@@ -11,8 +11,12 @@ rust-version.workspace = true
 # `ring` backend (no extra native build tooling on Windows); `des` and `dsa`
 # compile in the legacy algorithms, `rsa` the RSA host/user keys.
 russh = { version = "=0.65.1", default-features = false, features = ["ring", "rsa", "des", "dsa", "flate2"] }
+serde = { version = "1", features = ["derive"] }
+# YAML for workspace files; maintained fork of the deprecated serde_yaml.
+serde_norway = "0.9"
 thiserror = "2"
 tokio = { workspace = true }
 
 [dev-dependencies]
 rand = { version = "0.10", features = ["thread_rng"] }
+tempfile = "3"

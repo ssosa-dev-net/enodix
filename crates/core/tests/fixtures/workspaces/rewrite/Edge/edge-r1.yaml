@@ -1,0 +1,8 @@
+name: edge-r1
+vendor: Juniper
+address: 10.9.0.1
+rack_unit: 12
+custom:
+  contract: ACME-1234
+  owner: noc
+port: 22

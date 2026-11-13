@@ -11,6 +11,17 @@ export interface QuickConnectTarget {
   password: string;
 }
 
+/** What a session connects to. */
+export type ConnectTarget =
+  | ({ kind: "quick" } & QuickConnectTarget)
+  | {
+      kind: "host";
+      /** The host's id in the open workspace. */
+      id: string;
+      username: string;
+      password: string;
+    };
+
 export interface TerminalSize {
   cols: number;
   rows: number;
@@ -37,7 +48,7 @@ export function appName(): Promise<string> {
  * core stops reading from the device while too much output is unconsumed.
  */
 export async function openSession(
-  target: QuickConnectTarget,
+  target: ConnectTarget,
   size: TerminalSize,
   onOutput: (bytes: Uint8Array, consumed: () => void) => void,
   onState: (state: SessionState) => void,

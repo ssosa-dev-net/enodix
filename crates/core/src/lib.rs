@@ -5,4 +5,6 @@
 //! single test seam (see `docs/spec-v1.md`, "Architecture" and "Testing
 //! Decisions").
 
+pub mod app_state;
 pub mod session;
+pub mod workspace;

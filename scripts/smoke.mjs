@@ -7,7 +7,7 @@
 // Windows only for now: it relies on WebView2's remote-debugging switch.
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -20,6 +20,26 @@ const TIMEOUT_MS = 15000;
 
 const children = [];
 const userData = mkdtempSync(join(tmpdir(), "netterm-smoke-"));
+// The app's own data folder, holding a last workspace to reopen on launch.
+const appData = join(userData, "app-data");
+const workspace = join(userData, "smoke-workspace");
+
+/** A workspace with one host (the test server) and one malformed file. */
+function createWorkspace() {
+  mkdirSync(join(workspace, "Lab"), { recursive: true });
+  writeFileSync(join(workspace, "Lab", "_folder.yaml"), "description: Lab\n");
+  writeFileSync(
+    join(workspace, "Lab", "smoke-r1.yaml"),
+    `name: smoke-r1\naddress: 127.0.0.1\nport: ${SSH_PORT}\n`,
+  );
+  writeFileSync(join(workspace, "broken.yaml"), "name: [\n");
+  mkdirSync(appData);
+  // JSON is valid YAML, and quotes the Windows path safely.
+  writeFileSync(
+    join(appData, "state.yaml"),
+    JSON.stringify({ last_workspace: workspace }),
+  );
+}
 
 function fail(message) {
   throw new Error(message);
@@ -66,6 +86,7 @@ function startApp() {
       ...process.env,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEVTOOLS_PORT}`,
       WEBVIEW2_USER_DATA_FOLDER: userData,
+      NETTERM_DATA_DIR: appData,
     },
   });
   children.push(app);
@@ -102,6 +123,7 @@ async function connectDevTools() {
 }
 
 async function main() {
+  createWorkspace();
   await startServer();
   startApp();
   const devtools = await connectDevTools();
@@ -138,17 +160,8 @@ async function main() {
       await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
     }
   };
-  const quickConnect = async (password) => {
-    await until("the quick-connect form", () =>
-      evaluate(`!!document.querySelector("input[name=host]")`),
-    );
-    const fields = {
-      host: "127.0.0.1",
-      port: String(SSH_PORT),
-      username: USERNAME,
-      password,
-    };
-    await evaluate(`(() => {
+  const fillForm = (fields) =>
+    evaluate(`(() => {
       const fields = ${JSON.stringify(fields)};
       for (const [name, value] of Object.entries(fields)) {
         const input = document.querySelector("input[name=" + name + "]");
@@ -157,6 +170,34 @@ async function main() {
       }
       document.querySelector("form").requestSubmit();
     })()`);
+  const quickConnect = async (password) => {
+    await until("the quick-connect form", () =>
+      evaluate(`!!document.querySelector("input[name=host]")`),
+    );
+    await fillForm({
+      host: "127.0.0.1",
+      port: String(SSH_PORT),
+      username: USERNAME,
+      password,
+    });
+  };
+  // A real double-click, through the mouse, in the middle of the element.
+  const doubleClick = async (selector) => {
+    const { x, y } = await evaluate(`(() => {
+      const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    })()`);
+    for (const clickCount of [1, 2]) {
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await devtools.send("Input.dispatchMouseEvent", {
+          type,
+          x,
+          y,
+          button: "left",
+          clickCount,
+        });
+      }
+    }
   };
   const step = (message) => console.log(`ok - ${message}`);
   // Set SMOKE_SCREENSHOTS to a folder to keep pictures of the window.
@@ -175,6 +216,18 @@ async function main() {
   if (heading !== name) fail(`heading ${heading} differs from title ${name}`);
   await screenshot("quick-connect");
   step(`app launched, named "${name}"`);
+
+  // The last opened workspace reopens: its tree is shown, and the malformed
+  // file is reported by name without stopping the rest from loading.
+  await until("the reopened workspace's tree", () =>
+    evaluate(
+      `[...document.querySelectorAll("nav button")].some((b) => b.textContent.includes("Lab"))`,
+    ),
+  );
+  await until("the malformed file reported", async () =>
+    (await text("details")).includes("broken.yaml"),
+  );
+  step("the last workspace reopened, with the malformed file reported");
 
   // Quick-connect opens an interactive shell.
   await quickConnect(PASSWORD);
@@ -291,6 +344,30 @@ async function main() {
     async () => (await status()) === "Closed: authentication failed",
   );
   step("a wrong password is reported");
+
+  // Double-clicking a host in the tree prompts for credentials and opens an
+  // SSH session to its management address.
+  await evaluate(
+    `[...document.querySelectorAll("nav button[aria-expanded]")].find((b) => b.textContent.includes("Lab")).click()`,
+  );
+  const hostButton = '[data-host="Lab/smoke-r1.yaml"]';
+  await until("the host in the tree", () =>
+    evaluate(`!!document.querySelector(${JSON.stringify(hostButton)})`),
+  );
+  await doubleClick(hostButton);
+  await until("the credentials prompt", async () =>
+    (await text("h2")).includes("smoke-r1"),
+  );
+  await fillForm({ username: USERNAME, password: PASSWORD });
+  await until(
+    "the Connected status",
+    async () => (await status()) === "Connected",
+  );
+  await until("the shell prompt", async () =>
+    (await screen()).includes("test-ssh$"),
+  );
+  await screenshot("host-session");
+  step("double-clicking a host opened a session to it");
 
   devtools.close();
 }

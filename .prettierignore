@@ -5,3 +5,4 @@
 /docs/
 /ROADMAP.md
 package-lock.json
+/crates/core/tests/fixtures/

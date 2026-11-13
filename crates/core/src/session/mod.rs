@@ -35,6 +35,9 @@ pub enum SessionTarget {
     Ssh(SshTarget),
 }
 
+/// The port SSH uses when nothing sets one.
+pub const DEFAULT_SSH_PORT: u16 = 22;
+
 /// An SSH server and the password login to use on it.
 #[derive(Clone)]
 pub struct SshTarget {
