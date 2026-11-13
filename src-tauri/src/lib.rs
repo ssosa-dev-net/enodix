@@ -68,8 +68,10 @@ fn app_name(app: AppHandle) -> String {
     product_name(&app)
 }
 
-/// Opens a session. Output arrives on `on_output` as raw bytes and state
-/// changes on `on_state`; terminal data never goes through the event system.
+/// Opens a session. Output arrives on `on_output` as raw bytes, already
+/// batched by the core, and state changes on `on_state`; terminal data never
+/// goes through the event system. The interface acknowledges output with
+/// `session_acknowledge`.
 #[tauri::command]
 async fn session_open(
     manager: State<'_, SessionManager>,
@@ -107,6 +109,19 @@ fn session_write(manager: State<'_, SessionManager>, id: u64, data: Vec<u8>) -> 
         .map_err(|error| error.to_string())
 }
 
+/// The terminal has consumed `bytes` bytes of the session's output. Without
+/// these, the core stops reading from the device (flow control).
+#[tauri::command]
+fn session_acknowledge(
+    manager: State<'_, SessionManager>,
+    id: u64,
+    bytes: usize,
+) -> Result<(), String> {
+    manager
+        .acknowledge(SessionId(id), bytes)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn session_resize(manager: State<'_, SessionManager>, id: u64, size: Size) -> Result<(), String> {
     manager
@@ -137,6 +152,7 @@ pub fn run() {
             app_name,
             session_open,
             session_write,
+            session_acknowledge,
             session_resize,
             session_close
         ])

@@ -59,11 +59,11 @@ pub(super) async fn run(target: SshTarget, link: &mut Link) -> CloseReason {
 
     let (mut incoming, outgoing) = channel.split();
 
-    link.state(SessionState::Connected).await;
+    link.state(SessionState::Connected);
     if link.size != requested_size && resize(&outgoing, link.size).await.is_err() {
         return CloseReason::ConnectionLost;
     }
-    if !early_output.is_empty() && !link.output(early_output).await {
+    if !early_output.is_empty() && !link.output(early_output) {
         return close(&connection).await;
     }
 
@@ -74,6 +74,7 @@ pub(super) async fn run(target: SshTarget, link: &mut Link) -> CloseReason {
     let mut unsent: VecDeque<Vec<u8>> = VecDeque::new();
     let mut sending: Option<Sending<'_>> = None;
     let mut exit_status = None;
+    let flow = link.flow();
     loop {
         if sending.is_none() {
             if let Some(bytes) = unsent.pop_front() {
@@ -95,9 +96,14 @@ pub(super) async fn run(target: SshTarget, link: &mut Link) -> CloseReason {
                 }
                 Command::Close => return close(&connection).await,
             },
-            message = incoming.wait() => match message {
+            // Output is read only while the consumer is less than a window
+            // behind (flow control); commands are taken regardless.
+            message = async {
+                flow.room_to_read().await;
+                incoming.wait().await
+            } => match message {
                 Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
-                    if !link.output(data.to_vec()).await {
+                    if !link.output(data.to_vec()) {
                         return close(&connection).await;
                     }
                 }

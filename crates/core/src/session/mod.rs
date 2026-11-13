@@ -3,20 +3,20 @@
 //! Every transport sits behind the same session interface: bytes in
 //! ([`SessionManager::write`]), bytes out and state changes
 //! ([`SessionEvents`]), resize and close. Callers never see which transport
-//! is underneath once a session is open.
+//! is underneath once a session is open. Output goes through the
+//! output pipeline: batching and flow control (see [`OutputOptions`]).
 
+mod output;
 mod ssh;
 
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::mpsc;
 
-/// Output chunks and state changes a session may queue before the transport
-/// stops reading from the device until the consumer catches up.
-const EVENT_QUEUE: usize = 64;
+use output::Flow;
+pub use output::{OutputOptions, SessionEvents};
 
 /// Identifies one session within its [`SessionManager`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,26 +106,6 @@ pub enum SessionError {
     NotFound,
 }
 
-/// The stream of output and state changes of one session.
-///
-/// It ends after the `Closed` state. If the consumer falls behind, the
-/// session stops reading from the device until it catches up. Dropping the
-/// stream closes the session.
-pub struct SessionEvents(mpsc::Receiver<SessionEvent>);
-
-impl SessionEvents {
-    /// The next event, or `None` once the session has closed.
-    pub async fn next(&mut self) -> Option<SessionEvent> {
-        self.0.recv().await
-    }
-}
-
-impl fmt::Debug for SessionEvents {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SessionEvents").finish_non_exhaustive()
-    }
-}
-
 /// Opens, tracks and closes sessions.
 ///
 /// Cloning gives another handle to the same set of sessions. Sessions are
@@ -138,7 +118,14 @@ pub struct SessionManager {
 #[derive(Default)]
 struct Inner {
     next_id: AtomicU64,
-    sessions: Mutex<HashMap<SessionId, mpsc::UnboundedSender<Command>>>,
+    output: OutputOptions,
+    sessions: Mutex<HashMap<SessionId, SessionHandle>>,
+}
+
+/// How the manager reaches an open session.
+struct SessionHandle {
+    commands: mpsc::UnboundedSender<Command>,
+    flow: Arc<Flow>,
 }
 
 impl Inner {
@@ -155,6 +142,16 @@ impl SessionManager {
         Self::default()
     }
 
+    /// A manager whose sessions batch and pace their output as `options` say.
+    pub fn with_output_options(options: OutputOptions) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                output: options,
+                ..Inner::default()
+            }),
+        }
+    }
+
     /// Starts opening a session and returns at once; progress and failure
     /// arrive as [`SessionState`] events, starting with `Connecting`.
     ///
@@ -162,23 +159,34 @@ impl SessionManager {
     pub fn open(&self, target: SessionTarget, size: TerminalSize) -> (SessionId, SessionEvents) {
         let id = SessionId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::channel(EVENT_QUEUE);
+        // Unbounded, so the transport never waits on the consumer and keeps
+        // taking commands; flow control bounds the output queued here.
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let flow = Arc::new(Flow::new(self.inner.output.window));
         self.inner
             .sessions
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, command_tx);
+            .insert(
+                id,
+                SessionHandle {
+                    commands: command_tx,
+                    flow: flow.clone(),
+                },
+            );
 
         // The task holds the manager weakly so that dropping the last manager
         // handle drops the command senders, which closes every session.
         let manager = Arc::downgrade(&self.inner);
+        let link_flow = flow.clone();
         tokio::spawn(async move {
             let mut link = Link {
                 commands: command_rx,
                 events: event_tx,
+                flow: link_flow,
                 size,
             };
-            link.state(SessionState::Connecting).await;
+            link.state(SessionState::Connecting);
             let reason = match target {
                 SessionTarget::Ssh(target) => ssh::run(target, &mut link).await,
             };
@@ -187,10 +195,23 @@ impl SessionManager {
             if let Some(manager) = manager.upgrade() {
                 manager.forget(id);
             }
-            link.state(SessionState::Closed(reason)).await;
+            link.state(SessionState::Closed(reason));
         });
 
-        (id, SessionEvents(event_rx))
+        (id, SessionEvents::new(event_rx, flow, self.inner.output))
+    }
+
+    /// Tells the session that `bytes` bytes of its output have been consumed,
+    /// for a consumer that does not hold the [`SessionEvents`] itself.
+    pub fn acknowledge(&self, id: SessionId, bytes: usize) -> Result<(), SessionError> {
+        let sessions = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let session = sessions.get(&id).ok_or(SessionError::NotFound)?;
+        session.flow.acknowledge(bytes);
+        Ok(())
     }
 
     /// Sends bytes to the device, for example keystrokes.
@@ -214,8 +235,11 @@ impl SessionManager {
             .sessions
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let commands = sessions.get(&id).ok_or(SessionError::NotFound)?;
-        commands.send(command).map_err(|_| SessionError::NotFound)
+        let session = sessions.get(&id).ok_or(SessionError::NotFound)?;
+        session
+            .commands
+            .send(command)
+            .map_err(|_| SessionError::NotFound)
     }
 }
 
@@ -229,9 +253,13 @@ enum Command {
 /// A transport's side of the session interface: where it takes commands from
 /// and reports output and state to. Each transport is a function that drives
 /// a `Link` until the session ends and returns why it ended.
+///
+/// A transport reads from the device only once [`Link::flow`]'s
+/// `room_to_read` resolves, and keeps taking commands meanwhile.
 struct Link {
     commands: mpsc::UnboundedReceiver<Command>,
-    events: mpsc::Sender<SessionEvent>,
+    events: mpsc::UnboundedSender<SessionEvent>,
+    flow: Arc<Flow>,
     /// The size the terminal should have, kept current while connecting.
     size: TerminalSize,
 }
@@ -254,13 +282,19 @@ impl Link {
         }
     }
 
-    /// Delivers output, waiting if the consumer is behind. Returns `false`
-    /// if nobody is listening any more.
-    async fn output(&mut self, bytes: Vec<u8>) -> bool {
-        self.events.send(SessionEvent::Output(bytes)).await.is_ok()
+    /// The session's flow control, for waiting until there is room to read.
+    fn flow(&self) -> Arc<Flow> {
+        self.flow.clone()
     }
 
-    async fn state(&mut self, state: SessionState) {
-        let _ = self.events.send(SessionEvent::State(state)).await;
+    /// Passes on output read from the device. Returns `false` if nobody is
+    /// listening any more.
+    fn output(&mut self, bytes: Vec<u8>) -> bool {
+        self.flow.read(bytes.len());
+        self.events.send(SessionEvent::Output(bytes)).is_ok()
+    }
+
+    fn state(&mut self, state: SessionState) {
+        let _ = self.events.send(SessionEvent::State(state));
     }
 }
