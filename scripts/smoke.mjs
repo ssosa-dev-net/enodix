@@ -237,6 +237,31 @@ async function main() {
   );
   step("a long listing arrives complete");
 
+  // Output far beyond the core's flow-control window keeps flowing, so the
+  // interface acknowledges what the terminal consumes.
+  await type("lines 200000\r");
+  await until("the end of a 2.5 MB listing", async () =>
+    /line 199999\s*line 200000\s*test-ssh\$/.test(await screen()),
+  );
+  step("a 2.5 MB listing arrives complete");
+
+  // A flood of output can be stopped with Ctrl+C.
+  await type("flood\r");
+  await until("the flood", async () => (await screen()).includes("flood"));
+  await sleep(1000);
+  const ctrlC = {
+    key: "c",
+    code: "KeyC",
+    windowsVirtualKeyCode: 67,
+    modifiers: 2,
+  };
+  await devtools.send("Input.dispatchKeyEvent", { type: "keyDown", ...ctrlC });
+  await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...ctrlC });
+  await until("the prompt after Ctrl+C", async () =>
+    /\^C\s*test-ssh\$\s*$/.test(await screen()),
+  );
+  step("Ctrl+C stops a flood of output and the prompt returns");
+
   // The remote end exiting is reflected in the interface.
   await type("exit\r");
   await until("the closed status", async () =>

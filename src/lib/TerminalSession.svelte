@@ -60,7 +60,9 @@
     openSession(
       target,
       requestedSize,
-      (bytes) => terminal.write(bytes),
+      // Acknowledged once xterm.js has parsed it, so a flood of output
+      // never queues up faster than the terminal can show it.
+      (bytes, consumed) => terminal.write(bytes, consumed),
       (state) => (status = state),
     ).then(
       (opened) => {

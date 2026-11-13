@@ -14,9 +14,16 @@
 //! | `colors`     | prints [`COLOR_OUTPUT`]                           |
 //! | `fullscreen` | prints [`FULLSCREEN_OUTPUT`]                      |
 //! | `lines <n>`  | prints `line 1` to `line <n>`, one per row          |
+//! | `flood`      | prints [`FLOOD_LINE`] without end until Ctrl+C    |
 //! | `exit [n]`   | ends the shell with exit status `n` (default 0)   |
 //! | `drop`       | drops the connection without ending the shell     |
 //!
+//! Ctrl+C prints [`INTERRUPTED`] and a new prompt, stopping a flood. A flood
+//! is sent as fast as the client's SSH window allows, like a device dumping
+//! a huge table.
+//!
+//! The output helpers acknowledge every byte they receive, as the interface
+//! does once the terminal has consumed it.
 //! `examples/test_ssh_server.rs` runs the same server standalone, for trying
 //! the app by hand and for the end-to-end smoke test.
 //!
@@ -24,6 +31,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,6 +45,9 @@ pub const USERNAME: &str = "engineer";
 pub const PASSWORD: &str = "correct horse";
 pub const PROMPT: &[u8] = b"test-ssh$ ";
 
+/// The byte a terminal sends for Ctrl+C.
+pub const CTRL_C: u8 = 0x03;
+
 /// SGR colour sequences, as a device would send them.
 pub const COLOR_OUTPUT: &[u8] = b"\x1b[1;31mdown\x1b[0m \x1b[38;5;46mup\x1b[0m\r\n";
 
@@ -45,8 +56,14 @@ pub const COLOR_OUTPUT: &[u8] = b"\x1b[1;31mdown\x1b[0m \x1b[38;5;46mup\x1b[0m\r
 pub const FULLSCREEN_OUTPUT: &[u8] =
     b"\x1b[?1049h\x1b[2J\x1b[H\x1b[5;10H\xe2\x94\x82 top\x1b[?25l\x1b[?25h\x1b[?1049l";
 
+/// One line of `flood` output.
+pub const FLOOD_LINE: &[u8] = b"flood flood flood flood flood flood flood\r\n";
+
+/// What Ctrl+C prints before the next prompt.
+pub const INTERRUPTED: &[u8] = b"^C\r\n";
+
 /// How long a test waits for something the server should send.
-const WAIT: Duration = Duration::from_secs(10);
+pub const WAIT: Duration = Duration::from_secs(10);
 
 pub struct TestSshServer {
     port: u16,
@@ -120,6 +137,25 @@ struct ShellState {
     cols: u32,
     rows: u32,
     line: Vec<u8>,
+    /// Set while a flood is running; setting the flag stops it.
+    flood: Option<Arc<AtomicBool>>,
+}
+
+/// Sends [`FLOOD_LINE`] until `stop` is set, then the interrupt and a prompt.
+fn start_flood(channel: ChannelId, session: &Session) -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let handle = session.handle();
+    let flooding = stop.clone();
+    tokio::spawn(async move {
+        let chunk = FLOOD_LINE.repeat(200);
+        while !flooding.load(Ordering::Relaxed) {
+            if handle.data(channel, chunk.clone()).await.is_err() {
+                return;
+            }
+        }
+        let _ = handle.data(channel, [INTERRUPTED, PROMPT].concat()).await;
+    });
+    stop
 }
 
 impl ScriptedShell {
@@ -137,6 +173,10 @@ impl ScriptedShell {
             Some("lines") => {
                 let count: u32 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
                 session.data(channel, numbered_lines(count))?;
+            }
+            Some("flood") => {
+                state.flood = Some(start_flood(channel, session));
+                return Ok(());
             }
             Some("exit") => {
                 let status = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
@@ -223,7 +263,21 @@ impl Handler for ScriptedShell {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         for &byte in data {
-            if byte == b'\r' {
+            if byte == CTRL_C {
+                let state = self.channels.entry(channel).or_default();
+                state.line.clear();
+                match state.flood.take() {
+                    // The flood prints the interrupt and prompt as it stops.
+                    Some(stop) => stop.store(true, Ordering::Relaxed),
+                    None => session.data(channel, [INTERRUPTED, PROMPT].concat())?,
+                }
+            } else if self
+                .channels
+                .get(&channel)
+                .is_some_and(|s| s.flood.is_some())
+            {
+                // Input typed during a flood is not echoed, like a busy device.
+            } else if byte == b'\r' {
                 session.data(channel, &b"\r\n"[..])?;
                 self.run_line(channel, session)?;
             } else {
@@ -248,7 +302,7 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
         loop {
             match events.next().await {
                 Some(SessionEvent::State(state)) => return state,
-                Some(SessionEvent::Output(_)) => {}
+                Some(SessionEvent::Output(bytes)) => events.acknowledge(bytes.len()),
                 None => panic!("session events ended while waiting for a state change"),
             }
         }
@@ -261,11 +315,24 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
 ///
 /// Panics if a state change arrives first or nothing matching arrives in time.
 pub async fn output_ending_with(events: &mut SessionEvents, expected: &[u8]) -> Vec<u8> {
+    output_batches_ending_with(events, expected).await.concat()
+}
+
+/// Like [`output_ending_with`], but returns each output event separately.
+pub async fn output_batches_ending_with(
+    events: &mut SessionEvents,
+    expected: &[u8],
+) -> Vec<Vec<u8>> {
+    let mut batches = Vec::new();
     let mut received = Vec::new();
     let result = tokio::time::timeout(WAIT, async {
         while !received.ends_with(expected) {
             match events.next().await {
-                Some(SessionEvent::Output(bytes)) => received.extend_from_slice(&bytes),
+                Some(SessionEvent::Output(bytes)) => {
+                    events.acknowledge(bytes.len());
+                    received.extend_from_slice(&bytes);
+                    batches.push(bytes);
+                }
                 other => panic!("expected output, got {other:?}"),
             }
         }
@@ -278,5 +345,17 @@ pub async fn output_ending_with(events: &mut SessionEvents, expected: &[u8]) -> 
             String::from_utf8_lossy(&received)
         );
     }
-    received
+    batches
+}
+
+/// Collects output without acknowledging it until none arrives for `quiet`.
+pub async fn unacknowledged_output(events: &mut SessionEvents, quiet: Duration) -> Vec<u8> {
+    let mut received = Vec::new();
+    loop {
+        match tokio::time::timeout(quiet, events.next()).await {
+            Ok(Some(SessionEvent::Output(bytes))) => received.extend_from_slice(&bytes),
+            Ok(other) => panic!("expected output, got {other:?}"),
+            Err(_) => return received,
+        }
+    }
 }
