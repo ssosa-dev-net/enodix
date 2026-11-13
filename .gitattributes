@@ -1,0 +1,2 @@
+# LF everywhere, so format checks agree on every machine.
+* text=auto eol=lf

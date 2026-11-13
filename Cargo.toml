@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+rust-version = "1.90"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "io-util"] }

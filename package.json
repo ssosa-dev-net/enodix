@@ -1,0 +1,36 @@
+{
+  "name": "netterm",
+  "private": true,
+  "version": "0.1.0",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tauri": "tauri",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build --no-bundle",
+    "test": "cargo test --workspace",
+    "smoke": "node scripts/smoke.mjs",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "lint": "cargo clippy --workspace --all-targets -- -D warnings && npm run typecheck",
+    "format": "cargo fmt --all && prettier --write .",
+    "format:check": "cargo fmt --all --check && prettier --check .",
+    "check": "npm run format:check && npm run lint && npm run test"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tauri-apps/cli": "^2.12.4",
+    "prettier": "^3.10.1",
+    "prettier-plugin-svelte": "^4.1.1",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.8"
+  }
+}
