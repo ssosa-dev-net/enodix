@@ -4,24 +4,25 @@
   import { onMount } from "svelte";
   import {
     openSession,
-    type QuickConnectTarget,
+    type ConnectTarget,
     type Session,
     type SessionState,
   } from "./session";
 
   interface Props {
-    target: QuickConnectTarget;
+    target: ConnectTarget;
+    /** Shown in the header, such as `user@host:port`. */
+    title: string;
     /** Called when the user leaves this session's view. */
     ondismiss: () => void;
   }
 
-  let { target, ondismiss }: Props = $props();
+  let { target, title, ondismiss }: Props = $props();
 
   let container: HTMLDivElement;
   let session = $state<Session | null>(null);
   let status = $state<SessionState>({ state: "connecting" });
 
-  const title = $derived(`${target.username}@${target.host}:${target.port}`);
   const statusText = $derived(
     status.state === "connecting"
       ? "Connecting…"
