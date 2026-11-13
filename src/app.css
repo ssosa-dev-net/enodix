@@ -1,0 +1,61 @@
+:root {
+  --bg: #161a21;
+  --surface: #1e242d;
+  --terminal: #0e1116;
+  --border: #323a46;
+  --text: #d7dce2;
+  --muted: #8b95a3;
+  --accent: #4c9aff;
+  --ok: #3fb950;
+  --danger: #f85149;
+
+  color-scheme: dark;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+
+button[type="submit"] {
+  color: #fff;
+  background: #2f6fd0;
+  border-color: #2f6fd0;
+  padding: 0.5rem 1.4rem;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
