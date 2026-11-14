@@ -62,6 +62,8 @@ export const inventory = $state({
    * target it starts with).
    */
   csvImport: null as string | null,
+  /** The same for the Nornir import dialog. */
+  nornirImport: null as string | null,
 });
 
 /** Opens the CSV import dialog with `folder` as its first target. */
@@ -81,6 +83,22 @@ export async function runCsvImport(
   return apply(await api.importCsv(mapping, target, replace));
 }
 
+/** Opens the Nornir import dialog with `folder` as its first target. */
+export function openNornirImport(folder: string) {
+  inventory.nornirImport = folder;
+}
+
+/**
+ * Runs the Nornir import the last preview showed (see
+ * `api.importNornir`) and shows the reloaded workspace; returns the report.
+ * Errors propagate.
+ */
+export async function runNornirImport(
+  replace: string[],
+): Promise<api.ImportReport> {
+  return apply(await api.importNornir(replace));
+}
+
 export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.workspace = workspace;
   inventory.selected = null;
@@ -89,6 +107,7 @@ export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.activeFilter = null;
   inventory.filterView = null;
   inventory.csvImport = null;
+  inventory.nornirImport = null;
 }
 
 // Under a filter, the selected item (one just created, say, or edited out

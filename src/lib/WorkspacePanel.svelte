@@ -10,6 +10,7 @@
     newFolder,
     newHost,
     openCsvImport,
+    openNornirImport,
     remove,
     removeFilter,
     rename,
@@ -146,6 +147,7 @@
       ["New folder…", () => newFolder(item.path)],
       ["New host…", () => newHost(item.path)],
       ["Import CSV…", () => openCsvImport(item.path)],
+      ["Import Nornir inventory…", () => openNornirImport(item.path)],
     ];
     if (item.path === "") return creating;
     return [
@@ -214,6 +216,11 @@
         data-open-csv-import
         title="Import hosts from a CSV file into the selected folder"
         onclick={() => openCsvImport(targetFolder())}>Import…</button
+      >
+      <button
+        data-open-nornir-import
+        title="Import hosts from a Nornir inventory into the selected folder"
+        onclick={() => openNornirImport(targetFolder())}>Nornir…</button
       >
       <button
         title="Credential profiles"

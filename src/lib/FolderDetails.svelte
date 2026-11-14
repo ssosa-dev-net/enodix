@@ -9,6 +9,7 @@
     newFolder,
     newHost,
     openCsvImport,
+    openNornirImport,
     remove,
     renameTo,
     saveFolderSettings,
@@ -53,6 +54,10 @@
       <button onclick={() => newHost(folder.path)}>New host…</button>
       <button data-folder-import onclick={() => openCsvImport(folder.path)}
         >Import CSV…</button
+      >
+      <button
+        data-folder-nornir-import
+        onclick={() => openNornirImport(folder.path)}>Import Nornir…</button
       >
       {#if !isRoot}
         <button onclick={() => move(item)}>Move…</button>
