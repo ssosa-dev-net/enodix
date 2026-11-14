@@ -2663,6 +2663,7 @@ async function jobs({
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const profilesDialog = "[data-dialog=profiles]";
   const folder = join(workspace, "Jobs");
+  const backupHostFile = join(folder, "jobs-b1.yaml");
   const snippetsFile = join(workspace, "_snippets.yaml");
   const savedSnippets = existsSync(snippetsFile)
     ? readFileSync(snippetsFile, "utf8")
@@ -2713,7 +2714,7 @@ async function jobs({
   );
   writeFileSync(
     snippetsFile,
-    `${savedSnippets ?? ""}Job check: "show hostname\\necho site {{site}}\\n"\nJob hang: hang\n`,
+    `${savedSnippets ?? ""}Job check: "show hostname\\necho site {{site}}\\n"\nJob hang: hang\nJob configure: configure interface Loopback9\n`,
   );
   const folderRow = 'nav button[data-item=folder][data-path="Jobs"]';
   await until("the Jobs folder in the tree", () => exists(folderRow));
@@ -3065,7 +3066,167 @@ async function jobs({
     step("Run again planned the same step and target and showed pre-flight");
     await clickOn(`${dialog} [data-job=dismiss]`);
     await until("the job dialog closed", async () => !(await exists(dialog)));
+
+    // Config backup: a host driven by eos (which ignores the device's
+    // changing `! Time:` line), backed up twice for one version, then
+    // again after its configuration changed for a second one and a diff.
+    writeFileSync(backupHostFile, "address: 127.0.0.1\nplatform: eos\n");
+    const backupHost = "Jobs/jobs-b1.yaml";
+    const backupRow = `nav [data-host="${backupHost}"]`;
+    await until("jobs-b1 in the tree", () => exists(backupRow));
+    await clickOn(backupRow);
+    await until("jobs-b1's side panel", () =>
+      exists(".side [data-host-back-up]"),
+    );
+    const backUp = async () => {
+      await clickOn(".side [data-host-back-up]");
+      await until("the backup pre-flight", async () =>
+        exists(
+          `${dialog}[data-step=preflight] [data-job-host="${backupHost}"]`,
+        ),
+      );
+      if (!(await exists(`${dialog} [data-job-backup-note]`))) {
+        fail("the backup pre-flight does not say how sensitive backups are");
+      }
+      await until(
+        "the backup's start button enabled",
+        async () => !(await startDisabled()),
+      );
+      await clickOn(`${dialog} [data-job=start]`);
+      await until("the backup finished", () =>
+        exists(`${dialog} [data-job-progress][data-finished]`),
+      );
+      const result = await evaluate(`(() => {
+        const row = document.querySelector('${dialog} [data-job-result="${backupHost}"]');
+        const backup = row.querySelector("[data-job-backup]");
+        return {
+          state: row.dataset.hostState,
+          reason: row.querySelector("[data-job-reason]")?.textContent ?? "",
+          backup: backup?.dataset.jobBackup ?? null,
+          version: backup?.dataset.version ?? null,
+        };
+      })()`);
+      await clickOn(`${dialog} [data-job=close]`);
+      await until("the job dialog closed", async () => !(await exists(dialog)));
+      if (result.state !== "done") fail(`the backup failed: ${json(result)}`);
+      return result;
+    };
+    const first = await backUp();
+    if (first.backup !== "saved") fail(`the first backup: ${json(first)}`);
+    const second = await backUp();
+    if (second.backup !== "unchanged" || second.version !== first.version) {
+      fail(`a second backup of an unchanged device: ${json(second)}`);
+    }
+    const kept = () => {
+      const root = join(appData, "configs");
+      if (!existsSync(root)) return [];
+      return readdirSync(root).flatMap((id) => {
+        const folder = join(root, id, "Jobs", "jobs-b1");
+        return existsSync(folder) ? readdirSync(folder) : [];
+      });
+    };
+    if (kept().length !== 1) fail(`versions on disk: ${json(kept())}`);
+    await screenshot("config-backup");
+    step(
+      "two backups of an unchanged device kept one version, outside the workspace",
+    );
+
+    // The device's configuration changes (a snippet job), and the next
+    // backup keeps a second version.
+    await clickOn(".side [data-host-run-snippet]");
+    await until("the run-snippet dialog on jobs-b1", () => atStep("snippet"));
+    await pickSnippet("Job configure");
+    await until("the configure snippet shown", async () =>
+      (await text(`${dialog} [data-job-snippet-text]`)).includes(
+        "configure interface",
+      ),
+    );
+    await clickOn(`${dialog} [data-job=plan]`);
+    await until("the configure pre-flight", () => atStep("preflight"));
+    await clickOn(`${dialog} [data-job=start]`);
+    await until("the configure job finished", () =>
+      exists(`${dialog} [data-job-progress][data-finished]`),
+    );
+    if (
+      !(await exists(
+        `${dialog} [data-job-result="${backupHost}"][data-host-state=done]`,
+      ))
+    ) {
+      fail("the configure snippet did not run");
+    }
+    await clickOn(`${dialog} [data-job=close]`);
+    await until("the job dialog closed", async () => !(await exists(dialog)));
+    const third = await backUp();
+    if (third.backup !== "saved" || third.version === first.version) {
+      fail(`a backup of a changed device: ${json(third)}`);
+    }
+    if (kept().length !== 2) fail(`versions on disk: ${json(kept())}`);
+    step("a changed configuration was kept as a second version");
+
+    // The history, from the host panel: both versions, the text without
+    // the prompt, a diff, and Save to….
+    const history = "[data-dialog=config-history]";
+    await clickOn(".side [data-open-config-history]");
+    await until("the config history", () =>
+      exists(`${history} [data-config-version]`),
+    );
+    if (!(await exists(`${history} [data-config-sensitive]`))) {
+      fail("the config history does not say how sensitive backups are");
+    }
+    const versions = await evaluate(
+      `[...document.querySelectorAll("${history} [data-config-version]")].map((b) => b.dataset.configVersion)`,
+    );
+    if (json(versions) !== json([third.version, first.version])) {
+      fail(`the versions listed: ${json(versions)}`);
+    }
+    await until("the newest version's text", async () =>
+      (await text(`${history} [data-config-text]`)).includes(
+        "interface Loopback9",
+      ),
+    );
+    const shown = await text(`${history} [data-config-text]`);
+    // No prompt, so no echo line either (`lab-r1# show running-config`).
+    if (shown.includes("lab-r1#") || !shown.startsWith("! Command:")) {
+      fail(`the version holds more than the configuration: ${json(shown)}`);
+    }
+    await clickOn(`${history} [data-config-action=diff]`);
+    await until("the versions' diff", () => exists(`${history} [data-diff]`));
+    const added = await evaluate(
+      `[...document.querySelectorAll('${history} [data-diff-line="added"] .text')].map((l) => l.textContent)`,
+    );
+    if (!added.includes("interface Loopback9")) {
+      fail(`the diff of the two versions adds ${json(added)}`);
+    }
+    await screenshot("config-history");
+    step("the host's config history lists both versions and diffs them");
+
+    const saveConfigTo = mkdtempSync(join(tmpdir(), "netterm-config-export-"));
+    try {
+      await fillForm(
+        { "config-export-folder": saveConfigTo },
+        `${history} [data-config-export]`,
+      );
+      await until("the version saved", () =>
+        exists(`${history} [data-config-notice]`),
+      );
+      const savedFile = join(saveConfigTo, `jobs-b1_${third.version}.txt`);
+      if (
+        !existsSync(savedFile) ||
+        !readFileSync(savedFile, "utf8").includes("interface Loopback9")
+      ) {
+        fail(`the saved version ${savedFile} is not there`);
+      }
+    } finally {
+      rmSync(saveConfigTo, { recursive: true, force: true });
+    }
+    step("Save to… wrote the version's text to the chosen folder");
+    await clickOn(`${history} [data-config-action=close]`);
+    await until(
+      "the config history closed",
+      async () => !(await exists(history)),
+    );
   } finally {
+    rmSync(backupHostFile, { force: true });
     if (savedSnippets === null) rmSync(snippetsFile, { force: true });
     else writeFileSync(snippetsFile, savedSnippets);
   }

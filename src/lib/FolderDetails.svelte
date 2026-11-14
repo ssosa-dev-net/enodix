@@ -8,6 +8,7 @@
     move,
     newFolder,
     newHost,
+    openBackup,
     openCsvImport,
     openJob,
     openNornirImport,
@@ -66,6 +67,13 @@
         onclick={() =>
           openJob({ kind: "folder", path: folder.path }, folder.name)}
         >Run snippet…</button
+      >
+      <button
+        data-folder-back-up
+        title="Fetch the configuration of every host in this folder and keep each in its host's config history if it changed"
+        onclick={() =>
+          openBackup({ kind: "folder", path: folder.path }, folder.name)}
+        >Back up configs</button
       >
       {#if !isRoot}
         <button onclick={() => move(item)}>Move…</button>

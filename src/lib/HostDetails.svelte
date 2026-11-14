@@ -8,6 +8,8 @@
     hostRole,
     inventory,
     move,
+    openBackup,
+    openConfigHistory,
     openJob,
     remove,
     renameTo,
@@ -227,6 +229,17 @@
           openLogFolder(host.id).catch(
             (error) => (inventory.editError = String(error)),
           )}>Open log folder</button
+      >
+      <button
+        data-open-config-history
+        title="Earlier versions of this host's configuration, kept by config backups"
+        onclick={() => openConfigHistory(host.id)}>Config history</button
+      >
+      <button
+        data-host-back-up
+        title="Fetch this host's configuration and keep it in its config history if it changed"
+        onclick={() => openBackup({ kind: "hosts", ids: [host.id] }, host.name)}
+        >Back up config</button
       >
       <button
         data-host-run-snippet

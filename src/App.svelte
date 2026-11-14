@@ -33,6 +33,7 @@
   import NornirImportDialog from "./lib/NornirImportDialog.svelte";
   import JobDialog from "./lib/JobDialog.svelte";
   import JobsView from "./lib/JobsView.svelte";
+  import ConfigHistory from "./lib/ConfigHistory.svelte";
   import { liveJobs } from "./lib/jobs.svelte";
   import {
     hostRole,
@@ -1158,8 +1159,19 @@
     target={inventory.job.target}
     label={inventory.job.label}
     planned={inventory.job.planned ?? null}
+    backup={inventory.job.backup ?? false}
     onclose={() => {
       inventory.job = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if inventory.configHistory !== null && inventory.workspace}
+  <ConfigHistory
+    host={inventory.configHistory}
+    onclose={() => {
+      inventory.configHistory = null;
       focusRequest += 1;
     }}
   />

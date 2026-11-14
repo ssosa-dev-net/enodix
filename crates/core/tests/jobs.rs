@@ -112,6 +112,7 @@ async fn run(
                 JobEvent::Output { host, text } => {
                     streamed.entry(host).or_default().push_str(&text)
                 }
+                JobEvent::Backup { host, .. } => panic!("a snippet job backed up {host}"),
                 JobEvent::Finished(report) => return report,
             }
         }

@@ -10,11 +10,44 @@ export type JobTarget =
   { kind: "folder"; path: string } | { kind: "hosts"; ids: string[] };
 
 /** What a job does on each host. */
-export interface JobStep {
-  kind: "snippet";
-  name: string;
-  /** Values for the variables no host fills, the same for every host. */
-  answers: Record<string, string>;
+export type JobStep =
+  | {
+      kind: "snippet";
+      name: string;
+      /** Values for the variables no host fills, the same for every host. */
+      answers: Record<string, string>;
+    }
+  /** Fetches each configuration and keeps it in the config history. */
+  | { kind: "configBackup" };
+
+/** What a config backup kept of one host's configuration. */
+export type SaveOutcome =
+  /** Changed (or the first): kept as a new version. */
+  | { kind: "saved"; version: string }
+  /** The same as the latest version, apart from ignored lines. */
+  | { kind: "unchanged"; version: string };
+
+/** What a kept run is called: its snippet, or "Config backup". */
+export function stepTitle(step: JobStep): string {
+  return step.kind === "snippet" ? step.name : "Config backup";
+}
+
+/** A config backup's outcome, for the user. */
+export function outcomeText(outcome: SaveOutcome): string {
+  const when = versionTime(outcome.version);
+  return outcome.kind === "saved"
+    ? `Saved as version ${when}`
+    : `Unchanged since version ${when}`;
+}
+
+/** A version's name (`YYYY-MM-DD_HH-MM-SS[_n]`) as a date and time. */
+export function versionTime(version: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})(?:_(\d+))?$/.exec(
+    version,
+  );
+  if (!match) return version;
+  const [, day, h, m, s, n] = match;
+  return `${day} ${h}:${m}:${s}${n ? ` (${n})` : ""}`;
 }
 
 export interface PlannedHost {
@@ -58,11 +91,14 @@ export interface HostResult {
   name: string;
   state: HostState;
   output: string;
+  /** For a config backup that got the configuration. */
+  backup: SaveOutcome | null;
 }
 
 export type JobEvent =
   | { kind: "state"; host: string; state: HostState }
   | { kind: "output"; host: string; text: string }
+  | { kind: "backup"; host: string; outcome: SaveOutcome }
   | { kind: "finished"; hosts: HostResult[] };
 
 /** Works out the pre-flight list (connects to nothing). */
@@ -103,6 +139,8 @@ export interface RunHost {
   state: HostState;
   /** Its output file, relative to the run folder. */
   file: string;
+  /** For a config backup: the version holding its configuration. */
+  backup?: SaveOutcome;
 }
 
 /** A kept run, as its description says. */
@@ -184,6 +222,33 @@ export function planAgain(run: string) {
   return invoke<{ target: JobTarget; plan: JobPlan }>("job_run_again", {
     run,
   });
+}
+
+/** A kept version of a host's configuration. */
+export interface ConfigVersion {
+  /** Its name: the local time it was saved, `YYYY-MM-DD_HH-MM-SS[_n]`. */
+  id: string;
+  lines: number;
+  bytes: number;
+}
+
+/** The kept versions of a host's configuration, newest first. */
+export function configVersions(host: string) {
+  return invoke<ConfigVersion[]>("config_versions", { host });
+}
+
+export function configVersion(host: string, version: string) {
+  return invoke<string>("config_version", { host, version });
+}
+
+/** A line diff of two versions of a host's configuration, `old` first. */
+export function diffConfigs(host: string, old: string, new_: string) {
+  return invoke<DiffLine[]>("config_diff", { host, old, new: new_ });
+}
+
+/** Copies a version into `folder`; the copy's path. */
+export function exportConfig(host: string, version: string, folder: string) {
+  return invoke<string>("config_export", { host, version, folder });
 }
 
 /** Cancels a running job, keeping the output collected. */

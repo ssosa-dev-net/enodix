@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use super::{HostState, JobEvent, JobPlan, JobStep, JobTarget};
+use crate::configs::SaveOutcome;
 use crate::diff::{diff_lines, DiffLine};
 use crate::workspace::HostId;
 
@@ -76,6 +77,10 @@ pub struct RunHost {
     pub state: HostState,
     /// Its output file, relative to the run folder, `/`-separated.
     pub file: String,
+    /// For a config backup: the version that holds its configuration
+    /// (saved by this run, or found unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<SaveOutcome>,
 }
 
 /// A host pre-flight skipped, and why.
@@ -222,6 +227,7 @@ impl RunStore {
                 address: host.address.clone(),
                 state: HostState::Waiting,
                 file: output_file(&host.id),
+                backup: None,
             })
             .collect();
         let run = StoredRun {
@@ -463,6 +469,12 @@ impl RunRecorder {
                 }
                 self.save()
             }
+            JobEvent::Backup { host, outcome } => {
+                if let Some(entry) = self.run.hosts.iter_mut().find(|h| &h.id == host) {
+                    entry.backup = Some(outcome.clone());
+                }
+                self.save()
+            }
             JobEvent::Output { host, text } => {
                 let Some(entry) = self.run.host(host) else {
                     return Ok(());
@@ -482,6 +494,7 @@ impl RunRecorder {
                         continue;
                     };
                     entry.state = result.state.clone();
+                    entry.backup.clone_from(&result.backup);
                     // The whole output again, in case a piece was not kept.
                     let path = self.folder.join(&entry.file);
                     if let Err(error) = fs::write(&path, &result.output) {

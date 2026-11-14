@@ -24,6 +24,11 @@
 //! names it. One host's failure never stops the others. Job sessions are
 //! never logged and never touch open terminals (each is its own session).
 //!
+//! The [`JobStep::ConfigBackup`] step sends the definition's show-config
+//! command instead of a snippet and keeps what it showed (the command's
+//! echo and the final prompt left out) in a [`crate::configs::ConfigStore`]
+//! as a new version of the host's configuration, if it changed.
+//!
 //! Every run is kept, outside the workspace, by [`results::RunStore`]:
 //! listed newest first, searched, compared line by line, exported, deleted,
 //! and planned again on the same target with [`plan_again`].
@@ -71,6 +76,10 @@ pub enum JobStep {
         #[serde(default)]
         answers: BTreeMap<String, String>,
     },
+    /// Fetches the configuration with the platform definition's
+    /// show-config command and keeps it in the config history if it
+    /// changed (see [`crate::configs`]).
+    ConfigBackup,
 }
 
 /// The pre-flight list of a job.
@@ -90,6 +99,10 @@ pub struct JobPlan {
     /// and plan again with the answers. The plan cannot start until this is
     /// empty.
     pub missing_variables: Vec<String>,
+    /// The id of the workspace it was planned in, where a config backup
+    /// keeps what it fetched.
+    #[serde(skip)]
+    workspace: Option<String>,
 }
 
 impl JobPlan {
@@ -138,8 +151,19 @@ struct HostWork {
     /// The definition's disable-paging command, if it has one.
     disable_paging: Option<String>,
     /// The snippet's lines for this host; empty while variables are
-    /// missing.
+    /// missing (and for a config backup).
     lines: Vec<String>,
+    /// For a config backup: what fetches the configuration.
+    backup: Option<BackupWork>,
+}
+
+/// How a config backup fetches a host's configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BackupWork {
+    /// The definition's show-config command.
+    command: String,
+    /// The definition's ignored-lines pattern, if it has one.
+    ignored_lines: Option<String>,
 }
 
 /// An enable secret, kept out of `Debug` and wiped when dropped.
@@ -191,6 +215,10 @@ pub enum SkipReason {
     /// definition.
     #[error("{}", no_platform(.platform))]
     NoPlatform { platform: Option<String> },
+    /// A config backup, and its platform definition has no show-config
+    /// command.
+    #[error("its platform {platform} has no show-config command, so a backup cannot fetch its configuration")]
+    NoShowConfig { platform: String },
     /// No credential profile applies to it: a job cannot ask for a login.
     #[error("it has no credential profile, and a job cannot ask for a login")]
     NoProfile,
@@ -240,11 +268,11 @@ pub fn plan(
     target: &JobTarget,
     step: &JobStep,
 ) -> Result<JobPlan, PlanError> {
-    let JobStep::Snippet { name, answers } = step;
-    if workspace.snippet(name).is_none() {
-        return Err(PlanError::NoSuchSnippet(name.clone()));
+    if let JobStep::Snippet { name, .. } = step {
+        if workspace.snippet(name).is_none() {
+            return Err(PlanError::NoSuchSnippet(name.clone()));
+        }
     }
-    let answers: Variables = answers.iter().collect();
 
     let mut plan = JobPlan {
         step: step.clone(),
@@ -252,6 +280,7 @@ pub fn plan(
         skipped: Vec::new(),
         production: Vec::new(),
         missing_variables: Vec::new(),
+        workspace: workspace.id().map(str::to_string),
     };
     for id in target_hosts(workspace, target)? {
         let Some(host) = workspace.resolve_host(&id) else {
@@ -263,7 +292,7 @@ pub fn plan(
             });
             continue;
         };
-        match runnable(workspace, profiles, &host) {
+        match runnable(workspace, profiles, &host, step) {
             Ok((work, platform)) => {
                 let environment = host.settings.environment.as_ref().map(|e| e.value);
                 if environment == Some(Environment::Production) {
@@ -287,6 +316,10 @@ pub fn plan(
         }
     }
 
+    let JobStep::Snippet { name, answers } = step else {
+        return Ok(plan);
+    };
+    let answers: Variables = answers.iter().collect();
     let ids: Vec<Option<HostId>> = plan.hosts.iter().map(|h| Some(h.id.clone())).collect();
     match workspace.expand_snippet_for_each(name, &ids, &answers) {
         Ok(lines) => {
@@ -350,6 +383,7 @@ fn runnable(
     workspace: &Workspace,
     profiles: &Profiles<'_>,
     host: &ResolvedHost,
+    step: &JobStep,
 ) -> Result<(HostWork, String), SkipReason> {
     let id = &host.host.id;
     let protocol = host.settings.protocol.value;
@@ -361,6 +395,15 @@ fn runnable(
         .ok_or_else(|| SkipReason::NoPlatform {
             platform: host.settings.platform.as_ref().map(|p| p.value.clone()),
         })?;
+    let backup = match step {
+        JobStep::Snippet { .. } => None,
+        JobStep::ConfigBackup => Some(BackupWork {
+            command: given(&definition.show_config).ok_or_else(|| SkipReason::NoShowConfig {
+                platform: definition.name.clone(),
+            })?,
+            ignored_lines: given(&definition.ignored_lines),
+        }),
+    };
     let profile = match profiles.login_with(id, Protocol::Ssh).map_err(skip)? {
         HostLogin::Profile { profile, .. } => profile,
         HostLogin::NotSetUp { profile } => return Err(SkipReason::ProfileNotSetUp { profile }),
@@ -389,6 +432,7 @@ fn runnable(
         privilege_prompt: given(&definition.privilege_prompt),
         disable_paging: given(&definition.disable_paging),
         lines: Vec::new(),
+        backup,
     };
     Ok((work, definition.name.clone()))
 }
