@@ -14,8 +14,9 @@ use netterm_core::credentials::{
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
-    NegotiatedAlgorithms, SessionEvent, SessionEvents, SessionId, SessionManager, SessionState,
-    SessionTarget, SshAuth, SshTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT,
+    NegotiatedAlgorithms, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent,
+    SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth, SshTarget,
+    TerminalSize, Transport, DEFAULT_CONNECT_TIMEOUT,
 };
 use netterm_core::workspace::{
     EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem,
@@ -124,6 +125,14 @@ enum ConnectTarget {
     /// A host of the open workspace, by telnet (whatever its protocol
     /// setting): the device asks for the login in the terminal.
     Telnet { id: HostId },
+    /// A host of the open workspace, on its serial console (whatever its
+    /// protocol setting), with its serial settings.
+    Serial { id: HostId },
+    /// The quick-connect form's serial console: any port, no host.
+    QuickSerial {
+        port: String,
+        parameters: SerialParameters,
+    },
 }
 
 /// A username and password the user typed.
@@ -487,6 +496,8 @@ enum LoginView {
     Prompt,
     /// Over telnet: connect at once; the device asks in the terminal.
     Telnet,
+    /// On its serial console: connect at once, as for telnet.
+    Serial,
 }
 
 /// How the host `id` logs in over `protocol`, or over its own protocol
@@ -505,6 +516,7 @@ fn host_login(
         HostLogin::NotSetUp { profile } => LoginView::NotSetUp { profile },
         HostLogin::Prompt => LoginView::Prompt,
         HostLogin::Telnet => LoginView::Telnet,
+        HostLogin::Serial => LoginView::Serial,
     })
 }
 
@@ -627,6 +639,14 @@ async fn session_open(
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
 ) -> Result<Opened, String> {
     let target = match target {
+        ConnectTarget::Serial { id } => {
+            SessionTarget::Serial(with_open_profiles(&shell, |profiles| {
+                profiles.serial_target(&id)
+            })?)
+        }
+        ConnectTarget::QuickSerial { port, parameters } => {
+            SessionTarget::Serial(SerialTarget { port, parameters })
+        }
         ConnectTarget::Telnet { id } => {
             SessionTarget::Telnet(with_open_profiles(&shell, |profiles| {
                 profiles.telnet_target(&id)
@@ -661,6 +681,7 @@ async fn session_open(
         })?),
     };
     let encrypted = target.encrypted();
+    let transport = target.transport();
     let (id, events) = manager.open(target, size.into());
     forward(
         events,
@@ -675,6 +696,7 @@ async fn session_open(
     Ok(Opened {
         id: id.0,
         encrypted,
+        transport,
     })
 }
 
@@ -684,6 +706,8 @@ struct Opened {
     id: u64,
     /// Whether its traffic is encrypted on the network; telnet's is not.
     encrypted: bool,
+    /// `ssh`, `telnet` or `serial` (serial sessions can send a break).
+    transport: Transport,
 }
 
 /// Where a session's events go in the interface.
@@ -774,9 +798,11 @@ async fn session_duplicate(
         },
     );
     let encrypted = manager.encrypted(copy).map_err(|error| error.to_string())?;
+    let transport = manager.transport(copy).map_err(|error| error.to_string())?;
     Ok(Opened {
         id: copy.0,
         encrypted,
+        transport,
     })
 }
 
@@ -835,6 +861,20 @@ fn session_resize(manager: State<'_, SessionManager>, id: u64, size: Size) -> Re
     manager
         .resize(SessionId(id), size.into())
         .map_err(|error| error.to_string())
+}
+
+/// Sends a break on a serial session's line.
+#[tauri::command]
+fn session_break(manager: State<'_, SessionManager>, id: u64) -> Result<(), String> {
+    manager
+        .send_break(SessionId(id))
+        .map_err(|error| error.to_string())
+}
+
+/// The serial ports this computer has now, with their adapters.
+#[tauri::command]
+async fn serial_ports(manager: State<'_, SessionManager>) -> Result<Vec<SerialPortInfo>, String> {
+    manager.serial_ports().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -909,6 +949,8 @@ pub fn run() {
             session_acknowledge,
             session_resize,
             session_close,
+            session_break,
+            serial_ports,
             session_reconnect,
             session_duplicate,
             session_discard

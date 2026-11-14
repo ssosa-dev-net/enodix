@@ -499,6 +499,49 @@ fn a_serial_parameter_set_alone_keeps_the_others_in_the_file() {
 }
 
 #[test]
+fn the_serial_port_is_saved_on_a_host_and_inherits_like_the_other_parameters() {
+    let (_temp, root) = fixture_copy("edit");
+    fs::write(root.join("Access/_folder.yaml"), "serial:\n  port: COM3\n").unwrap();
+    let mut workspace = Workspace::open(&root).unwrap();
+    let id = HostId::new("Access/sw1.yaml");
+
+    let inherited = workspace.resolve_host(&id).unwrap().settings.serial;
+    assert_eq!(
+        inherited.port,
+        Some(from("COM3".to_string(), folder("Access")))
+    );
+    assert_eq!(
+        workspace.resolve_folder("").unwrap().serial.port,
+        None,
+        "nothing sets a port at the root"
+    );
+
+    let mut sw = workspace.host(&id).unwrap().clone();
+    sw.settings.serial.port = Some("  COM12 ".into());
+    sw.settings.serial.baud_rate = Some(115_200);
+    workspace.write_host(&sw).unwrap();
+    assert_eq!(
+        read(&root, "Access/sw1.yaml"),
+        "address: 10.0.2.1\nserial:\n  port: COM12\n  baud_rate: 115200\n"
+    );
+    let own = workspace.resolve_host(&id).unwrap().settings.serial;
+    assert_eq!(own.port, Some(from("COM12".to_string(), Origin::Host)));
+
+    // A blank port is no port: the folder's applies again.
+    let mut sw = workspace.host(&id).unwrap().clone();
+    sw.settings.serial.port = Some(" ".into());
+    workspace.write_host(&sw).unwrap();
+    assert_eq!(
+        read(&root, "Access/sw1.yaml"),
+        "address: 10.0.2.1\nserial:\n  baud_rate: 115200\n"
+    );
+    assert_eq!(
+        workspace.resolve_host(&id).unwrap().settings.serial.port,
+        Some(from("COM3".to_string(), folder("Access")))
+    );
+}
+
+#[test]
 fn invalid_settings_are_refused_and_the_file_is_untouched() {
     let (_temp, root) = fixture_copy("edit");
     let mut workspace = Workspace::open(&root).unwrap();
@@ -562,6 +605,10 @@ fn malformed_settings_are_reported_for_that_file() {
     write("e.yaml", "address: 1.1.1.5\nserial:\n  parity: sometimes\n");
     write("f.yaml", "address: 1.1.1.6\nserial:\n  data_bits: 4\n");
     write("g.yaml", "address: 1.1.1.8\nconnect_timeout: 0\n");
+    write(
+        "h.yaml",
+        "address: 1.1.1.9\nserial:\n  port: [COM1, COM2]\n",
+    );
     write("Site/_folder.yaml", "port: twenty-two\n");
     write("Site/r1.yaml", "address: 1.1.1.7\n");
 
@@ -579,6 +626,7 @@ fn malformed_settings_are_reported_for_that_file() {
             "e.yaml: `serial.parity` must be one of none, odd, even, mark, space",
             "f.yaml: `serial.data_bits` must be a number from 5 to 8",
             "g.yaml: `connect_timeout` must be a number of seconds from 1 to 3600",
+            "h.yaml: `serial.port` must be the name of a serial port, such as COM3",
         ]
     );
     // The host under the bad folder file still loads, without its settings.

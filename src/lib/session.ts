@@ -3,6 +3,7 @@
 // shell, which forwards to the core.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { FlowControl, Parity } from "./workspace";
 
 export interface QuickConnectTarget {
   host: string;
@@ -10,6 +11,38 @@ export interface QuickConnectTarget {
   username: string;
   password: string;
 }
+
+/** Serial line parameters; the default is 9600 8N1, no flow control. */
+export interface SerialParameters {
+  baudRate: number;
+  dataBits: number;
+  parity: Parity;
+  stopBits: number;
+  flowControl: FlowControl;
+}
+
+export const DEFAULT_SERIAL_PARAMETERS: SerialParameters = {
+  baudRate: 9600,
+  dataBits: 8,
+  parity: "none",
+  stopBits: 1,
+  flowControl: "none",
+};
+
+/** A serial port this computer has. */
+export interface SerialPortInfo {
+  /** What to open it by, such as `COM3`. */
+  name: string;
+  /** The adapter, as its driver names it; may be empty. */
+  description: string;
+}
+
+/** The serial ports there are now, in port order. */
+export function serialPorts(): Promise<SerialPortInfo[]> {
+  return invoke<SerialPortInfo[]>("serial_ports");
+}
+
+export type Transport = "ssh" | "telnet" | "serial";
 
 /** What a session connects to. */
 export type ConnectTarget =
@@ -22,7 +55,11 @@ export type ConnectTarget =
       credentials: { username: string; password: string } | null;
     }
   /** A host of the open workspace by telnet, whatever its protocol. */
-  | { kind: "telnet"; id: string };
+  | { kind: "telnet"; id: string }
+  /** A host of the open workspace on its serial console. */
+  | { kind: "serial"; id: string }
+  /** Any serial port, without an inventory host. */
+  | { kind: "quickSerial"; port: string; parameters: SerialParameters };
 
 export interface TerminalSize {
   cols: number;
@@ -113,7 +150,10 @@ export interface Session {
   readonly id: number;
   /** Whether its traffic is encrypted on the network (telnet's is not). */
   readonly encrypted: boolean;
+  readonly transport: Transport;
   write(data: Uint8Array): void;
+  /** Sends a break on the line (serial sessions only). */
+  sendBreak(): void;
   /** Answers the last login prompt, one answer per question. */
   answer(answers: string[]): void;
   /** Decides the last host-key question. */
@@ -209,6 +249,7 @@ function send(id: number, command: string, args: Record<string, unknown>) {
 interface Opened {
   id: number;
   encrypted: boolean;
+  transport: Transport;
 }
 
 /** Opens a session, to a target or as a copy of another session. */
@@ -218,7 +259,7 @@ export async function openSession(
   handlers: SessionHandlers,
 ): Promise<Session> {
   const { ready, ...events } = channels(handlers);
-  const { id, encrypted } =
+  const { id, encrypted, transport } =
     source.kind === "target"
       ? await invoke<Opened>("session_open", {
           target: source.target,
@@ -235,7 +276,9 @@ export async function openSession(
   return {
     id,
     encrypted,
+    transport,
     write: (data) => send(id, "session_write", { data: Array.from(data) }),
+    sendBreak: () => send(id, "session_break", {}),
     answer: (answers) => send(id, "session_answer", { answers }),
     decideHostKey: (decision) =>
       send(id, "session_decide_host_key", { decision }),

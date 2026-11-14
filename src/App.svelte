@@ -114,7 +114,7 @@
       key,
       source: { kind: "target", target },
       title,
-      hostId: target.kind === "quick" ? null : target.id,
+      hostId: "id" in target ? target.id : null,
       profileLogin,
     });
     shown = key;
@@ -164,6 +164,8 @@
     }
     if (login.kind === "telnet") {
       connect({ kind: "telnet", id: host.id }, `${host.name} (telnet)`);
+    } else if (login.kind === "serial") {
+      connect({ kind: "serial", id: host.id }, `${host.name} (serial)`);
     } else if (login.kind === "profile") {
       connect(
         { kind: "host", id: host.id, credentials: null },
@@ -275,6 +277,11 @@
               connect(
                 { kind: "quick", ...target },
                 `${target.username}@${target.host}:${target.port}`,
+              )}
+            onserial={(port, parameters) =>
+              connect(
+                { kind: "quickSerial", port, parameters },
+                `${port} (${parameters.baudRate} ${parameters.dataBits}${parameters.parity[0].toUpperCase()}${parameters.stopBits})`,
               )}
           />
         {/if}

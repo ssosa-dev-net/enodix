@@ -23,6 +23,8 @@ export interface WebLink {
 }
 
 export interface SerialSettings {
+  /** The serial port to open, such as `COM3`. */
+  port: string | null;
   baud_rate: number | null;
   data_bits: number | null;
   parity: Parity | null;
@@ -72,6 +74,8 @@ export interface EffectiveSettings {
   environment: Effective<Environment> | null;
   web_links: Effective<WebLink>[];
   serial: {
+    /** Null when nothing sets a port. */
+    port: Effective<string> | null;
     baud_rate: Effective<number>;
     data_bits: Effective<number>;
     parity: Effective<Parity>;

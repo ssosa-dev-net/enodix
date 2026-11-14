@@ -38,7 +38,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_norway::{Mapping, Value};
 
-use crate::session::{SshAuth, SshTarget, TelnetTarget, DEFAULT_SSH_PORT, DEFAULT_TELNET_PORT};
+use crate::session::{
+    SerialParameters, SerialTarget, SshAuth, SshTarget, TelnetTarget, DEFAULT_SSH_PORT,
+    DEFAULT_TELNET_PORT,
+};
 
 mod filters;
 mod jumps;
@@ -317,6 +320,22 @@ impl ResolvedHost {
             port: self.port_or(DEFAULT_TELNET_PORT),
             connect_timeout: self.connect_timeout(),
         }
+    }
+
+    /// The serial target for this host: its resolved serial port and line
+    /// parameters; `None` if nothing sets a serial port for it.
+    pub fn serial_target(&self) -> Option<SerialTarget> {
+        let serial = &self.settings.serial;
+        Some(SerialTarget {
+            port: serial.port.as_ref()?.value.clone(),
+            parameters: SerialParameters {
+                baud_rate: serial.baud_rate.value,
+                data_bits: serial.data_bits.value,
+                parity: serial.parity.value,
+                stop_bits: serial.stop_bits.value,
+                flow_control: serial.flow_control.value,
+            },
+        })
     }
 
     /// The resolved port, or `default` (the protocol's) if nothing sets one.

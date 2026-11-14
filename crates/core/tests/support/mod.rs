@@ -37,11 +37,12 @@
 //! use a `KnownHosts` of their own.
 //!
 //! [`telnet`] has the telnet server (a scripted device behind real telnet
-//! option negotiation).
+//! option negotiation); [`serial`] a virtual serial port pair.
 #![allow(dead_code)]
 
 pub mod agent;
 pub mod algorithms;
+pub mod serial;
 pub mod telnet;
 pub mod workspaces;
 

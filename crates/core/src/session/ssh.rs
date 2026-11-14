@@ -200,7 +200,8 @@ pub(super) async fn run(
                     }
                 }
                 // Logged in already: nothing asked for these.
-                Command::Answer(_) | Command::HostKey(_) => {}
+                // The manager sends breaks to serial sessions only.
+                Command::Answer(_) | Command::HostKey(_) | Command::Break => {}
                 Command::Close => return close(&connection, &jumps).await,
             },
             // Output is read only while the consumer is less than a window

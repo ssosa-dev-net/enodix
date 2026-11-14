@@ -24,7 +24,7 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::{JumpHost, SshAgent, SshAuth, SshTarget, TelnetTarget};
+use crate::session::{JumpHost, SerialTarget, SshAgent, SshAuth, SshTarget, TelnetTarget};
 use crate::workspace::{Folder, HostId, JumpChainError, Protocol, ResolvedHost, Workspace};
 
 mod keychain;
@@ -272,6 +272,9 @@ pub enum HostLogin {
     /// nothing is asked before connecting. Connect with
     /// [`Profiles::telnet_target`].
     Telnet,
+    /// Over its serial console: like telnet, the device asks for any login
+    /// in the terminal. Connect with [`Profiles::serial_target`].
+    Serial,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -292,6 +295,9 @@ pub enum ProfileError {
     /// The host is reached through a jump host, which telnet cannot use.
     #[error("{host} is reached through the jump host {jump_host}, and telnet sessions cannot go through jump hosts")]
     TelnetThroughJumpHost { host: HostId, jump_host: HostId },
+    /// The host's settings name no serial port to open.
+    #[error("{0} has no serial port set; choose one in its serial line settings")]
+    NoSerialPort(HostId),
 }
 
 /// The credential profiles of one workspace.
@@ -410,9 +416,9 @@ impl<'a> Profiles<'a> {
     }
 
     /// How the host `id` logs in when reached over `protocol`: over telnet
-    /// in the terminal ([`HostLogin::Telnet`]); otherwise with the profile
-    /// its settings resolve to, if that profile is stored. Serial is not a
-    /// session transport yet, so it logs in as SSH does for now.
+    /// or serial in the terminal ([`HostLogin::Telnet`],
+    /// [`HostLogin::Serial`]); over SSH with the profile its settings
+    /// resolve to, if that profile is stored.
     /// The target in [`HostLogin::Profile`] is the host alone, without its
     /// jump hosts: connect with [`Self::profile_target`].
     pub fn login_with(&self, id: &HostId, protocol: Protocol) -> Result<HostLogin, ProfileError> {
@@ -425,8 +431,10 @@ impl<'a> Profiles<'a> {
         host: &ResolvedHost,
         protocol: Protocol,
     ) -> Result<HostLogin, ProfileError> {
-        if protocol == Protocol::Telnet {
-            return Ok(HostLogin::Telnet);
+        match protocol {
+            Protocol::Telnet => return Ok(HostLogin::Telnet),
+            Protocol::Serial => return Ok(HostLogin::Serial),
+            Protocol::Ssh => {}
         }
         let Some(name) = host.settings.credential_profile.as_ref() else {
             return Ok(HostLogin::Prompt);
@@ -450,7 +458,7 @@ impl<'a> Profiles<'a> {
         let mut target = match self.login_with(id, Protocol::Ssh)? {
             HostLogin::Profile { target, .. } => target,
             HostLogin::NotSetUp { profile } => return Err(ProfileError::NotSetUp(profile)),
-            HostLogin::Prompt | HostLogin::Telnet => {
+            HostLogin::Prompt | HostLogin::Telnet | HostLogin::Serial => {
                 return Err(ProfileError::Invalid(format!(
                     "{id} has no credential profile"
                 )))
@@ -487,6 +495,16 @@ impl<'a> Profiles<'a> {
             });
         }
         Ok(host.telnet_target())
+    }
+
+    /// The target for opening the host `id`'s serial console, whatever
+    /// protocol its settings name: its serial port and line parameters,
+    /// each its own or inherited. Jump hosts do not apply (the port is on
+    /// this computer).
+    pub fn serial_target(&self, id: &HostId) -> Result<SerialTarget, ProfileError> {
+        self.resolve(id)?
+            .serial_target()
+            .ok_or_else(|| ProfileError::NoSerialPort(id.clone()))
     }
 
     /// The jump hosts the host `id` is reached through, in the order they
