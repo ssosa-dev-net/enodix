@@ -5,7 +5,6 @@
 #
 #   docker build -t netterm-frr:latest lab/frr
 #
-# Not built or tested by the suite's author.
 FROM quay.io/frrouting/frr:10.2.1
 
 RUN apk add --no-cache openssh-server \

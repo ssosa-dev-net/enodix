@@ -7,10 +7,10 @@ API, the same way the app does (a workspace host, a credential profile,
 Nokia SR Linux, Arista cEOS and FRR; any other device can be added to the
 lab file.
 
-**Status:** the suite has only been run against the in-process test servers
-on the loopback address. It has not been run against a real device yet, so
-the platform defaults below (prompts, commands, expected output) are
-unverified guesses and the app claims no tested platforms from it.
+**Status:** every check passes against the topology's Nokia SR Linux
+24.10.1, Arista cEOS 4.36.0.1F and FRR 10.2.1 (containerlab 0.83.0, through
+the containerlab server as the jump host), first run 2026-11-14. The README's
+tested-platforms list comes from these runs.
 
 ## What it checks, per device
 
@@ -56,18 +56,21 @@ files).
    users. Remove a node from the topology (and the lab file) if its image
    is not available.
 
-   **Docker inside an LXC container** (such as a Proxmox CT): if every
-   container fails with `AppArmor enabled on system but the docker-default
-   profile could not be loaded`, Docker on that server cannot start
-   containers at all, so neither `docker build` nor `containerlab deploy`
-   works. That is the server's setup, not the suite's; fix it on the LXC
-   host (the usual fix is the container's AppArmor profile, for example
-   `lxc.apparmor.profile: unconfined` with nesting enabled) and check with
-   `docker run --rm alpine true`. While it persists, `docker run
-   --security-opt apparmor=unconfined` still works, so the FRR image can be
-   built by hand: run the Dockerfile's `RUN` line in an unconfined
-   container, `docker cp` `start.sh` to `/usr/local/bin/netterm-start`, and
-   `docker commit` it with the Dockerfile's `ENTRYPOINT`.
+   **Docker inside a Proxmox LXC container** needs two entries in the
+   container's `/etc/pve/lxc/<id>.conf` on the Proxmox host (besides
+   `features: nesting=1` and `lxc.apparmor.profile: unconfined`), then a
+   restart of the container:
+
+   ```ini
+   # Docker sees AppArmor as off, so it never runs apparmor_parser (which
+   # fails without cap_mac_admin: "docker-default profile could not be
+   # loaded", exit 243, for docker build and containerlab's -netns sidecar).
+   lxc.mount.entry: /dev/null sys/module/apparmor/parameters/enabled none bind,optional 0 0
+   # Keep sys_time and sys_rawio, which SR Linux's sr_device_mgr needs
+   # (without them SR Linux never starts its management server or SSH).
+   lxc.cap.drop:
+   lxc.cap.drop: mac_admin mac_override sys_module
+   ```
 
 2. Write a lab file, outside git: copy `lab/lab.example.yaml` to
    `lab/lab.yaml` (ignored by git) or anywhere else, and fill in the
@@ -127,12 +130,12 @@ directly, not through the jump host: for the topology's cEOS, the
 containerlab server's address with `telnet: 2323`), `login_prompt`,
 `password_prompt`.
 
-## Platform defaults (unverified)
+## Platform defaults (verified on the versions above)
 
 | Platform  | Username | Prompt             | Setup               | Command                    | Expect             | Large output                      | Size         | Exit   |
 | --------- | -------- | ------------------ | ------------------- | -------------------------- | ------------------ | --------------------------------- | ------------ | ------ |
-| `srlinux` | admin    | `A:srl1#`          |                     | `show version`             | `software version` | `info detail flat from running /` |              | `quit` |
-| `ceos`    | admin    | `ceos1>`/`ceos1#`  | `terminal length 0` | `show version`             | `arista`           | `show running-config all`         |              | `exit` |
+| `srlinux` | admin    | `A:srl1#`          |                     | `show version`             | `software version` | `info detail from state /`        | `bash stty size` | `quit` |
+| `ceos`    | admin    | `ceos1>`/`ceos1#`  | `terminal length 0` | `show version`             | `arista`           | `show running-config all`         | `bash stty size` | `exit` |
 | `frr`     | root     | ends in `$` or `#` |                     | `vtysh -c 'show version'`  | `FRRouting`        | `seq 1 100000`                    | `stty size`  | `exit` |
 | `other`   | required | required           |                     | required                   | required           |                                   |              | required |
 

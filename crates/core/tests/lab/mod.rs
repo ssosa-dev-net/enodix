@@ -115,8 +115,9 @@ pub enum Platform {
     Other,
 }
 
-/// What the defaults of a platform are. All of them are best guesses that
-/// have not been tried against the real images; a lab file can override each.
+/// What the defaults of a platform are. Verified against SR Linux 24.10.1,
+/// cEOS 4.36.0.1F and FRR 10.2.1 in `lab/netterm-test.clab.yml`; a lab file
+/// can override each.
 struct Defaults {
     username: Option<&'static str>,
     prompt: Option<&'static str>,
@@ -140,10 +141,12 @@ impl Platform {
                 setup: &[],
                 command: Some("show version"),
                 expect: Some(r"(?i)software version"),
-                large_command: Some("info detail flat from running /"),
-                large_min_bytes: 32 * 1024,
-                size_command: None,
-                size_output: None,
+                // Megabytes, but generated slowly enough that the device
+                // rarely fills the flow-control window.
+                large_command: Some("info detail from state /"),
+                large_min_bytes: 600_000,
+                size_command: Some("bash stty size"),
+                size_output: Some("{rows} {cols}"),
                 exit: Some("quit"),
             },
             Self::Ceos => Defaults {
@@ -153,10 +156,12 @@ impl Platform {
                 setup: &["terminal length 0"],
                 command: Some("show version"),
                 expect: Some(r"(?i)arista"),
+                // Needs privilege 15 (the topology's `aaa authorization exec
+                // default local`).
                 large_command: Some("show running-config all"),
                 large_min_bytes: 32 * 1024,
-                size_command: None,
-                size_output: None,
+                size_command: Some("bash stty size"),
+                size_output: Some("{rows} {cols}"),
                 exit: Some("exit"),
             },
             Self::Frr => Defaults {
