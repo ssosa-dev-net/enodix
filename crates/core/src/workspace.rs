@@ -40,12 +40,14 @@ use serde_norway::{Mapping, Value};
 use crate::session::{SshAuth, SshTarget, DEFAULT_SSH_PORT};
 
 mod filters;
+mod jumps;
 mod roles;
 mod search;
 mod settings;
 mod watch;
 
 pub use filters::{Condition, SavedFilter, FILTERS_FILE};
+pub use jumps::JumpChainError;
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
 use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
@@ -281,7 +283,8 @@ pub struct ResolvedHost {
 impl ResolvedHost {
     /// The SSH target for this host with a password login (as prompted
     /// for), on the resolved port, or SSH's default port when nothing sets
-    /// one.
+    /// one. The host alone: its jump hosts are left out (connect through
+    /// [`crate::credentials::Profiles`], which adds them).
     pub fn ssh_target(&self, username: String, password: String) -> SshTarget {
         self.ssh_target_with(username, SshAuth::Password(password))
     }
@@ -297,6 +300,7 @@ impl ResolvedHost {
                 .map_or(DEFAULT_SSH_PORT, |port| port.value),
             username,
             auth,
+            jump_hosts: Vec::new(),
         }
     }
 }

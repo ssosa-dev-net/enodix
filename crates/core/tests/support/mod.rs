@@ -18,6 +18,9 @@
 //! | `exit [n]`   | ends the shell with exit status `n` (default 0)   |
 //! | `drop`       | drops the connection without ending the shell     |
 //!
+//! Every server also forwards `direct-tcpip` channels to the address asked
+//! for, so it can be a jump host; [`TestSshServer::forwarded`] counts them.
+//!
 //! Ctrl+C prints [`INTERRUPTED`] and a new prompt, stopping a flood. A flood
 //! is sent as fast as the client's SSH window allows, like a device dumping
 //! a huge table.
@@ -37,7 +40,7 @@ pub mod agent;
 pub mod workspaces;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,8 +55,8 @@ use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{
     Auth, ChannelOpenHandle, Handler, Msg, Response, Server, Session, VerifiedPublicKey,
 };
-use russh::{Channel, ChannelId, MethodKind, MethodSet, Pty};
-use tokio::net::TcpListener;
+use russh::{Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty};
+use tokio::net::{TcpListener, TcpStream};
 
 pub const USERNAME: &str = "engineer";
 pub const PASSWORD: &str = "correct horse";
@@ -121,6 +124,7 @@ pub struct TestSshServer {
     host_key: PublicKey,
     /// An Ed25519 client key the server accepts for [`USERNAME`].
     client_key: PrivateKey,
+    forwarded: Arc<AtomicUsize>,
 }
 
 impl TestSshServer {
@@ -198,8 +202,13 @@ impl TestSshServer {
         known_hosts()
             .remember("127.0.0.1", port, host_key.public_key())
             .unwrap();
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let counter = forwarded.clone();
         let task = tokio::spawn(async move {
-            let mut server = ScriptedServer { authorized_keys };
+            let mut server = ScriptedServer {
+                authorized_keys,
+                forwarded: counter,
+            };
             let _ = server.run_on_socket(config, &listener).await;
         });
         Self {
@@ -207,11 +216,18 @@ impl TestSshServer {
             task,
             host_key: host_key.public_key().clone(),
             client_key,
+            forwarded,
         }
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// How many connections clients have opened through this server, as
+    /// through a jump host (`direct-tcpip` channels it forwarded).
+    pub fn forwarded(&self) -> usize {
+        self.forwarded.load(Ordering::Relaxed)
     }
 
     /// A target that logs in to this server successfully.
@@ -221,6 +237,7 @@ impl TestSshServer {
             port: self.port,
             username: USERNAME.into(),
             auth: SshAuth::Password(PASSWORD.into()),
+            jump_hosts: Vec::new(),
         }
     }
 }
@@ -233,6 +250,7 @@ impl Drop for TestSshServer {
 
 struct ScriptedServer {
     authorized_keys: Arc<Vec<PublicKey>>,
+    forwarded: Arc<AtomicUsize>,
 }
 
 impl Server for ScriptedServer {
@@ -241,6 +259,7 @@ impl Server for ScriptedServer {
     fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> ScriptedShell {
         ScriptedShell {
             authorized_keys: self.authorized_keys.clone(),
+            forwarded: self.forwarded.clone(),
             channels: HashMap::new(),
             interactive: Interactive::Start,
         }
@@ -250,6 +269,8 @@ impl Server for ScriptedServer {
 struct ScriptedShell {
     /// The public keys [`USERNAME`] may log in with.
     authorized_keys: Arc<Vec<PublicKey>>,
+    /// How many connections this server has forwarded (`direct-tcpip`).
+    forwarded: Arc<AtomicUsize>,
     /// Pty size and pending input line, per channel.
     channels: HashMap<ChannelId, ShellState>,
     /// Where [`OTP_USERNAME`]'s login has got to.
@@ -409,6 +430,36 @@ impl Handler for ScriptedShell {
         Ok(())
     }
 
+    /// Forwards the channel to `host:port` over TCP, as a bastion does for
+    /// a client that jumps through it.
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Ok(port) = u16::try_from(port_to_connect) else {
+            reply.reject(ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        match TcpStream::connect((host_to_connect, port)).await {
+            Ok(mut socket) => {
+                reply.accept().await;
+                self.forwarded.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut socket).await;
+                });
+            }
+            Err(_) => reply.reject(ChannelOpenFailure::ConnectFailed).await,
+        }
+        Ok(())
+    }
+
     async fn pty_request(
         &mut self,
         channel: ChannelId,
@@ -456,6 +507,11 @@ impl Handler for ScriptedShell {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        // Data on a forwarded channel is the forwarding task's, not a
+        // shell's (russh passes it to both).
+        if !self.channels.contains_key(&channel) {
+            return Ok(());
+        }
         for &byte in data {
             if byte == CTRL_C {
                 let state = self.channels.entry(channel).or_default();
