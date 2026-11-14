@@ -34,6 +34,10 @@
 //! the hosts itself through the inventory plugin, limited to the job's
 //! hosts. Pre-flight and the production confirmation are the same.
 //!
+//! A job can be saved under a name in the workspace ([`SavedJob`], see
+//! [`crate::workspace::JOBS_FILE`]) and planned again in one action with
+//! [`plan_saved`].
+//!
 //! Every run is kept, outside the workspace, by [`results::RunStore`]:
 //! listed newest first, searched, compared line by line, exported, deleted,
 //! and planned again on the same target with [`plan_again`].
@@ -52,7 +56,8 @@ use crate::credentials::{HostLogin, ProfileError, Profiles};
 use crate::session::{SshAuth, SshTarget};
 use crate::template::Variables;
 use crate::workspace::{
-    Environment, ExpandError, Folder, HostId, Protocol, ResolvedHost, ScriptError, Workspace,
+    Environment, ExpandError, Folder, HostId, Protocol, ResolvedHost, SavedJob, ScriptError,
+    Workspace,
 };
 
 pub use login::{LoginBackup, LoginBackupOutcome, SessionLogin};
@@ -70,7 +75,10 @@ pub enum JobTarget {
     /// Every host in the folder at `path` (`""` is the root) and in the
     /// folders below it.
     Folder { path: String },
-    /// These hosts, in this order (a saved filter's, or a single host).
+    /// The hosts the saved filter `name` shows when the job is planned, in
+    /// tree order.
+    Filter { name: String },
+    /// These hosts, in this order (a single host, say).
     Hosts { ids: Vec<HostId> },
 }
 
@@ -281,6 +289,15 @@ pub enum PlanError {
     /// A folder target that the workspace does not have.
     #[error("there is no folder {0:?} in the workspace")]
     NoSuchFolder(String),
+    /// A filter target that the workspace does not have.
+    #[error("there is no saved filter called {0}")]
+    NoSuchFilter(String),
+    /// A saved job whose one host the workspace no longer has.
+    #[error("{0} is no longer in the workspace")]
+    NoSuchHost(HostId),
+    /// A saved job that the workspace does not have.
+    #[error("there is no saved job called {0}")]
+    NoSuchJob(String),
     /// A snippet step that the workspace does not have.
     #[error("there is no snippet called {0}")]
     NoSuchSnippet(String),
@@ -398,6 +415,52 @@ pub fn plan_again(
     plan(workspace, profiles, &run.target, &run.step)
 }
 
+/// Why the saved job `job` cannot run as the workspace is now: its
+/// snippet, script, folder, saved filter or host is gone. `None`: it can be
+/// planned (pre-flight may still skip every host).
+pub fn saved_job_problem(workspace: &Workspace, job: &SavedJob) -> Option<PlanError> {
+    let step = match &job.step {
+        JobStep::Snippet { name, .. } if workspace.snippet(name).is_none() => {
+            Some(PlanError::NoSuchSnippet(name.clone()))
+        }
+        JobStep::Script { path } => workspace.script_file(path).err().map(PlanError::from),
+        _ => None,
+    };
+    step.or_else(|| match &job.target {
+        JobTarget::Folder { path } if workspace.folder(path).is_none() => {
+            Some(PlanError::NoSuchFolder(path.clone()))
+        }
+        JobTarget::Filter { name } if workspace.filter(name).is_none() => {
+            Some(PlanError::NoSuchFilter(name.clone()))
+        }
+        JobTarget::Hosts { ids } => ids
+            .iter()
+            .find(|id| workspace.host(id).is_none())
+            .map(|id| PlanError::NoSuchHost(id.clone())),
+        _ => None,
+    })
+}
+
+/// Plans the saved job called `name` (ignoring case) as the workspace is
+/// now: its target and pre-flight list, with the answers it keeps (a
+/// variable they do not fill is missing, to ask for). Refused, saying what
+/// is gone, if its snippet, script, folder, saved filter or host no longer
+/// exists.
+pub fn plan_saved(
+    workspace: &Workspace,
+    profiles: &Profiles<'_>,
+    name: &str,
+) -> Result<(JobTarget, JobPlan), PlanError> {
+    let job = workspace
+        .saved_job(name)
+        .ok_or_else(|| PlanError::NoSuchJob(name.trim().to_string()))?;
+    if let Some(problem) = saved_job_problem(workspace, job) {
+        return Err(problem);
+    }
+    let plan = plan(workspace, profiles, &job.target, &job.step)?;
+    Ok((job.target.clone(), plan))
+}
+
 /// The hosts `target` names, each once, in order.
 fn target_hosts(workspace: &Workspace, target: &JobTarget) -> Result<Vec<HostId>, PlanError> {
     match target {
@@ -407,6 +470,17 @@ fn target_hosts(workspace: &Workspace, target: &JobTarget) -> Result<Vec<HostId>
                 .ok_or_else(|| PlanError::NoSuchFolder(path.clone()))?;
             let mut ids = Vec::new();
             collect_hosts(folder, &mut ids);
+            Ok(ids)
+        }
+        JobTarget::Filter { name } => {
+            let filter = workspace
+                .filter(name)
+                .ok_or_else(|| PlanError::NoSuchFilter(name.clone()))?;
+            let shown: BTreeSet<HostId> =
+                workspace.apply_filter(filter).hosts.into_iter().collect();
+            let mut ids = Vec::new();
+            collect_hosts(workspace.tree(), &mut ids);
+            ids.retain(|id| shown.contains(id));
             Ok(ids)
         }
         JobTarget::Hosts { ids } => {

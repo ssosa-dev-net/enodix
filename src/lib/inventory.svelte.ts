@@ -3,7 +3,13 @@
 // edits. Every edit is made by the core, which writes the files and returns
 // the reloaded workspace.
 
-import type { JobPlan, JobTarget } from "./jobs";
+import {
+  planSavedJob,
+  type JobPlan,
+  type JobStep,
+  type JobTarget,
+  type SavedJob,
+} from "./jobs";
 import * as api from "./workspace";
 import type {
   Edited,
@@ -109,6 +115,77 @@ export function openScript(target: JobTarget, label: string) {
 /** Opens the job dialog backing up the configs of `target`'s hosts. */
 export function openBackup(target: JobTarget, label: string) {
   inventory.job = { target, label, planned: null, backup: true };
+}
+
+/** What the job dialog calls `target` (a folder, a saved filter, a host). */
+export function jobTargetLabel(target: JobTarget): string {
+  const workspace = inventory.workspace;
+  if (target.kind === "folder") {
+    if (target.path === "") return workspace?.tree.name ?? "the workspace";
+    return target.path.split("/").pop() ?? target.path;
+  }
+  if (target.kind === "filter") return `the hosts of ${target.name}`;
+  if (target.ids.length === 1) {
+    const host = workspace ? api.findHost(workspace.tree, target.ids[0]) : null;
+    return host?.name ?? target.ids[0];
+  }
+  return `${target.ids.length} hosts`;
+}
+
+/**
+ * Saves `step` on `target` as the job `name` in the workspace (a new one;
+ * see `renameJob`); rejects with why not.
+ */
+export async function saveJobAs(
+  name: string,
+  step: JobStep,
+  target: JobTarget,
+) {
+  apply(await api.saveJob(null, { name, step, target }));
+}
+
+/** Asks for a new name for the saved job `job`. */
+export function renameJob(job: SavedJob) {
+  inventory.dialog = {
+    title: "Rename saved job",
+    fields: [{ name: "name", label: "Name", value: job.name }],
+    confirm: "Rename",
+    onconfirm: (values) =>
+      inDialog(async () => {
+        apply(
+          await api.saveJob(job.name, {
+            name: values.name,
+            step: job.step,
+            target: job.target,
+          }),
+        );
+      }),
+  };
+}
+
+/** Asks before deleting the saved job `name` from the workspace. */
+export function removeJob(name: string) {
+  inventory.dialog = {
+    title: "Delete saved job",
+    message: `Delete the saved job ${name} from the workspace? Its past runs stay.`,
+    fields: [],
+    confirm: "Delete",
+    danger: true,
+    onconfirm: () =>
+      inDialog(async () => {
+        apply(await api.deleteJob(name));
+      }),
+  };
+}
+
+/**
+ * Plans the saved job `name` and opens the job dialog at its pre-flight
+ * (or the variables it still needs). Rejects, saying what is gone, if its
+ * step or target no longer exists.
+ */
+export async function runSavedJob(name: string) {
+  const { target, plan } = await planSavedJob(name);
+  openJob(target, jobTargetLabel(target), plan);
 }
 
 /** Opens the config history of the host `id`. */

@@ -19,6 +19,7 @@
   } from "./jobs";
   import { liveJob, liveJobs } from "./jobs.svelte";
   import { inventory, openJob } from "./inventory.svelte";
+  import SaveJobForm from "./SaveJobForm.svelte";
   import { pickWorkspaceFolder } from "./workspace";
 
   interface Props {
@@ -156,6 +157,9 @@
       return entry.target.path === ""
         ? "the whole workspace"
         : `folder ${entry.target.path}`;
+    }
+    if (entry.target.kind === "filter") {
+      return `the hosts of ${entry.target.name}`;
     }
     const names = (entry.targets ?? entry.hosts).map((h) => h.name);
     const all = names.length + entry.skipped.length;
@@ -363,6 +367,13 @@
                   : "Plan the same snippet on the same target, as the workspace is now"}
                 onclick={again}>Run again…</button
               >
+              {#key run.id}
+                <SaveJobForm
+                  step={run.step}
+                  target={run.target}
+                  suggested={`${runTitle(run)} on ${targetLabel(run)}`}
+                />
+              {/key}
               {#if !isRunning(run.id)}
                 {#if confirmingDelete}
                   <span class="confirm">Delete this run from disk?</span>

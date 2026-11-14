@@ -8,6 +8,7 @@
     outcomeText,
     planJob,
     SCRIPT_OUTPUT,
+    stepTitle,
     type HostState,
     type JobPlan,
     type JobStep,
@@ -21,6 +22,7 @@
     type LiveJob,
   } from "./jobs.svelte";
   import { inventory } from "./inventory.svelte";
+  import SaveJobForm from "./SaveJobForm.svelte";
   import { preferences } from "./preferences.svelte";
   import { python, pythonOff, refreshPython } from "./python.svelte";
 
@@ -489,6 +491,15 @@
           <span class="hint">1 to {MAX_PARALLEL}</span>
         </label>
       {/if}
+      {#if !backingUp}
+        <div class="save-row">
+          <SaveJobForm
+            step={plan.step}
+            {target}
+            suggested={`${stepTitle(plan.step)} on ${label}`}
+          />
+        </div>
+      {/if}
       <div class="actions">
         {#if !backingUp}
           <button type="button" onclick={() => (step = firstStep)}>Back</button>
@@ -835,6 +846,13 @@
   .python-off p {
     margin: 0;
     flex: 1 1 20rem;
+  }
+
+  .save-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
   }
 
   .actions,

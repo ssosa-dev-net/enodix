@@ -50,6 +50,7 @@ mod filters;
 mod highlights;
 mod identity;
 pub(crate) mod import;
+mod jobs;
 mod jumps;
 mod platforms;
 mod roles;
@@ -64,6 +65,7 @@ use crate::paste::PasteSafety;
 pub use filters::{Condition, SavedFilter, FILTERS_FILE};
 pub use highlights::HIGHLIGHTS_FILE;
 pub use identity::WORKSPACE_FILE;
+pub use jobs::{SavedJob, JOBS_FILE};
 pub use jumps::JumpChainError;
 pub use platforms::PLATFORMS_FILE;
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
@@ -179,6 +181,8 @@ pub struct Workspace {
     platforms: Vec<ListedPlatform>,
     /// The snippets, in file order.
     snippets: Vec<Snippet>,
+    /// The saved jobs, in file order.
+    jobs: Vec<SavedJob>,
     index: SearchIndex,
     problems: Vec<Problem>,
     /// See [`Workspace::revision`].
@@ -522,6 +526,7 @@ impl Workspace {
         let highlighter = compile_highlights(&highlights);
         let platforms = load_platforms(&root, &mut problems);
         let snippets = load_snippets(&root, &mut problems);
+        let jobs = load_jobs(&root, &mut problems);
         let index = SearchIndex::build(&tree, |id| roles::find(&roles, id).map(|r| r.name.clone()));
         problems.sort_by(|a, b| a.file.cmp(&b.file));
         Ok(Self {
@@ -534,6 +539,7 @@ impl Workspace {
             highlighter,
             platforms,
             snippets,
+            jobs,
             index,
             problems,
             revision: 0,
@@ -651,6 +657,15 @@ impl Workspace {
     /// The saved filters, in the order of the filters file.
     pub fn filters(&self) -> &[SavedFilter] {
         &self.filters
+    }
+
+    /// The saved filter called `name` (ignoring case and surrounding
+    /// blanks).
+    pub fn filter(&self, name: &str) -> Option<&SavedFilter> {
+        let name = name.trim().to_lowercase();
+        self.filters
+            .iter()
+            .find(|filter| filter.name.trim().to_lowercase() == name)
     }
 
     /// The hosts `filter` matches and the folders holding them.
@@ -960,6 +975,62 @@ impl Workspace {
                 Ok(())
             } else {
                 Err(EditError::NotFound(format!("snippet {}", name.trim())))
+            }
+        })
+    }
+
+    /// The saved jobs, in the order of the jobs file.
+    pub fn saved_jobs(&self) -> &[SavedJob] {
+        &self.jobs
+    }
+
+    /// The saved job called `name` (ignoring case).
+    pub fn saved_job(&self, name: &str) -> Option<&SavedJob> {
+        self.jobs.iter().find(|job| jobs::same(&job.name, name))
+    }
+
+    /// Saves `job` to the jobs file, in place of the saved job called
+    /// `previous` (ignoring case; a rename keeps its place), or as a new one
+    /// after the others when `previous` is `None`. Names, the snippet name,
+    /// the script path and the target are trimmed. A job without a name,
+    /// with the name of another, a config backup, or a list of hosts (rather
+    /// than a folder, a saved filter or one host) is refused. What it names
+    /// need not exist (see [`crate::job::saved_job_problem`]).
+    pub fn save_job(&mut self, previous: Option<&str>, job: &SavedJob) -> Result<(), EditError> {
+        let job = jobs::clean(job)
+            .map_err(|message| EditError::Invalid(format!("the job cannot be saved: {message}")))?;
+        let replaced = match previous {
+            Some(previous) => Some(
+                self.saved_job(previous)
+                    .ok_or_else(|| EditError::NotFound(format!("saved job {}", previous.trim())))?
+                    .name
+                    .clone(),
+            ),
+            None => None,
+        };
+        let clash = self.jobs.iter().any(|other| {
+            jobs::same(&other.name, &job.name)
+                && replaced
+                    .as_deref()
+                    .is_none_or(|old| !jobs::same(old, &other.name))
+        });
+        if clash {
+            return Err(EditError::AlreadyExists(format!("saved job {}", job.name)));
+        }
+        self.edit_file(JOBS_FILE.into(), |document| {
+            jobs::write(document, replaced.as_deref(), &job)
+                .map_err(|name| EditError::AlreadyExists(format!("saved job {name}")))
+        })
+    }
+
+    /// Deletes the saved job called `name` (ignoring case); the file goes
+    /// when no saved job is left.
+    pub fn delete_job(&mut self, name: &str) -> Result<(), EditError> {
+        self.edit_file(JOBS_FILE.into(), |document| {
+            if jobs::remove(document, name) {
+                Ok(())
+            } else {
+                Err(EditError::NotFound(format!("saved job {}", name.trim())))
             }
         })
     }
@@ -1335,6 +1406,7 @@ impl Workspace {
             || fresh.highlights != self.highlights
             || fresh.platforms != self.platforms
             || fresh.snippets != self.snippets
+            || fresh.jobs != self.jobs
             || fresh.problems != self.problems;
         if changed {
             self.replace_with(fresh);
@@ -1771,6 +1843,30 @@ fn compile_highlights(rules: &[ListedRule]) -> Highlighter {
         .map(|listed| listed.rule.clone())
         .collect();
     Highlighter::new(&usable)
+}
+
+/// The workspace's saved jobs, if it has a jobs file. A bad file or job
+/// definition becomes a problem; the rest load.
+fn load_jobs(root: &Path, problems: &mut Vec<Problem>) -> Vec<SavedJob> {
+    let path = root.join(JOBS_FILE);
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let problem = |message| Problem {
+        file: JOBS_FILE.into(),
+        message,
+    };
+    match read_mapping(&path) {
+        Ok(document) => {
+            let (jobs, errors) = jobs::load(&document);
+            problems.extend(errors.into_iter().map(problem));
+            jobs
+        }
+        Err(message) => {
+            problems.push(problem(message));
+            Vec::new()
+        }
+    }
 }
 
 /// The workspace's snippets, if it has a snippets file. A bad file or
