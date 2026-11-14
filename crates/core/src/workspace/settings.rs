@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_norway::{Mapping, Value};
 
 use super::{normalize, optional_text, EditError};
+use crate::paste::MAX_PASTE_LINE_DELAY_MS;
 
 /// File keys of the settings.
 pub(super) const PROTOCOL: &str = "protocol";
@@ -28,6 +29,7 @@ pub(super) const LEGACY_CRYPTO: &str = "legacy_crypto";
 pub(super) const CONNECT_TIMEOUT: &str = "connect_timeout";
 pub(super) const LOGGING: &str = "logging";
 pub(super) const ENVIRONMENT: &str = "environment";
+pub(super) const PASTE_LINE_DELAY: &str = "paste_line_delay";
 pub(super) const SERIAL: &str = "serial";
 pub(super) const WEB_LINKS: &str = "web_links";
 
@@ -69,6 +71,9 @@ pub struct Settings {
     pub connect_timeout: Option<u32>,
     pub logging: Option<bool>,
     pub environment: Option<Environment>,
+    /// Milliseconds to wait between pasted lines (0 to
+    /// [`MAX_PASTE_LINE_DELAY_MS`]), for slow devices.
+    pub paste_line_delay: Option<u32>,
     /// Links set here, in file order; names are unique.
     pub web_links: Vec<WebLink>,
     pub serial: SerialSettings,
@@ -218,6 +223,8 @@ pub struct EffectiveSettings {
     pub connect_timeout: Effective<u32>,
     pub logging: Effective<bool>,
     pub environment: Option<Effective<Environment>>,
+    /// In milliseconds; 0 (no delay) by default.
+    pub paste_line_delay: Effective<u32>,
     /// Merged by name: the order a name first appears, from the root down.
     pub web_links: Vec<Effective<WebLink>>,
     pub serial: EffectiveSerial,
@@ -301,6 +308,7 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
         ),
         logging: or_default(nearest(levels, |s| s.logging), true),
         environment: nearest(levels, |s| s.environment),
+        paste_line_delay: or_default(nearest(levels, |s| s.paste_line_delay), 0),
         web_links,
         serial: EffectiveSerial {
             port: nearest(levels, |s| s.serial.port.clone()),
@@ -340,6 +348,7 @@ pub(super) fn settings_from_document(document: &Mapping) -> Result<Settings, Str
             Environment::parse,
             Environment::expected,
         )?,
+        paste_line_delay: read_paste_line_delay(document)?,
         web_links: read_web_links(document)?,
         serial,
     })
@@ -374,6 +383,23 @@ fn read_connect_timeout(document: &Mapping) -> Result<Option<u32>, String> {
 
 fn connect_timeout_error(what: &str) -> String {
     format!("{what} must be a number of seconds from 1 to {MAX_CONNECT_TIMEOUT_SECONDS}")
+}
+
+fn read_paste_line_delay(document: &Mapping) -> Result<Option<u32>, String> {
+    let error = || paste_line_delay_error(&format!("`{PASTE_LINE_DELAY}`"));
+    match document.get(PASTE_LINE_DELAY) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .filter(|ms| *ms <= u64::from(MAX_PASTE_LINE_DELAY_MS))
+            .map(|ms| Some(ms as u32))
+            .ok_or_else(error),
+        Some(_) => Err(error()),
+    }
+}
+
+fn paste_line_delay_error(what: &str) -> String {
+    format!("{what} must be a number of milliseconds from 0 to {MAX_PASTE_LINE_DELAY_MS}")
 }
 
 fn serial_from_mapping(serial: &Mapping) -> Result<SerialSettings, String> {
@@ -483,6 +509,14 @@ fn checked(edit: &Settings) -> Result<Settings, EditError> {
     {
         return Err(EditError::Invalid(connect_timeout_error(
             "the connect timeout",
+        )));
+    }
+    if edit
+        .paste_line_delay
+        .is_some_and(|ms| ms > MAX_PASTE_LINE_DELAY_MS)
+    {
+        return Err(EditError::Invalid(paste_line_delay_error(
+            "the paste line delay",
         )));
     }
     let serial = &edit.serial;
@@ -595,6 +629,11 @@ pub(super) fn apply_settings(
         ENVIRONMENT,
         text(current.environment.map(Environment::as_str)),
         text(edit.environment.map(Environment::as_str)),
+    );
+    update(
+        PASTE_LINE_DELAY,
+        current.paste_line_delay.map(Value::from),
+        edit.paste_line_delay.map(Value::from),
     );
 
     if edit.serial != current.serial {

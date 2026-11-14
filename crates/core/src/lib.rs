@@ -11,6 +11,7 @@ pub mod highlight;
 pub mod known_hosts;
 pub mod layout;
 pub mod logging;
+pub mod paste;
 pub mod preferences;
 pub mod session;
 pub mod template;

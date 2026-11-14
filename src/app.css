@@ -9,6 +9,12 @@
   --ok: #3fb950;
   --danger: #f85149;
   --warning: #d29922;
+  /* Environment colours of sessions (tab and border); production stands
+     out the most. */
+  --env-production: #ff4d4d;
+  --env-production-bg: #5a1418;
+  --env-staging: #e0a030;
+  --env-lab: #3fb950;
 
   color-scheme: dark;
   font-family: "Segoe UI", system-ui, sans-serif;
@@ -30,6 +36,10 @@
   --ok: #1a7f37;
   --danger: #c4161c;
   --warning: #8a6100;
+  --env-production: #c4161c;
+  --env-production-bg: #fbd5d6;
+  --env-staging: #9a6700;
+  --env-lab: #1a7f37;
 
   color-scheme: light;
 }

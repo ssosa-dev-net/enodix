@@ -17,6 +17,19 @@ export type Environment = "production" | "staging" | "lab";
 export type Parity = "none" | "odd" | "even" | "mark" | "space";
 export type FlowControl = "none" | "hardware" | "software";
 
+/**
+ * What applies to pastes into a host's sessions, and the environment that
+ * colours them; see `netterm_core::paste`.
+ */
+export interface PasteSafety {
+  environment: Environment | null;
+  /** Milliseconds to wait between pasted lines. */
+  lineDelayMs: number;
+}
+
+/** The core's limit on `paste_line_delay`, in milliseconds. */
+export const MAX_PASTE_LINE_DELAY_MS = 10_000;
+
 export interface WebLink {
   name: string;
   url: string;
@@ -47,6 +60,8 @@ export interface Settings {
   connect_timeout: number | null;
   logging: boolean | null;
   environment: Environment | null;
+  /** Milliseconds between pasted lines (0 to `MAX_PASTE_LINE_DELAY_MS`). */
+  paste_line_delay: number | null;
   web_links: WebLink[];
   serial: SerialSettings;
 }
@@ -72,6 +87,8 @@ export interface EffectiveSettings {
   connect_timeout: Effective<number>;
   logging: Effective<boolean>;
   environment: Effective<Environment> | null;
+  /** In milliseconds; 0 by default. */
+  paste_line_delay: Effective<number>;
   web_links: Effective<WebLink>[];
   serial: {
     /** Null when nothing sets a port. */
@@ -288,6 +305,8 @@ export interface WorkspaceView {
   roles: Role[];
   /** The role each host that has one shows (neutral if undefined), by id. */
   host_roles: Record<string, Role>;
+  /** Every host's environment and paste line delay, by id. */
+  host_safety: Record<string, PasteSafety>;
   /** The saved filters, in file order. */
   filters: SavedFilter[];
   /** The highlight rules: the workspace's own first, then the built-in. */

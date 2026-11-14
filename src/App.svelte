@@ -21,6 +21,7 @@
   import WorkspacePanel from "./lib/WorkspacePanel.svelte";
   import {
     hostRole,
+    hostSafety,
     inventory,
     selectedFolder,
     selectedHost,
@@ -31,6 +32,7 @@
   import { highlighting, trackHighlightRules } from "./lib/highlight.svelte";
   import { profiles, refreshProfiles } from "./lib/profiles.svelte";
   import { snippets } from "./lib/snippets.svelte";
+  import { NO_SAFETY } from "./lib/paste";
   import {
     isDark,
     loadPreferences,
@@ -59,6 +61,7 @@
     onWorkspaceChanged,
     restoreWorkspace,
     type Host,
+    type PasteSafety,
     type Protocol,
   } from "./lib/workspace";
 
@@ -84,6 +87,11 @@
     title: string;
     /** The inventory host it connects to, if any (for its role). */
     hostId: string | null;
+    /**
+     * The host's environment and paste line delay when the session was
+     * opened; kept for when the host is no longer in the open workspace.
+     */
+    safety: PasteSafety;
     /** The host and username, when logging in with a profile. */
     profileLogin?: { host: Host; username: string };
   }
@@ -216,6 +224,14 @@
     if (layout) void tick().then(measure);
   });
 
+  /** What applies to the session's pastes and colours: its host's, as the
+   * workspace now sets them (live), else as they were when it opened. */
+  function safetyOf(session: OpenSession): PasteSafety {
+    return (
+      (session.hostId ? hostSafety(session.hostId) : null) ?? session.safety
+    );
+  }
+
   function tabState(tab: TabId): TabInfo["state"] {
     const state = states[tab] ?? "connecting";
     return state === "closed" ? "disconnected" : state;
@@ -229,6 +245,7 @@
         name: session.name,
         title: session.title,
         role: session.hostId ? hostRole(session.hostId) : null,
+        environment: safetyOf(session).environment,
         state: tabState(tab),
       };
     },
@@ -325,12 +342,14 @@
     title: string,
     profileLogin?: { host: Host; username: string },
   ) {
+    const hostId = "id" in target ? target.id : null;
     void edit({ kind: "openTab" }, (tab) => {
       sessions[tab] = {
         source: { kind: "target", target },
         name,
         title,
-        hostId: "id" in target ? target.id : null,
+        hostId,
+        safety: (hostId ? hostSafety(hostId) : null) ?? NO_SAFETY,
         profileLogin,
       };
     });
@@ -584,6 +603,8 @@
             source={session.source}
             title={session.title}
             role={session.hostId ? hostRole(session.hostId) : null}
+            safety={safetyOf(session)}
+            name={session.name}
             {shown}
             {focused}
             {focusRequest}
