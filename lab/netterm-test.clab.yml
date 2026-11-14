@@ -4,7 +4,7 @@
 #   docker build -t netterm-frr:latest lab/frr
 #   NETTERM_LAB_PASSWORD=... sudo -E containerlab deploy -t lab/netterm-test.clab.yml
 #
-# Never deployed or tested by the suite's author; image tags are examples.
+# Deployed and passing with these images (docs/containerlab.md).
 # cEOS must be imported into Docker first (Arista's download needs an account).
 name: netterm-test
 
@@ -17,7 +17,7 @@ topology:
     srl1:
       kind: nokia_srlinux
       image: ghcr.io/nokia/srlinux:24.10.1
-      type: ixrd2l
+      type: ixr-d2l
       mgmt-ipv4: 172.20.30.11
       # Partial config, applied on top of the image's default (its admin
       # login is unchanged).

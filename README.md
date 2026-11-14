@@ -80,11 +80,16 @@ netterm claims only the device platforms below, each verified by the
 containerlab device suite ([docs/containerlab.md](docs/containerlab.md))
 at the version shown. Anything else may work, but has not been tested.
 
-| Platform | Version | SSH | Telnet | Date |
-| -------- | ------- | --- | ------ | ---- |
+| Platform       | Version   | SSH | Telnet     | Verified   |
+| -------------- | --------- | --- | ---------- | ---------- |
+| Nokia SR Linux | 24.10.1   | yes | not tested | 2026-11-14 |
+| Arista cEOS    | 4.36.0.1F | yes | yes        | 2026-11-14 |
+| FRRouting      | 10.2.1    | yes | not tested | 2026-11-14 |
 
-None yet: the suite has not been run against a real device. Nokia SR Linux,
-Arista cEOS and FRR are next, as soon as the lab server can run containers.
+SSH covers login with a password, a command and its output, host-key
+checking, a refused password, resizing, large output with flow control and
+session logs, each through an SSH jump host. Cisco and Juniper devices have
+not been tested.
 
 ## Building from source
 
