@@ -23,8 +23,12 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::{is_secret_name, ImportReport, ReportEntry};
-use crate::workspace::import::{check_import_name, HostWrite, ImportedValues, WriteOutcome};
+use super::{
+    existing_hosts, is_secret_name, write_planned, ImportReport, Planned, ReportEntry,
+    PASSWORDS_SKIPPED,
+};
+pub use super::{FieldValue, ImportedHost, PreviewOutcome};
+use crate::workspace::import::check_import_name;
 use crate::workspace::{join, HOST_EXTENSION};
 use crate::workspace::{CustomField, HostId, Workspace};
 
@@ -458,43 +462,6 @@ pub struct PreviewRow {
     pub host: Option<ImportedHost>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum PreviewOutcome {
-    /// A new host.
-    Create { id: HostId },
-    /// The host exists: skipped unless the user confirms that it takes the
-    /// imported values.
-    Exists { id: HostId },
-    /// Nothing to import (an empty row).
-    Skip { reason: String },
-    /// The row cannot be imported.
-    Fail { reason: String },
-}
-
-/// The values a row gives a host.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportedHost {
-    pub name: String,
-    pub address: String,
-    /// The workspace folder it goes to.
-    pub folder: String,
-    /// The other built-in fields with a value.
-    pub fields: Vec<FieldValue>,
-    pub tags: Vec<String>,
-    /// Custom fields with a value.
-    pub custom: Vec<CustomField>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FieldValue {
-    pub field: HostField,
-    pub value: String,
-}
-
-const PASSWORDS_SKIPPED: &str = "passwords are never written to the workspace";
 const EMPTY_ROW: &str = "the row has nothing to import";
 
 impl CsvImport {
@@ -517,97 +484,18 @@ impl CsvImport {
             skipped: preview.skipped_columns.clone(),
             ..ImportReport::default()
         };
-        let entry = |row: &PreviewRow, host: Option<HostId>, reason: Option<String>| ReportEntry {
-            line: Some(row.line),
-            name: row.name.clone(),
-            host,
-            reason,
-        };
-
-        let mut writes = Vec::new();
-        for row in &preview.rows {
-            match (&row.outcome, &row.host) {
-                (PreviewOutcome::Create { .. }, Some(host)) => writes.push(HostWrite::New {
-                    folder: host.folder.clone(),
-                    name: host.name.clone(),
-                    values: values(host),
-                }),
-                (PreviewOutcome::Exists { id }, Some(host)) if replace.contains(id) => {
-                    writes.push(HostWrite::Update {
-                        id: id.clone(),
-                        values: values(host),
-                    })
-                }
-                _ => {}
-            }
-        }
-        let written = workspace.write_imported(writes);
-        let mut outcomes = written.outcomes.into_iter();
-
-        for row in &preview.rows {
-            match &row.outcome {
-                PreviewOutcome::Create { .. } => match outcomes.next() {
-                    Some(WriteOutcome::Created(id)) => {
-                        report.created.push(entry(row, Some(id), None))
-                    }
-                    Some(WriteOutcome::Exists(id)) => {
-                        let reason = not_replaced(&id);
-                        report.skipped.push(entry(row, Some(id), Some(reason)));
-                    }
-                    Some(WriteOutcome::Failed(reason)) => {
-                        report.failed.push(entry(row, None, Some(reason)))
-                    }
-                    other => unreachable!("a new host's write gave {other:?}"),
-                },
-                PreviewOutcome::Exists { id } if replace.contains(id) => match outcomes.next() {
-                    Some(WriteOutcome::Updated(id)) => {
-                        report.updated.push(entry(row, Some(id), None))
-                    }
-                    Some(WriteOutcome::Failed(reason)) => {
-                        report
-                            .failed
-                            .push(entry(row, Some(id.clone()), Some(reason)))
-                    }
-                    other => unreachable!("an update gave {other:?}"),
-                },
-                PreviewOutcome::Exists { id } => {
-                    let reason = not_replaced(id);
-                    report
-                        .skipped
-                        .push(entry(row, Some(id.clone()), Some(reason)));
-                }
-                PreviewOutcome::Skip { reason } => {
-                    report.skipped.push(entry(row, None, Some(reason.clone())))
-                }
-                PreviewOutcome::Fail { reason } => {
-                    report.failed.push(entry(row, None, Some(reason.clone())))
-                }
-            }
-        }
-        report.created_folders = written.created_folders;
-        report.reload_error = written.reload_error;
+        let planned: Vec<Planned<'_>> = preview
+            .rows
+            .iter()
+            .map(|row| Planned {
+                line: Some(row.line),
+                name: &row.name,
+                outcome: &row.outcome,
+                host: row.host.as_ref(),
+            })
+            .collect();
+        write_planned(workspace, &planned, replace, &mut report);
         Ok(report)
-    }
-}
-
-fn not_replaced(id: &HostId) -> String {
-    format!("{id} already exists; it is only replaced when you confirm it")
-}
-
-fn values(host: &ImportedHost) -> ImportedValues {
-    ImportedValues {
-        address: Some(host.address.clone()),
-        text: host
-            .fields
-            .iter()
-            .map(|field| (field.field.key(), field.value.clone()))
-            .collect(),
-        tags: (!host.tags.is_empty()).then(|| host.tags.clone()),
-        custom: host
-            .custom
-            .iter()
-            .map(|field| (field.key.clone(), field.value.clone()))
-            .collect(),
     }
 }
 
@@ -813,6 +701,7 @@ impl<'a> Planner<'a> {
             address,
             folder: folder.clone(),
             fields,
+            port: None,
             tags,
             custom,
         };
@@ -880,26 +769,10 @@ impl<'a> Planner<'a> {
     /// would clash with: by file name, or by the name in its file.
     fn existing_host(&mut self, folder: &str, name: &str) -> Option<HostId> {
         let workspace = self.workspace;
-        let hosts = self.existing.entry(folder.to_string()).or_insert_with(|| {
-            workspace
-                .folder(folder)
-                .map(|folder| {
-                    folder
-                        .hosts
-                        .iter()
-                        .flat_map(|host| {
-                            let file = host.id.as_str().rsplit('/').next().unwrap_or_default();
-                            let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
-                            // Its file name, and the name its file gives it.
-                            [
-                                (host.name.to_lowercase(), host.id.clone()),
-                                (stem.to_lowercase(), host.id.clone()),
-                            ]
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        });
+        let hosts = self
+            .existing
+            .entry(folder.to_string())
+            .or_insert_with(|| existing_hosts(workspace, folder));
         hosts.get(&name.to_lowercase()).cloned()
     }
 }

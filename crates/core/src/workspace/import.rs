@@ -19,6 +19,8 @@ pub(crate) struct ImportedValues {
     pub address: Option<String>,
     /// Built-in text fields by file key (`vendor`, `rack_unit`, ...).
     pub text: Vec<(&'static str, String)>,
+    /// The port setting; `None` leaves it as it is.
+    pub port: Option<u16>,
     pub tags: Option<Vec<String>>,
     /// Custom fields by key; blank values remove the field.
     pub custom: Vec<(String, String)>,
@@ -317,6 +319,9 @@ fn apply(host: &mut Host, values: &ImportedValues) {
         if let Some(field) = host.text_field_mut(key) {
             *field = Some(value.clone());
         }
+    }
+    if let Some(port) = values.port {
+        host.settings.port = Some(port);
     }
     if let Some(tags) = &values.tags {
         host.tags = tags.clone();

@@ -15,6 +15,7 @@ use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
 use netterm_core::import::csv::{
     suggest_mapping, ColumnTarget, CsvImport, CsvTable, ImportPreview, Separator,
 };
+use netterm_core::import::nornir::{NornirImport, NornirInventory, NornirPreview};
 use netterm_core::import::ImportReport;
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
@@ -916,6 +917,61 @@ fn csv_import_run(
     })
 }
 
+/// The Nornir import last previewed (its inventory as read, and its target):
+/// the import does what the preview showed, even if the files change
+/// meanwhile.
+struct NornirFiles(Mutex<Option<NornirImport>>);
+
+impl NornirFiles {
+    fn lock(&self) -> MutexGuard<'_, Option<NornirImport>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Reads a Nornir simple inventory (a hosts file, and a groups and a
+/// defaults file if given) and shows what importing it into `target` would
+/// do; writes nothing.
+#[tauri::command]
+fn nornir_import_preview(
+    shell: State<'_, Shell>,
+    files: State<'_, NornirFiles>,
+    hosts: PathBuf,
+    groups: Option<PathBuf>,
+    defaults: Option<PathBuf>,
+    target: String,
+) -> Result<NornirPreview, String> {
+    let inventory = NornirInventory::read(&hosts, groups.as_deref(), defaults.as_deref())
+        .map_err(|error| error.to_string())?;
+    let import = NornirImport { inventory, target };
+    let preview =
+        read(&shell, |workspace| import.preview(workspace))?.map_err(|error| error.to_string())?;
+    *files.lock() = Some(import);
+    Ok(preview)
+}
+
+/// Runs the import the last preview showed. Existing hosts are only written
+/// if listed in `replace` (the user confirmed them).
+#[tauri::command]
+fn nornir_import_run(
+    shell: State<'_, Shell>,
+    files: State<'_, NornirFiles>,
+    replace: Vec<HostId>,
+) -> Result<Edited<ImportReport>, String> {
+    let import = files
+        .lock()
+        .clone()
+        .ok_or("no Nornir inventory has been previewed")?;
+    let mut guard = shell.workspace();
+    let workspace = guard.as_mut().ok_or("no workspace is open")?;
+    let report = import
+        .run(workspace, &replace)
+        .map_err(|error| error.to_string())?;
+    Ok(Edited {
+        workspace: WorkspaceView::from(&*workspace),
+        result: report,
+    })
+}
+
 /// Opens a session. Output arrives on `on_output` as raw bytes, already
 /// batched by the core, state changes on `on_state`, questions the server
 /// asks while logging in on `on_prompt` (answered with `session_answer`),
@@ -1477,6 +1533,7 @@ pub fn run() {
             )));
             app.manage(Tabs(Mutex::new(Layout::new())));
             app.manage(CsvFile(Mutex::new(None)));
+            app.manage(NornirFiles(Mutex::new(None)));
             let preferences = Preferences::load(&data_folder);
             let theme = window_theme(preferences.theme);
             app.manage(UserPreferences(Mutex::new(preferences)));
@@ -1532,6 +1589,8 @@ pub fn run() {
             csv_import_read,
             csv_import_preview,
             csv_import_run,
+            nornir_import_preview,
+            nornir_import_run,
             profiles_list,
             profile_save,
             profile_delete,

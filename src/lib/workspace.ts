@@ -532,6 +532,8 @@ export interface ImportedHost {
   address: string;
   folder: string;
   fields: { field: HostField; value: string }[];
+  /** The port setting, if the import gives one. */
+  port: number | null;
   tags: string[];
   custom: CustomField[];
 }
@@ -560,6 +562,61 @@ export interface ImportReport {
   createdFolders: string[];
   /** Written, but the workspace could not be reloaded afterwards: why. */
   reloadError: string | null;
+}
+
+/** What importing a Nornir inventory would do. */
+export interface NornirPreview {
+  /** One per host of the hosts file, in file order. */
+  hosts: NornirPreviewHost[];
+  /** Never imported: passwords, usernames, connection options, ... */
+  skipped: ReportEntry[];
+}
+
+export interface NornirPreviewHost {
+  /** The line of the host's key in the hosts file, if found. */
+  line: number | null;
+  name: string;
+  outcome: PreviewOutcome;
+  host: ImportedHost | null;
+}
+
+/** Asks for a Nornir inventory file; null if none was picked. */
+export async function pickNornirFile(title: string): Promise<string | null> {
+  const file = await open({
+    title,
+    filters: [
+      { name: "YAML", extensions: ["yaml", "yml"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  return typeof file === "string" ? file : null;
+}
+
+/**
+ * Reads a Nornir simple inventory and shows what importing it into `target`
+ * would do; writes nothing. The import then uses what this read.
+ */
+export function previewNornir(
+  hosts: string,
+  groups: string | null,
+  defaults: string | null,
+  target: string,
+) {
+  return invoke<NornirPreview>("nornir_import_preview", {
+    hosts,
+    groups,
+    defaults,
+    target,
+  });
+}
+
+/**
+ * Runs the Nornir import the last preview showed (its files as read then,
+ * into its target). Existing hosts are only written if their id is in
+ * `replace`.
+ */
+export function importNornir(replace: string[]) {
+  return invoke<Edited<ImportReport>>("nornir_import_run", { replace });
 }
 
 /** Asks for a CSV file to import; null if none was picked. */

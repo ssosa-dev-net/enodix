@@ -282,9 +282,12 @@ async function main() {
       password,
     });
   };
+  // Scrolled into view first: a long tree can hide the element.
   const centreOf = (selector) =>
     evaluate(`(() => {
-      const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+      const element = document.querySelector(${JSON.stringify(selector)});
+      element.scrollIntoView({ block: "nearest" });
+      const box = element.getBoundingClientRect();
       return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     })()`);
   const mouse = (type, { x, y }, extra = {}) =>
@@ -896,6 +899,8 @@ async function main() {
   await webLinks({ evaluate, text, screenshot, step });
 
   await csvImport({ evaluate, fillForm, text, screenshot, step });
+
+  await nornirImport({ evaluate, fillForm, text, screenshot, step });
 
   await workspaces({
     evaluate,
@@ -1707,6 +1712,152 @@ async function csvImport({ evaluate, fillForm, text, screenshot, step }) {
   await clickOn(`${dialog} [data-csv=close]`);
   await until("the dialog closed", async () => !(await exists(dialog)));
   step("a re-import overwrites no existing host without confirmation");
+}
+
+/**
+ * Nornir import: a simple inventory (hosts, groups and defaults files) into
+ * the Europe folder the CSV import made: inherited values, groups as tags,
+ * data as custom fields, passwords never written, and a re-import that
+ * overwrites nothing.
+ */
+async function nornirImport({ evaluate, fillForm, text, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const dialog = "[data-dialog=nornir-import]";
+  const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
+  const files = {
+    "nornir-hosts": join(userData, "nornir-hosts.yaml"),
+    "nornir-groups": join(userData, "nornir-groups.yaml"),
+    "nornir-defaults": join(userData, "nornir-defaults.yaml"),
+  };
+  writeFileSync(
+    files["nornir-hosts"],
+    [
+      "---",
+      "nr-1:",
+      "  hostname: 10.8.0.1",
+      "  groups: [core]",
+      "  password: NornirHostPass",
+      "  data:",
+      "    owner: neteng",
+      "nr-2:",
+      "  hostname: 10.8.0.2",
+      "  port: 2201",
+      "broken:",
+      "  platform: eos",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    files["nornir-groups"],
+    ["core:", "  port: 830", "  data:", "    layer: core", ""].join("\n"),
+  );
+  writeFileSync(
+    files["nornir-defaults"],
+    [
+      "platform: ios",
+      "username: automation",
+      "password: NornirDefaultPass",
+      "",
+    ].join("\n"),
+  );
+  const nr1 = join(workspace, "Europe", "nr-1.yaml");
+  const nr2 = join(workspace, "Europe", "nr-2.yaml");
+
+  const outcomes = () =>
+    evaluate(`[...document.querySelectorAll("${dialog} [data-preview-host]")].map(
+      (row) => row.dataset.previewHost + ":" + row.dataset.outcome,
+    ).join(" ")`);
+  const counts = () =>
+    evaluate(`[...document.querySelectorAll("${dialog} [data-report]")].map(
+      (section) => section.dataset.report + "=" + section.dataset.count,
+    ).join(" ")`);
+  const preview = async () => {
+    await clickOn("[data-open-nornir-import]");
+    await until("the Nornir import dialog", () => atStep("files"));
+    await evaluate(`(() => {
+      const target = document.querySelector("${dialog} select[name=nornir-target]");
+      target.value = "Europe";
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await fillForm(files, `${dialog} form`);
+    await until("the Nornir preview", () => atStep("preview"));
+  };
+  const runImport = async () => {
+    await clickOn(`${dialog} [data-nornir=import]`);
+    await until("the Nornir report", () => atStep("report"));
+  };
+  const close = async () => {
+    await clickOn(`${dialog} [data-nornir=close]`);
+    await until("the dialog closed", async () => !(await exists(dialog)));
+  };
+
+  // The preview: each host's fate, the passwords left out, nothing written.
+  await preview();
+  const expected = "nr-1:create nr-2:create broken:fail";
+  await until(
+    `the Nornir preview ${expected}`,
+    async () => (await outcomes()) === expected,
+  );
+  for (const skipped of ["host nr-1: password", "defaults: password"]) {
+    if (
+      !(await exists(`${dialog} [data-preview-skipped-entry="${skipped}"]`))
+    ) {
+      fail(`the preview does not list ${skipped} as not imported`);
+    }
+  }
+  if (existsSync(nr1)) fail("the Nornir preview wrote a host");
+  await screenshot("nornir-preview");
+  step(
+    "a Nornir inventory's preview lists every host and the passwords left out",
+  );
+
+  // Importing: inherited values, tags and custom fields; no password.
+  await runImport();
+  const first = "created=2 updated=0 skipped=3 failed=1";
+  await until(`the report ${first}`, async () => (await counts()) === first);
+  await screenshot("nornir-report");
+  const nr1Text = readFileSync(nr1, "utf8");
+  const expectedNr1 =
+    "address: 10.8.0.1\nport: 830\nplatform: ios\ntags:\n- core\ncustom:\n  owner: neteng\n  layer: core\n";
+  if (nr1Text !== expectedNr1) fail(`nr-1.yaml holds ${json(nr1Text)}`);
+  const nr2Text = readFileSync(nr2, "utf8");
+  if (nr2Text !== "address: 10.8.0.2\nport: 2201\nplatform: ios\n") {
+    fail(`nr-2.yaml holds ${json(nr2Text)}`);
+  }
+  for (const secret of ["NornirHostPass", "NornirDefaultPass", "automation"]) {
+    if (nr1Text.includes(secret) || nr2Text.includes(secret)) {
+      fail(`${secret} was written to the workspace`);
+    }
+  }
+  await close();
+  await until("an imported Nornir host in the tree", () =>
+    exists('nav [data-host="Europe/nr-1.yaml"]'),
+  );
+  step(
+    "importing writes inherited values, group tags and data fields, never passwords",
+  );
+
+  // Again: both hosts exist now, nothing is confirmed, nothing is written.
+  writeFileSync(nr2, "address: 10.8.0.2\ndescription: edited by hand\n");
+  const nr2Before = readFileSync(nr2, "utf8");
+  await preview();
+  await until(
+    "both Nornir hosts existing",
+    async () => (await outcomes()) === "nr-1:exists nr-2:exists broken:fail",
+  );
+  await runImport();
+  const second = "created=0 updated=0 skipped=5 failed=1";
+  await until(`the report ${second}`, async () => (await counts()) === second);
+  if (readFileSync(nr1, "utf8") !== expectedNr1)
+    fail("nr-1.yaml was overwritten");
+  if (readFileSync(nr2, "utf8") !== nr2Before)
+    fail("nr-2.yaml was overwritten");
+  await close();
+  step("a Nornir re-import overwrites no existing host without confirmation");
 }
 
 async function workspaces({

@@ -22,6 +22,7 @@
   import WorkspacePanel from "./lib/WorkspacePanel.svelte";
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
   import CsvImportDialog from "./lib/CsvImportDialog.svelte";
+  import NornirImportDialog from "./lib/NornirImportDialog.svelte";
   import {
     hostRole,
     hostSafety,
@@ -762,6 +763,16 @@
     folder={inventory.csvImport}
     onclose={() => {
       inventory.csvImport = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if inventory.nornirImport !== null && inventory.workspace}
+  <NornirImportDialog
+    folder={inventory.nornirImport}
+    onclose={() => {
+      inventory.nornirImport = null;
       focusRequest += 1;
     }}
   />
