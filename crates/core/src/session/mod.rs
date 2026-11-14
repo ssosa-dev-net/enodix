@@ -10,6 +10,8 @@ mod output;
 mod ssh;
 
 use std::collections::HashMap;
+use std::fmt;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -38,13 +40,43 @@ pub enum SessionTarget {
 /// The port SSH uses when nothing sets one.
 pub const DEFAULT_SSH_PORT: u16 = 22;
 
-/// An SSH server and the password login to use on it.
-#[derive(Clone)]
+/// An SSH server and the login to use on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshTarget {
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub password: String,
+    pub auth: SshAuth,
+}
+
+/// How an SSH session proves who the user is. `Debug` leaves the secrets
+/// out, so a target can be logged.
+#[derive(Clone, PartialEq, Eq)]
+pub enum SshAuth {
+    Password(String),
+    /// Public-key authentication with the private key in `key_file`
+    /// (OpenSSH, PEM or PuTTY format), decrypted with `passphrase` if it is
+    /// encrypted.
+    PrivateKey {
+        key_file: PathBuf,
+        passphrase: Option<String>,
+    },
+}
+
+impl fmt::Debug for SshAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Password(_) => f.write_str("Password(..)"),
+            Self::PrivateKey {
+                key_file,
+                passphrase,
+            } => f
+                .debug_struct("PrivateKey")
+                .field("key_file", key_file)
+                .field("passphrase", &passphrase.as_ref().map(|_| ".."))
+                .finish(),
+        }
+    }
 }
 
 /// Something a session reports to whoever opened it.
@@ -97,6 +129,9 @@ pub enum OpenError {
     Connect(String),
     #[error("authentication failed")]
     AuthenticationFailed,
+    /// The private key to log in with could not be read or decrypted.
+    #[error("cannot use the private key {file}: {reason}")]
+    PrivateKey { file: String, reason: String },
     /// The device was reached but the session could not be set up.
     #[error("could not open the session: {0}")]
     Protocol(String),

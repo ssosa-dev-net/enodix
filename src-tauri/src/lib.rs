@@ -7,8 +7,13 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use netterm_core::app_state::AppState;
+use netterm_core::credentials::{
+    CredentialStore, HostLogin, KeychainStore, MemoryStore, ProfileDraft, ProfileError,
+    ProfileSummary, Profiles,
+};
 use netterm_core::session::{
-    SessionEvent, SessionId, SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
+    SessionEvent, SessionId, SessionManager, SessionState, SessionTarget, SshAuth, SshTarget,
+    TerminalSize,
 };
 use netterm_core::workspace::{
     EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem, Role,
@@ -22,13 +27,19 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 /// start from a known state).
 const DATA_DIR_VARIABLE: &str = "NETTERM_DATA_DIR";
 
+/// Set to `memory` to keep credential profiles in memory instead of the OS
+/// keychain (the smoke test uses it, so that it never touches the keychain).
+const CREDENTIAL_STORE_VARIABLE: &str = "NETTERM_CREDENTIAL_STORE";
+
 /// The event that brings the interface the workspace after changes made
 /// outside the app.
 const WORKSPACE_CHANGED_EVENT: &str = "workspace-changed";
 
-/// Where app-level state lives, and the open workspace.
+/// Where app-level state lives, the open workspace, and where credential
+/// profiles are kept.
 struct Shell {
     data_folder: PathBuf,
+    credentials: Box<dyn CredentialStore>,
     workspace: Mutex<Option<Workspace>>,
     /// Reports changes to the open workspace's files; replaced with it.
     watcher: Mutex<Option<WorkspaceWatcher>>,
@@ -101,12 +112,19 @@ enum ConnectTarget {
         username: String,
         password: String,
     },
-    /// A host of the open workspace, with the credentials prompted for.
+    /// A host of the open workspace: with the credentials prompted for, or
+    /// without, to log in with its credential profile.
     Host {
         id: HostId,
-        username: String,
-        password: String,
+        credentials: Option<Prompted>,
     },
+}
+
+/// A username and password the user typed.
+#[derive(Deserialize)]
+struct Prompted {
+    username: String,
+    password: String,
 }
 
 /// An open workspace as the interface receives it.
@@ -364,6 +382,88 @@ fn settings_resolve(shell: State<'_, Shell>, item: Item) -> Result<EffectiveSett
     }
 }
 
+/// The credential profiles of the open workspace, as the interface shows
+/// them: without secrets.
+#[derive(Serialize)]
+struct ProfilesView {
+    profiles: Vec<ProfileSummary>,
+    /// Profile names the workspace uses that are not set up here.
+    missing: Vec<String>,
+}
+
+/// Runs `action` on the open workspace's credential profiles and returns
+/// them afterwards.
+fn with_profiles(
+    shell: &Shell,
+    action: impl FnOnce(&Profiles<'_>) -> Result<(), ProfileError>,
+) -> Result<ProfilesView, String> {
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    let profiles = Profiles::new(shell.credentials.as_ref(), workspace);
+    let view = || {
+        action(&profiles)?;
+        Ok(ProfilesView {
+            profiles: profiles.list()?,
+            missing: profiles.missing()?,
+        })
+    };
+    view().map_err(|error: ProfileError| error.to_string())
+}
+
+#[tauri::command]
+fn profiles_list(shell: State<'_, Shell>) -> Result<ProfilesView, String> {
+    with_profiles(&shell, |_| Ok(()))
+}
+
+/// Creates a profile (no `previous`) or changes the one called `previous`.
+#[tauri::command]
+fn profile_save(
+    shell: State<'_, Shell>,
+    previous: Option<String>,
+    draft: ProfileDraft,
+) -> Result<ProfilesView, String> {
+    with_profiles(&shell, |profiles| {
+        profiles.save(previous.as_deref(), &draft).map(drop)
+    })
+}
+
+#[tauri::command]
+fn profile_delete(shell: State<'_, Shell>, name: String) -> Result<ProfilesView, String> {
+    with_profiles(&shell, |profiles| profiles.delete(&name))
+}
+
+/// How a host logs in, as the interface needs to know it.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum LoginView {
+    /// With its profile, without a prompt.
+    Profile { profile: String, username: String },
+    /// The host names a profile that is not set up on this computer.
+    NotSetUp { profile: String },
+    /// Ask for a username and password.
+    Prompt,
+}
+
+#[tauri::command]
+fn host_login(shell: State<'_, Shell>, id: HostId) -> Result<LoginView, String> {
+    Ok(match profile_login(&shell, &id)? {
+        HostLogin::Profile { profile, target } => LoginView::Profile {
+            profile,
+            username: target.username,
+        },
+        HostLogin::NotSetUp { profile } => LoginView::NotSetUp { profile },
+        HostLogin::Prompt => LoginView::Prompt,
+    })
+}
+
+fn profile_login(shell: &Shell, id: &HostId) -> Result<HostLogin, String> {
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    Profiles::new(shell.credentials.as_ref(), workspace)
+        .login(id)
+        .map_err(|error| error.to_string())
+}
+
 /// The hosts of the open workspace matching `query` (the Ctrl+K palette).
 #[tauri::command]
 fn workspace_search(
@@ -461,18 +561,27 @@ async fn session_open(
             host,
             port,
             username,
-            password,
+            auth: SshAuth::Password(password),
         },
         ConnectTarget::Host {
             id,
-            username,
-            password,
+            credentials: Some(Prompted { username, password }),
         } => shell
             .workspace()
             .as_ref()
             .and_then(|workspace| workspace.resolve_host(&id))
             .ok_or_else(|| format!("{id} is not in the open workspace"))?
             .ssh_target(username, password),
+        ConnectTarget::Host {
+            id,
+            credentials: None,
+        } => {
+            let guard = shell.workspace();
+            let workspace = guard.as_ref().ok_or("no workspace is open")?;
+            Profiles::new(shell.credentials.as_ref(), workspace)
+                .profile_target(&id)
+                .map_err(|error| error.to_string())?
+        }
     });
     let (id, mut events) = manager.open(target, size.into());
     tauri::async_runtime::spawn(async move {
@@ -533,8 +642,16 @@ pub fn run() {
                 Some(folder) => PathBuf::from(folder),
                 None => app.path().app_data_dir()?,
             };
+            let credentials: Box<dyn CredentialStore> =
+                match std::env::var(CREDENTIAL_STORE_VARIABLE).as_deref() {
+                    Ok("memory") => Box::new(MemoryStore::new()),
+                    // Entries are named after the app's identifier, which
+                    // stays put if the product is renamed.
+                    _ => Box::new(KeychainStore::new(app.config().identifier.clone())),
+                };
             app.manage(Shell {
                 data_folder,
+                credentials,
                 workspace: Mutex::new(None),
                 watcher: Mutex::new(None),
             });
@@ -567,6 +684,10 @@ pub fn run() {
             host_move,
             host_delete,
             host_save,
+            profiles_list,
+            profile_save,
+            profile_delete,
+            host_login,
             session_open,
             session_write,
             session_acknowledge,

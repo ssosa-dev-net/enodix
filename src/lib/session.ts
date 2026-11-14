@@ -18,8 +18,8 @@ export type ConnectTarget =
       kind: "host";
       /** The host's id in the open workspace. */
       id: string;
-      username: string;
-      password: string;
+      /** What the user typed; null logs in with the host's profile. */
+      credentials: { username: string; password: string } | null;
     };
 
 export interface TerminalSize {
