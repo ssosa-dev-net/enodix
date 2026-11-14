@@ -11,16 +11,25 @@ What comes after v1. The order and the decisions below were settled in a design 
 
 ## Order
 
-1. Multi-send
-2. Vault and master password, with named secrets
-3. Platform definitions, jobs and config backup
+1. Multi-send (built)
+2. Vault and master password, with named secrets (built)
+3. Platform definitions, jobs and config backup (built)
 4. SFTP/SCP browser
-5. Headless binary, Python bridge and script jobs
-6. Host enrichment
-7. Linux release
+5. Headless binary, Python bridge and script jobs (built)
+6. Host enrichment (built)
+7. Linux release (built; not yet checked on a Linux desktop)
 8. NetBox sync
 9. NETCONF and RESTCONF client
 10. Temporary file servers
+
+## Status
+
+As of 2026-11-14, items 1, 2, 3, 5, 6 and 7 are built and on the main branch; none of it is in a release yet (the last release is 0.1.2). Item 4 was skipped for now, as it still needs its design session. What was built but not verified:
+
+- **Linux desktop:** the packages build and the core, the headless binary and the Python bridge pass their tests under WSL. The app itself has not been run on a real Linux desktop; the check list is in `docs/linux.md`.
+- **NX-OS:** its built-in platform definition has not been run against a device (no image in the lab). The other five are verified in the containerlab suite.
+- **Privilege password:** no lab account asks for an enable password, so that question has only been exercised against the test device.
+- **Host enrichment through tunnels:** checked against the in-process test servers; the lab run through the lab's jump host is still to do.
 
 ## 1. Multi-send
 
@@ -54,7 +63,7 @@ Act on many devices at once, with config backup as the proving use case.
 - A definition has six values: prompt pattern, disable-paging command, privilege command, privilege password prompt, show-config command, and a pattern for lines to ignore when comparing configs. All but the prompt are optional.
 - Stored in `_platforms.yaml` at the workspace root and shared through git, but created and edited only in the app.
 - A definition is matched to a host by its `platform` field, ignoring case. The field becomes a dropdown of defined platforms that still accepts typed text, and it can be set on a folder so a folder of identical devices needs one assignment.
-- Built in: SR Linux, EOS, FRR, IOS, NX-OS and Junos, each verified in the containerlab suite before it ships.
+- Built in: SR Linux, EOS, FRR, IOS, NX-OS and Junos, each verified in the containerlab suite before it ships (NX-OS is still to verify).
 - The engine sends the credential profile's enable secret at the privilege prompt.
 
 **Jobs**
@@ -77,6 +86,7 @@ Act on many devices at once, with config backup as the proving use case.
 - History opens from the host side panel, with a diff between any two versions.
 - Nothing is pruned automatically.
 - Backups are plain files outside the workspace. The docs say plainly that they are as sensitive as the configs themselves.
+- Checked in the lab: SR Linux, cEOS, FRR and cJunos accept the second channel; IOS-XE refuses it, so its backup on login uses the second connection.
 
 ## 4. SFTP/SCP browser
 
@@ -168,7 +178,9 @@ Let existing automation use the inventory.
 
 ## Still open
 
-- **Backup on login:** which platforms accept a second channel on one SSH connection. To be checked in the lab.
+- **Linux:** the check on a real desktop (Ubuntu and Fedora, X11 and Wayland), before Linux is claimed as supported.
+- **Script tunnels:** job pre-flight does not know host keys, so a host whose device or jump-host key is not trusted yet is refused only when the job runs.
+
 - **SFTP/SCP browser:** the whole design.
 - **NetBox:** how its hierarchy (region, site, location, rack) maps onto the folder tree, and where local overrides are kept.
 - **NETCONF/RESTCONF:** where collections sit in the workspace and whether they inherit like snippets and web links; how RESTCONF device certificates are trusted, given the self-signed ones common on network devices.
