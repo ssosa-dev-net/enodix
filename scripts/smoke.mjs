@@ -895,6 +895,8 @@ async function main() {
 
   await webLinks({ evaluate, text, screenshot, step });
 
+  await csvImport({ evaluate, fillForm, text, screenshot, step });
+
   await workspaces({
     evaluate,
     fillForm,
@@ -1543,6 +1545,170 @@ async function webLinks({ evaluate, text, screenshot, step }) {
  * an existing folder; creating over a non-empty folder is refused. Ends
  * with the smoke workspace open again.
  */
+/**
+ * CSV import: a spreadsheet saved by a European Excel (semicolons, a
+ * byte-order mark, quoted values) is mapped, previewed, imported into the
+ * top of the workspace with one existing host confirmed, then imported again
+ * without confirming anything.
+ */
+async function csvImport({ evaluate, fillForm, text, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const dialog = "[data-dialog=csv-import]";
+  const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
+  const csvFile = join(userData, "inventory.csv");
+  writeFileSync(
+    csvFile,
+    "\uFEFF" +
+      [
+        "Hostname;Management IP;Vendor;Folder;Tags;Password;Owner",
+        'imp-1;10.9.0.1;Arista;Europe/Madrid;"core, dc1";hunter2;noc',
+        "imp-2;10.9.0.2;Cisco;Europe/Paris;;;",
+        "odd;192.0.2.99;Juniper;;;;",
+        ";;;;;;",
+        "bad:name;10.9.0.5;;;;;",
+        "",
+      ].join("\r\n"),
+  );
+  const oddFile = join(workspace, "odd.yaml");
+  const oddBefore = readFileSync(oddFile, "utf8");
+
+  const readFile = async () => {
+    await clickOn("[data-open-csv-import]");
+    await until("the CSV import dialog", () => atStep("file"));
+    await fillForm({ "csv-file": csvFile }, `${dialog} form`);
+    await until("the column mapping", () => atStep("map"));
+  };
+  const choices = () =>
+    evaluate(
+      `[...document.querySelectorAll("${dialog} select[name^=csv-column-]")].map((s) => s.value).join(" ")`,
+    );
+  const preview = async () => {
+    await evaluate(`(() => {
+      const target = document.querySelector("${dialog} select[name=csv-target]");
+      target.value = "";
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await clickOn(`${dialog} [data-csv=preview]`);
+    await until("the import preview", () => atStep("preview"));
+  };
+  const outcomes = () =>
+    evaluate(`[...document.querySelectorAll("${dialog} [data-preview-row]")].map(
+      (row) => row.dataset.previewRow + ":" + row.dataset.outcome,
+    ).join(" ")`);
+  const counts = () =>
+    evaluate(`[...document.querySelectorAll("${dialog} [data-report]")].map(
+      (section) => section.dataset.report + "=" + section.dataset.count,
+    ).join(" ")`);
+  const runImport = async () => {
+    await clickOn(`${dialog} [data-csv=import]`);
+    await until("the import report", () => atStep("report"));
+  };
+
+  // The file is read with its byte-order mark and semicolons, and the
+  // columns are mapped from their headers; the password is never mapped.
+  await readFile();
+  const suggested =
+    "field:name field:address field:vendor folderPath tags ignore custom";
+  await until(
+    `the suggested mapping ${suggested}`,
+    async () => (await choices()) === suggested,
+  );
+  await screenshot("csv-mapping");
+  step("a semicolon CSV with a byte-order mark is read and its columns mapped");
+
+  // The preview shows every row's fate and writes nothing.
+  await preview();
+  const expected = "2:create 3:create 4:exists 5:skip 6:fail";
+  await until(
+    `the preview rows ${expected}`,
+    async () => (await outcomes()) === expected,
+  );
+  if (!(await exists(`${dialog} [data-preview-skipped-column="Password"]`))) {
+    fail("the preview does not say the password column is left out");
+  }
+  if (
+    !(await text(`${dialog} [data-preview-folders]`)).includes("Europe/Madrid")
+  ) {
+    fail("the preview does not list the new folders");
+  }
+  if (existsSync(join(workspace, "Europe"))) fail("the preview wrote folders");
+  await screenshot("csv-preview");
+  step(
+    "the preview lists new, existing, empty and failing rows, writing nothing",
+  );
+
+  // Importing with the existing host confirmed: folders made under the
+  // target, the confirmed host updated, the report complete.
+  await clickOn(`${dialog} [data-replace="odd.yaml"]`);
+  await until("the Import button counting 3 hosts", async () =>
+    /Import\s+3\s+hosts/.test(await text(`${dialog} [data-csv=import]`)),
+  );
+  await runImport();
+  const first = "created=2 updated=1 skipped=2 failed=1";
+  await until(`the report ${first}`, async () => (await counts()) === first);
+  const failed = await text(`${dialog} [data-report=failed] li`);
+  if (!failed.includes("Row 6")) fail(`the failed row: ${failed}`);
+  await screenshot("csv-report");
+  const madrid = readFileSync(
+    join(workspace, "Europe", "Madrid", "imp-1.yaml"),
+    "utf8",
+  );
+  const expectedMadrid =
+    "address: 10.9.0.1\nvendor: Arista\ntags:\n- core\n- dc1\ncustom:\n  Owner: noc\n";
+  if (madrid !== expectedMadrid) fail(`imp-1.yaml holds ${json(madrid)}`);
+  if (!existsSync(join(workspace, "Europe", "Paris", "imp-2.yaml"))) {
+    fail("imp-2 was not created in Europe/Paris");
+  }
+  const odd = readFileSync(oddFile, "utf8");
+  if (
+    !odd.includes("address: 192.0.2.99\n") ||
+    !odd.includes("vendor: Juniper\n") ||
+    !odd.includes("role: mainframe\n")
+  ) {
+    fail(`the confirmed odd.yaml holds ${json(odd)} (was ${json(oddBefore)})`);
+  }
+  await clickOn(`${dialog} [data-csv=close]`);
+  await until("the dialog closed", async () => !(await exists(dialog)));
+  await until("the imported folder in the tree", () =>
+    exists('nav button[data-item=folder][data-path="Europe"]'),
+  );
+  step(
+    "importing creates folders under the target, replaces only the confirmed host and reports every row",
+  );
+
+  // Again, confirming nothing: every host exists now and none is written.
+  const madridBefore = readFileSync(
+    join(workspace, "Europe", "Madrid", "imp-1.yaml"),
+  );
+  writeFileSync(oddFile, oddBefore);
+  await readFile();
+  await preview();
+  await until(
+    "every host existing",
+    async () =>
+      (await outcomes()) === "2:exists 3:exists 4:exists 5:skip 6:fail",
+  );
+  await runImport();
+  const second = "created=0 updated=0 skipped=5 failed=1";
+  await until(`the report ${second}`, async () => (await counts()) === second);
+  if (readFileSync(oddFile, "utf8") !== oddBefore)
+    fail("odd.yaml was overwritten");
+  if (
+    !readFileSync(join(workspace, "Europe", "Madrid", "imp-1.yaml")).equals(
+      madridBefore,
+    )
+  ) {
+    fail("imp-1.yaml was overwritten");
+  }
+  await clickOn(`${dialog} [data-csv=close]`);
+  await until("the dialog closed", async () => !(await exists(dialog)));
+  step("a re-import overwrites no existing host without confirmation");
+}
+
 async function workspaces({
   evaluate,
   fillForm,

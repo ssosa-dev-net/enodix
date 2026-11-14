@@ -475,6 +475,131 @@ export function createHost(folder: string, name: string, address: string) {
   return invoke<Edited<string>>("host_create", { folder, name, address });
 }
 
+// --- CSV import (see `netterm_core::import::csv`) ---
+
+/** The built-in host fields a CSV column can fill, by file key. */
+export type HostField =
+  | "name"
+  | "address"
+  | "vendor"
+  | "platform"
+  | "model"
+  | "serial_number"
+  | "site"
+  | "building"
+  | "room"
+  | "rack"
+  | "rack_unit"
+  | "role"
+  | "description";
+
+/** What a CSV column fills. */
+export type ColumnTarget =
+  | { kind: "field"; field: HostField }
+  | { kind: "custom"; key: string }
+  | { kind: "tags" }
+  | { kind: "folderPath" }
+  | { kind: "ignore" };
+
+/** A CSV file as read, before mapping. */
+export interface CsvFileView {
+  separator: "comma" | "semicolon";
+  headers: string[];
+  /** How many rows there are below the header. */
+  rows: number;
+  /** The first rows' values. */
+  sample: string[][];
+  /** The core's guess at a mapping, one per column. */
+  suggested: ColumnTarget[];
+}
+
+export interface ReportEntry {
+  /** The line in the file; null for the whole file (a password column). */
+  line: number | null;
+  name: string;
+  host: string | null;
+  reason: string | null;
+}
+
+export type PreviewOutcome =
+  | { kind: "create"; id: string }
+  | { kind: "exists"; id: string }
+  | { kind: "skip"; reason: string }
+  | { kind: "fail"; reason: string };
+
+export interface ImportedHost {
+  name: string;
+  address: string;
+  folder: string;
+  fields: { field: HostField; value: string }[];
+  tags: string[];
+  custom: CustomField[];
+}
+
+export interface PreviewRow {
+  line: number;
+  name: string;
+  outcome: PreviewOutcome;
+  host: ImportedHost | null;
+}
+
+export interface ImportPreview {
+  rows: PreviewRow[];
+  /** Folders the import would create, parents first. */
+  newFolders: string[];
+  /** Columns that are never written (passwords). */
+  skippedColumns: ReportEntry[];
+}
+
+export interface ImportReport {
+  created: ReportEntry[];
+  /** Existing hosts the user confirmed to take the imported values. */
+  updated: ReportEntry[];
+  skipped: ReportEntry[];
+  failed: ReportEntry[];
+  createdFolders: string[];
+  /** Written, but the workspace could not be reloaded afterwards: why. */
+  reloadError: string | null;
+}
+
+/** Asks for a CSV file to import; null if none was picked. */
+export async function pickCsvFile(): Promise<string | null> {
+  const file = await open({
+    title: "CSV file to import",
+    filters: [
+      { name: "CSV", extensions: ["csv", "txt"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  return typeof file === "string" ? file : null;
+}
+
+/** Reads a CSV file for importing; the preview and import then use it. */
+export function readCsv(path: string) {
+  return invoke<CsvFileView>("csv_import_read", { path });
+}
+
+/** What importing the CSV file read last would do; writes nothing. */
+export function previewCsv(mapping: ColumnTarget[], target: string) {
+  return invoke<ImportPreview>("csv_import_preview", { mapping, target });
+}
+
+/**
+ * Imports the CSV file read last into `target`. Existing hosts are only
+ * written if their id is in `replace`.
+ */
+export function importCsv(
+  mapping: ColumnTarget[],
+  target: string,
+  replace: string[],
+) {
+  return invoke<Edited<ImportReport>>("csv_import_run", {
+    mapping,
+    target,
+    replace,
+  });
+}
+
 /** Returns the host's new id. */
 export function renameHost(id: string, name: string) {
   return invoke<Edited<string>>("host_rename", { id, name });

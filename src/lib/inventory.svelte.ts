@@ -57,7 +57,29 @@ export const inventory = $state({
   activeFilter: null as string | null,
   /** What the active filter shows; null shows everything. */
   filterView: null as { hosts: Set<string>; folders: Set<string> } | null,
+  /**
+   * While the CSV import dialog is open: the folder it was opened on (the
+   * target it starts with).
+   */
+  csvImport: null as string | null,
 });
+
+/** Opens the CSV import dialog with `folder` as its first target. */
+export function openCsvImport(folder: string) {
+  inventory.csvImport = folder;
+}
+
+/**
+ * Imports the CSV file read last (see `api.importCsv`) and shows the
+ * reloaded workspace; returns the report. Errors propagate.
+ */
+export async function runCsvImport(
+  mapping: api.ColumnTarget[],
+  target: string,
+  replace: string[],
+): Promise<api.ImportReport> {
+  return apply(await api.importCsv(mapping, target, replace));
+}
 
 export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.workspace = workspace;
@@ -66,6 +88,7 @@ export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.editError = null;
   inventory.activeFilter = null;
   inventory.filterView = null;
+  inventory.csvImport = null;
 }
 
 // Under a filter, the selected item (one just created, say, or edited out

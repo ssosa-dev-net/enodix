@@ -12,6 +12,10 @@ use netterm_core::credentials::{
     ProfileError, ProfileSummary, Profiles,
 };
 use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
+use netterm_core::import::csv::{
+    suggest_mapping, ColumnTarget, CsvImport, CsvTable, ImportPreview, Separator,
+};
+use netterm_core::import::ImportReport;
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
 use netterm_core::logging::{LogFolder, SessionLog};
@@ -819,6 +823,99 @@ fn host_save(shell: State<'_, Shell>, host: Host) -> Result<Edited<()>, String> 
     edit(&shell, |workspace| workspace.write_host(&host))
 }
 
+/// The CSV file being imported, as read once: the preview and the import
+/// both use this copy, so they agree even if the file changes meanwhile.
+struct CsvFile(Mutex<Option<CsvTable>>);
+
+impl CsvFile {
+    fn lock(&self) -> MutexGuard<'_, Option<CsvTable>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A CSV file as the import dialog shows it before mapping.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CsvFileView {
+    separator: Separator,
+    headers: Vec<String>,
+    /// How many rows below the header.
+    rows: usize,
+    /// The first rows' values, to recognise the columns by.
+    sample: Vec<Vec<String>>,
+    suggested: Vec<ColumnTarget>,
+}
+
+/// How many rows `csv_import_read` shows.
+const CSV_SAMPLE_ROWS: usize = 3;
+
+/// Reads the CSV file at `path` for importing (replacing any read before).
+#[tauri::command]
+fn csv_import_read(file: State<'_, CsvFile>, path: PathBuf) -> Result<CsvFileView, String> {
+    let table = CsvTable::read(&path).map_err(|error| error.to_string())?;
+    let view = CsvFileView {
+        separator: table.separator,
+        headers: table.headers.clone(),
+        rows: table.rows.len(),
+        sample: table
+            .rows
+            .iter()
+            .take(CSV_SAMPLE_ROWS)
+            .map(|row| row.values.clone())
+            .collect(),
+        suggested: suggest_mapping(&table.headers),
+    };
+    *file.lock() = Some(table);
+    Ok(view)
+}
+
+fn csv_import(
+    file: &CsvFile,
+    mapping: Vec<ColumnTarget>,
+    target: String,
+) -> Result<CsvImport, String> {
+    let table = file.lock().clone().ok_or("no CSV file has been read")?;
+    Ok(CsvImport {
+        table,
+        mapping,
+        target,
+    })
+}
+
+/// What importing the CSV file read last would do; writes nothing.
+#[tauri::command]
+fn csv_import_preview(
+    shell: State<'_, Shell>,
+    file: State<'_, CsvFile>,
+    mapping: Vec<ColumnTarget>,
+    target: String,
+) -> Result<ImportPreview, String> {
+    let import = csv_import(&file, mapping, target)?;
+    read(&shell, |workspace| import.preview(workspace))?.map_err(|error| error.to_string())
+}
+
+/// Imports the CSV file read last. Existing hosts are only written if
+/// listed in `replace` (the user confirmed them).
+#[tauri::command]
+fn csv_import_run(
+    shell: State<'_, Shell>,
+    file: State<'_, CsvFile>,
+    mapping: Vec<ColumnTarget>,
+    target: String,
+    replace: Vec<HostId>,
+) -> Result<Edited<ImportReport>, String> {
+    let import = csv_import(&file, mapping, target)?;
+    let mut guard = shell.workspace();
+    let workspace = guard.as_mut().ok_or("no workspace is open")?;
+    let report = import
+        .run(workspace, &replace)
+        .map_err(|error| error.to_string())?;
+    Ok(Edited {
+        workspace: WorkspaceView::from(&*workspace),
+        result: report,
+    })
+}
+
 /// Opens a session. Output arrives on `on_output` as raw bytes, already
 /// batched by the core, state changes on `on_state`, questions the server
 /// asks while logging in on `on_prompt` (answered with `session_answer`),
@@ -1379,6 +1476,7 @@ pub fn run() {
                 &data_folder,
             )));
             app.manage(Tabs(Mutex::new(Layout::new())));
+            app.manage(CsvFile(Mutex::new(None)));
             let preferences = Preferences::load(&data_folder);
             let theme = window_theme(preferences.theme);
             app.manage(UserPreferences(Mutex::new(preferences)));
@@ -1431,6 +1529,9 @@ pub fn run() {
             host_move,
             host_delete,
             host_save,
+            csv_import_read,
+            csv_import_preview,
+            csv_import_run,
             profiles_list,
             profile_save,
             profile_delete,
