@@ -5,11 +5,15 @@
     inventory,
     move,
     moveInto,
+    newFilter,
     newFolder,
     newHost,
     remove,
+    removeFilter,
     rename,
     targetFolder,
+    trackFilterView,
+    viewThrough,
     type Item,
   } from "./inventory.svelte";
   import { findHost, type Host } from "./workspace";
@@ -22,6 +26,8 @@
   let { onopen, onconnect }: Props = $props();
 
   const workspace = $derived(inventory.workspace);
+
+  trackFilterView();
 
   /** The item under the pointer while the button is held. */
   let pressed: { item: Item; label: string; x: number; y: number } | null =
@@ -177,6 +183,43 @@
       <button title="New host" onclick={() => newHost(targetFolder())}
         >+ Host</button
       >
+      <button
+        class="search"
+        title="Search hosts (Ctrl+K)"
+        onclick={() => (inventory.palette = true)}
+        >Search… <kbd>Ctrl+K</kbd></button
+      >
+    </div>
+    <div class="filters">
+      <select
+        name="filter"
+        aria-label="View"
+        value={inventory.activeFilter ?? ""}
+        onchange={(event) => viewThrough(event.currentTarget.value || null)}
+      >
+        <option value="">All hosts</option>
+        {#each workspace.filters as filter (filter.name)}
+          <option value={filter.name}>{filter.name}</option>
+        {/each}
+      </select>
+      {#if inventory.activeFilter !== null}
+        {@const name = inventory.activeFilter}
+        <span class="count">
+          {inventory.filterView
+            ? inventory.filterView.hosts.size === 1
+              ? "1 host"
+              : `${inventory.filterView.hosts.size} hosts`
+            : ""}
+        </span>
+        <button
+          title="Delete this saved filter"
+          onclick={() => removeFilter(name)}>Delete filter</button
+        >
+      {:else}
+        <button title="Save a filter to the workspace" onclick={newFilter}
+          >Save filter…</button
+        >
+      {/if}
     </div>
   {/if}
 
@@ -224,6 +267,9 @@
       onkeydown={ontreekeydown}
     >
       <TreeFolder folder={workspace.tree} depth={0} {onconnect} />
+      {#if inventory.filterView?.hosts.size === 0}
+        <p class="hint">No host matches this filter.</p>
+      {/if}
     </nav>
   {:else if !inventory.openError}
     <p class="hint">Open a workspace folder to see its hosts.</p>
@@ -302,9 +348,40 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .toolbar button {
+  .toolbar button,
+  .filters button {
     padding: 0.15rem 0.55rem;
     font-size: 0.8rem;
+  }
+
+  .toolbar .search {
+    margin-left: auto;
+    color: var(--muted);
+  }
+
+  kbd {
+    font-family: inherit;
+    font-size: 0.7rem;
+  }
+
+  .filters {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .filters select {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.8rem;
+  }
+
+  .filters .count {
+    color: var(--muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
   }
 
   .tree {

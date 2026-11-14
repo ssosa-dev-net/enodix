@@ -160,6 +160,50 @@ export interface Problem {
   message: string;
 }
 
+/**
+ * A condition of a saved filter. `field` is a built-in host field (`name`,
+ * `address`, `vendor`, ..., `role`), `tag`, `custom.<key>` or `text`;
+ * `value` matches the whole value ignoring case, `*` standing for any text
+ * (for `text`: words searched as the palette does).
+ */
+export interface Condition {
+  field: string;
+  value: string;
+}
+
+/** A named view of the inventory: the hosts meeting every condition. */
+export interface SavedFilter {
+  name: string;
+  conditions: Condition[];
+}
+
+/** What a saved filter shows: its hosts, and the folders holding them. */
+export interface FilterView {
+  hosts: string[];
+  folders: string[];
+}
+
+/** A field of a host that a search matched. */
+export interface FieldMatch {
+  /** `name`, `address`, `tag`, a built-in field, `role` or `custom.<key>`. */
+  field: string;
+  value: string;
+}
+
+export interface SearchHit {
+  id: string;
+  name: string;
+  address: string;
+  matches: FieldMatch[];
+}
+
+export interface SearchResults {
+  /** The best hits, best first. */
+  hits: SearchHit[];
+  /** How many hosts matched in all. */
+  total: number;
+}
+
 export interface WorkspaceView {
   root: string;
   tree: Folder;
@@ -167,6 +211,8 @@ export interface WorkspaceView {
   roles: Role[];
   /** The role each host that has one shows (neutral if undefined), by id. */
   host_roles: Record<string, Role>;
+  /** The saved filters, in file order. */
+  filters: SavedFilter[];
   problems: Problem[];
 }
 
@@ -270,6 +316,24 @@ export function deleteHost(id: string) {
 /** Saves a host's fields (not its name or place: see rename and move). */
 export function saveHost(host: Host) {
   return invoke<Edited<null>>("host_save", { host });
+}
+
+/** The hosts matching every word of `query`, best first. */
+export function searchHosts(query: string, limit: number) {
+  return invoke<SearchResults>("workspace_search", { query, limit });
+}
+
+export function applyFilter(filter: SavedFilter) {
+  return invoke<FilterView>("filter_apply", { filter });
+}
+
+/** Saves a filter, replacing the one of the same name. */
+export function saveFilter(filter: SavedFilter) {
+  return invoke<Edited<null>>("filter_save", { filter });
+}
+
+export function deleteFilter(name: string) {
+  return invoke<Edited<null>>("filter_delete", { name });
 }
 
 export function findFolder(tree: Folder, path: string): Folder | null {

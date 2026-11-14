@@ -19,6 +19,10 @@
 //! place and their exact value, new built-in keys take a fixed place
 //! ([`HOST_KEY_ORDER`]), and saving a host with nothing changed leaves its
 //! file untouched.
+//!
+//! The workspace keeps a search index over its hosts ([`Workspace::search`]),
+//! rebuilt from the files every time it loads, and the saved filters of its
+//! [`FILTERS_FILE`] ([`Workspace::filters`]).
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -32,10 +36,15 @@ use serde_norway::{Mapping, Value};
 
 use crate::session::{SshTarget, DEFAULT_SSH_PORT};
 
+mod filters;
 mod roles;
+mod search;
 mod settings;
 
+pub use filters::{Condition, SavedFilter, FILTERS_FILE};
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
+use search::SearchIndex;
+pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
     apply_settings, settings_from_document, Level, CREDENTIAL_PROFILE, ENVIRONMENT, JUMP_HOST,
     LEGACY_CRYPTO, LOGGING, PORT, PROTOCOL, SERIAL, WEB_LINKS,
@@ -122,6 +131,9 @@ pub struct Workspace {
     tree: Folder,
     /// The built-in roles, then the workspace's own.
     roles: Vec<Role>,
+    /// The saved filters, in file order.
+    filters: Vec<SavedFilter>,
+    index: SearchIndex,
     problems: Vec<Problem>,
 }
 
@@ -358,11 +370,15 @@ impl Workspace {
         let mut problems = Vec::new();
         let tree = load_folder(&root, name, String::new(), &mut problems);
         let roles = load_roles(&root, &mut problems);
+        let filters = load_filters(&root, &mut problems);
+        let index = SearchIndex::build(&tree, |id| roles::find(&roles, id).map(|r| r.name.clone()));
         problems.sort_by(|a, b| a.file.cmp(&b.file));
         Ok(Self {
             root,
             tree,
             roles,
+            filters,
+            index,
             problems,
         })
     }
@@ -419,6 +435,48 @@ impl Workspace {
                 .cloned()
                 .unwrap_or_else(|| Role::undefined(role)),
         )
+    }
+
+    /// The hosts matching every word of `query`, best first, at most
+    /// `limit` of them (see the search index's rules in `search.rs`). An
+    /// empty query lists every host by name.
+    pub fn search(&self, query: &str, limit: usize) -> SearchResults {
+        self.index.search(query, limit)
+    }
+
+    /// The saved filters, in the order of the filters file.
+    pub fn filters(&self) -> &[SavedFilter] {
+        &self.filters
+    }
+
+    /// The hosts `filter` matches and the folders holding them.
+    pub fn apply_filter(&self, filter: &SavedFilter) -> FilterView {
+        self.index.apply(filter)
+    }
+
+    /// Saves `filter` to the filters file: in place of the filter of the
+    /// same name (ignoring case), else after the others. Names and values
+    /// are trimmed; a filter without a name, without conditions, with a
+    /// blank value, an unknown field or a field other than `tag` given
+    /// twice is refused.
+    pub fn save_filter(&mut self, filter: &SavedFilter) -> Result<(), EditError> {
+        let filter = filters::clean(filter).map_err(EditError::Invalid)?;
+        self.edit_file(FILTERS_FILE.into(), |document| {
+            filters::upsert(document, &filter);
+            Ok(())
+        })
+    }
+
+    /// Deletes the filter called `name` (ignoring case) from the filters
+    /// file; the file goes when no filter is left.
+    pub fn delete_filter(&mut self, name: &str) -> Result<(), EditError> {
+        self.edit_file(FILTERS_FILE.into(), |document| {
+            if filters::remove(document, name) {
+                Ok(())
+            } else {
+                Err(EditError::NotFound(format!("filter {}", name.trim())))
+            }
+        })
     }
 
     /// Files that could not be loaded, ordered by path.
@@ -590,15 +648,25 @@ impl Workspace {
         })
     }
 
-    /// Changes the settings file of the folder at `path`: it is written if
-    /// the change made a difference, and removed if left empty.
+    /// Changes the settings file of the folder at `path` (see
+    /// [`Self::edit_file`]).
     fn edit_folder_file(
         &mut self,
         path: &str,
         change: impl FnOnce(&mut Mapping) -> Result<(), EditError>,
     ) -> Result<(), EditError> {
         self.existing_folder(path)?;
-        let file = join(path, FOLDER_SETTINGS_FILE);
+        self.edit_file(join(path, FOLDER_SETTINGS_FILE), change)
+    }
+
+    /// Changes the mapping in `file` (relative to the root; a missing file
+    /// is an empty mapping): it is written if the change made a difference,
+    /// and removed if left empty.
+    fn edit_file(
+        &mut self,
+        file: String,
+        change: impl FnOnce(&mut Mapping) -> Result<(), EditError>,
+    ) -> Result<(), EditError> {
         let full = self.root.join(&file);
         let original = if full.exists() {
             read_mapping(&full).map_err(|message| {
@@ -1063,6 +1131,30 @@ fn load_roles(root: &Path, problems: &mut Vec<Problem>) -> Vec<Role> {
         Err(message) => {
             problems.push(problem(message));
             roles::built_in()
+        }
+    }
+}
+
+/// The workspace's saved filters, if it has a filters file. A bad file or
+/// filter definition becomes a problem; the rest load.
+fn load_filters(root: &Path, problems: &mut Vec<Problem>) -> Vec<SavedFilter> {
+    let path = root.join(FILTERS_FILE);
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let problem = |message| Problem {
+        file: FILTERS_FILE.into(),
+        message,
+    };
+    match read_mapping(&path) {
+        Ok(document) => {
+            let (filters, errors) = filters::load(&document);
+            problems.extend(errors.into_iter().map(problem));
+            filters
+        }
+        Err(message) => {
+            problems.push(problem(message));
+            Vec::new()
         }
     }
 }

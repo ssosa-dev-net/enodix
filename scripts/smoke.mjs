@@ -428,6 +428,17 @@ async function main() {
   await expectIcon("undefined role", '[data-host="odd.yaml"]', "unknown");
   step("roles showed their icon and colour in the tree and the session header");
 
+  await searchAndFilter({
+    evaluate,
+    text,
+    click,
+    fillForm,
+    type,
+    devtools,
+    screenshot,
+    step,
+  });
+
   await editInventory({
     evaluate,
     text,
@@ -442,6 +453,129 @@ async function main() {
   });
 
   devtools.close();
+}
+
+/** Ctrl+K finds a host from the terminal, connects to it or shows it in the
+ * tree; a saved filter is written to the workspace, applied to the tree
+ * and deleted. */
+async function searchAndFilter({
+  evaluate,
+  text,
+  click,
+  fillForm,
+  type,
+  devtools,
+  screenshot,
+  step,
+}) {
+  const filters = join(workspace, "_filters.yaml");
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const key = async (spec) => {
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyDown", ...spec });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...spec });
+  };
+  const ctrlK = {
+    key: "k",
+    code: "KeyK",
+    windowsVirtualKeyCode: 75,
+    modifiers: 2,
+  };
+  const enter = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };
+  const palette = "[role=dialog][aria-label='Search hosts']";
+  const hostRow = '[data-host="Lab/smoke-r1.yaml"]';
+  const hit = '[data-hit="Lab/smoke-r1.yaml"]';
+  const search = async (query) => {
+    await key(ctrlK);
+    await until("the palette", () => exists(`${palette} input`));
+    await until("the palette's input focused", () =>
+      evaluate(
+        `document.activeElement?.name === "palette-query" || document.activeElement?.outerHTML.slice(0, 80)`,
+      ).then((focused) => focused === true || Promise.reject(focused)),
+    );
+    await type(query);
+    await until(`the hit for ${query}`, () =>
+      evaluate(`(() => {
+        const first = document.querySelector("${palette} [role=option]");
+        return first?.dataset.hit === "Lab/smoke-r1.yaml" && first.getAttribute("aria-selected") === "true";
+      })()`),
+    );
+  };
+  const setView = (value) =>
+    evaluate(`(() => {
+      const select = document.querySelector("select[name=filter]");
+      select.value = ${JSON.stringify(value)};
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+
+  // Ctrl+K reaches the palette even while the terminal has the keyboard.
+  // Shift+Enter shows the host in the tree, opening its folder.
+  await evaluate(
+    `document.querySelector("nav [data-item=folder][data-path=Lab]").click()`,
+  );
+  await until("the Lab folder collapsed", async () => !(await exists(hostRow)));
+  await evaluate(`document.querySelector(".xterm textarea")?.focus()`);
+  await search("smoke");
+  await screenshot("palette");
+  await key({ ...enter, modifiers: 8 });
+  await until("the host shown and selected in the tree", () =>
+    evaluate(
+      `document.querySelector(${JSON.stringify(hostRow)})?.getAttribute("aria-pressed") === "true"`,
+    ),
+  );
+  if (await exists(palette)) fail("the palette stayed open");
+  step("Ctrl+K found a host and Shift+Enter showed it in the tree");
+
+  // A field other than the name is searched and shown; Enter connects.
+  await search("lab router");
+  if (!(await text(hit)).includes("Role: Lab router")) {
+    fail(`the hit does not show the matched role: ${await text(hit)}`);
+  }
+  await key(enter);
+  await until("the credentials prompt", async () =>
+    (await text("h2")).includes("smoke-r1"),
+  );
+  await click("Cancel");
+  step("a search on the role found the host and Enter connected to it");
+
+  // A filter is saved to the workspace and the tree is viewed through it.
+  await click("Save filter…");
+  await until("the save filter dialog", () => exists("[role=dialog] form"));
+  await evaluate(`(() => {
+    const select = document.querySelector("[role=dialog] select[name=field]");
+    select.value = "role";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await fillForm(
+    { "filter-name": "Lab routers", value: "lab_router" },
+    "[role=dialog] form",
+  );
+  await until(
+    "the filter in the workspace",
+    () =>
+      existsSync(filters) &&
+      readFileSync(filters, "utf8") === "Lab routers:\n  role: lab_router\n",
+  );
+  const odd = '[data-host="odd.yaml"]';
+  await until(
+    "the tree viewed through the filter",
+    async () => (await exists(hostRow)) && !(await exists(odd)),
+  );
+  await screenshot("filter");
+  await setView("");
+  await until("every host back", () => exists(odd));
+  await setView("Lab routers");
+  await until("the filter applied again", async () => !(await exists(odd)));
+  step("a filter was saved to the workspace and applied to the tree");
+
+  await click("Delete filter");
+  await until("the delete confirmation", () => exists("[role=dialog] form"));
+  await clickOn("[role=dialog] form button[type=submit]");
+  await until("the filters file removed", () => !existsSync(filters));
+  await until("every host back", () => exists(odd));
+  step("the filter was deleted");
 }
 
 /** The inventory is edited from the tree and the side panel, and each

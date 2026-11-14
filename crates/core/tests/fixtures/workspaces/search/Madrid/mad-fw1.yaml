@@ -1,0 +1,7 @@
+address: 10.1.0.1
+vendor: Fortinet
+site: Madrid
+role: firewall
+tags: [perimeter]
+custom:
+  circuit: CID-100

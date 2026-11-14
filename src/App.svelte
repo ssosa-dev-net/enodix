@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CommandPalette from "./lib/CommandPalette.svelte";
   import CredentialsPrompt from "./lib/CredentialsPrompt.svelte";
   import Dialog from "./lib/Dialog.svelte";
   import FolderDetails from "./lib/FolderDetails.svelte";
@@ -63,7 +64,25 @@
     inventory.selected = { kind: "host", id: host.id };
     view = { kind: "prompt", host };
   }
+
+  // Ctrl+K opens the palette from anywhere, the terminal included, so it is
+  // caught before the focused element sees it.
+  function onkeydowncapture(event: KeyboardEvent) {
+    const ctrlK =
+      event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      !event.metaKey &&
+      // By position too, so that it works on any keyboard layout.
+      (event.code === "KeyK" || event.key.toLowerCase() === "k");
+    if (!ctrlK || !inventory.workspace || inventory.dialog) return;
+    event.preventDefault();
+    event.stopPropagation();
+    inventory.palette = true;
+  }
 </script>
+
+<svelte:window {onkeydowncapture} />
 
 <div class="layout" class:with-details={host || folder}>
   <WorkspacePanel onopen={open} onconnect={prompt} />
@@ -113,6 +132,13 @@
     </aside>
   {/if}
 </div>
+
+{#if inventory.palette}
+  <CommandPalette
+    onconnect={prompt}
+    onclose={() => (inventory.palette = false)}
+  />
+{/if}
 
 {#if inventory.dialog}
   {#key inventory.dialog}

@@ -1,0 +1,17 @@
+# Saved filters, in the order they are listed.
+Firewalls:
+  role: firewall
+Arista in Madrid:
+  vendor: arista
+  site: Madrid
+Circuits:
+  custom:
+    circuit: CID-*
+Spanish switches:
+  tags: [spain]
+  name: "*-sw*"
+Core text:
+  text: core north
+Colour:
+  colour: red
+Empty: {}
