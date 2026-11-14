@@ -34,6 +34,11 @@ devices:
     platform: ceos
     address: 172.20.30.12
     password_env: NETTERM_LAB_CEOS_PASSWORD
+    # The topology publishes cEOS's telnet on the server's port 2323;
+    # telnet is not tunnelled through the jump host, so it goes there
+    # directly.
+    telnet: 2323
+    telnet_address: 192.0.2.10 # replace with your containerlab server
 
   - name: frr1
     platform: frr

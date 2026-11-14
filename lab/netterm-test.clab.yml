@@ -25,10 +25,15 @@ topology:
 
     ceos1:
       kind: arista_ceos
-      image: ceos:4.33.1F
+      image: ceos:4.36.0.1F
       mgmt-ipv4: 172.20.30.12
-      # No startup config: containerlab's default cEOS config, which sets
-      # the admin login and enables SSH.
+      # Containerlab's defaults plus telnet (admin / admin).
+      startup-config: configs/ceos1.cfg
+      # Telnet is published on the containerlab server itself, because the
+      # app does not tunnel telnet through a jump host: the suite reaches
+      # it at <server>:2323 (`telnet_address` in the lab file).
+      ports:
+        - 2323:23
 
     frr1:
       kind: linux

@@ -222,6 +222,9 @@ struct DeviceFile {
     agent: Option<bool>,
     /// Also check telnet, on this port (`true` = 23).
     telnet: Option<TelnetSetting>,
+    /// Where telnet is reached directly, not through the jump host (such
+    /// as the containerlab server, publishing the device's port 23).
+    telnet_address: Option<String>,
     prompt: Option<String>,
     setup: Option<Vec<String>>,
     command: Option<String>,
@@ -277,6 +280,9 @@ pub struct Device {
     pub password: Option<String>,
     /// The telnet port, when telnet is checked too.
     pub telnet_port: Option<u16>,
+    /// Telnet's own address, reached directly; `None`: `address`, which
+    /// behind a jump host means telnet is not checked (it is not tunnelled).
+    pub telnet_address: Option<String>,
     /// Matched against the end of the output: the device is ready for a line.
     pub prompt: Regex,
     /// Lines sent after logging in, each waiting for the prompt (such as
@@ -478,6 +484,7 @@ impl Lab {
                 username,
                 password,
                 telnet_port,
+                telnet_address: device.telnet_address,
                 prompt,
                 setup: device
                     .setup
@@ -746,8 +753,10 @@ impl Check {
             Check::SessionLog => session_log(run, device).await.into(),
             Check::Telnet => match device.telnet_port {
                 None => Outcome::NotApplicable("telnet is not enabled for this device".into()),
-                Some(_) if run.lab.jump_host.is_some() => {
-                    Outcome::NotApplicable("telnet is not tunnelled through the jump host".into())
+                Some(_) if run.lab.jump_host.is_some() && device.telnet_address.is_none() => {
+                    Outcome::NotApplicable(
+                        "telnet is not tunnelled through the jump host (set telnet_address)".into(),
+                    )
                 }
                 Some(port) => match &device.password {
                     None => Outcome::NotApplicable(
@@ -975,7 +984,10 @@ async fn telnet(
 ) -> Result<String, String> {
     let manager = run.manager();
     let target = SessionTarget::Telnet(TelnetTarget {
-        host: device.address.clone(),
+        host: device
+            .telnet_address
+            .clone()
+            .unwrap_or_else(|| device.address.clone()),
         port,
         connect_timeout: run.timeout(),
     });
