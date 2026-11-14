@@ -247,6 +247,116 @@ fn expanding_an_unknown_snippet_or_host_fails() {
     ));
 }
 
+// --- Expanding for each member of the multi-send group (#36) ---
+
+/// The `workspace_with` workspace plus a second host, `Lisbon/r2.yaml`,
+/// with a site of its own and no `circuit`.
+fn two_hosts() -> (TempDir, Workspace) {
+    let (temp, _) = workspace_with(Some(SNIPPETS));
+    fs::create_dir(temp.path().join("Lisbon")).unwrap();
+    fs::write(
+        temp.path().join("Lisbon/r2.yaml"),
+        "address: 10.0.0.2\nsite: LIS1\n",
+    )
+    .unwrap();
+    let workspace = Workspace::open(temp.path()).unwrap();
+    (temp, workspace)
+}
+
+fn r2() -> HostId {
+    HostId::new("Lisbon/r2.yaml")
+}
+
+#[test]
+fn a_snippet_for_the_group_is_filled_with_each_members_own_values() {
+    let (_temp, workspace) = two_hosts();
+    let answers: Variables = [("vlan", "42")].into_iter().collect();
+    let expanded = workspace
+        .expand_snippet_for_each("Vlan", &[Some(r1()), Some(r2())], &answers)
+        .unwrap();
+    assert_eq!(
+        expanded,
+        [
+            lines(&["vlan 42", " name MAD1-42"]),
+            lines(&["vlan 42", " name LIS1-42"]),
+        ]
+    );
+}
+
+#[test]
+fn variables_any_member_lacks_are_asked_once_for_the_whole_group() {
+    let (temp, _) = two_hosts();
+    let snippets = "Circuit: |\n  description {{circuit}} {{site}} {{vlan}}\n";
+    fs::write(temp.path().join(SNIPPETS_FILE), snippets).unwrap();
+    let workspace = Workspace::open(temp.path()).unwrap();
+    // r1 has a circuit, r2 does not; neither has a vlan. Each name is
+    // asked once, in the snippet's order.
+    let expanded =
+        workspace.expand_snippet_for_each("Circuit", &[Some(r1()), Some(r2())], &Variables::new());
+    let Err(ExpandError::Missing(missing)) = expanded else {
+        panic!("expected missing variables, got {expanded:?}");
+    };
+    assert_eq!(names(missing), ["circuit", "vlan"]);
+
+    // The answers apply to every member; host values still come first.
+    let answers: Variables = [("circuit", "NONE"), ("vlan", "7")].into_iter().collect();
+    assert_eq!(
+        workspace
+            .expand_snippet_for_each("Circuit", &[Some(r1()), Some(r2())], &answers)
+            .unwrap(),
+        [
+            lines(&["description CID-42 MAD1 7"]),
+            lines(&["description NONE LIS1 7"]),
+        ]
+    );
+}
+
+#[test]
+fn members_without_a_live_host_get_only_the_answers() {
+    let (_temp, workspace) = two_hosts();
+    // A quick connect in the group: the host's variables are asked for.
+    let expanded =
+        workspace.expand_snippet_for_each("Ping", &[Some(r1()), None], &Variables::new());
+    let Err(ExpandError::Missing(missing)) = expanded else {
+        panic!("expected missing variables, got {expanded:?}");
+    };
+    assert_eq!(names(missing), ["address", "source"]);
+
+    let answers: Variables = [("address", "192.0.2.9"), ("source", "lo0")]
+        .into_iter()
+        .collect();
+    assert_eq!(
+        workspace
+            .expand_snippet_for_each("Ping", &[Some(r1()), None], &answers)
+            .unwrap(),
+        [
+            lines(&["ping 10.0.0.1 source lo0"]),
+            lines(&["ping 192.0.2.9 source lo0"]),
+        ]
+    );
+}
+
+#[test]
+fn expanding_for_the_group_fails_for_an_unknown_snippet_or_host() {
+    let (_temp, workspace) = two_hosts();
+    assert!(matches!(
+        workspace.expand_snippet_for_each("nope", &[None], &Variables::new()),
+        Err(ExpandError::NoSuchSnippet(name)) if name == "nope"
+    ));
+    let gone = HostId::new("Madrid/gone.yaml");
+    assert!(matches!(
+        workspace.expand_snippet_for_each("Show version", &[Some(r1()), Some(gone.clone())], &Variables::new()),
+        Err(ExpandError::NoSuchHost(id)) if id == gone
+    ));
+    // No members: nothing to send.
+    assert_eq!(
+        workspace
+            .expand_snippet_for_each("Show version", &[], &Variables::new())
+            .unwrap(),
+        Vec::<Vec<String>>::new()
+    );
+}
+
 // --- The snippets file ---
 
 #[test]

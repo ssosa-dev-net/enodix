@@ -371,6 +371,25 @@ impl Layout {
         Ok(())
     }
 
+    /// Adds every tab of `pane` that is not a member yet to the multi-send
+    /// group, in the pane's order, and returns them (nothing changes if
+    /// there are none).
+    pub fn join_pane(&mut self, pane: PaneId) -> Result<Vec<TabId>, LayoutError> {
+        let joining: Vec<TabId> = self
+            .pane(pane)
+            .ok_or(LayoutError::NoSuchPane(pane))?
+            .tabs
+            .iter()
+            .copied()
+            .filter(|&tab| !self.in_group(tab))
+            .collect();
+        if !joining.is_empty() {
+            self.group.extend(&joining);
+            self.changed();
+        }
+        Ok(joining)
+    }
+
     /// Takes `tab` out of the multi-send group (nothing changes if it is
     /// not in it).
     pub fn leave_group(&mut self, tab: TabId) -> Result<(), LayoutError> {

@@ -3,6 +3,7 @@
 // and the delay between its lines.
 
 import { invoke } from "@tauri-apps/api/core";
+import type { TabId } from "./layout";
 import type { Environment, PasteSafety } from "./workspace";
 
 export interface PastePlan {
@@ -22,6 +23,33 @@ export const ENVIRONMENT_NAMES: Record<Environment, string> = {
   staging: "Staging",
   lab: "Lab",
 };
+
+/** How one paste goes out to the multi-send group's members. */
+export interface GroupPastePlan {
+  /** Each member's own plan, in the order the members were given. */
+  members: PastePlan[];
+  /** Whether the user confirms it once, before any member gets a line. */
+  confirm: boolean;
+  /** The strictest member environment, for how the question looks. */
+  environment: Environment | null;
+}
+
+/** How a paste goes out to the group: each member's text and safety. */
+export function planGroupPaste(
+  members: { text: string; safety: PasteSafety }[],
+): Promise<GroupPastePlan> {
+  return invoke<GroupPastePlan>("paste_plan_group", { members });
+}
+
+/**
+ * Which of the tabs about to join the multi-send group the user confirms
+ * first (the core decides: production ones).
+ */
+export function joinConfirmations(
+  joining: { tab: TabId; safety: PasteSafety }[],
+): Promise<TabId[]> {
+  return invoke<TabId[]>("group_join_check", { joining });
+}
 
 /** How `text` is pasted into a session with `safety`. */
 export function planPaste(

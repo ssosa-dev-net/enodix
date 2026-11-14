@@ -27,6 +27,8 @@
     newTab: (pane: PaneId) => void;
     split: (pane: PaneId, direction: SplitDirection) => void;
     closePane: (pane: PaneId) => void;
+    /** Adds every tab of the pane to the multi-send group. */
+    joinPane: (pane: PaneId) => void;
     /** Attaches to each pane's body, where its terminal is placed. */
     body: (pane: PaneId) => Attachment<HTMLElement>;
   }
@@ -208,6 +210,21 @@
         onclick={() => handlers.newTab(pane.id)}>+</button
       >
       <span class="spacer"></span>
+      {#if pane.tabs.some((tab) => handlers.tab(tab)?.member === false)}
+        <button
+          class="icon"
+          data-join-pane
+          aria-label="Add this pane's tabs to the multi-send group"
+          title="Add this pane's tabs to the multi-send group"
+          onclick={() => handlers.joinPane(pane.id)}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true"
+            ><rect x="1.5" y="4.5" width="8" height="7" rx="1" /><path
+              d="M3.5 2.5h8a1 1 0 0 1 1 1v6M12.5 11v4M10.5 13h4"
+            /></svg
+          >
+        </button>
+      {/if}
       <button
         class="icon"
         data-split="right"

@@ -744,6 +744,26 @@ export function expandSnippet(
   return invoke<Expansion>("snippet_expand", { name, host, answers });
 }
 
+/** A snippet made ready for each member of the multi-send group. */
+export type GroupExpansion =
+  { kind: "lines"; members: string[][] } | { kind: "missing"; names: string[] };
+
+/**
+ * The snippet `name` for each member of the multi-send group: `hosts` holds
+ * each member's live host (null: none, it gets only the answers).
+ */
+export function expandSnippetForGroup(
+  name: string,
+  hosts: (string | null)[],
+  answers: Record<string, string>,
+) {
+  return invoke<GroupExpansion>("snippet_expand_group", {
+    name,
+    hosts,
+    answers,
+  });
+}
+
 export function findFolder(tree: Folder, path: string): Folder | null {
   if (path === "") return tree;
   let folder: Folder | undefined = tree;

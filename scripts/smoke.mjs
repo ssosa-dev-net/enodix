@@ -1058,7 +1058,16 @@ async function main() {
     step,
   });
 
-  await multiSend({ evaluate, devtools, screenshot, step });
+  await multiSend({
+    evaluate,
+    devtools,
+    doubleClick,
+    fillForm,
+    text,
+    status,
+    screenshot,
+    step,
+  });
 
   await terminalComforts({
     evaluate,
@@ -4580,8 +4589,20 @@ async function tabsAndPanes({
 // join the group (header button, Ctrl+Shift+M), what is typed in one
 // reaches both (also the hidden one) and not the third; a disconnected
 // member is marked and skipped, and receives again after reconnecting;
-// ending the group makes typing local again.
-async function multiSend({ evaluate, devtools, screenshot, step }) {
+// ending the group makes typing local again. Safety (#36): a production
+// session (and a pane holding one) asks before joining, Cancel focused; a
+// multi-line paste asks once for the whole group, then reaches every
+// member; a snippet is filled with each member's own values.
+async function multiSend({
+  evaluate,
+  devtools,
+  doubleClick,
+  fillForm,
+  text,
+  status,
+  screenshot,
+  step,
+}) {
   const json = (value) => JSON.stringify(value);
   const clickOn = (selector) =>
     evaluate(`document.querySelector(${json(selector)}).click()`);
@@ -4589,6 +4610,19 @@ async function multiSend({ evaluate, devtools, screenshot, step }) {
     evaluate(`!!document.querySelector(${json(selector)})`);
   const CTRL = 2;
   const SHIFT = 8;
+  const pasteKeys = async () => {
+    const event = {
+      key: "V",
+      code: "KeyV",
+      windowsVirtualKeyCode: 86,
+      modifiers: CTRL | SHIFT,
+    };
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...event,
+    });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+  };
   const toggleShortcut = async () => {
     const event = {
       key: "M",
@@ -4721,6 +4755,202 @@ async function multiSend({ evaluate, devtools, screenshot, step }) {
   step(
     "a disconnected member was marked and skipped, and received again after reconnecting",
   );
+
+  // A production session asks before it joins, with Cancel focused; so
+  // does adding its pane, naming it.
+  const prodFile = join(workspace, "ms-prod.yaml");
+  writeFileSync(
+    prodFile,
+    `address: 127.0.0.1\nport: ${SSH_PORT}\nenvironment: production\npaste_line_delay: 300\n`,
+  );
+  const snippetsFile = join(workspace, "_snippets.yaml");
+  const savedSnippets = existsSync(snippetsFile)
+    ? readFileSync(snippetsFile, "utf8")
+    : null;
+  const savedClipboard = readClipboard();
+  try {
+    const host = '[data-host="ms-prod.yaml"]';
+    await until("the production host in the tree", () => exists(host));
+    await doubleClick(host);
+    await until("the credentials prompt", async () =>
+      (await text("main h2")).includes("ms-prod"),
+    );
+    await fillForm({ username: USERNAME, password: PASSWORD });
+    await until(
+      "the production session connected",
+      async () => (await status()) === "Connected",
+    );
+    const d = Number(
+      await evaluate(`document.querySelector("${SHOWN_SESSION}").dataset.tab`),
+    );
+    await until("the production session's prompt", async () =>
+      (await screenOfTab(d)).includes("test-ssh$"),
+    );
+    const joinQuestion = () =>
+      evaluate(`(() => {
+        const card = document.querySelector("[data-confirm-join]");
+        return card && {
+          count: card.dataset.joinCount,
+          production: [...card.querySelectorAll("[data-join-production]")].map((li) => li.dataset.joinProduction),
+          focused: document.activeElement?.dataset.join ?? null,
+        };
+      })()`);
+    const groupSize = async () =>
+      (await tabs()).filter((tab) => tab.member !== null).length;
+
+    const pane = await evaluate(
+      `document.querySelector(${json(slot(d))}).dataset.pane`,
+    );
+    await clickOn(`.pane[data-pane="${pane}"] [data-join-pane]`);
+    const paneAsked = await until("the pane's join question", joinQuestion);
+    if (
+      json(paneAsked.production) !== json(["ms-prod"]) ||
+      Number(paneAsked.count) < 2 ||
+      paneAsked.focused !== "cancel"
+    ) {
+      fail(`the pane's join question shows ${json(paneAsked)}`);
+    }
+    await clickOn("[data-join=cancel]");
+    await until("the question gone", async () => !(await joinQuestion()));
+    if ((await groupSize()) !== 2)
+      fail("a cancelled pane join changed the group");
+
+    await clickOn(`${slot(d)} [data-multi-send-toggle=join]`);
+    const asked = await until("the production join question", joinQuestion);
+    if (
+      json(asked) !==
+      json({ count: "1", production: ["ms-prod"], focused: "cancel" })
+    ) {
+      fail(`the production join question shows ${json(asked)}`);
+    }
+    await screenshot("multi-send-production-join");
+    await clickOn("[data-join=cancel]");
+    await until("the question gone", async () => !(await joinQuestion()));
+    if ((await tabOf(d)).member !== null)
+      fail("Cancel added the production tab");
+    await clickOn(`${slot(d)} [data-multi-send-toggle=join]`);
+    await until("the production join question", joinQuestion);
+    await clickOn("[data-join=join]");
+    await until(
+      "the production member",
+      async () => (await tabOf(d)).member === "receiving",
+    );
+    step(
+      "a production session (and its pane) asked before joining, Cancel focused; Cancel kept it out, Add joined it",
+    );
+
+    // A multi-line paste in one member asks once for the whole group, as
+    // for production, naming every member; then each member gets it.
+    await show(b);
+    await evaluate(
+      `document.querySelector(${json(`${slot(b)} .terminal textarea`)}).focus()`,
+    );
+    writeClipboard("ms-one\nms-two\n");
+    await pasteKeys();
+    const pasteQuestion = () =>
+      evaluate(`(() => {
+        const cards = document.querySelectorAll("[data-paste-confirm]");
+        const card = document.querySelector(${json(`${slot(b)} [data-paste-confirm]`)});
+        return card && {
+          cards: cards.length,
+          environment: card.dataset.pasteConfirm,
+          members: card.dataset.pasteMembers,
+          lines: card.querySelector("[data-paste-lines]").dataset.pasteLines,
+          names: [...card.querySelectorAll("[data-paste-member]")].map((li) => li.dataset.pasteMember),
+          text: card.querySelector("[data-paste-text]").textContent.replace(/\\r\\n/g, "\\n"),
+          focused: document.activeElement?.dataset.paste ?? null,
+        };
+      })()`);
+    const names = await evaluate(
+      `Object.fromEntries([${[a, b, d].join(",")}].map((tab) => [tab, document.querySelector('[data-tab-bar] [data-tab="' + tab + '"]').textContent.trim()]))`,
+    );
+    const pasted = await until("the group's paste question", pasteQuestion);
+    if (
+      pasted.cards !== 1 ||
+      pasted.environment !== "production" ||
+      pasted.members !== "3" ||
+      pasted.lines !== "2" ||
+      pasted.names.length !== 3 ||
+      !pasted.names.includes("ms-prod") ||
+      pasted.text !== "ms-one\nms-two\n" ||
+      pasted.focused !== "cancel"
+    ) {
+      fail(`the group's paste question shows ${json(pasted)} (${json(names)})`);
+    }
+    await screenshot("multi-send-paste");
+    await clickOn(`${slot(b)} [data-paste=send]`);
+    // Held output is written once a hidden tab is shown.
+    for (const tab of [b, a, d]) {
+      await show(tab);
+      await until(`the pasted lines in tab ${tab}`, async () => {
+        const shown = await screenOfTab(tab);
+        return shown.includes("$ ms-one") && shown.includes("$ ms-two");
+      });
+    }
+    await show(c);
+    await sleep(300);
+    if ((await screenOfTab(c)).includes("ms-one")) {
+      fail("the tab outside the group got the paste");
+    }
+    step(
+      "a multi-line paste in one member asked once (production, every member listed), then reached every member",
+    );
+
+    // A snippet is filled per member: the production host gives its own
+    // name; the quick connects have none, so it is asked once, for both.
+    writeFileSync(snippetsFile, "Who: who-{{name}}\n");
+    await until("the snippet in the panel", () =>
+      exists('[data-snippet="Who"]'),
+    );
+    await show(b);
+    await clickOn('[data-snippet="Who"]');
+    const variables = await until("the variables asked for", () =>
+      evaluate(`(() => {
+        const dialog = document.querySelector("[data-dialog=snippet-variables]");
+        return dialog && [...dialog.querySelectorAll("[data-variable]")].map((i) => i.dataset.variable);
+      })()`),
+    );
+    if (json(variables) !== json(["name"])) {
+      fail(`the group snippet asked for ${json(variables)}`);
+    }
+    await fillForm(
+      { "variable-0": "quick" },
+      "[data-dialog=snippet-variables] form",
+    );
+    for (const tab of [b, a]) {
+      await show(tab);
+      await until(`the answer in tab ${tab}`, async () =>
+        (await screenOfTab(tab)).includes("$ who-quick"),
+      );
+    }
+    await show(d);
+    await until("the production member's own value", async () =>
+      (await screenOfTab(d)).includes("$ who-ms-prod"),
+    );
+    if ((await screenOfTab(d)).includes("who-quick")) {
+      fail("the production member got the answer instead of its own name");
+    }
+    step(
+      "a snippet sent to the group was filled per member; the missing variable was asked once",
+    );
+
+    // The production tab goes, with its host.
+    await clickOn(`[data-tab="${d}"] [data-tab-close]`);
+    await until("the close question", () => exists("[data-confirm-close]"));
+    await clickOn("[data-confirm=close]");
+    await until("the production tab closed", async () =>
+      (await tabs()).every((tab) => tab.id !== d),
+    );
+    await show(b);
+    await evaluate(
+      `document.querySelector(${json(`${slot(b)} .terminal textarea`)}).focus()`,
+    );
+  } finally {
+    writeClipboard(savedClipboard);
+    if (savedSnippets === null) rmSync(snippetsFile, { force: true });
+    else writeFileSync(snippetsFile, savedSnippets);
+    rmSync(prodFile, { force: true });
+  }
 
   // Ending the group: no markers, typing is local again.
   await clickOn(`${slot(b)} [data-end-group]`);

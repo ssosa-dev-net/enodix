@@ -3,6 +3,16 @@
   import { ENVIRONMENT_NAMES } from "./paste";
   import type { Environment } from "./workspace";
 
+  /** A session of the multi-send group the paste goes to. */
+  export interface PasteMember {
+    name: string;
+    environment: Environment | null;
+    /** Milliseconds between its lines; 0: none. */
+    lineDelayMs: number;
+    /** What it gets, if not the text shown (a snippet filled for it). */
+    text: string | null;
+  }
+
   interface Props {
     /** The text as it would be sent. */
     text: string;
@@ -12,6 +22,11 @@
     environment: Environment | null;
     /** Milliseconds between lines; 0: none. */
     lineDelayMs: number;
+    /**
+     * For a paste to the multi-send group (#36): every member it goes to,
+     * each with its own delay; `environment` is then the strictest one.
+     */
+    members?: PasteMember[];
     onsend: () => void;
     oncancel: () => void;
   }
@@ -22,6 +37,7 @@
     target,
     environment,
     lineDelayMs,
+    members,
     onsend,
     oncancel,
   }: Props = $props();
@@ -54,6 +70,7 @@
     class="card"
     class:production={environment === "production"}
     data-paste-confirm={environment ?? "none"}
+    data-paste-members={members?.length}
     onsubmit={(event) => {
       event.preventDefault();
       onsend();
@@ -63,16 +80,40 @@
       Paste <span data-paste-lines={lineCount}
         >{lineCount} {lineCount === 1 ? "line" : "lines"}</span
       >
-      into {target}?
+      into {members
+        ? `${members.length} ${members.length === 1 ? "session" : "sessions"} of the multi-send group`
+        : target}?
     </h2>
-    {#if environment === "production"}
+    {#if environment === "production" && members}
+      <p class="warning" data-paste-production>
+        The group includes production devices. Check that they are the right
+        ones.
+      </p>
+    {:else if environment === "production"}
       <p class="warning" data-paste-production>
         This is a {ENVIRONMENT_NAMES[environment].toLowerCase()} device. Check that
         it is the right one.
       </p>
     {/if}
     <pre data-paste-text>{text}</pre>
-    {#if lineDelayMs > 0}
+    {#if members}
+      <ul class="members">
+        {#each members as member, index (index)}
+          <li
+            data-paste-member={member.name}
+            data-environment={member.environment ?? undefined}
+          >
+            {member.name}{#if member.environment}<span class="environment"
+                >{ENVIRONMENT_NAMES[member.environment]}</span
+              >{/if}{#if member.lineDelayMs > 0}<span class="muted"
+                >, lines {member.lineDelayMs} ms apart</span
+              >{/if}{#if member.text !== null}<pre
+                class="member-text"
+                data-paste-member-text>{member.text}</pre>{/if}
+          </li>
+        {/each}
+      </ul>
+    {:else if lineDelayMs > 0}
       <p class="muted">Sent one line at a time, {lineDelayMs} ms apart.</p>
     {/if}
     <div class="actions">
@@ -134,6 +175,31 @@
 
   .muted {
     color: var(--muted);
+  }
+
+  .members {
+    margin: 0;
+    padding-left: 1.2rem;
+    max-height: 8rem;
+    overflow: auto;
+    font-size: 0.85rem;
+  }
+
+  .member-text {
+    min-height: 0;
+    max-height: 5rem;
+    margin-top: 0.2rem;
+  }
+
+  .environment {
+    margin-left: 0.4rem;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+
+  .members li[data-environment="production"] .environment {
+    color: var(--env-production);
+    font-weight: 600;
   }
 
   pre {

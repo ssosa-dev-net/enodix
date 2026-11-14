@@ -3,6 +3,8 @@
   import type { Attachment } from "svelte/attachments";
   import CommandPalette from "./lib/CommandPalette.svelte";
   import ConfirmClose from "./lib/ConfirmClose.svelte";
+  import ConfirmJoin from "./lib/ConfirmJoin.svelte";
+  import PasteConfirm, { type PasteMember } from "./lib/PasteConfirm.svelte";
   import ConfirmSwitch from "./lib/ConfirmSwitch.svelte";
   import CredentialsPrompt from "./lib/CredentialsPrompt.svelte";
   import Dialog from "./lib/Dialog.svelte";
@@ -39,7 +41,7 @@
   import { highlighting, trackHighlightRules } from "./lib/highlight.svelte";
   import { profiles, refreshProfiles } from "./lib/profiles.svelte";
   import { snippets } from "./lib/snippets.svelte";
-  import { NO_SAFETY } from "./lib/paste";
+  import { joinConfirmations, NO_SAFETY, planGroupPaste } from "./lib/paste";
   import {
     changePreferences,
     isDark,
@@ -65,8 +67,10 @@
   } from "./lib/layout";
   import {
     expandSnippet,
+    expandSnippetForGroup,
     onWorkspaceChanged,
     restoreWorkspace,
+    type Environment,
     type Host,
     type PasteSafety,
     type Protocol,
@@ -139,6 +143,33 @@
   let asking = $state<{ tab: TabId; name: string; names: string[] } | null>(
     null,
   );
+  /** Tabs waiting for the user's yes before joining the group (#36). */
+  let joining = $state<{
+    production: string[];
+    count: number;
+    answer: (join: boolean) => void;
+  } | null>(null);
+  /** A paste to the multi-send group waiting for the user's yes (#36). */
+  let groupPasteQuestion = $state<{
+    /** The tab pasted in, over whose terminal the question is shown. */
+    tab: TabId;
+    text: string;
+    lineCount: number;
+    environment: Environment | null;
+    members: PasteMember[];
+    answer: (send: boolean) => void;
+  } | null>(null);
+  /** Group pastes go one at a time, in order. */
+  let groupPasting: Promise<void> = Promise.resolve();
+
+  // The group's paste question is shown over the tab pasted in: if that
+  // tab goes or is hidden, the paste is cancelled (nothing waits on it).
+  $effect(() => {
+    const question = groupPasteQuestion;
+    if (question && !placement.get(question.tab)?.shown) {
+      question.answer(false);
+    }
+  });
 
   const panes = $derived(layout ? panesOf(layout.root) : []);
   const activePane = $derived(
@@ -153,7 +184,11 @@
   });
   /** That tab's name, as the snippet panel and palette show it. */
   const snippetTarget = $derived(
-    snippetTab === null ? null : sessions[snippetTab].name,
+    snippetTab === null
+      ? null
+      : inGroup(snippetTab)
+        ? groupName()
+        : sessions[snippetTab].name,
   );
   /** Where each tab is: its pane, and whether that pane shows it. */
   const placement = $derived(
@@ -275,9 +310,136 @@
     return layout?.group.includes(tab) ?? false;
   }
 
+  /** The group, as the snippet panel and questions name it. */
+  function groupName(): string {
+    return `the multi-send group (${layout?.group.length ?? 0})`;
+  }
+
   /** Adds `tab` to the multi-send group, or takes it out. */
   function toggleGroup(tab: TabId) {
-    void edit({ kind: inGroup(tab) ? "leaveGroup" : "joinGroup", tab });
+    if (inGroup(tab)) void edit({ kind: "leaveGroup", tab });
+    else void join([tab], { kind: "joinGroup", tab });
+  }
+
+  /** Adds every tab of `pane` to the multi-send group. */
+  function joinPane(pane: PaneId) {
+    const joining = () =>
+      (panes.find((each) => each.id === pane)?.tabs ?? []).filter(
+        (tab) => !inGroup(tab),
+      );
+    void join(joining(), { kind: "joinPane", pane }, joining);
+  }
+
+  /**
+   * Makes the layout edit `change`, which adds `tabs` to the multi-send
+   * group, once the user agrees if the core says any of them must be
+   * confirmed (production sessions): one question names them all. If
+   * `current` (what the edit would add now) gained a tab while the user
+   * was asked (one dragged into the pane), they are asked again.
+   */
+  async function join(
+    tabs: TabId[],
+    change: LayoutEdit,
+    current?: () => TabId[],
+  ) {
+    let production: TabId[];
+    try {
+      production = await joinConfirmations(
+        tabs
+          .filter((tab) => sessions[tab])
+          .map((tab) => ({ tab, safety: safetyOf(sessions[tab]) })),
+      );
+    } catch {
+      return;
+    }
+    if (production.length > 0) {
+      const agreed = await new Promise<boolean>((answer) => {
+        joining = {
+          production: production.map((tab) => sessions[tab]?.name ?? ""),
+          count: tabs.length,
+          answer,
+        };
+      });
+      joining = null;
+      focusRequest += 1;
+      if (!agreed) return;
+      const now = current?.() ?? tabs;
+      if (now.some((tab) => !tabs.includes(tab))) {
+        return join(now, change, current);
+      }
+    }
+    await edit(change);
+  }
+
+  /**
+   * The multi-send group's members that take a paste now, the tab pasted
+   * in first: those whose session is connected.
+   */
+  function receivingMembers(from: TabId): TabId[] {
+    const members = layout?.group ?? [];
+    return [from, ...members.filter((tab) => tab !== from)].filter(
+      (tab) => sessions[tab] && states[tab] === "connected" && terminals[tab],
+    );
+  }
+
+  /**
+   * Pastes into every member of the multi-send group, as pasted in `from`
+   * (#36): `texts` gives each member's text (the same for a paste; a
+   * snippet is filled per member). The core plans it once for all: if any
+   * member's own rules would ask, one question shows the text, the line
+   * count and the members (as for production if one is). Then each member
+   * gets its lines with its own delay; one that ends stops, the rest go on.
+   */
+  function pasteToGroup(from: TabId, texts: Map<TabId, string>) {
+    groupPasting = groupPasting
+      .then(() => sendToGroup(from, texts))
+      .catch((error) => {
+        inventory.editError = `Cannot paste to the multi-send group: ${error}`;
+      });
+  }
+
+  async function sendToGroup(from: TabId, texts: Map<TabId, string>) {
+    const members = receivingMembers(from).filter((tab) => texts.has(tab));
+    if (members.length === 0) return;
+    const plan = await planGroupPaste(
+      members.map((tab) => ({
+        text: texts.get(tab) ?? "",
+        safety: safetyOf(sessions[tab]),
+      })),
+    );
+    if (plan.confirm) {
+      // The text pasted in; a member filled differently shows its own.
+      const shown = plan.members[0].lines.join("");
+      const send = await new Promise<boolean>((answer) => {
+        groupPasteQuestion = {
+          tab: members[0],
+          text: shown,
+          lineCount: plan.members[0].lines.length,
+          environment: plan.environment,
+          members: members.map((tab, index) => {
+            const text = plan.members[index].lines.join("");
+            return {
+              name: sessions[tab]?.name ?? "",
+              environment: safetyOf(sessions[tab]).environment,
+              lineDelayMs: plan.members[index].lineDelayMs,
+              text: text === shown ? null : text,
+            };
+          }),
+          answer,
+        };
+      });
+      groupPasteQuestion = null;
+      focusRequest += 1;
+      if (!send) return;
+    }
+    await Promise.all(
+      members.map((tab, index) =>
+        terminals[tab]?.pasteLines(
+          plan.members[index].lines,
+          plan.members[index].lineDelayMs,
+        ),
+      ),
+    );
   }
 
   function tabState(tab: TabId): TabInfo["state"] {
@@ -314,6 +476,7 @@
     },
     split: (pane, direction) => void edit({ kind: "split", pane, direction }),
     closePane: (pane) => void edit({ kind: "closePane", pane }),
+    joinPane,
     body: paneBody,
   };
 
@@ -592,6 +755,10 @@
       inventory.editError = `Cannot send ${name}: no connected session.`;
       return;
     }
+    if (inGroup(tab)) {
+      await sendSnippetToGroup(name, answers, tab);
+      return;
+    }
     let expansion;
     try {
       // A host of another workspace gives no values: all are asked for.
@@ -609,6 +776,45 @@
       inventory.editError = `Cannot send ${name}: the session is no longer connected.`;
       return;
     }
+    focusRequest += 1;
+  }
+
+  /**
+   * Sends the snippet `name` to every connected member of the multi-send
+   * group, as sent from `tab` (#36): the core fills it with each member's
+   * own host values (a member without a live host gets only the answers);
+   * variables some member lacks are asked once, for all. Then it goes
+   * through the group's paste path.
+   */
+  async function sendSnippetToGroup(
+    name: string,
+    answers: Record<string, string>,
+    tab: TabId,
+  ) {
+    const members = receivingMembers(tab);
+    let expansion;
+    try {
+      expansion = await expandSnippetForGroup(
+        name,
+        members.map((member) => liveHost(sessions[member])),
+        answers,
+      );
+    } catch (error) {
+      inventory.editError = `Cannot send ${name}: ${error}`;
+      return;
+    }
+    if (expansion.kind === "missing") {
+      asking = { tab, name, names: expansion.names };
+      return;
+    }
+    const filled = expansion.members;
+    const texts = new Map(
+      members.map((member, index) => [
+        member,
+        filled[index].map((line) => `${line}\n`).join(""),
+      ]),
+    );
+    pasteToGroup(tab, texts);
     focusRequest += 1;
   }
 
@@ -697,6 +903,8 @@
       switching ||
       snippets.editing ||
       asking ||
+      joining ||
+      groupPasteQuestion ||
       closing !== null;
     const action = zoomShortcut(event) ?? (busy ? null : shortcut(event));
     if (!action) return;
@@ -761,6 +969,11 @@
             groupSize={inGroup(tab) ? layout.group.length : null}
             ontogglegroup={() => toggleGroup(tab)}
             onendgroup={() => void edit({ kind: "endGroup" })}
+            ongrouppaste={(text) =>
+              pasteToGroup(
+                tab,
+                new Map(receivingMembers(tab).map((member) => [member, text])),
+              )}
             title={session.title}
             role={roleOf(session)}
             safety={safetyOf(session)}
@@ -773,6 +986,19 @@
             onduplicate={(id) => duplicate(tab, id)}
             onpasswordlogin={passwordLogin(tab, session)}
           />
+          {#if groupPasteQuestion?.tab === tab}
+            {@const question = groupPasteQuestion}
+            <PasteConfirm
+              text={question.text}
+              lineCount={question.lineCount}
+              target={session.name}
+              environment={question.environment}
+              lineDelayMs={0}
+              members={question.members}
+              onsend={() => question.answer(true)}
+              oncancel={() => question.answer(false)}
+            />
+          {/if}
         </div>
       {/each}
       {@const connectRect = rects[layout.activePane]}
@@ -927,6 +1153,16 @@
   />
 {/if}
 
+{#if joining}
+  {@const question = joining}
+  <ConfirmJoin
+    production={question.production}
+    joining={question.count}
+    onjoin={() => question.answer(true)}
+    oncancel={() => question.answer(false)}
+  />
+{/if}
+
 {#if closing !== null && sessions[closing]}
   {@const state = tabState(closing)}
   <ConfirmClose
@@ -974,7 +1210,7 @@
   {@const { tab, name, names } = asking}
   <SnippetVariables
     snippet={name}
-    target={sessions[tab]?.name ?? ""}
+    target={inGroup(tab) ? groupName() : (sessions[tab]?.name ?? "")}
     {names}
     onsend={(answers) => {
       // Read before clearing `asking`, which these are derived from.

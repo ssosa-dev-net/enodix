@@ -20,7 +20,9 @@ use netterm_core::import::ImportReport;
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
 use netterm_core::logging::{LogFolder, SessionLog};
-use netterm_core::paste::{plan_paste, PastePlan, PasteSafety};
+use netterm_core::paste::{
+    confirm_joining, plan_group_paste, plan_paste, GroupPastePlan, PastePlan, PasteSafety,
+};
 use netterm_core::preferences::{FontZoom, Preferences, Theme};
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
@@ -788,6 +790,38 @@ fn snippet_expand(
     })?
 }
 
+/// A snippet made ready to send to every member of the multi-send group.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum GroupExpansion {
+    /// Each member's lines, in the order the members were given.
+    Lines { members: Vec<Vec<String>> },
+    /// Ask the user for these variables once, then expand again.
+    Missing { names: Vec<String> },
+}
+
+/// The snippet `name` for each member of the multi-send group: `hosts`
+/// holds each member's host (none: not a live inventory host, which gets
+/// only the answers); `answers` fill what the hosts do not (#36).
+#[tauri::command]
+fn snippet_expand_group(
+    shell: State<'_, Shell>,
+    name: String,
+    hosts: Vec<Option<HostId>>,
+    answers: BTreeMap<String, String>,
+) -> Result<GroupExpansion, String> {
+    let answers: Variables = answers.into_iter().collect();
+    read(&shell, |workspace| {
+        match workspace.expand_snippet_for_each(&name, &hosts, &answers) {
+            Ok(members) => Ok(GroupExpansion::Lines { members }),
+            Err(ExpandError::Missing(missing)) => Ok(GroupExpansion::Missing {
+                names: missing.names,
+            }),
+            Err(error) => Err(error.to_string()),
+        }
+    })?
+}
+
 #[tauri::command]
 fn host_create(
     shell: State<'_, Shell>,
@@ -1325,6 +1359,9 @@ enum LayoutEdit {
     JoinGroup {
         tab: TabId,
     },
+    JoinPane {
+        pane: PaneId,
+    },
     LeaveGroup {
         tab: TabId,
     },
@@ -1381,6 +1418,7 @@ fn apply_layout_edit(layout: &mut Layout, edit: LayoutEdit) -> Result<Option<u64
         LayoutEdit::Split { pane, direction } => Some(layout.split(pane, direction)?.0),
         LayoutEdit::ClosePane { pane } => layout.close_pane(pane).map(|()| None)?,
         LayoutEdit::JoinGroup { tab } => layout.join_group(tab).map(|()| None)?,
+        LayoutEdit::JoinPane { pane } => layout.join_pane(pane).map(|_| None)?,
         LayoutEdit::LeaveGroup { tab } => layout.leave_group(tab).map(|()| None)?,
         LayoutEdit::EndGroup => {
             layout.end_group();
@@ -1556,6 +1594,47 @@ fn paste_plan(
 ) -> PastePlan {
     let confirm = preferred.lock().confirm_multi_line_paste;
     plan_paste(&text, &safety, confirm)
+}
+
+/// One member of the multi-send group a paste goes to: the text it is to
+/// receive and its safety, as the interface shows them.
+#[derive(Deserialize)]
+struct GroupPasteMember {
+    text: String,
+    safety: PasteSafety,
+}
+
+/// How a paste goes out to the multi-send group's members (#36): one
+/// confirmation for all, each member its own lines and delay.
+#[tauri::command]
+fn paste_plan_group(
+    preferred: State<'_, UserPreferences>,
+    members: Vec<GroupPasteMember>,
+) -> GroupPastePlan {
+    let confirm = preferred.lock().confirm_multi_line_paste;
+    let members: Vec<(&str, PasteSafety)> = members
+        .iter()
+        .map(|member| (member.text.as_str(), member.safety))
+        .collect();
+    plan_group_paste(&members, confirm)
+}
+
+/// A tab about to join the multi-send group, with its session's safety.
+#[derive(Deserialize)]
+struct Joining {
+    tab: TabId,
+    safety: PasteSafety,
+}
+
+/// Which of the tabs about to join the multi-send group the user confirms
+/// first: the production ones.
+#[tauri::command]
+fn group_join_check(joining: Vec<Joining>) -> Vec<TabId> {
+    let joining: Vec<(TabId, PasteSafety)> = joining
+        .into_iter()
+        .map(|joining| (joining.tab, joining.safety))
+        .collect();
+    confirm_joining(&joining)
 }
 
 /// The update check (`netterm_core::update`) and, in a release build, the
@@ -1762,6 +1841,7 @@ pub fn run() {
             snippet_save,
             snippet_delete,
             snippet_expand,
+            snippet_expand_group,
             host_create,
             host_rename,
             host_move,
@@ -1798,6 +1878,8 @@ pub fn run() {
             preferences_save,
             preferences_zoom,
             paste_plan,
+            paste_plan_group,
+            group_join_check,
             update_build,
             update_check_automatic,
             update_check_now,

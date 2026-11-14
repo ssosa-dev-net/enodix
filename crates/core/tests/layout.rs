@@ -732,3 +732,65 @@ fn the_interface_sees_the_group_members() {
     let view = serde_json::to_value(&layout).unwrap();
     assert_eq!(view["group"], json!([a.0]));
 }
+
+// Adding a whole pane to the group (#36).
+
+#[test]
+fn joining_a_pane_adds_each_of_its_tabs_not_yet_in_the_group() {
+    let mut layout = Layout::new();
+    let left = layout.active_pane();
+    let [a, b, c] = open(&mut layout, 3)[..] else {
+        unreachable!()
+    };
+    let right = layout.split(left, Split::Right).unwrap();
+    let d = layout.open_tab();
+    layout.join_group(b).unwrap();
+    layout.join_group(d).unwrap();
+    let revision = layout.revision();
+
+    // `c` moved to the right pane with the split.
+    assert_eq!(tabs(&layout, left), vec![a, b]);
+    let joined = layout.join_pane(right).unwrap();
+
+    assert_eq!(joined, vec![c]);
+    assert_eq!(layout.group(), &[b, d, c]);
+    assert!(layout.revision() > revision);
+
+    let joined = layout.join_pane(left).unwrap();
+    assert_eq!(joined, vec![a]);
+    assert_eq!(layout.group(), &[b, d, c, a]);
+}
+
+#[test]
+fn joining_a_pane_whose_tabs_are_all_members_changes_nothing() {
+    let mut layout = Layout::new();
+    let pane = layout.active_pane();
+    let [a, b] = open(&mut layout, 2)[..] else {
+        unreachable!()
+    };
+    layout.join_group(a).unwrap();
+    layout.join_group(b).unwrap();
+    let revision = layout.revision();
+
+    assert_eq!(layout.join_pane(pane).unwrap(), vec![]);
+    assert_eq!(layout.revision(), revision);
+
+    // Nor does joining an empty pane.
+    let mut empty = Layout::new();
+    let pane = empty.active_pane();
+    let revision = empty.revision();
+    assert_eq!(empty.join_pane(pane).unwrap(), vec![]);
+    assert_eq!(empty.revision(), revision);
+}
+
+#[test]
+fn joining_an_unknown_pane_is_refused_without_changing_anything() {
+    let mut layout = Layout::new();
+    open(&mut layout, 2);
+    let revision = layout.revision();
+
+    let gone = PaneId(999);
+    assert_eq!(layout.join_pane(gone), Err(LayoutError::NoSuchPane(gone)));
+    assert_eq!(layout.revision(), revision);
+    assert_eq!(layout.group(), &[] as &[TabId]);
+}

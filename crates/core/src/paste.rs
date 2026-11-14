@@ -44,6 +44,13 @@ impl PasteSafety {
     pub fn always_confirms(&self) -> bool {
         self.environment == Some(Environment::Production)
     }
+
+    /// Whether a session with this safety is confirmed by the user before
+    /// it joins the multi-send group: production ones, whatever the paste
+    /// preference (joining is not a paste).
+    pub fn confirms_joining(&self) -> bool {
+        self.always_confirms()
+    }
 }
 
 /// How a paste goes out.
@@ -98,4 +105,60 @@ pub fn paste_lines(text: &str) -> Vec<String> {
         lines.push(text[start..].to_string());
     }
     lines
+}
+
+/// Which of the sessions `joining` (each an id of the caller's, with its
+/// safety) must be confirmed before they join the multi-send group, in
+/// their order. Adding a whole pane asks once, naming these.
+pub fn confirm_joining<T: Clone>(joining: &[(T, PasteSafety)]) -> Vec<T> {
+    joining
+        .iter()
+        .filter(|(_, safety)| safety.confirms_joining())
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// How one paste (or snippet) goes out to every member of the multi-send
+/// group: confirmed once for all of them, then each member's lines with its
+/// own delay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupPastePlan {
+    /// Each member's own plan, in the order the members were given.
+    pub members: Vec<PastePlan>,
+    /// Whether the user confirms it, once, before any member gets a line:
+    /// if any member's own plan would ask.
+    pub confirm: bool,
+    /// The strictest member environment (production, then staging, then
+    /// lab), for how the confirmation is presented.
+    pub environment: Option<Environment>,
+}
+
+/// How a paste goes out to the group's `members`, each the text it is to
+/// receive (the same for a paste; a snippet is filled per member) and its
+/// safety. See [`plan_paste`] for each member's own rules.
+pub fn plan_group_paste(
+    members: &[(&str, PasteSafety)],
+    confirm_multi_line: bool,
+) -> GroupPastePlan {
+    let plans: Vec<PastePlan> = members
+        .iter()
+        .map(|(text, safety)| plan_paste(text, safety, confirm_multi_line))
+        .collect();
+    GroupPastePlan {
+        confirm: plans.iter().any(|plan| plan.confirm),
+        environment: members
+            .iter()
+            .filter_map(|(_, safety)| safety.environment)
+            .max_by_key(|&environment| strictness(environment)),
+        members: plans,
+    }
+}
+
+fn strictness(environment: Environment) -> u8 {
+    match environment {
+        Environment::Lab => 1,
+        Environment::Staging => 2,
+        Environment::Production => 3,
+    }
 }

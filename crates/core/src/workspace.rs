@@ -43,7 +43,7 @@ use crate::session::{
     SerialParameters, SerialTarget, SshAuth, SshTarget, TelnetTarget, DEFAULT_SSH_PORT,
     DEFAULT_TELNET_PORT,
 };
-use crate::template::Variables;
+use crate::template::{MissingVariables, Variables};
 
 mod filters;
 mod highlights;
@@ -855,6 +855,41 @@ impl Workspace {
         };
         values.fill_gaps(answers);
         snippet.expand(&values).map_err(ExpandError::Missing)
+    }
+
+    /// The snippet `name` ready to send to each member of the multi-send
+    /// group (#36), in their order: each filled with its own host's values
+    /// (`hosts`; `None` for a member without a live host, which gets only
+    /// the answers), then `answers` for the gaps. If any member still lacks
+    /// a value, every variable some member lacks is reported once, in the
+    /// snippet's order, so the user answers once for the whole group.
+    pub fn expand_snippet_for_each(
+        &self,
+        name: &str,
+        hosts: &[Option<HostId>],
+        answers: &Variables,
+    ) -> Result<Vec<Vec<String>>, ExpandError> {
+        let mut expanded = Vec::with_capacity(hosts.len());
+        let mut missing: Vec<String> = Vec::new();
+        for host in hosts {
+            match self.expand_snippet(name, host.as_ref(), answers) {
+                Ok(lines) => expanded.push(lines),
+                Err(ExpandError::Missing(lacking)) => missing.extend(lacking.names),
+                Err(error) => return Err(error),
+            }
+        }
+        if missing.is_empty() {
+            return Ok(expanded);
+        }
+        let snippet = self
+            .snippet(name)
+            .ok_or_else(|| ExpandError::NoSuchSnippet(name.to_string()))?;
+        let names = snippet
+            .variables()
+            .into_iter()
+            .filter(|variable| missing.contains(variable))
+            .collect();
+        Err(ExpandError::Missing(MissingVariables { names }))
     }
 
     /// Files that could not be loaded, ordered by path.

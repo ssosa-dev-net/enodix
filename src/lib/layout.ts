@@ -53,6 +53,8 @@ export type LayoutEdit =
   | { kind: "split"; pane: PaneId; direction: SplitDirection }
   | { kind: "closePane"; pane: PaneId }
   | { kind: "joinGroup"; tab: TabId }
+  /** Every tab of the pane not yet in the group joins it. */
+  | { kind: "joinPane"; pane: PaneId }
   | { kind: "leaveGroup"; tab: TabId }
   | { kind: "endGroup" };
 
