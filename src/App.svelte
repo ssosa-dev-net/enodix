@@ -1200,6 +1200,10 @@
       vaultLocked = false;
       reopenWorkspace();
     }}
+    onstartedover={() => {
+      vaultLocked = false;
+      reopenWorkspace();
+    }}
   />
 {/if}
 

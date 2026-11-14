@@ -1436,7 +1436,192 @@ async function vault({ app, devtools, evaluate, step }) {
   );
   if (await shown("input[name=password]")) fail("a password was asked for");
   step("unlocked, the workspace opened and the vault's profile logged in");
-  return next.devtools;
+
+  return vaultUpkeep({ current: next, vaultFile, hostRow, step });
+}
+
+const NEW_MASTER_PASSWORD = "smoke n3w master password";
+
+/**
+ * Vault upkeep (#39), on the unlocked app `current`: the master password is
+ * changed (a wrong current one refused), and after a restart only the new
+ * one unlocks; the vault is turned off (the file goes) and the next start
+ * has no unlock screen; then, turned on again and restarted, "start over"
+ * from the unlock screen (its warning, Keep, then confirmed) deletes the
+ * vault and the app opens with the keychain. Resolves to the last page.
+ */
+async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
+  let page = current;
+  const ev = (expression) => page.evaluate(expression);
+  const shown = (selector) =>
+    ev(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const clickOn = (selector) =>
+    ev(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const textOf = (selector) =>
+    ev(
+      `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ""`,
+    );
+  const fillForm = (fields, form) =>
+    ev(`(() => {
+      const fields = ${JSON.stringify(fields)};
+      const form = document.querySelector(${JSON.stringify(form)});
+      for (const [name, value] of Object.entries(fields)) {
+        const input = form.querySelector("[name=" + name + "]");
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      form.requestSubmit();
+    })()`);
+  const closeDialog = () =>
+    ev(
+      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Close" && b.checkVisibility()).click()`,
+    );
+  const openSecurity = async (status) => {
+    await clickOn("[data-open-preferences]");
+    await until(`the vault ${status} in Preferences`, () =>
+      shown(`[data-vault-status=${status}]`),
+    );
+  };
+  const restart = async () => {
+    page = await restartApp(page.app, page.devtools);
+  };
+  const unlockWith = (password) =>
+    ev(`(() => {
+      const form = document.querySelector("[data-unlock-screen] form");
+      const input = form.querySelector("[name=vault-unlock-password]");
+      input.value = ${JSON.stringify(password)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      form.requestSubmit();
+    })()`);
+
+  // Changing the password needs the current one.
+  await openSecurity("unlocked");
+  await clickOn("[data-vault=change]");
+  await until("the change form", () => shown("[data-vault-change-form]"));
+  await fillForm(
+    {
+      "vault-current": "not the master password",
+      "vault-new": NEW_MASTER_PASSWORD,
+      "vault-new-repeat": NEW_MASTER_PASSWORD,
+    },
+    "[data-vault-change-form]",
+  );
+  await until("a wrong current password refused", () =>
+    shown("[data-vault-error]"),
+  );
+  await fillForm(
+    {
+      "vault-current": MASTER_PASSWORD,
+      "vault-new": NEW_MASTER_PASSWORD,
+      "vault-new-repeat": NEW_MASTER_PASSWORD,
+    },
+    "[data-vault-change-form]",
+  );
+  await until("the password changed", () => shown("[data-vault-done]"));
+  await closeDialog();
+
+  await restart();
+  await until("the unlock screen", () => shown("[data-unlock-screen]"));
+  await unlockWith(MASTER_PASSWORD);
+  await until("the old password refused", () =>
+    shown("[data-unlock-error=wrongPassword]"),
+  );
+  await unlockWith(NEW_MASTER_PASSWORD);
+  await until("the workspace after unlocking", () => shown(hostRow));
+  step("the master password was changed: afterwards only the new one unlocked");
+
+  // Turning the vault off asks for the password, then removes the file.
+  await openSecurity("unlocked");
+  await clickOn("[data-vault=turn-off]");
+  await until("the turn-off form", () => shown("[data-vault-off-form]"));
+  await fillForm(
+    { "vault-off-password": NEW_MASTER_PASSWORD },
+    "[data-vault-off-form]",
+  );
+  await until("the keychain in use again", () =>
+    shown("[data-vault-status=off]"),
+  );
+  if (existsSync(vaultFile)) fail("turning the vault off left its file");
+  await closeDialog();
+  await restart();
+  await until("the workspace without unlocking", () => shown(hostRow));
+  if (await shown("[data-unlock-screen]")) {
+    fail("an unlock screen after turning the vault off");
+  }
+  step("the vault was turned off: no file, and no unlock screen at start");
+
+  // Turned on again, then started over from the unlock screen.
+  await openSecurity("off");
+  await clickOn("[data-vault=turn-on]");
+  await until("the turn-on form", () => shown("[data-vault-form]"));
+  await fillForm(
+    { "vault-password": MASTER_PASSWORD, "vault-repeat": MASTER_PASSWORD },
+    "[data-vault-form]",
+  );
+  await until("the vault in use", () => shown("[data-vault-status=unlocked]"));
+  await closeDialog();
+  // A profile kept only in the vault, which starting over deletes.
+  await clickOn('button[title="Credential profiles"]');
+  await until("the profiles dialog", () => shown("[data-dialog=profiles]"));
+  await ev(
+    `[...document.querySelectorAll("[data-dialog=profiles] button")].find((b) => b.textContent.trim() === "New profile…").click()`,
+  );
+  await until("the profile form", () =>
+    shown("[data-dialog=profiles] [name=profile-name]"),
+  );
+  await fillForm(
+    {
+      "profile-name": "vault-login",
+      "profile-username": USERNAME,
+      "profile-password": PASSWORD,
+    },
+    "[data-dialog=profiles] form",
+  );
+  await until("the profile listed", () =>
+    shown('[data-dialog=profiles] [data-profile="vault-login"]'),
+  );
+  await closeDialog();
+  await restart();
+  await until("the unlock screen", () => shown("[data-unlock-screen]"));
+  await clickOn("[data-unlock=start-over]");
+  const warning = await until("the start-over warning", () =>
+    textOf("[data-start-over-warning]"),
+  );
+  if (!/profiles/.test(warning) || !/secrets/.test(warning)) {
+    fail(`the start-over warning: ${warning}`);
+  }
+  if (!/gone/.test(warning)) fail(`the start-over warning: ${warning}`);
+  await clickOn("[data-start-over=cancel]");
+  await until("back at the unlock form", () =>
+    shown("[data-unlock-screen] [name=vault-unlock-password]"),
+  );
+  if (!existsSync(vaultFile)) fail("keeping the vault deleted it");
+  await clickOn("[data-unlock=start-over]");
+  await until("the start-over confirmation", () =>
+    shown("[data-start-over=confirm]"),
+  );
+  await clickOn("[data-start-over=confirm]");
+  await until(
+    "the unlock screen gone",
+    async () => !(await shown("[data-unlock-screen]")),
+  );
+  await until("the workspace after starting over", () => shown(hostRow));
+  if (existsSync(vaultFile)) fail("starting over left the vault file");
+  await clickOn('button[title="Credential profiles"]');
+  await until("the profiles dialog", () => shown("[data-dialog=profiles]"));
+  await until("the vault-login profile shown as not set up", () =>
+    shown('[data-dialog=profiles] li.missing[data-profile="vault-login"]'),
+  );
+  if (await shown("[data-dialog=profiles] [data-profile]:not(.missing)")) {
+    fail("a profile is left after starting over");
+  }
+  await closeDialog();
+  await openSecurity("off");
+  await closeDialog();
+  step(
+    "started over from the unlock screen: warned, vault deleted, no profiles left",
+  );
+  return page.devtools;
 }
 
 /**
