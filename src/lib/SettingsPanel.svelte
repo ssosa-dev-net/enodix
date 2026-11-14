@@ -1,11 +1,17 @@
 <script lang="ts">
-  import { describeOrigin, isOwn, type Item } from "./inventory.svelte";
+  import {
+    describeOrigin,
+    inventory,
+    isOwn,
+    type Item,
+  } from "./inventory.svelte";
   import { profileNames } from "./profiles.svelte";
   import { serialPorts, type SerialPortInfo } from "./session";
   import {
     MAX_PASTE_LINE_DELAY_MS,
     type Effective,
     type EffectiveSettings,
+    type Folder,
     type Settings,
   } from "./workspace";
 
@@ -54,6 +60,32 @@
   const toText = (value: string) => (value.trim() === "" ? null : value);
   const show = (value: unknown) =>
     typeof value === "boolean" ? (value ? "on" : "off") : String(value);
+
+  const device: Row[] = [
+    {
+      key: "platform",
+      label: "Platform",
+      input: { kind: "text", list: "platforms" },
+      own: (s) => s.platform ?? "",
+      set: (s, v) => ({ ...s, platform: toText(v) }),
+      effective: (e) => e.platform,
+      unset: "none",
+    },
+  ];
+
+  /** Every platform the workspace names, offered for the platform setting. */
+  const platformNames = $derived.by(() => {
+    const names = new Set<string>();
+    const walk = (folder: Folder) => {
+      if (folder.settings.platform) names.add(folder.settings.platform);
+      for (const host of folder.hosts) {
+        if (host.settings.platform) names.add(host.settings.platform);
+      }
+      folder.folders.forEach(walk);
+    };
+    if (inventory.workspace) walk(inventory.workspace.tree);
+    return [...names].sort((a, b) => a.localeCompare(b));
+  });
 
   const connection: Row[] = [
     {
@@ -347,6 +379,16 @@
     </div>
   {/each}
 {/snippet}
+
+<section aria-label="Device settings">
+  <h3>Device</h3>
+  {@render rowsOf(device)}
+  <datalist id="platforms">
+    {#each platformNames as name (name)}
+      <option value={name}></option>
+    {/each}
+  </datalist>
+</section>
 
 <section aria-label="Connection settings">
   <h3>Connection</h3>

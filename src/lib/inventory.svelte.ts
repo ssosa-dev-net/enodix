@@ -237,6 +237,7 @@ const FILTER_FIELDS: [string, string][] = [
   ["role", "Role"],
   ["name", "Name"],
   ["address", "Management address"],
+  ["platform", "Platform"],
   ...api.HOST_TEXT_FIELDS.map(([key, label]): [string, string] => [key, label]),
   ["description", "Description"],
   ["text", "Any field (search words)"],

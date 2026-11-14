@@ -4,8 +4,9 @@
 //!
 //! A query is split into words; a host matches when every word is part of
 //! one of its fields, ignoring case: its name, management address, tags
-//! (those inherited from its folders included), built-in fields, role (id
-//! or name) and custom field values. Each word scores by the best field it
+//! (those inherited from its folders included), built-in fields (the
+//! platform that applies, perhaps a folder's), role (id or name) and custom
+//! field values. Each word scores by the best field it
 //! is part of: the name before the address, then tags, then the other
 //! fields; within each, a whole match before the start of a field, the
 //! start of a word, and anywhere else. Hosts are ordered by the sum of
@@ -20,7 +21,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use super::filters::{Condition, SavedFilter, CUSTOM_PREFIX, TAG, TEXT};
-use super::{Folder, HostId, ADDRESS, NAME};
+use super::{Folder, HostId, ADDRESS, NAME, PLATFORM};
 
 /// What a search found: the best hits, up to the limit asked for, and how
 /// many hosts matched in all.
@@ -220,7 +221,7 @@ impl SearchIndex {
     /// by id, when the workspace defines it.
     pub(super) fn build(tree: &Folder, role_name: impl Fn(&str) -> Option<String>) -> Self {
         let mut index = Self::default();
-        index.add(tree, &[], &role_name);
+        index.add(tree, &[], None, &role_name);
         index
     }
 
@@ -228,8 +229,10 @@ impl SearchIndex {
         &mut self,
         folder: &Folder,
         inherited: &[String],
+        inherited_platform: Option<&str>,
         role_name: &impl Fn(&str) -> Option<String>,
     ) {
+        let platform = folder.settings.platform.as_deref().or(inherited_platform);
         let mut tags = inherited.to_vec();
         for tag in &folder.tags {
             if !tags.contains(tag) {
@@ -254,6 +257,10 @@ impl SearchIndex {
             if let Some(name) = host.role.as_deref().and_then(role_name) {
                 entry.push(super::ROLE, &name, FIELD_WEIGHT);
             }
+            // The platform that applies: the host's own, else its folders'.
+            if let Some(platform) = host.settings.platform.as_deref().or(platform) {
+                entry.push(PLATFORM, platform, FIELD_WEIGHT);
+            }
             for (key, value) in host.text_fields() {
                 if let Some(value) = value {
                     entry.push(key, value, FIELD_WEIGHT);
@@ -269,7 +276,7 @@ impl SearchIndex {
             self.entries.push(entry);
         }
         for child in &folder.folders {
-            self.add(child, &tags, role_name);
+            self.add(child, &tags, platform, role_name);
         }
     }
 

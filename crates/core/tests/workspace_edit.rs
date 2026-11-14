@@ -63,7 +63,7 @@ fn a_host_file_gives_its_fields_tags_and_custom_fields() {
     let core = host(&workspace, "Core/core-r1.yaml");
     assert_eq!(core.vendor.as_deref(), Some("Arista"));
     assert_eq!(core.rack_unit.as_deref(), Some("12"));
-    assert_eq!(core.platform, None);
+    assert_eq!(core.settings.platform, None);
     assert_eq!(core.tags, ["core", "dc1"]);
     assert_eq!(
         core.custom,
@@ -374,7 +374,7 @@ fn edited_fields_are_saved_in_a_fixed_key_order_keeping_everything_else() {
     let (_temp, root, mut workspace) = edit_workspace();
     let mut core = host(&workspace, "Core/core-r1.yaml");
 
-    core.platform = Some("EOS".into());
+    core.settings.platform = Some("EOS".into());
     core.model = Some(" 7280R3 ".into());
     core.serial_number = Some("0012345".into());
     core.site = Some("MAD1".into());
@@ -423,7 +423,7 @@ fn every_built_in_field_is_written_and_read_back() {
 
     sw.address = "sw1.example.net".into();
     sw.vendor = Some("Cisco".into());
-    sw.platform = Some("IOS-XE".into());
+    sw.settings.platform = Some("IOS-XE".into());
     sw.model = Some("C9300-48P".into());
     sw.serial_number = Some("FOC1234X0AB".into());
     sw.site = Some("Madrid".into());

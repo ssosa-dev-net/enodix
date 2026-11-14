@@ -551,3 +551,31 @@ fn finding_snippets_matches_every_word_in_name_group_or_text() {
     assert_eq!(found("name"), ["Vlan"]);
     assert!(found("ping vlan").is_empty());
 }
+
+#[test]
+fn the_platform_variable_is_the_one_that_applies() {
+    let (temp, _workspace) = workspace_with(None);
+    let root = temp.path();
+    fs::write(
+        root.join("Madrid/_folder.yaml"),
+        "tags: [spain]\nplatform: ios\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Madrid/r2.yaml"),
+        "address: 10.0.0.2\nplatform: nxos\n",
+    )
+    .unwrap();
+    let workspace = Workspace::open(root).unwrap();
+    let platform = |id: &str| {
+        let values = workspace
+            .resolve_host(&HostId::new(id))
+            .unwrap()
+            .variables();
+        fill("{{platform}}", &values).unwrap()
+    };
+
+    // Inherited from the folder, or the host's own.
+    assert_eq!(platform("Madrid/r1.yaml"), "ios");
+    assert_eq!(platform("Madrid/r2.yaml"), "nxos");
+}

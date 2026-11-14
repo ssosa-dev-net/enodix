@@ -364,3 +364,27 @@ fn filter(conditions: &[(&str, &str)]) -> SavedFilter {
             .collect(),
     }
 }
+
+#[test]
+fn an_inherited_platform_is_searched_and_a_hosts_own_wins() {
+    let (_temp, root) = fixture_copy("search");
+    fs::write(
+        root.join("Madrid/_folder.yaml"),
+        "tags: [spain]\nplatform: nxos\n",
+    )
+    .unwrap();
+    // Lisbon's switch sets `eos` itself.
+    fs::write(root.join("Lisbon/_folder.yaml"), "platform: ios\n").unwrap();
+    let workspace = Workspace::open(&root).unwrap();
+
+    assert_eq!(
+        found(&workspace, "nxos"),
+        ["Madrid/mad-fw1.yaml", "Madrid/mad-sw1.yaml"]
+    );
+    assert_eq!(
+        matched(&workspace, "nxos", "Madrid/mad-sw1.yaml"),
+        ["platform=nxos"]
+    );
+    assert_eq!(found(&workspace, "eos"), ["Lisbon/lis-sw1.yaml"]);
+    assert!(found(&workspace, "ios").is_empty());
+}
