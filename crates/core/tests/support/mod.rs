@@ -75,6 +75,7 @@ pub mod agent;
 pub mod algorithms;
 pub mod credentials;
 pub mod http;
+pub mod python;
 pub mod serial;
 pub mod telnet;
 pub mod workspaces;

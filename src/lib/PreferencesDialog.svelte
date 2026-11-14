@@ -10,6 +10,8 @@
   import { highlighting } from "./highlight.svelte";
   import { checkNow, describeStatus, updates } from "./updates.svelte";
   import VaultSection from "./VaultSection.svelte";
+  import PythonSection from "./PythonSection.svelte";
+  import { python } from "./python.svelte";
 
   interface Props {
     onclose: () => void;
@@ -218,6 +220,13 @@
     {/if}
 
     <VaultSection />
+
+    <PythonSection
+      onsetup={() => {
+        onclose();
+        python.dialog = true;
+      }}
+    />
 
     <dl>
       {#each SHORTCUTS as [what, keys] (what)}

@@ -1,0 +1,229 @@
+//! The Python environment's commands (#51): a thin adapter over
+//! `netterm_core::python`. The setup runs exactly the plan the user
+//! confirmed (kept here between `python_plan` and `python_setup`), on a
+//! blocking thread, its progress sent on a channel.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use netterm_core::python::{
+    self, create_environment, package_version, status, system_candidates, Library, PythonChoice,
+    PythonStatus, Setup, SetupCanceller, SetupOffer, SetupPlan, SetupProgress,
+};
+use serde::Serialize;
+use tauri::ipc::Channel;
+use tauri::State;
+
+/// Where the app keeps the choice and its environment, where its wheel is,
+/// and the setup under way.
+pub struct PythonSetup {
+    data_folder: PathBuf,
+    /// `python` beside the program: the installer and the portable zip put
+    /// the wheel there, and `app:build` leaves it in `target/release/python`.
+    wheel_folder: PathBuf,
+    app_version: String,
+    offer: Mutex<Option<SetupOffer>>,
+    plan: Mutex<Option<SetupPlan>>,
+    /// The setup under way; while it runs the choice is not changed
+    /// otherwise (its lock is held while the choice is saved).
+    running: Mutex<Option<SetupCanceller>>,
+}
+
+const SETUP_RUNNING: &str = "the app's environment is being set up; wait for it or cancel it";
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl PythonSetup {
+    pub fn new(data_folder: PathBuf, program_folder: PathBuf, app_version: String) -> Arc<Self> {
+        Arc::new(Self {
+            data_folder,
+            wheel_folder: program_folder.join("python"),
+            app_version,
+            offer: Mutex::new(None),
+            plan: Mutex::new(None),
+            running: Mutex::new(None),
+        })
+    }
+
+    fn expected(&self) -> String {
+        package_version(&self.app_version)
+    }
+
+    fn wheel(&self) -> Option<PathBuf> {
+        Some(
+            self.wheel_folder
+                .join(python::wheel_name(&self.app_version)),
+        )
+        .filter(|w| w.is_file())
+    }
+
+    fn view(&self) -> PythonView {
+        let wheel = self.wheel();
+        PythonView {
+            status: status(
+                PythonChoice::load(&self.data_folder).as_ref(),
+                &self.expected(),
+                wheel.as_deref(),
+            ),
+            environment: python::environment_folder(&self.data_folder),
+            wheel,
+        }
+    }
+}
+
+/// The chosen interpreter as it is now, with where the app's environment
+/// goes and the shipped wheel.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PythonView {
+    status: PythonStatus,
+    environment: PathBuf,
+    wheel: Option<PathBuf>,
+}
+
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn python_status(setup: State<'_, Arc<PythonSetup>>) -> Result<PythonView, String> {
+    let setup = setup.inner().clone();
+    blocking(move || Ok(setup.view())).await
+}
+
+/// Looks for a Python for the app's environment. Installs nothing.
+#[tauri::command]
+pub async fn python_offer(setup: State<'_, Arc<PythonSetup>>) -> Result<SetupOffer, String> {
+    let setup = setup.inner().clone();
+    blocking(move || {
+        let offer = SetupOffer::find(
+            &system_candidates(),
+            &setup.data_folder,
+            &setup.wheel_folder,
+            &setup.app_version,
+        )
+        .map_err(|error| error.to_string())?;
+        *lock(&setup.offer) = Some(offer.clone());
+        Ok(offer)
+    })
+    .await
+}
+
+/// Everything the setup with these libraries will install, kept for
+/// `python_setup`.
+#[tauri::command]
+pub fn python_plan(
+    setup: State<'_, Arc<PythonSetup>>,
+    libraries: Vec<Library>,
+) -> Result<SetupPlan, String> {
+    let plan = lock(&setup.offer)
+        .as_ref()
+        .ok_or("look for a Python first")?
+        .plan(&libraries);
+    *lock(&setup.plan) = Some(plan.clone());
+    Ok(plan)
+}
+
+/// Runs the plan the user confirmed, and only that one.
+#[tauri::command]
+pub async fn python_setup(
+    setup: State<'_, Arc<PythonSetup>>,
+    on_progress: Channel<SetupProgress>,
+) -> Result<PythonView, String> {
+    let setup = setup.inner().clone();
+    let canceller = SetupCanceller::new();
+    let plan = {
+        let mut running = lock(&setup.running);
+        if running.is_some() {
+            return Err("a setup is already running".into());
+        }
+        let plan = lock(&setup.plan)
+            .take()
+            .ok_or("there is no confirmed setup to run")?;
+        *running = Some(canceller.clone());
+        plan
+    };
+    blocking(move || {
+        // `running` is cleared however this ends.
+        let _done = Running(&setup);
+        create_environment(
+            &plan,
+            &setup.data_folder,
+            &setup.expected(),
+            &canceller,
+            &mut |progress| {
+                let _ = on_progress.send(progress);
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(setup.view())
+    })
+    .await
+}
+
+/// Clears the running setup when dropped.
+struct Running<'a>(&'a PythonSetup);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        *lock(&self.0.running) = None;
+    }
+}
+
+#[tauri::command]
+pub fn python_setup_cancel(setup: State<'_, Arc<PythonSetup>>) {
+    if let Some(canceller) = lock(&setup.running).as_ref() {
+        canceller.cancel();
+    }
+}
+
+/// Stores the user's own interpreter (installs nothing) and checks it.
+#[tauri::command]
+pub async fn python_use_interpreter(
+    setup: State<'_, Arc<PythonSetup>>,
+    path: PathBuf,
+) -> Result<PythonView, String> {
+    let setup = setup.inner().clone();
+    blocking(move || {
+        if path.as_os_str().is_empty() {
+            return Err("give the interpreter's path".into());
+        }
+        let running = lock(&setup.running);
+        if running.is_some() {
+            return Err(SETUP_RUNNING.into());
+        }
+        PythonChoice {
+            interpreter: path,
+            setup: Setup::Own,
+        }
+        .save(&setup.data_folder)
+        .map_err(|error| format!("the choice could not be saved: {error}"))?;
+        drop(running);
+        Ok(setup.view())
+    })
+    .await
+}
+
+/// Forgets the choice: the Python features are off again. The app's
+/// environment stays on disk.
+#[tauri::command]
+pub async fn python_turn_off(setup: State<'_, Arc<PythonSetup>>) -> Result<PythonView, String> {
+    let setup = setup.inner().clone();
+    blocking(move || {
+        let running = lock(&setup.running);
+        if running.is_some() {
+            return Err(SETUP_RUNNING.into());
+        }
+        PythonChoice::clear(&setup.data_folder)
+            .map_err(|error| format!("the choice could not be removed: {error}"))?;
+        drop(running);
+        Ok(setup.view())
+    })
+    .await
+}

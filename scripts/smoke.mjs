@@ -347,8 +347,8 @@ async function sidePanels({
   await devtools.send("Browser.setWindowBounds", { windowId, bounds });
 }
 
-async function until(description, probe) {
-  const deadline = Date.now() + TIMEOUT_MS;
+async function until(description, probe, timeout = TIMEOUT_MS) {
+  const deadline = Date.now() + timeout;
   let last;
   while (Date.now() < deadline) {
     try {
@@ -1184,6 +1184,13 @@ async function main() {
     step,
   });
 
+  const pythonInterpreter = await pythonSetup({
+    evaluate,
+    fillForm,
+    screenshot,
+    step,
+  });
+
   await sidePanels({ evaluate, mouse, centreOf, devtools, screenshot, step });
 
   devtools.close();
@@ -1286,6 +1293,12 @@ async function main() {
     fail(`the switcher lists after a restart: ${JSON.stringify(listed)}`);
   }
   step("the known workspaces were kept across a restart");
+
+  await pythonAfterRestart({
+    evaluate: evaluateAgain,
+    expected: pythonInterpreter,
+    step,
+  });
 
   await portableUpdateCheck({
     evaluate: evaluateAgain,
@@ -1785,6 +1798,195 @@ async function updateCheck({ evaluate, text, screenshot, step }) {
  * start; "Check now" asks once and only announces the release, with its
  * download page (recorded, never opened in a browser) and no install.
  */
+/** A Python 3.10 or newer of this machine ({ executable, version }), or null. */
+function systemPython() {
+  for (const [command, ...args] of [["py", "-3"], ["python3"], ["python"]]) {
+    const done = spawnSync(
+      command,
+      [
+        ...args,
+        "-c",
+        "import sys; print(sys.version_info >= (3, 10), '%d.%d' % sys.version_info[:2], sys.executable)",
+      ],
+      { encoding: "utf8", windowsHide: true },
+    );
+    if (done.status !== 0) continue;
+    const [ok, version, ...executable] = done.stdout.trim().split(" ");
+    if (ok === "True") return { executable: executable.join(" "), version };
+  }
+  return null;
+}
+
+/**
+ * The Python environment (#51): off until set, the user's own interpreter
+ * (stored, nothing installed, the missing package reported), then the app's
+ * own environment in the smoke's data folder with no libraries (so no
+ * network: only the wheel shipped beside the built app). Resolves to the
+ * environment's interpreter, or null without a Python 3.10+ (then only the
+ * "not found" message is checked).
+ */
+async function pythonSetup({ evaluate, fillForm, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickButton = (scope, label) =>
+    evaluate(
+      `[...document.querySelectorAll(${json(scope + " button")})].find((b) => b.textContent.trim() === ${json(label)}).click()`,
+    );
+  const shownStatus = () =>
+    evaluate(`(() => {
+      const status = document.querySelector("[data-python-status]");
+      return status && {
+        kind: status.dataset.pythonStatus,
+        text: status.textContent.trim(),
+        interpreter: document.querySelector("[data-python-interpreter]")?.textContent ?? null,
+      };
+    })()`);
+  const untilStatus = (description, kind) =>
+    until(description, async () => {
+      const status = await shownStatus();
+      return status?.kind === kind ? status : null;
+    });
+  const dialog = "[data-dialog=python-setup]";
+  const dialogStep = () =>
+    evaluate(`document.querySelector(${json(dialog)})?.dataset.step ?? null`);
+  const environment = join(appData, "python");
+
+  await clickOn("[data-open-preferences]");
+  const off = await untilStatus("Python off before it is set up", "notSet");
+  if (
+    !/Python features are off/.test(off.text) ||
+    !/Preferences/.test(off.text)
+  )
+    fail(`the message while Python is not set: ${json(off)}`);
+  step("Python features are off until set up, saying how to turn them on");
+
+  const found = systemPython();
+  if (!found) {
+    await clickOn("[data-python=set-up]");
+    const failed = await until("the setup without Python", async () =>
+      (await dialogStep()) === "failed"
+        ? evaluate(
+            `document.querySelector("[data-python-setup-result=failed]").textContent`,
+          )
+        : null,
+    );
+    if (!/No Python was found/.test(failed))
+      fail(`the setup without Python: ${failed}`);
+    step("pythonSetup SKIPPED: no Python 3.10 or newer on this machine");
+    await clickButton(dialog, "Close");
+    return null;
+  }
+
+  // The user's own interpreter: stored, checked, nothing installed.
+  await clickOn("[data-python=use-own]");
+  await until("the interpreter field", () =>
+    evaluate(`!!document.querySelector("[name=python-interpreter]")`),
+  );
+  await fillForm(
+    { "python-interpreter": found.executable },
+    "[data-python-form]",
+  );
+  const mine = await until("the own interpreter checked", async () => {
+    const status = await shownStatus();
+    return status && status.kind !== "notSet" ? status : null;
+  });
+  if (
+    mine.kind === "problem" &&
+    !/cannot import the app's package/.test(mine.text)
+  )
+    fail(`the own interpreter without the package: ${json(mine)}`);
+  if (mine.interpreter !== found.executable)
+    fail(`the own interpreter shown: ${json(mine)}`);
+  step(
+    `the own interpreter (Python ${found.version}) is stored and checked: ${mine.kind}`,
+  );
+  await screenshot("python-own-interpreter");
+  await clickOn("[data-python=turn-off]");
+  await untilStatus("Python off again", "notSet");
+
+  // The app's own environment: nothing is installed before "Install".
+  await clickOn("[data-python=set-up]");
+  await until("the setup offer", async () => (await dialogStep()) === "offer");
+  const offer = await evaluate(`(() => ({
+    base: document.querySelector("[data-python-base]").textContent,
+    environment: document.querySelector("[data-python-environment]").textContent,
+    libraries: [...document.querySelectorAll(${json(dialog + " input[type=checkbox]")})].map((box) => box.name),
+  }))()`);
+  if (offer.environment !== environment)
+    fail(`the environment offered: ${json(offer)}`);
+  const libraries = ["nornir", "netmiko", "scrapli", "napalm"];
+  if (
+    json(offer.libraries) !==
+    json(libraries.map((library) => `python-library-${library}`))
+  )
+    fail(`the libraries offered: ${json(offer)}`);
+  // No libraries, so no package index.
+  await evaluate(`(() => {
+    for (const box of document.querySelectorAll(${json(dialog + " input[type=checkbox]")}))
+      if (box.checked) box.click();
+  })()`);
+  await clickOn("[data-python-setup=continue]");
+  await until(
+    "the confirmation",
+    async () => (await dialogStep()) === "confirm",
+  );
+  const installs = await evaluate(
+    `[...document.querySelectorAll("[data-python-install]")].map((item) => item.dataset.pythonInstall + " " + item.dataset.source)`,
+  );
+  if (installs.length !== 1 || !/^netterm-.*\.whl wheel$/.test(installs[0]))
+    fail(`what the setup lists: ${json(installs)}`);
+  if (existsSync(environment))
+    fail("the environment exists before the setup was confirmed");
+  step(`the setup lists ${json(installs)} and installed nothing yet`);
+  await screenshot("python-setup-confirm");
+  await clickOn("[data-python-setup=install]");
+  const result = await until(
+    "the environment set up",
+    async () => {
+      const at = await dialogStep();
+      if (at === "failed")
+        fail(
+          `the setup failed: ${await evaluate(`document.querySelector("[data-python-setup-result]").textContent`)}`,
+        );
+      return at === "done"
+        ? evaluate(
+            `document.querySelector("[data-python-setup-result=done]").textContent`,
+          )
+        : null;
+    },
+    180000,
+  );
+  if (!/Python features are on/.test(result))
+    fail(`the setup's result: ${result}`);
+  await screenshot("python-setup-done");
+  await clickButton(dialog, "Close");
+  await clickOn("[data-open-preferences]");
+  const ready = await untilStatus("Python ready", "ready");
+  if (!ready.interpreter?.startsWith(environment))
+    fail(`the environment's interpreter: ${json(ready)}`);
+  step(`the app's environment was created: ${ready.interpreter}`);
+  await clickButton("[data-dialog=preferences]", "Close");
+  return ready.interpreter;
+}
+
+/** The Python choice survives a restart (the preferences dialog is open). */
+async function pythonAfterRestart({ evaluate, expected, step }) {
+  if (!expected) return;
+  const status = await until("the Python status after a restart", () =>
+    evaluate(`(() => {
+      const status = document.querySelector("[data-python-status]");
+      return status && {
+        kind: status.dataset.pythonStatus,
+        interpreter: document.querySelector("[data-python-interpreter]")?.textContent ?? null,
+      };
+    })()`),
+  );
+  if (status.kind !== "ready" || status.interpreter !== expected)
+    fail(`the Python choice after a restart: ${JSON.stringify(status)}`);
+  step("the Python choice was kept across a restart");
+}
+
 async function portableUpdateCheck({ evaluate, requestsBeforeRestart, step }) {
   await evaluate(`(() => {
     if (!document.querySelector("[data-dialog=preferences]"))
