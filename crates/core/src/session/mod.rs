@@ -49,6 +49,23 @@ pub struct SshTarget {
     pub port: u16,
     pub username: String,
     pub auth: SshAuth,
+    /// The SSH hosts to tunnel through, in the order they are connected:
+    /// the first is reached directly, each next one through the one before
+    /// it (a `direct-tcpip` channel), and the target through the last.
+    /// Empty: the target is reached directly.
+    pub jump_hosts: Vec<JumpHost>,
+}
+
+/// An SSH host a session tunnels through, with its own login. Its host
+/// key is checked like the target's, by its own `host` and `port`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpHost {
+    /// What failures call it, such as the workspace host id.
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth: SshAuth,
 }
 
 /// How an SSH session proves who the user is. `Debug` leaves the secrets
@@ -231,6 +248,15 @@ pub enum OpenError {
     /// The device was reached but the session could not be set up.
     #[error("could not open the session: {0}")]
     Protocol(String),
+    /// A jump host on the way failed: `error` says how (unreachable,
+    /// login refused, host key not trusted, ...). A device a jump host
+    /// cannot reach is a [`OpenError::Connect`] of the device instead.
+    #[error("jump host {name}: {error}")]
+    JumpHost {
+        /// The [`JumpHost::name`] of the hop that failed.
+        name: String,
+        error: Box<OpenError>,
+    },
 }
 
 /// Why logging in with an SSH agent did not work.
@@ -484,6 +510,7 @@ impl Link {
         let prompter = Prompter {
             events: self.events.clone(),
             answers,
+            jump_host: None,
         };
         let asker = HostKeyAsker {
             events: self.events.clone(),
@@ -517,12 +544,22 @@ impl Link {
 struct Prompter {
     events: mpsc::UnboundedSender<SessionEvent>,
     answers: mpsc::UnboundedReceiver<Vec<String>>,
+    /// The jump host being logged in to, if any: its questions say so in
+    /// their [`LoginPrompt::name`], so they are not taken for the device's.
+    jump_host: Option<String>,
 }
 
 impl Prompter {
     /// The answers to `prompt`, exactly one per question; `None` if nobody
     /// is listening any more.
-    async fn ask(&mut self, prompt: LoginPrompt) -> Option<Vec<String>> {
+    async fn ask(&mut self, mut prompt: LoginPrompt) -> Option<Vec<String>> {
+        if let Some(jump_host) = &self.jump_host {
+            prompt.name = if prompt.name.is_empty() {
+                format!("Jump host {jump_host}")
+            } else {
+                format!("Jump host {jump_host}: {}", prompt.name)
+            };
+        }
         // Answers sent before this prompt was asked were for an earlier one.
         while self.answers.try_recv().is_ok() {}
         let count = prompt.questions.len();

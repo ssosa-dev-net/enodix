@@ -577,16 +577,18 @@ async fn session_open(
             port,
             username,
             auth: SshAuth::Password(password),
+            jump_hosts: Vec::new(),
         },
         ConnectTarget::Host {
             id,
             credentials: Some(Prompted { username, password }),
-        } => shell
-            .workspace()
-            .as_ref()
-            .and_then(|workspace| workspace.resolve_host(&id))
-            .ok_or_else(|| format!("{id} is not in the open workspace"))?
-            .ssh_target(username, password),
+        } => {
+            let guard = shell.workspace();
+            let workspace = guard.as_ref().ok_or("no workspace is open")?;
+            Profiles::new(shell.credentials.as_ref(), workspace)
+                .prompted_target(&id, username, password)
+                .map_err(|error| error.to_string())?
+        }
         ConnectTarget::Host {
             id,
             credentials: None,

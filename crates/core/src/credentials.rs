@@ -24,8 +24,8 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::{SshAgent, SshAuth, SshTarget};
-use crate::workspace::{Folder, HostId, Workspace};
+use crate::session::{JumpHost, SshAgent, SshAuth, SshTarget};
+use crate::workspace::{Folder, HostId, JumpChainError, ResolvedHost, Workspace};
 
 mod keychain;
 
@@ -282,6 +282,16 @@ pub enum ProfileError {
     Invalid(String),
     #[error("the credential store failed: {0}")]
     Store(#[from] StoreError),
+    /// The host's jump hosts cannot be worked out (missing, a loop, ...).
+    #[error("{0}")]
+    JumpChain(#[from] JumpChainError),
+    /// A jump host (by host id) has no credential profile to log in with.
+    #[error("the jump host {0} has no credential profile")]
+    JumpHostNoProfile(String),
+    #[error(
+        "the credential profile {profile} of the jump host {jump_host} is not set up on this computer"
+    )]
+    JumpHostNotSetUp { jump_host: String, profile: String },
 }
 
 /// The credential profiles of one workspace.
@@ -394,11 +404,10 @@ impl<'a> Profiles<'a> {
 
     /// How the host `id` logs in: with the profile its settings resolve to,
     /// if that profile is stored.
+    /// The target in [`HostLogin::Profile`] is the host alone, without its
+    /// jump hosts: connect with [`Self::profile_target`].
     pub fn login(&self, id: &HostId) -> Result<HostLogin, ProfileError> {
-        let host = self
-            .workspace
-            .resolve_host(id)
-            .ok_or_else(|| ProfileError::NotFound(id.to_string()))?;
+        let host = self.resolve(id)?;
         let Some(name) = host.settings.credential_profile.as_ref() else {
             return Ok(HostLogin::Prompt);
         };
@@ -413,17 +422,73 @@ impl<'a> Profiles<'a> {
         })
     }
 
-    /// The target the host `id` logs in with through its profile, for
-    /// connecting without a prompt; an error says why it cannot (no
-    /// profile, or one that is not set up here).
+    /// The target the host `id` logs in with through its profile, jump
+    /// hosts included, for connecting without a prompt; an error says why
+    /// it cannot (no profile, or one that is not set up here, or a jump
+    /// host that cannot be used).
     pub fn profile_target(&self, id: &HostId) -> Result<SshTarget, ProfileError> {
-        match self.login(id)? {
-            HostLogin::Profile { target, .. } => Ok(target),
-            HostLogin::NotSetUp { profile } => Err(ProfileError::NotSetUp(profile)),
-            HostLogin::Prompt => Err(ProfileError::Invalid(format!(
-                "{id} has no credential profile"
-            ))),
-        }
+        let mut target = match self.login(id)? {
+            HostLogin::Profile { target, .. } => target,
+            HostLogin::NotSetUp { profile } => return Err(ProfileError::NotSetUp(profile)),
+            HostLogin::Prompt => {
+                return Err(ProfileError::Invalid(format!(
+                    "{id} has no credential profile"
+                )))
+            }
+        };
+        target.jump_hosts = self.jump_hosts(id)?;
+        Ok(target)
+    }
+
+    /// The target the host `id` logs in with by `username` and `password`
+    /// (as prompted for), jump hosts included.
+    pub fn prompted_target(
+        &self,
+        id: &HostId,
+        username: String,
+        password: String,
+    ) -> Result<SshTarget, ProfileError> {
+        let host = self.resolve(id)?;
+        let mut target = host.ssh_target(username, password);
+        target.jump_hosts = self.jump_hosts(id)?;
+        Ok(target)
+    }
+
+    /// The jump hosts the host `id` is reached through, in the order they
+    /// are connected, each logging in with its own profile. A jump host
+    /// is never prompted for, so each needs a profile that is set up.
+    pub fn jump_hosts(&self, id: &HostId) -> Result<Vec<JumpHost>, ProfileError> {
+        let host = self.resolve(id)?;
+        self.workspace
+            .jump_chain(&host)?
+            .into_iter()
+            .map(|jump| {
+                let name = jump.host.id.to_string();
+                let Some(profile_name) = jump.settings.credential_profile.as_ref() else {
+                    return Err(ProfileError::JumpHostNoProfile(name));
+                };
+                let Some(profile) = self.profile(&profile_name.value)? else {
+                    return Err(ProfileError::JumpHostNotSetUp {
+                        jump_host: name,
+                        profile: profile_name.value.clone(),
+                    });
+                };
+                let target = jump.ssh_target_with(profile.username, profile.auth.ssh_auth());
+                Ok(JumpHost {
+                    name,
+                    host: target.host,
+                    port: target.port,
+                    username: target.username,
+                    auth: target.auth,
+                })
+            })
+            .collect()
+    }
+
+    fn resolve(&self, id: &HostId) -> Result<ResolvedHost, ProfileError> {
+        self.workspace
+            .resolve_host(id)
+            .ok_or_else(|| ProfileError::NotFound(id.to_string()))
     }
 }
 

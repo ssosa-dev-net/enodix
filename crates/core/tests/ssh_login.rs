@@ -117,6 +117,7 @@ async fn an_agent_that_is_not_running_is_reported_before_connecting() {
         port: 9,
         username: USERNAME.into(),
         auth: SshAuth::Agent(SshAgent::At(path.clone())),
+        jump_hosts: Vec::new(),
     };
 
     let (_id, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);

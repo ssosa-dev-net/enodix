@@ -6,20 +6,21 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::watch;
+use tokio::sync::{watch, Mutex};
 
 use russh::client::{self, AuthResult, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::{
     load_secret_key, Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate,
 };
 use russh::{
-    AgentAuthError, Channel, ChannelMsg, ChannelWriteHalf, Disconnect, MethodKind, MethodSet,
+    AgentAuthError, Channel, ChannelMsg, ChannelOpenFailure, ChannelWriteHalf, Disconnect,
+    MethodKind, MethodSet,
 };
 
 use super::{
-    agent, AgentError, CloseReason, Command, HostKeyAsker, HostKeyDecision, HostKeyQuestion, Link,
-    LoginPrompt, LoginQuestion, OpenError, Prompter, SessionState, SshAuth, SshTarget,
-    TerminalSize,
+    agent, AgentError, CloseReason, Command, HostKeyAsker, HostKeyDecision, HostKeyQuestion,
+    JumpHost, Link, LoginPrompt, LoginQuestion, OpenError, Prompter, SessionState, SshAuth,
+    SshTarget, TerminalSize,
 };
 use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
 
@@ -35,11 +36,14 @@ struct Client {
     host: String,
     port: u16,
     known_hosts: KnownHosts,
-    asker: HostKeyAsker,
+    asker: SharedAsker,
     /// True while the user is asked about the key: the handshake then
     /// waits for them, not for the network, and the timeout is paused.
     asking: watch::Sender<bool>,
 }
+
+/// Asks about the host keys of every hop of a session, one at a time.
+type SharedAsker = Arc<Mutex<HostKeyAsker>>;
 
 /// Why the connection could not be set up.
 #[derive(Debug)]
@@ -89,7 +93,7 @@ impl client::Handler for Client {
         };
         let changed = question.changed();
         self.asking.send_replace(true);
-        let decision = self.asker.ask(question).await;
+        let decision = self.asker.lock().await.ask(question).await;
         self.asking.send_replace(false);
         match decision {
             Some(HostKeyDecision::TrustAndRemember) => {
@@ -112,6 +116,9 @@ impl client::Handler for Client {
 /// before it was confirmed.
 struct Shell {
     connection: Handle<Client>,
+    /// The connections to the jump hosts, in the order they were made;
+    /// kept open as long as the shell.
+    jumps: Vec<Handle<Client>>,
     channel: Channel<client::Msg>,
     early_output: Vec<u8>,
 }
@@ -130,6 +137,7 @@ pub(super) async fn run(
     };
     let Shell {
         connection,
+        jumps,
         channel,
         early_output,
     } = match opened {
@@ -144,7 +152,7 @@ pub(super) async fn run(
         return CloseReason::ConnectionLost;
     }
     if !early_output.is_empty() && !link.output(early_output) {
-        return close(&connection).await;
+        return close(&connection, &jumps).await;
     }
 
     // Input is sent one piece at a time while output keeps being read. A
@@ -176,7 +184,7 @@ pub(super) async fn run(
                 }
                 // Logged in already: nothing asked for these.
                 Command::Answer(_) | Command::HostKey(_) => {}
-                Command::Close => return close(&connection).await,
+                Command::Close => return close(&connection, &jumps).await,
             },
             // Output is read only while the consumer is less than a window
             // behind (flow control); commands are taken regardless.
@@ -186,12 +194,12 @@ pub(super) async fn run(
             } => match message {
                 Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
                     if !link.output(data.to_vec()) {
-                        return close(&connection).await;
+                        return close(&connection, &jumps).await;
                     }
                 }
                 Some(ChannelMsg::ExitStatus { exit_status: status }) => exit_status = Some(status),
                 Some(ChannelMsg::Close) => {
-                    close(&connection).await;
+                    close(&connection, &jumps).await;
                     return CloseReason::RemoteExited { exit_status };
                 }
                 Some(_) => {}
@@ -476,6 +484,22 @@ fn asks_only_for_password(prompts: &[russh::client::Prompt]) -> bool {
     matches!(prompts, [prompt] if !prompt.echo && prompt.prompt.to_lowercase().contains("password"))
 }
 
+/// One SSH server on the way to the device: a jump host or the target.
+struct Hop<'a> {
+    host: &'a str,
+    port: u16,
+    username: &'a str,
+    auth: &'a SshAuth,
+}
+
+/// The jump host a hop is reached through.
+struct Via<'a> {
+    name: &'a str,
+    connection: &'a Handle<Client>,
+}
+
+/// Connects to each jump host in turn, each through the one before, then
+/// to the target through the last, and starts the shell there.
 async fn open_shell(
     target: &SshTarget,
     known_hosts: KnownHosts,
@@ -483,30 +507,35 @@ async fn open_shell(
     size: TerminalSize,
     prompter: &mut Prompter,
 ) -> Result<Shell, OpenError> {
-    let login = login(&target.auth).await?;
-    let config = Arc::new(client::Config::default());
-    let address = (target.host.as_str(), target.port);
-    let (asking, asking_rx) = watch::channel(false);
-    let client = Client {
-        host: target.host.clone(),
+    let asker = Arc::new(Mutex::new(asker));
+    // The connections to the jump hosts so far, one per jump host.
+    let mut jumps: Vec<Handle<Client>> = Vec::with_capacity(target.jump_hosts.len());
+    for jump in &target.jump_hosts {
+        let hop = Hop {
+            host: &jump.host,
+            port: jump.port,
+            username: &jump.username,
+            auth: &jump.auth,
+        };
+        let through = last_via(&target.jump_hosts, &jumps);
+        prompter.jump_host = Some(jump.name.clone());
+        let connection = connect(hop, through, &known_hosts, &asker, prompter)
+            .await
+            .map_err(|error| OpenError::JumpHost {
+                name: jump.name.clone(),
+                error: Box::new(error),
+            })?;
+        jumps.push(connection);
+    }
+    prompter.jump_host = None;
+    let hop = Hop {
+        host: &target.host,
         port: target.port,
-        known_hosts,
-        asker,
-        asking,
+        username: &target.username,
+        auth: &target.auth,
     };
-    let mut connection = tokio::select! {
-        connected = client::connect(config, address, client) => match connected {
-            Ok(connection) => connection,
-            Err(ClientError::Refused(error)) => return Err(error),
-            Err(ClientError::Ssh(russh::Error::IO(error))) => {
-                return Err(OpenError::Connect(error.to_string()))
-            }
-            Err(ClientError::Ssh(error)) => return Err(protocol(error)),
-        },
-        () = handshake_deadline(asking_rx) => return Err(OpenError::Connect("timed out".into())),
-    };
-
-    authenticate(&mut connection, &target.username, login, prompter).await?;
+    let through = last_via(&target.jump_hosts, &jumps);
+    let connection = connect(hop, through, &known_hosts, &asker, prompter).await?;
 
     let mut channel = connection.channel_open_session().await.map_err(protocol)?;
     channel
@@ -540,9 +569,90 @@ async fn open_shell(
 
     Ok(Shell {
         connection,
+        jumps,
         channel,
         early_output,
     })
+}
+
+/// The last jump host connected so far, to reach the next hop through.
+fn last_via<'a>(jump_hosts: &'a [JumpHost], connections: &'a [Handle<Client>]) -> Option<Via<'a>> {
+    let last = connections.len().checked_sub(1)?;
+    Some(Via {
+        name: &jump_hosts[last].name,
+        connection: &connections[last],
+    })
+}
+
+/// Connects to `hop` (directly, or through the jump host `via`), checks
+/// its host key and logs in.
+async fn connect(
+    hop: Hop<'_>,
+    via: Option<Via<'_>>,
+    known_hosts: &KnownHosts,
+    asker: &SharedAsker,
+    prompter: &mut Prompter,
+) -> Result<Handle<Client>, OpenError> {
+    let login = login(hop.auth).await?;
+    let config = Arc::new(client::Config::default());
+    let (asking, asking_rx) = watch::channel(false);
+    let client = Client {
+        host: hop.host.to_owned(),
+        port: hop.port,
+        known_hosts: known_hosts.clone(),
+        asker: asker.clone(),
+        asking,
+    };
+    let connecting = async {
+        let connected = match via {
+            None => client::connect(config, (hop.host, hop.port), client).await,
+            Some(via) => {
+                let channel = via
+                    .connection
+                    .channel_open_direct_tcpip(hop.host, u32::from(hop.port), "127.0.0.1", 0)
+                    .await
+                    .map_err(|error| {
+                        OpenError::Connect(format!(
+                            "the jump host {} could not reach it ({})",
+                            via.name,
+                            forwarding_failure(&error)
+                        ))
+                    })?;
+                client::connect_stream(config, channel.into_stream(), client).await
+            }
+        };
+        match connected {
+            Ok(connection) => Ok(connection),
+            Err(ClientError::Refused(error)) => Err(error),
+            Err(ClientError::Ssh(russh::Error::IO(error))) => {
+                Err(OpenError::Connect(error.to_string()))
+            }
+            Err(ClientError::Ssh(error)) => Err(protocol(error)),
+        }
+    };
+    let mut connection = tokio::select! {
+        connected = connecting => connected?,
+        () = handshake_deadline(asking_rx) => return Err(OpenError::Connect("timed out".into())),
+    };
+    authenticate(&mut connection, hop.username, login, prompter).await?;
+    Ok(connection)
+}
+
+/// Why a jump host did not forward a connection, in words.
+fn forwarding_failure(error: &russh::Error) -> String {
+    match error {
+        russh::Error::ChannelOpenFailure(ChannelOpenFailure::ConnectFailed) => {
+            "the connection failed".into()
+        }
+        russh::Error::ChannelOpenFailure(ChannelOpenFailure::AdministrativelyProhibited) => {
+            "it does not allow forwarding".into()
+        }
+        russh::Error::ChannelOpenFailure(ChannelOpenFailure::Other { reason, .. }) => {
+            reason.clone()
+        }
+        russh::Error::ChannelOpenFailure(failure) => format!("{failure:?}"),
+        other => other.to_string(),
+    }
 }
 
 /// Resolves when the connection and handshake have taken
@@ -577,10 +687,13 @@ async fn resize(
     channel.window_change(size.cols, size.rows, 0, 0).await
 }
 
-/// Disconnects from this side.
-async fn close(connection: &Handle<Client>) -> CloseReason {
-    let _ = connection
-        .disconnect(Disconnect::ByApplication, "", "en")
-        .await;
+/// Disconnects from this side: from the device, then from each jump host,
+/// the nearest first.
+async fn close(connection: &Handle<Client>, jumps: &[Handle<Client>]) -> CloseReason {
+    for connection in std::iter::once(connection).chain(jumps.iter().rev()) {
+        let _ = connection
+            .disconnect(Disconnect::ByApplication, "", "en")
+            .await;
+    }
     CloseReason::ClosedLocally
 }
