@@ -83,6 +83,10 @@ pub enum SshAuth {
     /// Public-key authentication with the keys an SSH agent holds: the
     /// agent signs, and the private keys never leave it.
     Agent(SshAgent),
+    /// Ask the user for the password while connecting, once the host key
+    /// is trusted (a [`SessionEvent::Prompt`]), and for the username too if
+    /// the target's is empty. Used for jump hosts without a usable profile.
+    Prompt,
 }
 
 /// Which SSH agent to ask for keys.
@@ -112,6 +116,7 @@ impl fmt::Debug for SshAuth {
                 .field("passphrase", &passphrase.as_ref().map(|_| ".."))
                 .finish(),
             Self::Agent(agent) => f.debug_tuple("Agent").field(agent).finish(),
+            Self::Prompt => f.write_str("Prompt"),
         }
     }
 }

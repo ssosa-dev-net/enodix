@@ -285,13 +285,6 @@ pub enum ProfileError {
     /// The host's jump hosts cannot be worked out (missing, a loop, ...).
     #[error("{0}")]
     JumpChain(#[from] JumpChainError),
-    /// A jump host (by host id) has no credential profile to log in with.
-    #[error("the jump host {0} has no credential profile")]
-    JumpHostNoProfile(String),
-    #[error(
-        "the credential profile {profile} of the jump host {jump_host} is not set up on this computer"
-    )]
-    JumpHostNotSetUp { jump_host: String, profile: String },
 }
 
 /// The credential profiles of one workspace.
@@ -456,7 +449,9 @@ impl<'a> Profiles<'a> {
 
     /// The jump hosts the host `id` is reached through, in the order they
     /// are connected, each logging in with its own profile. A jump host
-    /// is never prompted for, so each needs a profile that is set up.
+    /// without a usable profile (none, or one not set up here) asks for
+    /// its username and password while connecting ([`SshAuth::Prompt`],
+    /// empty username).
     pub fn jump_hosts(&self, id: &HostId) -> Result<Vec<JumpHost>, ProfileError> {
         let host = self.resolve(id)?;
         self.workspace
@@ -464,16 +459,14 @@ impl<'a> Profiles<'a> {
             .into_iter()
             .map(|jump| {
                 let name = jump.host.id.to_string();
-                let Some(profile_name) = jump.settings.credential_profile.as_ref() else {
-                    return Err(ProfileError::JumpHostNoProfile(name));
+                let profile = match jump.settings.credential_profile.as_ref() {
+                    Some(profile) => self.profile(&profile.value)?,
+                    None => None,
                 };
-                let Some(profile) = self.profile(&profile_name.value)? else {
-                    return Err(ProfileError::JumpHostNotSetUp {
-                        jump_host: name,
-                        profile: profile_name.value.clone(),
-                    });
-                };
-                let target = jump.ssh_target_with(profile.username, profile.auth.ssh_auth());
+                let (username, auth) = profile.map_or((String::new(), SshAuth::Prompt), |p| {
+                    (p.username, p.auth.ssh_auth())
+                });
+                let target = jump.ssh_target_with(username, auth);
                 Ok(JumpHost {
                     name,
                     host: target.host,

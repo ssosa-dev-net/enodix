@@ -233,6 +233,8 @@ enum Login<'a> {
     Password(&'a str),
     Key(Arc<PrivateKey>),
     Agent(Vec<agent::Agent>),
+    /// Ask the user, once connected.
+    Ask,
 }
 
 /// Reads the private key, or reaches the agent, if the target logs in with
@@ -240,6 +242,7 @@ enum Login<'a> {
 async fn login(auth: &SshAuth) -> Result<Login<'_>, OpenError> {
     match auth {
         SshAuth::Password(password) => Ok(Login::Password(password)),
+        SshAuth::Prompt => Ok(Login::Ask),
         SshAuth::Agent(which) => Ok(Login::Agent(
             agent::open(which).await.map_err(OpenError::Agent)?,
         )),
@@ -304,6 +307,15 @@ async fn authenticate(
             .map_err(protocol)?,
         Login::Password(password) => {
             password_for_prompt = Some(password);
+            ask_after_refusal = true;
+            AuthResult::Failure {
+                remaining_methods: offered,
+                partial_success: false,
+            }
+        }
+        // `connect` asks before authenticating; if anything else still
+        // gets here, keyboard-interactive asks the user instead.
+        Login::Ask => {
             ask_after_refusal = true;
             AuthResult::Failure {
                 remaining_methods: offered,
@@ -634,8 +646,45 @@ async fn connect(
         connected = connecting => connected?,
         () = handshake_deadline(asking_rx) => return Err(OpenError::Connect("timed out".into())),
     };
-    authenticate(&mut connection, hop.username, login, prompter).await?;
+    let asked;
+    let (username, login) = match login {
+        Login::Ask => {
+            asked = ask_login(hop.username, prompter).await?;
+            (asked.0.as_str(), Login::Password(&asked.1))
+        }
+        login => (hop.username, login),
+    };
+    authenticate(&mut connection, username, login, prompter).await?;
     Ok(connection)
+}
+
+/// Asks the user for the password, and for the username if `username` is
+/// empty: the username and password to log in with.
+async fn ask_login(username: &str, prompter: &mut Prompter) -> Result<(String, String), OpenError> {
+    let mut questions = Vec::new();
+    if username.is_empty() {
+        questions.push(LoginQuestion {
+            text: "Username: ".into(),
+            echo: true,
+        });
+    }
+    questions.push(LoginQuestion {
+        text: "Password: ".into(),
+        echo: false,
+    });
+    let mut answers = prompter
+        .ask(LoginPrompt {
+            name: String::new(),
+            instructions: String::new(),
+            questions,
+        })
+        .await
+        .ok_or(OpenError::AuthenticationFailed)?;
+    let password = answers.pop().unwrap_or_default();
+    let username = answers
+        .pop()
+        .map_or_else(|| username.to_owned(), |given| given.trim().to_owned());
+    Ok((username, password))
 }
 
 /// Why a jump host did not forward a connection, in words.
