@@ -62,6 +62,7 @@ Options:
 | `filter`      | Only the hosts of this saved filter.                                   |
 | `hosts`       | Only these host ids (a list), such as `Madrid/core-r1.yaml`.           |
 | `credentials` | `True` (default): hand over each host's login; `False` reads no store. |
+| `tunnels`     | Tunnel to the hosts behind jump hosts (default: as `credentials`).     |
 
 Give at most one of `folder`, `filter` and `hosts`.
 
@@ -81,8 +82,9 @@ What you get:
   inherited ones included), and `netterm` with the rest: `id`, `name`,
   `folder`, `folders`, `settings` (every resolved setting), `login`
   (`password`, `private_key`, `agent` or `None`), `jump_hosts`,
-  `jump_chain_error`, `behind_jump_host`, `withheld` and `custom` (all the
-  custom fields; a custom field with a built-in field's name is only here).
+  `jump_chain_error`, `behind_jump_host`, `tunnel`, `tunnel_error` (see
+  below), `withheld` and `custom` (all the custom fields; a custom field
+  with a built-in field's name is only here).
   Custom fields whose names say they hold a secret are never exported (they
   are listed in `withheld`). Filter as usual:
   `nr.filter(F(tags__contains="core"))`, `nr.filter(site="MAD")`.
@@ -110,18 +112,55 @@ deliberately impossible.
 
 ### Hosts behind jump hosts
 
-The Python libraries make their own SSH connections and cannot go through
-the app's jump hosts yet. Such hosts are still in the inventory, marked
-`netterm.behind_jump_host` (with `netterm.jump_hosts`, or
-`netterm.jump_chain_error` when the chain is broken), and a warning names
-them when the inventory loads. Leave them out with
-`nr.filter(F(netterm__behind_jump_host=False))`. How scripts will reach them
-is not decided yet.
+The libraries make their own SSH connections and know nothing of the app's
+jump hosts, so for the hosts behind them the plugin starts
+`netterm-cli tunnel`: it connects each jump chain as the app does (the
+jump hosts' stored credential profiles or your agent, the host keys the
+app trusts, legacy crypto, connect timeouts) and listens on a port of
+`127.0.0.1` per host, only there. Those hosts get `hostname` `127.0.0.1`
+and that `port`, so scripts run unchanged; hosts behind the same jump host
+share its connection. The data keeps `netterm.behind_jump_host` and
+`netterm.jump_hosts`, and `netterm.tunnel` says where the tunnel listens.
+The tunnels close when the script ends, however it ends, killed included
+(the binary serves only while the pipe the plugin holds stays open).
+`netterm.tunnels(...)` opens them without Nornir.
 
-Other limits: the libraries keep their own host-key handling (they do not
-read the app's known hosts); telnet and serial hosts are exported as they
-are (see `netterm.settings.protocol`), with no telnet-specific driver
-names.
+Nothing is asked and nothing is trusted on your behalf. A host is not
+tunnelled, keeps its own address and carries the reason in
+`netterm.tunnel_error` (and a warning names it) when:
+
+- its chain is broken, or a jump host on it has no stored credential
+  profile, or asks a question at login (a one-time code, say);
+- a jump host's key is not the one the app trusts, or the app has never
+  trusted one (the reason names its fingerprint);
+- the app has not trusted the **device's** host key yet: connect to it once
+  in the app (Trust and remember);
+- it is reached over telnet: only SSH is tunnelled, so telnet hosts behind
+  jump hosts stay out of reach of scripts.
+
+Leave such hosts out with `nr.filter(F(netterm__tunnel_error=None))`.
+
+The device's host key is checked by the library, which now sees
+`127.0.0.1` and the tunnel's port: the plugin writes a known-hosts file per
+tunnelled host with the keys the app trusts for the device (as
+`127.0.0.1 <key>` and `[127.0.0.1]:<port> <key>`) and turns checking on in
+the connection options: Netmiko (`ssh_strict`, `alt_key_file`), scrapli
+(`auth_strict_key`, `ssh_known_hosts_file`; its paramiko transport ignores
+the port, hence a file per host) and NAPALM (`optional_args`, which its
+Netmiko-based drivers `ios` and `nxos_ssh` pass on). A device whose key
+changed is refused. NAPALM's other drivers (`eos`, `junos`, ...) do not
+check the key through the tunnel. While a script runs, any local program
+can reach the devices' SSH ports through the tunnels (as with `ssh -L`); it
+still needs their logins.
+
+If a jump host goes down mid-run, the connections through it break at
+once (the library reports a closed socket) and the reason is logged as a
+`netterm` warning; the next connection tries the chain again.
+
+Other limits: the libraries keep their own host-key handling for hosts
+reached directly (they do not read the app's known hosts); telnet and
+serial hosts are exported as they are (see `netterm.settings.protocol`),
+with no telnet-specific driver names.
 
 ## Script jobs
 
@@ -154,7 +193,9 @@ nr = InitNornir(inventory={"plugin": "NettermInventory"})
 ```
 
 The script has no console: a vault the running app has not unlocked is
-refused rather than asked for.
+refused rather than asked for. Pre-flight leaves out the hosts behind jump
+hosts that cannot be tunnelled (a broken chain, a jump host with no stored
+profile, telnet), with the reason.
 
 ## Fill in from devices
 
@@ -164,8 +205,10 @@ app runs this package's own script, `python -m netterm.enrich`, as a script
 job with the Python chosen in Preferences; it needs
 [NAPALM](https://napalm.readthedocs.io/) in that Python (`pip install
 napalm`, or tick NAPALM in the app's Python setup). Pre-flight keeps the
-hosts reached over SSH with a stored credential profile and no jump host
-whose platform definition answers to a NAPALM driver (`ios`, `eos`,
+hosts reached over SSH with a stored credential profile whose platform
+definition answers to a NAPALM driver (hosts behind jump hosts too, through
+the tunnels above, unless a jump host has no stored profile or the chain is
+broken) (`ios`, `eos`,
 `junos`, `nxos_ssh`, `nxos`, `iosxr`, `iosxr_netconf`; NX-OS prefers
 `nxos_ssh`). Each device is asked with its own login, on the host's SSH
 port (EOS over SSH, not eAPI; Junos over NETCONF on that port), at most 10
@@ -185,6 +228,8 @@ import netterm
 token = netterm.secret(r"C:\Work\inventory", "netbox-token")  # a named secret
 export = netterm.inventory(r"C:\Work\inventory", filter="Edge")  # the binary's JSON
 login = netterm.credentials(r"C:\Work\inventory", "Madrid/core-r1.yaml")
+with netterm.tunnels(r"C:\Work\inventory", folder="Madrid") as opened:
+    print(opened.hosts)  # host id -> address, port, known_hosts (or error)
 ```
 
 Errors are `netterm.NettermError` (`CliNotFound`, or `CliFailed` with the

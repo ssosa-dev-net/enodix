@@ -234,6 +234,8 @@ pub struct TestSshServer {
     /// How many logins it accepted, and whether it refuses second channels.
     logins: Arc<AtomicUsize>,
     one_channel: Arc<AtomicBool>,
+    /// The tasks serving its connections, to cut them.
+    serving: Arc<Mutex<Vec<russh::server::Handle>>>,
 }
 
 /// How a device-mode shell starts.
@@ -416,6 +418,8 @@ impl TestSshServer {
         let open = Arc::<OpenConnections>::default();
         let logins = Arc::<AtomicUsize>::default();
         let one_channel = Arc::<AtomicBool>::default();
+        let serving = Arc::<Mutex<Vec<russh::server::Handle>>>::default();
+        let tasks = serving.clone();
         let mut server = ScriptedServer {
             authorized_keys,
             forwarded: counter,
@@ -432,9 +436,11 @@ impl TestSshServer {
                 connections.lock().unwrap().push(bytes.clone());
                 let handler = server.new_client(Some(address));
                 let config = config.clone();
+                let tasks = tasks.clone();
                 tokio::spawn(async move {
                     let stream = algorithms::Recording::new(socket, bytes);
                     if let Ok(session) = russh::server::run_stream(config, stream, handler).await {
+                        tasks.lock().unwrap().push(session.handle());
                         let _ = session.await;
                     }
                 });
@@ -451,6 +457,22 @@ impl TestSshServer {
             open,
             logins,
             one_channel,
+            serving,
+        }
+    }
+
+    /// Cuts every connection made to it so far (their sockets close), as
+    /// when the server goes down; it still accepts new ones.
+    pub async fn cut_connections(&self) {
+        let handles: Vec<_> = self.serving.lock().unwrap().drain(..).collect();
+        for handle in handles {
+            let _ = handle
+                .disconnect(
+                    russh::Disconnect::ByApplication,
+                    "going down".into(),
+                    "en".into(),
+                )
+                .await;
         }
     }
 

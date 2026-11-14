@@ -289,10 +289,15 @@ pub enum SkipReason {
     /// driver.
     #[error("its platform {platform} has no NAPALM driver, so its facts cannot be fetched")]
     NoNapalmDriver { platform: String },
-    /// Filling in from devices, and it is reached through a jump host,
-    /// which the script cannot go through.
-    #[error("it is reached through the jump host {jump_host}, and scripts cannot go through jump hosts yet")]
+    /// A script step (filling in from devices too), and it is reached
+    /// through a jump host that has no usable profile, so the script's
+    /// tunnel (see [`crate::tunnel`]) cannot log in to it.
+    #[error("it is reached through the jump host {jump_host}, which has no stored credential profile, so the script's tunnel cannot log in to it")]
     BehindJumpHost { jump_host: String },
+    /// A script step, and it is reached over telnet through a jump host:
+    /// scripts are tunnelled through jump hosts over SSH only.
+    #[error("it is reached over telnet through the jump host {jump_host}, and scripts reach hosts behind jump hosts only over SSH")]
+    TelnetBehindJumpHost { jump_host: String },
     /// Its jump hosts cannot be worked out (missing, a loop, not SSH).
     #[error("its jump hosts cannot be used: {error}")]
     JumpChain { error: String },
@@ -344,10 +349,13 @@ pub enum PlanError {
 /// skipped with the first of those reasons that applies.
 ///
 /// A script step runs on every host of the target that the inventory
-/// plugin can hand over: only a host whose credential profile is named but
-/// not stored here (the plugin would refuse to load) is skipped. How the
-/// script reaches the others (protocol, platform, jump hosts) is its own
-/// business, as for a script run from a shell.
+/// plugin can hand over and reach: a host whose credential profile is
+/// named but not stored here (the plugin would refuse to load) is skipped,
+/// and so is a host behind jump hosts that cannot be tunnelled (a broken
+/// chain, a jump host with no stored profile, telnet). How the script
+/// reaches the others (protocol, platform) is its own business, as for a
+/// script run from a shell; hosts behind jump hosts it reaches through the
+/// plugin's tunnels.
 pub fn plan(
     workspace: &Workspace,
     profiles: &Profiles<'_>,
@@ -392,7 +400,7 @@ pub fn plan(
             continue;
         };
         let runs = match step {
-            JobStep::Script { .. } => script_runnable(profiles, &host),
+            JobStep::Script { .. } => script_runnable(workspace, profiles, &host),
             JobStep::Enrich => enrich_runnable(workspace, profiles, &host),
             _ => runnable(workspace, profiles, &host, step),
         };
@@ -603,6 +611,7 @@ fn runnable(
 /// does) and its platform as written (`""` if none), or why it cannot: its
 /// credential profile is named but not stored, or the store cannot say.
 fn script_runnable(
+    workspace: &Workspace,
     profiles: &Profiles<'_>,
     host: &ResolvedHost,
 ) -> Result<(HostWork, String), SkipReason> {
@@ -614,6 +623,7 @@ fn script_runnable(
             });
         }
     }
+    tunnelled(workspace, profiles, host)?;
     let work = HostWork {
         target: None,
         profile: host
@@ -642,7 +652,7 @@ fn script_runnable(
 /// How `host` takes part in filling in from devices (its NAPALM driver)
 /// and the name of its definition, or why it cannot: it is not reached
 /// over SSH, its definition has no NAPALM driver, it has no stored
-/// profile, or it is behind a jump host.
+/// profile, or it is behind jump hosts that cannot be tunnelled.
 fn enrich_runnable(
     workspace: &Workspace,
     profiles: &Profiles<'_>,
@@ -669,12 +679,7 @@ fn enrich_runnable(
             return Err(SkipReason::NoProfile)
         }
     };
-    let jump_hosts = profiles.jump_hosts(id).map_err(skip)?;
-    if let Some(jump) = jump_hosts.first() {
-        return Err(SkipReason::BehindJumpHost {
-            jump_host: jump.name.clone(),
-        });
-    }
+    tunnelled(workspace, profiles, host)?;
     let work = HostWork {
         target: None,
         profile: Some(profile),
@@ -688,6 +693,42 @@ fn enrich_runnable(
         napalm_driver: Some(driver),
     };
     Ok((work, definition.name.clone()))
+}
+
+/// Why a script cannot reach `host` if it is behind jump hosts: the
+/// chain is broken, a jump host has no stored profile (the tunnel cannot
+/// log in to it), or the host is reached over telnet (only SSH is
+/// tunnelled). Hosts reached directly, and serial ones, pass.
+fn tunnelled(
+    workspace: &Workspace,
+    profiles: &Profiles<'_>,
+    host: &ResolvedHost,
+) -> Result<(), SkipReason> {
+    let protocol = host.settings.protocol.value;
+    if protocol == Protocol::Serial {
+        return Ok(());
+    }
+    match workspace.jump_chain(host) {
+        Ok(chain) if chain.is_empty() => return Ok(()),
+        _ if protocol == Protocol::Telnet => {
+            return Err(SkipReason::TelnetBehindJumpHost {
+                jump_host: host
+                    .settings
+                    .jump_host
+                    .as_ref()
+                    .map(|jump| jump.value.clone())
+                    .unwrap_or_default(),
+            })
+        }
+        _ => {}
+    }
+    let jump_hosts = profiles.jump_hosts(&host.host.id).map_err(skip)?;
+    match jump_hosts.iter().find(|jump| jump.auth == SshAuth::Prompt) {
+        Some(jump) => Err(SkipReason::BehindJumpHost {
+            jump_host: jump.name.clone(),
+        }),
+        None => Ok(()),
+    }
 }
 
 fn skip(error: ProfileError) -> SkipReason {

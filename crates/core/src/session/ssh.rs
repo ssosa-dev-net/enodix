@@ -675,31 +675,8 @@ async fn open_shell(
     prompter: &mut Prompter,
 ) -> Result<Shell, OpenError> {
     let asker = Arc::new(Mutex::new(asker));
-    // The connections to the jump hosts so far, one per jump host.
-    let mut jumps: Vec<Handle<Client>> = Vec::with_capacity(target.jump_hosts.len());
-    let mut algorithms = Vec::with_capacity(target.jump_hosts.len() + 1);
-    for jump in &target.jump_hosts {
-        let hop = Hop {
-            jump_host: Some(&jump.name),
-            host: &jump.host,
-            port: jump.port,
-            username: &jump.username,
-            auth: &jump.auth,
-            legacy_crypto: jump.legacy_crypto,
-            connect_timeout: jump.connect_timeout,
-        };
-        let through = last_via(&target.jump_hosts, &jumps);
-        prompter.jump_host = Some(jump.name.clone());
-        let (connection, agreed) = connect(hop, through, &known_hosts, &asker, prompter)
-            .await
-            .map_err(|error| OpenError::JumpHost {
-                name: jump.name.clone(),
-                error: Box::new(error),
-            })?;
-        jumps.push(connection);
-        algorithms.push(agreed);
-    }
-    prompter.jump_host = None;
+    let (jumps, mut algorithms) =
+        connect_jumps(&target.jump_hosts, &known_hosts, &asker, prompter).await?;
     let hop = Hop {
         jump_host: None,
         host: &target.host,
@@ -727,6 +704,99 @@ async fn open_shell(
         early_output,
         algorithms,
     })
+}
+
+/// Connects to each jump host in turn, each through the one before: the
+/// connections, and what each agreed on.
+async fn connect_jumps(
+    jump_hosts: &[JumpHost],
+    known_hosts: &KnownHosts,
+    asker: &SharedAsker,
+    prompter: &mut Prompter,
+) -> Result<(Vec<Handle<Client>>, Vec<NegotiatedAlgorithms>), OpenError> {
+    let mut jumps: Vec<Handle<Client>> = Vec::with_capacity(jump_hosts.len());
+    let mut algorithms = Vec::with_capacity(jump_hosts.len() + 1);
+    for jump in jump_hosts {
+        let hop = Hop {
+            jump_host: Some(&jump.name),
+            host: &jump.host,
+            port: jump.port,
+            username: &jump.username,
+            auth: &jump.auth,
+            legacy_crypto: jump.legacy_crypto,
+            connect_timeout: jump.connect_timeout,
+        };
+        let through = last_via(jump_hosts, &jumps);
+        prompter.jump_host = Some(jump.name.clone());
+        let (connection, agreed) = connect(hop, through, known_hosts, asker, prompter)
+            .await
+            .map_err(|error| OpenError::JumpHost {
+                name: jump.name.clone(),
+                error: Box::new(error),
+            })?;
+        jumps.push(connection);
+        algorithms.push(agreed);
+    }
+    prompter.jump_host = None;
+    Ok((jumps, algorithms))
+}
+
+/// Open connections to a chain of jump hosts, through the last of which
+/// TCP connections are forwarded (the tunnels of [`crate::tunnel`]).
+/// Dropping it disconnects them.
+pub(crate) struct JumpConnections {
+    /// The jump hosts' names, in connect order.
+    names: Vec<String>,
+    connections: Vec<Handle<Client>>,
+}
+
+/// Connects to the chain `jump_hosts` (at least one), asking `asker` and
+/// `prompter` what a terminal session would ask the user.
+pub(super) async fn open_jump_chain(
+    jump_hosts: &[JumpHost],
+    known_hosts: &KnownHosts,
+    asker: HostKeyAsker,
+    mut prompter: Prompter,
+) -> Result<JumpConnections, OpenError> {
+    let asker = Arc::new(Mutex::new(asker));
+    let (connections, _) = connect_jumps(jump_hosts, known_hosts, &asker, &mut prompter).await?;
+    Ok(JumpConnections {
+        names: jump_hosts.iter().map(|jump| jump.name.clone()).collect(),
+        connections,
+    })
+}
+
+impl JumpConnections {
+    /// A channel to `host:port` as the last jump host reaches them,
+    /// refused if it does not answer within `timeout`.
+    pub(crate) async fn forward(
+        &self,
+        host: &str,
+        port: u16,
+        timeout: Duration,
+    ) -> Result<Channel<client::Msg>, OpenError> {
+        let (Some(last), Some(name)) = (self.connections.last(), self.names.last()) else {
+            return Err(OpenError::Connect("there is no jump host".into()));
+        };
+        let opening = last.channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0);
+        match tokio::time::timeout(timeout, opening).await {
+            Ok(Ok(channel)) => Ok(channel),
+            Ok(Err(error)) => Err(OpenError::Connect(format!(
+                "the jump host {name} could not reach it ({})",
+                forwarding_failure(&error)
+            ))),
+            Err(_) => Err(OpenError::TimedOut { after: timeout }),
+        }
+    }
+
+    /// The first jump host whose connection has ended, if any.
+    pub(crate) fn lost(&self) -> Option<&str> {
+        self.names
+            .iter()
+            .zip(&self.connections)
+            .find(|(_, connection)| connection.is_closed())
+            .map(|(name, _)| name.as_str())
+    }
 }
 
 /// Opens the shell channel with a pty, and waits for the server to confirm

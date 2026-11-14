@@ -28,7 +28,9 @@
 //! a passphrase; without `--device`, the first server's) and `agent`, and
 //! the secret `netbox-token`. It prints them, secrets included, as one
 //! JSON line after `credential agent: `, for the Python bridge's tests
-//! (`python/tests`). The shells behind them are
+//! (`python/tests`). It also prints each server's host key (`host key: `,
+//! `device host key: `), for tests that trust them as the app would. The
+//! shells behind them are
 //! scripted; see `tests/support/mod.rs` and `tests/support/telnet.rs` for
 //! their commands.
 
@@ -122,6 +124,17 @@ async fn main() {
         support::PASSWORD,
         support::ONE_TIME_CODE,
     );
+    // So that a test can trust them, as the app would have.
+    println!(
+        "host key: {}",
+        server.host_key().to_openssh().unwrap_or_default()
+    );
+    if let Some(device) = &device {
+        println!(
+            "device host key: {}",
+            device.host_key().to_openssh().unwrap_or_default()
+        );
+    }
     if let Some(old_device) = &old_device {
         println!(
             "old device (legacy algorithms only) listening on 127.0.0.1:{}",

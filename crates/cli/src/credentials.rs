@@ -94,7 +94,7 @@ fn print_secret(value: &impl serde::Serialize) -> Result<(), Failure> {
 
 /// The app's per-user data folder: as the app finds it (Tauri's app data
 /// folder, named after the identifier), or `NETTERM_DATA_DIR`.
-fn data_folder() -> Result<PathBuf, Failure> {
+pub(crate) fn data_folder() -> Result<PathBuf, Failure> {
     if let Some(folder) = std::env::var_os(DATA_DIR_VARIABLE) {
         return Ok(PathBuf::from(folder));
     }
@@ -123,7 +123,7 @@ fn platform_data_folder() -> Option<PathBuf> {
 
 /// Where the credentials are read from: the running app if it can answer,
 /// else the store itself.
-fn open_store() -> Result<Box<dyn CredentialStore>, Failure> {
+pub(crate) fn open_store() -> Result<Box<dyn CredentialStore>, Failure> {
     let data = data_folder()?;
     let mut app_locked = false;
     let agent = AgentStore::connect(&AgentEndpoint::for_data_folder(&data))

@@ -11,15 +11,16 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use netterm_core::app_state::{resolved_path, same_folder};
-use netterm_core::inventory::{export_within, Limit};
+use netterm_core::inventory::{export_within, InventoryExport, Limit};
 use netterm_core::job::script::{ScriptTargets, TARGETS_VARIABLE};
 use netterm_core::workspace::Workspace;
 
 mod credentials;
+mod tunnel;
 
 use credentials::PRODUCT;
 
-const NAME: &str = env!("CARGO_BIN_NAME");
+pub(crate) const NAME: &str = env!("CARGO_BIN_NAME");
 
 fn usage() -> String {
     format!(
@@ -28,6 +29,7 @@ Usage:
   {NAME} inventory <workspace folder> [--folder <path> | --filter <name> | --host <id>...]
   {NAME} credentials <workspace folder> <host id>
   {NAME} secret <workspace folder> <name>
+  {NAME} tunnel <workspace folder> [--folder <path> | --filter <name> | --host <id>...]
   {NAME} --help | --version
 
 inventory   prints the workspace's hosts as JSON, each with the settings that
@@ -40,6 +42,15 @@ credentials prints, as JSON, the login of the credential profile a host
             uses: username, then password, private key file and passphrase,
             or nothing for the SSH agent; and any enable secret.
 secret      prints, as JSON, the value of the workspace's named secret.
+tunnel      opens a loopback tunnel to each host behind jump hosts (in the
+            same limits as inventory), through its jump chain as {PRODUCT}
+            would connect, with the jump hosts' stored logins and the host
+            keys {PRODUCT} trusts; it asks no host-key or login question
+            (only the vault's master password, as for credentials). Prints one JSON line: for
+            each such host, the 127.0.0.1 port that reaches its SSH port
+            and its trusted host keys, or why it is not tunnelled. Then
+            serves the ports, reporting failures on stderr, until its
+            standard input ends: keep it open while the tunnels are used.
 
 Credentials come from {PRODUCT} while it runs and its vault, if it has
 one, is unlocked. Otherwise they are read here: from the keychain, or from
@@ -85,12 +96,42 @@ fn run(args: &[String]) -> Result<(), Failure> {
         Some("inventory") => inventory(&args[1..]),
         Some("credentials") => credentials::host(&args[1..]),
         Some("secret") => credentials::secret(&args[1..]),
+        Some("tunnel") => tunnel::run(&args[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown command {other:?}"))),
     }
 }
 
 /// `inventory <workspace> [limit]`.
 fn inventory(args: &[String]) -> Result<(), Failure> {
+    let (_, exported) = scoped_export(args)?;
+    for problem in &exported.problems {
+        eprintln!("{NAME}: warning: {problem}");
+    }
+    let mut json = serde_json::to_string_pretty(&exported)
+        .map_err(|error| Failure::Error(format!("cannot write the inventory: {error}")))?;
+    json.push('\n');
+    print(&json)
+}
+
+/// The workspace and the export of `<workspace> [limit]` (`args`), within
+/// the script job's hosts if this runs for one.
+pub(crate) fn scoped_export(args: &[String]) -> Result<(Workspace, InventoryExport), Failure> {
+    let (root, limit) = workspace_and_limit(args)?;
+    let workspace = Workspace::open(resolved_path(Path::new(root)))
+        .map_err(|error| Failure::Error(error.to_string()))?;
+    let scope = job_scope(&workspace)?;
+    let exported = export_within(
+        &workspace,
+        &limit,
+        scope.as_ref().map(|targets| targets.hosts.as_slice()),
+    )
+    .map_err(|error| Failure::Error(error.to_string()))?;
+    Ok((workspace, exported))
+}
+
+/// `<workspace> [--folder <path> | --filter <name> | --host <id>...]`, as
+/// `inventory` and `tunnel` take them.
+pub(crate) fn workspace_and_limit(args: &[String]) -> Result<(&str, Limit), Failure> {
     let mut root: Option<&str> = None;
     let mut folder: Option<&str> = None;
     let mut filter: Option<&str> = None;
@@ -126,23 +167,7 @@ fn inventory(args: &[String]) -> Result<(), Failure> {
             ))
         }
     };
-
-    let workspace = Workspace::open(resolved_path(Path::new(root)))
-        .map_err(|error| Failure::Error(error.to_string()))?;
-    let scope = job_scope(&workspace)?;
-    let exported = export_within(
-        &workspace,
-        &limit,
-        scope.as_ref().map(|targets| targets.hosts.as_slice()),
-    )
-    .map_err(|error| Failure::Error(error.to_string()))?;
-    for problem in &exported.problems {
-        eprintln!("{NAME}: warning: {problem}");
-    }
-    let mut json = serde_json::to_string_pretty(&exported)
-        .map_err(|error| Failure::Error(format!("cannot write the inventory: {error}")))?;
-    json.push('\n');
-    print(&json)
+    Ok((root, limit))
 }
 
 /// The hosts of the script job this process runs for, if it runs for one

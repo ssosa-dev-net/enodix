@@ -16,6 +16,7 @@ netterm-core = { path = "../core" }
 rpassword = "7"
 serde = "1"
 serde_json = "1"
+tokio = { workspace = true }
 zeroize = "1"
 
 # Whether there is a console to ask for the master password on.

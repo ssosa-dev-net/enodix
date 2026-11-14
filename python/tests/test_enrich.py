@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -15,7 +16,7 @@ from unittest import mock
 
 from netterm import enrich
 
-from support import BridgeTest
+from support import BridgeTest, JumpServer
 
 
 class Recording:
@@ -139,6 +140,65 @@ class FillIn(BridgeTest):
         self.assertTrue(any(line.startswith("devices/r-pass.yaml: vendor Cisco") for line in lines), lines)
         # No secret in what the script prints.
         self.assertFalse(any(lab["auth"]["password"] in line for line in lines))
+
+    def test_hosts_behind_a_jump_host_are_asked_through_its_tunnel(self) -> None:
+        bastion = JumpServer()
+        self.addCleanup(bastion.close)
+        port = self.server.device_port
+        self.workspace.write(
+            "jumps/bastion.yaml", f"address: 127.0.0.1\nport: {bastion.port}\ncredential_profile: lab\n"
+        )
+        self.workspace.write(
+            "behind/r1.yaml",
+            f"address: 127.0.0.1\nport: {port}\nplatform: ios\ncredential_profile: lab\n"
+            "jump_host: jumps/bastion.yaml\n",
+        )
+        self.workspace.write(
+            "behind/new.yaml",
+            "address: 192.0.2.8\nplatform: ios\ncredential_profile: lab\njump_host: jumps/bastion.yaml\n",
+        )
+        (self.workspace.data / "known_hosts").write_text(
+            f"[127.0.0.1]:{bastion.port} {bastion.key}\n[127.0.0.1]:{port} {self.server.device_key}\n",
+            encoding="utf-8",
+        )
+        reached: List[Dict[str, Any]] = []
+
+        def driver(name: str) -> Any:
+            class Device:
+                def __init__(self, **arguments: Any) -> None:
+                    self.arguments = arguments
+
+                def open(self) -> None:
+                    # Through the tunnel, the device's SSH banner.
+                    optional = self.arguments["optional_args"]
+                    with socket.create_connection((self.arguments["hostname"], optional["port"]), 10) as s:
+                        self.arguments["banner"] = s.recv(64).decode("ascii", "replace")
+                    self.arguments["known"] = Path(optional["alt_key_file"]).read_text(encoding="utf-8")
+                    reached.append(self.arguments)
+
+                def get_facts(self) -> Dict[str, Any]:
+                    return {"vendor": "Cisco", "model": "CSR1000V", "serial_number": "X", "os_version": "17"}
+
+                def close(self) -> None:
+                    pass
+
+            return Device
+
+        with self.job({"behind/r1.yaml": "ios", "behind/new.yaml": "ios"}):
+            entries = enrich.collect(self.targets, self.facts_file, driver, lambda line: None)
+        by_id = {entry["id"]: entry for entry in entries}
+        self.assertIn("facts", by_id["behind/r1.yaml"], by_id)
+        self.assertIn("connect to it once in the app", by_id["behind/new.yaml"]["error"])
+        [arguments] = reached
+        self.assertEqual(arguments["hostname"], "127.0.0.1")
+        optional = arguments["optional_args"]
+        self.assertNotEqual(optional["port"], port)
+        self.assertTrue(arguments["banner"].startswith("SSH-2.0-"))
+        # NAPALM's ios driver (Netmiko) checks the device's key.
+        self.assertTrue(optional["ssh_strict"])
+        self.assertIn(self.server.device_key, arguments["known"])
+        # The tunnels end with the collection.
+        self.assertFalse(Path(optional["alt_key_file"]).exists())
 
     def test_without_napalm_every_host_fails_saying_so(self) -> None:
         with self.job({"devices/r-pass.yaml": "ios", "devices/r-key.yaml": "ios"}):

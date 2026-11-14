@@ -23,5 +23,6 @@ pub mod preferences;
 pub mod python;
 pub mod session;
 pub mod template;
+pub mod tunnel;
 pub mod update;
 pub mod workspace;

@@ -37,6 +37,7 @@ pub use serial::{
     SerialLine, SerialParameters, SerialPortInfo, SerialPortKind, SerialPorts, SerialTarget,
     SystemSerialPorts, BREAK_DURATION, SERIAL_POLL,
 };
+pub(crate) use ssh::JumpConnections;
 
 /// Identifies one session within its [`SessionManager`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1122,6 +1123,67 @@ impl Link {
             }
         }
     }
+}
+
+/// Connects to the jump chain `jump_hosts` (at least one) with nobody to
+/// ask: an untrusted or changed host key is refused, and so is a login
+/// that asks questions. The reason names the key or the questions.
+pub(crate) async fn open_jump_chain_unattended(
+    jump_hosts: &[JumpHost],
+    known_hosts: &KnownHosts,
+) -> Result<JumpConnections, String> {
+    let (events, mut asked) = mpsc::unbounded_channel();
+    // Nobody answers: each question gets `None` at once.
+    let (_, answers) = mpsc::unbounded_channel();
+    let (_, decisions) = mpsc::unbounded_channel();
+    let user = UserWait::default();
+    let prompter = Prompter {
+        events: events.clone(),
+        answers,
+        jump_host: None,
+        user: user.clone(),
+    };
+    let asker = HostKeyAsker {
+        events,
+        decisions,
+        user,
+    };
+    let error = match ssh::open_jump_chain(jump_hosts, known_hosts, asker, prompter).await {
+        Ok(chain) => return Ok(chain),
+        Err(error) => error,
+    };
+    let mut reason = error.to_string();
+    while let Ok(event) = asked.try_recv() {
+        match event {
+            SessionEvent::HostKey(question) => {
+                reason = format!(
+                    "{reason}: its {} key {} (at {} port {}) is {}; connect to it once in the app to check and trust it",
+                    question.key.algorithm,
+                    question.key.fingerprint,
+                    question.host,
+                    question.port,
+                    if question.changed() {
+                        "not the one trusted for it"
+                    } else {
+                        "not trusted yet"
+                    },
+                );
+            }
+            SessionEvent::Prompt(prompt) => {
+                let questions: Vec<&str> = prompt
+                    .questions
+                    .iter()
+                    .map(|question| question.text.trim())
+                    .collect();
+                reason = format!(
+                    "{reason}: it asked {}, and nobody can answer here",
+                    questions.join(" ")
+                );
+            }
+            _ => {}
+        }
+    }
+    Err(reason)
 }
 
 /// Asks the session's owner login questions and waits for the answers.

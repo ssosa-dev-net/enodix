@@ -14,7 +14,10 @@ to, rewritten after every host::
     ]}
 
 Each host logs in with its own credential profile, handed over by the
-app. Nothing is written to the workspace here: the app shows what the
+app. Hosts behind jump hosts are reached through the binary's loopback
+tunnels (:func:`netterm.tunnels`); NAPALM's Netmiko-based drivers (``ios``,
+``nxos_ssh``) then check the device's host key against the keys the app
+trusts. Nothing is written to the workspace here: the app shows what the
 devices report and fills in what the user applies. NAPALM is the user's
 to install (the app's Python setup offers it); without it every host
 fails, saying so.
@@ -30,7 +33,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
-from . import credentials, inventory
+from . import Tunnels, credentials, inventory, tunnels
+from ._tunnel import host_key_options
 
 #: The variable naming the file the facts go to.
 FACTS_VARIABLE = "NETTERM_FACTS_FILE"
@@ -46,12 +50,24 @@ PARALLEL = 10
 DriverFinder = Callable[[str], Any]
 
 
-def driver_arguments(host: Mapping[str, Any], login: Mapping[str, Any], driver: str) -> Dict[str, Any]:
+#: The NAPALM drivers that log in through Netmiko, which takes a known-hosts
+#: file: a tunnelled host's key is checked with these only.
+NETMIKO_DRIVERS = ("ios", "nxos_ssh")
+
+
+def driver_arguments(
+    host: Mapping[str, Any],
+    login: Mapping[str, Any],
+    driver: str,
+    tunnel: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
     """The keyword arguments of NAPALM's driver class ``driver`` for the
-    exported ``host`` and its ``login`` (``netterm-cli credentials``)."""
+    exported ``host`` and its ``login`` (``netterm-cli credentials``),
+    through ``tunnel`` (an entry of :attr:`netterm.Tunnels.hosts`) if the
+    host is behind jump hosts."""
     settings = host.get("settings") or {}
     optional: Dict[str, Any] = {}
-    port = settings.get("port")
+    port = tunnel["port"] if tunnel else settings.get("port")
     # Every driver goes to the host's SSH port, Junos too: NETCONF over
     # SSH's own port works where port 830 is not open.
     if port:
@@ -73,8 +89,10 @@ def driver_arguments(host: Mapping[str, Any], login: Mapping[str, Any], driver: 
         optional.update(use_keys=True, allow_agent=True)
     if login.get("enable_secret"):
         optional["secret"] = login["enable_secret"]
+    if tunnel and driver in NETMIKO_DRIVERS:
+        optional.update(host_key_options(dict(tunnel))["napalm"])
     return {
-        "hostname": host["address"],
+        "hostname": tunnel["address"] if tunnel else host["address"],
         "username": login.get("username") or "",
         "password": password,
         "timeout": settings.get("connect_timeout") or 60,
@@ -163,6 +181,16 @@ def collect(
         exported = {host["id"]: host for host in inventory(hosts=ids)["hosts"]} if ids else {}
     except Exception as error:
         return fail_all(f"the inventory could not be read: {_reason(error)}")
+    behind = [host for host, value in exported.items() if value["jump_hosts"] or value["jump_chain_error"]]
+    tunnelled: Dict[str, Dict[str, Any]] = {}
+    opened: Optional[Tunnels] = None
+    if behind:
+        try:
+            opened = tunnels(hosts=behind)
+            tunnelled = dict(opened.hosts)
+        except Exception as error:
+            reason = f"the tunnels to the hosts behind jump hosts could not be opened: {_reason(error)}"
+            tunnelled = {host: {"error": reason} for host in behind}
 
     def one(host_id: str) -> Dict[str, Any]:
         driver = drivers.get(host_id)
@@ -171,27 +199,34 @@ def collect(
             return {"id": host_id, "error": "the app named no NAPALM driver for it"}
         if host is None:
             return {"id": host_id, "error": "it is not in the inventory"}
+        tunnel = tunnelled.get(host_id)
+        if tunnel is not None and "error" in tunnel:
+            return {"id": host_id, "error": f"it cannot be reached through its jump hosts: {tunnel['error']}"}
         try:
             login = credentials(None, host_id)
         except Exception as error:
             return {"id": host_id, "error": f"its login could not be had: {_reason(error)}"}
         try:
-            facts = fetch(get_driver, driver, driver_arguments(host, login, driver))
+            facts = fetch(get_driver, driver, driver_arguments(host, login, driver, tunnel))
         except Exception as error:
             return {"id": host_id, "error": f"NAPALM ({driver}) failed: {_reason(error)}"}
         return {"id": host_id, "facts": facts}
 
-    with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
-        running = {pool.submit(one, host): host for host in ids}
-        for done in as_completed(running):
-            entry = done.result()
-            entries[entry["id"]] = entry
-            if "facts" in entry:
-                shown = ", ".join(f"{key} {value}" for key, value in entry["facts"].items())
-                out(f"{entry['id']}: {shown or 'no facts reported'}")
-            else:
-                out(f"{entry['id']}: {entry['error']}")
-            save()
+    try:
+        with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
+            running = {pool.submit(one, host): host for host in ids}
+            for done in as_completed(running):
+                entry = done.result()
+                entries[entry["id"]] = entry
+                if "facts" in entry:
+                    shown = ", ".join(f"{key} {value}" for key, value in entry["facts"].items())
+                    out(f"{entry['id']}: {shown or 'no facts reported'}")
+                else:
+                    out(f"{entry['id']}: {entry['error']}")
+                save()
+    finally:
+        if opened is not None:
+            opened.close()
     return save()
 
 
