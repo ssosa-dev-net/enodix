@@ -1,7 +1,12 @@
 <script lang="ts">
   import RoleIcon from "./RoleIcon.svelte";
   import TreeFolder from "./TreeFolder.svelte";
-  import { hostRole, inventory } from "./inventory.svelte";
+  import {
+    folderShown,
+    hostRole,
+    hostShown,
+    inventory,
+  } from "./inventory.svelte";
   import type { Folder, Host } from "./workspace";
 
   interface Props {
@@ -38,8 +43,9 @@
 <!-- Rows carry data-item (what is dragged or acted on) and data-drop (the
      folder something dropped on them goes into); WorkspacePanel handles
      dragging and the context menu for the whole tree. -->
+<!-- Under a saved filter, only its hosts and the folders holding them show. -->
 <ul>
-  {#each folder.folders as child (child.path)}
+  {#each folder.folders.filter( (child) => folderShown(child.path) ) as child (child.path)}
     <li>
       <button
         class="folder"
@@ -62,7 +68,7 @@
       {/if}
     </li>
   {/each}
-  {#each folder.hosts as host (host.id)}
+  {#each folder.hosts.filter((host) => hostShown(host.id)) as host (host.id)}
     {@const role = hostRole(host.id)}
     <li>
       <button

@@ -1,0 +1,9 @@
+address: 10.1.0.2
+vendor: Arista
+model: 7050SX
+serial_number: JPE15400001
+site: Madrid
+rack: R12
+rack_unit: 40
+custom:
+  owner: netops

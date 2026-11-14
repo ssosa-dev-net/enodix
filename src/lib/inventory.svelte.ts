@@ -7,6 +7,7 @@ import * as api from "./workspace";
 import type {
   Edited,
   EffectiveSettings,
+  FilterView,
   Folder,
   Host,
   Origin,
@@ -49,6 +50,12 @@ export const inventory = $state({
   dialog: null as DialogRequest | null,
   /** While dragging: the folder the item would be dropped into. */
   dropTarget: null as string | null,
+  /** Whether the Ctrl+K palette is open. */
+  palette: false,
+  /** The saved filter the tree is viewed through, by name. */
+  activeFilter: null as string | null,
+  /** What the active filter shows; null shows everything. */
+  filterView: null as { hosts: Set<string>; folders: Set<string> } | null,
 });
 
 export function setWorkspace(workspace: WorkspaceView | null) {
@@ -56,6 +63,30 @@ export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.selected = null;
   inventory.expanded = {};
   inventory.editError = null;
+  inventory.activeFilter = null;
+  inventory.filterView = null;
+}
+
+// Under a filter, the selected item (one just created, say, or edited out
+// of the filter) stays in view with its folders, so it never vanishes
+// while the side panel shows it.
+
+/** Whether the tree shows the host `id` under the active filter. */
+export function hostShown(id: string): boolean {
+  const view = inventory.filterView;
+  if (!view || view.hosts.has(id)) return true;
+  const selected = inventory.selected;
+  return selected?.kind === "host" && selected.id === id;
+}
+
+/** Whether the tree shows the folder at `path` under the active filter. */
+export function folderShown(path: string): boolean {
+  const view = inventory.filterView;
+  if (!view || view.folders.has(path)) return true;
+  const selected = inventory.selected;
+  if (!selected) return false;
+  const at = selected.kind === "host" ? selected.id : selected.path;
+  return at === path || at.startsWith(`${path}/`);
 }
 
 export function selectedHost(): Host | null {
@@ -90,6 +121,134 @@ export function reveal(path: string, self = false) {
   for (let i = 1; i <= upTo; i++) {
     inventory.expanded[names.slice(0, i).join("/")] = true;
   }
+}
+
+/** Shows the host `id` in the tree: expands its folders and selects it. */
+export function revealHost(id: string) {
+  if (!hostShown(id)) viewThrough(null);
+  reveal(id);
+  inventory.selected = { kind: "host", id };
+}
+
+/** Views the tree through the saved filter `name`, or everything (null). */
+export function viewThrough(name: string | null) {
+  inventory.activeFilter = name;
+  if (name === null) inventory.filterView = null;
+}
+
+/**
+ * Keeps the active filter's view up to date as the workspace changes, and
+ * expands its folders when a filter is chosen. Call during component setup.
+ */
+export function trackFilterView() {
+  let expandedFor: string | null = null;
+  $effect(() => {
+    const name = inventory.activeFilter;
+    const filter = inventory.workspace?.filters.find((f) => f.name === name);
+    if (!filter) {
+      // Deleted, renamed outside the app, or none chosen.
+      inventory.activeFilter = null;
+      inventory.filterView = null;
+      expandedFor = null;
+      return;
+    }
+    let stale = false;
+    api
+      .applyFilter($state.snapshot(filter))
+      .then((view: FilterView) => {
+        if (stale) return;
+        inventory.filterView = {
+          hosts: new Set(view.hosts),
+          folders: new Set(view.folders),
+        };
+        if (expandedFor !== filter.name) {
+          expandedFor = filter.name;
+          for (const path of view.folders) inventory.expanded[path] = true;
+        }
+      })
+      .catch((error) => {
+        if (!stale) inventory.editError = String(error);
+      });
+    return () => {
+      stale = true;
+    };
+  });
+}
+
+/** How a search or filter field is called on screen. */
+export function fieldLabel(field: string): string {
+  if (field.startsWith("custom.")) return field.slice("custom.".length);
+  const known = FILTER_FIELDS.find(([key]) => key === field);
+  return known ? known[1] : field;
+}
+
+/** The fields a filter can test, besides custom ones. */
+const FILTER_FIELDS: [string, string][] = [
+  ["tag", "Tag"],
+  ["role", "Role"],
+  ["name", "Name"],
+  ["address", "Management address"],
+  ...api.HOST_TEXT_FIELDS.map(([key, label]): [string, string] => [key, label]),
+  ["description", "Description"],
+  ["text", "Any field (search words)"],
+];
+
+/** Asks for a filter of one condition, saves it and views the tree through it. */
+export function newFilter() {
+  const tree = inventory.workspace?.tree;
+  if (!tree) return;
+  const custom = [
+    ...new Set(
+      api.allHosts(tree).flatMap((host) => host.custom.map((f) => f.key)),
+    ),
+  ].sort();
+  const options = [
+    ...FILTER_FIELDS,
+    ...custom.map((key): [string, string] => [
+      `custom.${key}`,
+      `${key} (custom)`,
+    ]),
+  ].map(([value, label]) => ({ value, label }));
+  inventory.dialog = {
+    title: "Save filter",
+    message: "Values match whole, ignoring case; * stands for any text.",
+    fields: [
+      { name: "filter-name", label: "Name", value: "" },
+      { name: "field", label: "Field", value: options[0].value, options },
+      { name: "value", label: "Value", value: "" },
+    ],
+    confirm: "Save",
+    onconfirm: (values) =>
+      inDialog(async () => {
+        const name = values["filter-name"].trim();
+        apply(
+          await api.saveFilter({
+            name,
+            conditions: [{ field: values.field, value: values.value }],
+          }),
+        );
+        const saved = inventory.workspace?.filters.find(
+          (filter) => filter.name.toLowerCase() === name.toLowerCase(),
+        );
+        if (saved) viewThrough(saved.name);
+      }),
+  };
+}
+
+/** Asks before deleting the saved filter `name` from the workspace. */
+export function removeFilter(name: string) {
+  inventory.dialog = {
+    title: "Delete filter",
+    message: `Delete the saved filter ${name}? Its hosts are not touched.`,
+    fields: [],
+    confirm: "Delete",
+    danger: true,
+    onconfirm: () =>
+      inDialog(async () => {
+        apply(await api.deleteFilter(name));
+        if (inventory.activeFilter === name) viewThrough(null);
+      }),
+  };
 }
 
 function itemPath(item: Item) {

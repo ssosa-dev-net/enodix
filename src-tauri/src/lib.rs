@@ -11,8 +11,8 @@ use netterm_core::session::{
     SessionEvent, SessionId, SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{
-    EditError, EffectiveSettings, Folder, FolderDeletion, Host, HostId, Problem, Role, Settings,
-    Workspace,
+    EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem, Role,
+    SavedFilter, SearchResults, Settings, Workspace,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -64,6 +64,8 @@ struct WorkspaceView {
     roles: Vec<Role>,
     /// The role each host that has one shows, by host id.
     host_roles: BTreeMap<HostId, Role>,
+    /// The saved filters, in file order.
+    filters: Vec<SavedFilter>,
     problems: Vec<Problem>,
 }
 
@@ -74,6 +76,7 @@ impl From<&Workspace> for WorkspaceView {
             tree: workspace.tree().clone(),
             roles: workspace.roles().to_vec(),
             host_roles: workspace.host_roles(),
+            filters: workspace.filters().to_vec(),
             problems: workspace.problems().to_vec(),
         }
     }
@@ -299,6 +302,39 @@ fn settings_resolve(shell: State<'_, Shell>, item: Item) -> Result<EffectiveSett
     }
 }
 
+/// The hosts of the open workspace matching `query` (the Ctrl+K palette).
+#[tauri::command]
+fn workspace_search(
+    shell: State<'_, Shell>,
+    query: String,
+    limit: usize,
+) -> Result<SearchResults, String> {
+    read(&shell, |workspace| workspace.search(&query, limit))
+}
+
+/// The part of the tree a saved filter shows.
+#[tauri::command]
+fn filter_apply(shell: State<'_, Shell>, filter: SavedFilter) -> Result<FilterView, String> {
+    read(&shell, |workspace| workspace.apply_filter(&filter))
+}
+
+/// Asks the open workspace something.
+fn read<T>(shell: &Shell, query: impl FnOnce(&Workspace) -> T) -> Result<T, String> {
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    Ok(query(workspace))
+}
+
+#[tauri::command]
+fn filter_save(shell: State<'_, Shell>, filter: SavedFilter) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| workspace.save_filter(&filter))
+}
+
+#[tauri::command]
+fn filter_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| workspace.delete_filter(&name))
+}
+
 #[tauri::command]
 fn host_create(
     shell: State<'_, Shell>,
@@ -459,6 +495,10 @@ pub fn run() {
             folder_save_settings,
             folder_set_tags,
             settings_resolve,
+            workspace_search,
+            filter_apply,
+            filter_save,
+            filter_delete,
             host_create,
             host_rename,
             host_move,

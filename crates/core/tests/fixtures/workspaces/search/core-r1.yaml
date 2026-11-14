@@ -1,0 +1,5 @@
+address: core-r1.example.net
+vendor: Juniper
+role: core
+description: Backbone router, north
+tags: [backbone]
