@@ -452,6 +452,21 @@ impl ScriptedShell {
             }
             Some("colors") => session.data(channel, COLOR_OUTPUT)?,
             Some("fullscreen") => session.data(channel, FULLSCREEN_OUTPUT)?,
+            // A cursor-position and a device-attributes request, which a
+            // terminal answers by itself (the answers arrive as input).
+            Some("query") => session.data(channel, &b"\x1b[6n\x1b[c"[..])?,
+            // Mouse reporting (normal tracking, SGR encoding) on or off.
+            Some("mouse") => {
+                let mode = if words.next() == Some("off") {
+                    b'l'
+                } else {
+                    b'h'
+                };
+                session.data(
+                    channel,
+                    [b"\x1b[?1000".as_slice(), &[mode], b"\x1b[?1006", &[mode]].concat(),
+                )?;
+            }
             Some("lines") => {
                 let count: u32 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
                 session.data(channel, numbered_lines(count))?;
