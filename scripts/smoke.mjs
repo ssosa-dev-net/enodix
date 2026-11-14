@@ -7,7 +7,14 @@
 // Windows only for now: it relies on WebView2's remote-debugging switch.
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -160,15 +167,25 @@ async function main() {
       await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
     }
   };
-  const fillForm = (fields) =>
+  // Fills fields of the first form matching `form`, then submits it.
+  const fillForm = (fields, form = "form") =>
     evaluate(`(() => {
       const fields = ${JSON.stringify(fields)};
+      const form = document.querySelector(${JSON.stringify(form)});
       for (const [name, value] of Object.entries(fields)) {
-        const input = document.querySelector("input[name=" + name + "]");
+        const input = form.querySelector("[name=" + name + "]");
         input.value = value;
         input.dispatchEvent(new Event("input", { bubbles: true }));
       }
-      document.querySelector("form").requestSubmit();
+      form.requestSubmit();
+    })()`);
+  // Types into a side-panel field and commits it, as leaving the field does.
+  const changeField = (selector, value) =>
+    evaluate(`(() => {
+      const input = document.querySelector(".side " + ${JSON.stringify(selector)});
+      input.value = ${JSON.stringify(value)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
     })()`);
   const quickConnect = async (password) => {
     await until("the quick-connect form", () =>
@@ -181,12 +198,16 @@ async function main() {
       password,
     });
   };
-  // A real double-click, through the mouse, in the middle of the element.
-  const doubleClick = async (selector) => {
-    const { x, y } = await evaluate(`(() => {
+  const centreOf = (selector) =>
+    evaluate(`(() => {
       const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
       return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     })()`);
+  const mouse = (type, { x, y }, extra = {}) =>
+    devtools.send("Input.dispatchMouseEvent", { type, x, y, ...extra });
+  // A real double-click, through the mouse, in the middle of the element.
+  const doubleClick = async (selector) => {
+    const { x, y } = await centreOf(selector);
     for (const clickCount of [1, 2]) {
       for (const type of ["mousePressed", "mouseReleased"]) {
         await devtools.send("Input.dispatchMouseEvent", {
@@ -369,7 +390,208 @@ async function main() {
   await screenshot("host-session");
   step("double-clicking a host opened a session to it");
 
+  await editInventory({
+    evaluate,
+    text,
+    click,
+    fillForm,
+    changeField,
+    centreOf,
+    mouse,
+    devtools,
+    screenshot,
+    step,
+  });
+
   devtools.close();
+}
+
+/** The inventory is edited from the tree and the side panel, and each
+ * change is checked in the workspace files on disk. */
+async function editInventory({
+  evaluate,
+  text,
+  click,
+  fillForm,
+  changeField,
+  centreOf,
+  mouse,
+  devtools,
+  screenshot,
+  step,
+}) {
+  const file = (path) => join(workspace, ...path.split("/"));
+  const contents = (path) =>
+    existsSync(file(path)) ? readFileSync(file(path), "utf8") : null;
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const dialog = "[role=dialog] form";
+  const dialogOpen = () =>
+    evaluate(`!!document.querySelector(${JSON.stringify(dialog)})`);
+  const folderRow = (path) => `nav [data-item=folder][data-path="${path}"]`;
+  const hostRow = (id) => `nav [data-host="${id}"]`;
+  const hostFile = "address: 10.9.0.1\nvendor: Arista\nrack_unit: 12\n";
+
+  // A folder and a host, created from the toolbar at the top level.
+  await clickOn("aside header .name");
+  await click("+ Folder");
+  await until("the new folder dialog", dialogOpen);
+  await fillForm({ name: "Edge" }, dialog);
+  await until("the Edge folder on disk", () => existsSync(file("Edge")));
+  await click("+ Host");
+  await until("the new host dialog", dialogOpen);
+  await fillForm({ name: "edge-r1", address: "10.9.0.1" }, dialog);
+  await until(
+    "the new host's file",
+    () => contents("Edge/edge-r1.yaml") === "address: 10.9.0.1\n",
+  );
+  await until("the new host selected in the tree", () =>
+    evaluate(
+      `document.querySelector(${JSON.stringify(hostRow("Edge/edge-r1.yaml"))})?.getAttribute("aria-pressed") === "true"`,
+    ),
+  );
+  step("a folder and a host were created and written to disk");
+
+  // The side panel edits the selected host's file.
+  await until("the host's side panel", async () =>
+    (await text(".side h2")).includes("edge-r1"),
+  );
+  await changeField("[name=vendor]", "Arista");
+  await until(
+    "the vendor in the file",
+    () =>
+      contents("Edge/edge-r1.yaml") === "address: 10.9.0.1\nvendor: Arista\n",
+  );
+  await changeField("[name=rack_unit]", "12");
+  await until(
+    "the rack unit in the file",
+    () => contents("Edge/edge-r1.yaml") === hostFile,
+  );
+  await fillForm({ "new-tag": "edge" }, ".side form:has([name=new-tag])");
+  await until("the tag in the file", () =>
+    contents("Edge/edge-r1.yaml")?.endsWith("tags:\n- edge\n"),
+  );
+  await fillForm(
+    { "new-key": "circuit", "new-value": "CID-77" },
+    ".side form:has([name=new-key])",
+  );
+  await until("the custom field in the file", () =>
+    contents("Edge/edge-r1.yaml")?.endsWith("custom:\n  circuit: CID-77\n"),
+  );
+  await changeField('[data-custom="circuit"]', "CID-78");
+  await until("the edited custom field in the file", () =>
+    contents("Edge/edge-r1.yaml")?.endsWith("custom:\n  circuit: CID-78\n"),
+  );
+  await screenshot("host-details");
+  await clickOn('.side [aria-label="Remove tag edge"]');
+  await until(
+    "the tag removed from the file",
+    async () => !contents("Edge/edge-r1.yaml")?.includes("tags:"),
+  );
+  await clickOn('.side [aria-label="Remove field circuit"]');
+  await until(
+    "the custom field removed from the file",
+    () => contents("Edge/edge-r1.yaml") === hostFile,
+  );
+  step("the side panel saved fields, tags and custom fields to the file");
+
+  // One click copies a field's value.
+  await devtools.send("Browser.grantPermissions", {
+    permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+  });
+  await clickOn('.side [aria-label="Copy management address"]');
+  await until("the copied address on the clipboard", async () => {
+    const { result } = await devtools.send("Runtime.evaluate", {
+      expression: "navigator.clipboard.readText()",
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    return result.value === "10.9.0.1";
+  });
+  step("a field value was copied with one click");
+
+  // Renaming from the side panel renames the file.
+  await changeField("[name=name]", "edge-r2");
+  await until(
+    "the renamed host file",
+    () =>
+      contents("Edge/edge-r2.yaml") === hostFile &&
+      !existsSync(file("Edge/edge-r1.yaml")),
+  );
+  step("renaming a host renamed its file");
+
+  // Dragging the host onto another folder moves its file.
+  const from = await centreOf(hostRow("Edge/edge-r2.yaml"));
+  const to = await centreOf(folderRow("Lab"));
+  await mouse("mousePressed", from, { button: "left", clickCount: 1 });
+  for (let i = 1; i <= 5; i++) {
+    const at = {
+      x: from.x + ((to.x - from.x) * i) / 5,
+      y: from.y + ((to.y - from.y) * i) / 5,
+    };
+    await mouse("mouseMoved", at, { button: "left", buttons: 1 });
+  }
+  await mouse("mouseReleased", to, { button: "left", clickCount: 1 });
+  await until(
+    "the dragged host's file in Lab",
+    () =>
+      contents("Lab/edge-r2.yaml") === hostFile &&
+      !existsSync(file("Edge/edge-r2.yaml")),
+  );
+  step("dragging a host onto a folder moved its file");
+
+  // A folder's description is saved to its settings file.
+  await clickOn(folderRow("Edge"));
+  await until(
+    "the folder's side panel",
+    async () => (await text(".side h2")) === "Edge",
+  );
+  await changeField("[name=folder-description]", "Edge routers");
+  await until(
+    "the folder settings file",
+    () => contents("Edge/_folder.yaml") === "description: Edge routers\n",
+  );
+  step("a folder description was written to its settings file");
+
+  // Moving a folder from its context menu.
+  const openMenu = async (selector) => {
+    const at = await centreOf(selector);
+    await mouse("mousePressed", at, { button: "right", clickCount: 1 });
+    await mouse("mouseReleased", at, { button: "right", clickCount: 1 });
+    await until("the context menu", () =>
+      evaluate(`!!document.querySelector("[role=menu]")`),
+    );
+  };
+  await openMenu(folderRow("Edge"));
+  await click("Move to…");
+  await until("the move dialog", dialogOpen);
+  await fillForm({ folder: "Lab" }, dialog);
+  await until("the moved folder", () =>
+    existsSync(file("Lab/Edge/_folder.yaml")),
+  );
+  step("a folder was moved from its context menu");
+
+  // A folder without hosts is deleted at once; one with hosts asks first.
+  await until("the moved folder in the tree", () =>
+    evaluate(
+      `!!document.querySelector(${JSON.stringify(folderRow("Lab/Edge"))})`,
+    ),
+  );
+  await openMenu(folderRow("Lab/Edge"));
+  await click("Delete");
+  await until("the empty folder deleted", () => !existsSync(file("Lab/Edge")));
+  await openMenu(folderRow("Lab"));
+  await click("Delete");
+  await until("the delete confirmation", async () =>
+    (await text("[role=dialog]")).includes("contains 2 hosts"),
+  );
+  await screenshot("delete-confirmation");
+  if (!existsSync(file("Lab/smoke-r1.yaml"))) {
+    fail("the folder was deleted before the confirmation");
+  }
+  await click("Delete 2 hosts");
+  await until("the folder with hosts deleted", () => !existsSync(file("Lab")));
+  step("deleting a folder with hosts asked for confirmation first");
 }
 
 let exitCode = 0;

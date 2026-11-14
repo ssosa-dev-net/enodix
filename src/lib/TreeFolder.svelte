@@ -1,21 +1,30 @@
 <script lang="ts">
   import TreeFolder from "./TreeFolder.svelte";
+  import { inventory } from "./inventory.svelte";
   import type { Folder, Host } from "./workspace";
 
   interface Props {
     folder: Folder;
     depth: number;
-    selected: string | null;
-    onselect: (host: Host) => void;
     onconnect: (host: Host) => void;
   }
 
-  let { folder, depth, selected, onselect, onconnect }: Props = $props();
-
-  // Folders start collapsed, so a large inventory stays light.
-  let expanded = $state<Record<string, boolean>>({});
+  let { folder, depth, onconnect }: Props = $props();
 
   const indent = $derived(`${0.6 + depth * 0.9}rem`);
+
+  function isSelected(kind: "host" | "folder", path: string) {
+    const selected = inventory.selected;
+    return (
+      selected?.kind === kind &&
+      (selected.kind === "host" ? selected.id : selected.path) === path
+    );
+  }
+
+  function clickFolder(child: Folder) {
+    inventory.selected = { kind: "folder", path: child.path };
+    inventory.expanded[child.path] = !inventory.expanded[child.path];
+  }
 
   function onkeydown(event: KeyboardEvent, host: Host) {
     if (event.key === "Enter") {
@@ -25,27 +34,30 @@
   }
 </script>
 
+<!-- Rows carry data-item (what is dragged or acted on) and data-drop (the
+     folder something dropped on them goes into); WorkspacePanel handles
+     dragging and the context menu for the whole tree. -->
 <ul>
   {#each folder.folders as child (child.path)}
     <li>
       <button
         class="folder"
-        aria-expanded={!!expanded[child.path]}
+        class:selected={isSelected("folder", child.path)}
+        class:drop-target={inventory.dropTarget === child.path}
+        aria-expanded={!!inventory.expanded[child.path]}
         style:padding-left={indent}
         title={child.description ?? child.path}
-        onclick={() => (expanded[child.path] = !expanded[child.path])}
+        data-item="folder"
+        data-path={child.path}
+        data-drop={child.path}
+        data-label={child.name}
+        onclick={() => clickFolder(child)}
       >
-        <span class="twisty">{expanded[child.path] ? "▾" : "▸"}</span>
+        <span class="twisty">{inventory.expanded[child.path] ? "▾" : "▸"}</span>
         <span class="label">{child.name}</span>
       </button>
-      {#if expanded[child.path]}
-        <TreeFolder
-          folder={child}
-          depth={depth + 1}
-          {selected}
-          {onselect}
-          {onconnect}
-        />
+      {#if inventory.expanded[child.path]}
+        <TreeFolder folder={child} depth={depth + 1} {onconnect} />
       {/if}
     </li>
   {/each}
@@ -53,12 +65,16 @@
     <li>
       <button
         class="host"
-        aria-pressed={selected === host.id}
-        class:selected={selected === host.id}
+        aria-pressed={isSelected("host", host.id)}
+        class:selected={isSelected("host", host.id)}
         style:padding-left={indent}
         data-host={host.id}
+        data-item="host"
+        data-path={host.id}
+        data-drop={folder.path}
+        data-label={host.name}
         title="{host.address}{host.port ? `:${host.port}` : ''}"
-        onclick={() => onselect(host)}
+        onclick={() => (inventory.selected = { kind: "host", id: host.id })}
         ondblclick={() => onconnect(host)}
         onkeydown={(event) => onkeydown(event, host)}
       >
@@ -103,6 +119,11 @@
   .selected {
     background: var(--surface);
     box-shadow: inset 2px 0 var(--accent);
+  }
+
+  .drop-target,
+  .drop-target:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
   }
 
   .twisty {

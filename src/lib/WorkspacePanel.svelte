@@ -1,30 +1,198 @@
 <script lang="ts">
   import TreeFolder from "./TreeFolder.svelte";
-  import type { Host, WorkspaceView } from "./workspace";
+  import {
+    canMoveInto,
+    inventory,
+    move,
+    moveInto,
+    newFolder,
+    newHost,
+    remove,
+    rename,
+    targetFolder,
+    type Item,
+  } from "./inventory.svelte";
+  import { findHost, type Host } from "./workspace";
 
   interface Props {
-    workspace: WorkspaceView | null;
-    /** Why the last workspace could not be opened, if it could not. */
-    error: string | null;
     onopen: () => void;
     onconnect: (host: Host) => void;
   }
 
-  let { workspace, error, onopen, onconnect }: Props = $props();
+  let { onopen, onconnect }: Props = $props();
 
-  let selected = $state<string | null>(null);
+  const workspace = $derived(inventory.workspace);
+
+  /** The item under the pointer while the button is held. */
+  let pressed: { item: Item; label: string; x: number; y: number } | null =
+    null;
+  /** Where the dragged item's label follows the pointer, once dragging. */
+  let ghost = $state<{ label: string; x: number; y: number } | null>(null);
+  let menu = $state<{ item: Item; x: number; y: number } | null>(null);
+
+  function itemAt(target: EventTarget | null): Item | null {
+    const row = (target as Element | null)?.closest<HTMLElement>("[data-item]");
+    if (!row) return null;
+    const path = row.dataset.path ?? "";
+    return row.dataset.item === "host"
+      ? { kind: "host", id: path }
+      : { kind: "folder", path };
+  }
+
+  /** The folder under the pointer: a folder row, a host row's folder, or
+   * the empty part of the tree for the top level. */
+  function dropFolderAt(x: number, y: number): string | null {
+    const element = document.elementFromPoint(x, y);
+    return element?.closest<HTMLElement>("[data-drop]")?.dataset.drop ?? null;
+  }
+
+  function onpointerdown(event: PointerEvent) {
+    if (event.button !== 0) return;
+    const item = itemAt(event.target);
+    const row = (event.target as Element).closest<HTMLElement>("[data-item]");
+    if (!item || !row) return;
+    pressed = {
+      item,
+      label: row.dataset.label ?? "",
+      x: event.clientX,
+      y: event.clientY,
+    };
+  }
+
+  function onpointermove(event: PointerEvent) {
+    if (!pressed) return;
+    if (
+      !ghost &&
+      Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) < 5
+    ) {
+      return;
+    }
+    ghost = { label: pressed.label, x: event.clientX, y: event.clientY };
+    const folder = dropFolderAt(event.clientX, event.clientY);
+    inventory.dropTarget =
+      folder !== null && canMoveInto(pressed.item, folder) ? folder : null;
+  }
+
+  function onpointerup() {
+    const dragged = ghost !== null;
+    const item = pressed?.item;
+    const target = inventory.dropTarget;
+    pressed = null;
+    ghost = null;
+    inventory.dropTarget = null;
+    if (!dragged || !item) return;
+    // The click that ends a drag is not a selection.
+    const swallow = (event: Event) => {
+      event.stopPropagation();
+      event.preventDefault();
+    };
+    window.addEventListener("click", swallow, { capture: true, once: true });
+    setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+    if (target !== null) moveInto(item, target);
+  }
+
+  function oncontextmenu(event: MouseEvent) {
+    event.preventDefault();
+    const item = itemAt(event.target) ?? { kind: "folder", path: "" };
+    inventory.selected = item;
+    menu = { item, x: event.clientX, y: event.clientY };
+  }
+
+  function ontreekeydown(event: KeyboardEvent) {
+    const item = itemAt(event.target);
+    if (!item) return;
+    if (event.key === "F2") {
+      event.preventDefault();
+      rename(item);
+    } else if (event.key === "Delete") {
+      event.preventDefault();
+      remove(item);
+    }
+  }
+
+  function connect(item: Item) {
+    const host =
+      item.kind === "host" && workspace
+        ? findHost(workspace.tree, item.id)
+        : null;
+    if (host) onconnect(host);
+  }
+
+  /** The menu's entries for an item. */
+  function entries(item: Item): [string, () => void][] {
+    if (item.kind === "host") {
+      return [
+        ["Connect", () => connect(item)],
+        ["Rename…", () => rename(item)],
+        ["Move to…", () => move(item)],
+        ["Delete…", () => remove(item)],
+      ];
+    }
+    const creating: [string, () => void][] = [
+      ["New folder…", () => newFolder(item.path)],
+      ["New host…", () => newHost(item.path)],
+    ];
+    if (item.path === "") return creating;
+    return [
+      ...creating,
+      ["Rename…", () => rename(item)],
+      ["Move to…", () => move(item)],
+      ["Delete", () => remove(item)],
+    ];
+  }
 </script>
+
+<svelte:window
+  {onpointermove}
+  {onpointerup}
+  onpointerdown={(event) => {
+    if (menu && !(event.target as Element).closest(".menu")) menu = null;
+  }}
+  onkeydown={(event) => {
+    if (event.key === "Escape") menu = null;
+  }}
+  onblur={() => (menu = null)}
+/>
 
 <aside>
   <header>
-    <span class="name" title={workspace?.root}>
+    <button
+      class="name"
+      title={workspace?.root}
+      disabled={!workspace}
+      class:selected={inventory.selected?.kind === "folder" &&
+        inventory.selected.path === ""}
+      onclick={() => (inventory.selected = { kind: "folder", path: "" })}
+    >
       {workspace?.tree.name ?? "No workspace"}
-    </span>
+    </button>
     <button onclick={onopen}>Open workspace…</button>
   </header>
 
-  {#if error}
-    <p class="error" role="alert">{error}</p>
+  {#if workspace}
+    <div class="toolbar">
+      <button title="New folder" onclick={() => newFolder(targetFolder())}
+        >+ Folder</button
+      >
+      <button title="New host" onclick={() => newHost(targetFolder())}
+        >+ Host</button
+      >
+    </div>
+  {/if}
+
+  {#if inventory.openError}
+    <p class="error" role="alert">{inventory.openError}</p>
+  {/if}
+
+  {#if inventory.editError}
+    <p class="error edit-error" role="alert">
+      <span>{inventory.editError}</span>
+      <button
+        class="dismiss"
+        aria-label="Dismiss"
+        onclick={() => (inventory.editError = null)}>×</button
+      >
+    </p>
   {/if}
 
   {#if workspace}
@@ -43,22 +211,44 @@
       </details>
     {/if}
 
-    <nav class="tree" aria-label="Inventory">
-      <TreeFolder
-        folder={workspace.tree}
-        depth={0}
-        {selected}
-        onselect={(host) => (selected = host.id)}
-        onconnect={(host) => {
-          selected = host.id;
-          onconnect(host);
-        }}
-      />
+    <!-- The rows are buttons; the tree only delegates their pointer, menu
+         and key events. -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <nav
+      class="tree"
+      class:drop-target={inventory.dropTarget === ""}
+      aria-label="Inventory"
+      data-drop=""
+      {onpointerdown}
+      {oncontextmenu}
+      onkeydown={ontreekeydown}
+    >
+      <TreeFolder folder={workspace.tree} depth={0} {onconnect} />
     </nav>
-  {:else if !error}
+  {:else if !inventory.openError}
     <p class="hint">Open a workspace folder to see its hosts.</p>
   {/if}
 </aside>
+
+{#if ghost}
+  <div class="ghost" style:left="{ghost.x + 12}px" style:top="{ghost.y + 8}px">
+    {ghost.label}
+  </div>
+{/if}
+
+{#if menu}
+  <div class="menu" role="menu" style:left="{menu.x}px" style:top="{menu.y}px">
+    {#each entries(menu.item) as [label, action] (label)}
+      <button
+        role="menuitem"
+        onclick={() => {
+          menu = null;
+          action();
+        }}>{label}</button
+      >
+    {/each}
+  </div>
+{/if}
 
 <style>
   aside {
@@ -80,17 +270,41 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .name {
+  header button {
+    padding: 0.25rem 0.6rem;
+  }
+
+  header .name {
     flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-weight: 600;
+    text-align: left;
+    border-color: transparent;
+    background: none;
+    padding-left: 0.2rem;
   }
 
-  header button {
-    padding: 0.25rem 0.6rem;
+  header .name:disabled {
+    opacity: 1;
+  }
+
+  header .name.selected {
+    box-shadow: inset 2px 0 var(--accent);
+  }
+
+  .toolbar {
+    display: flex;
+    gap: 0.4rem;
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .toolbar button {
+    padding: 0.15rem 0.55rem;
+    font-size: 0.8rem;
   }
 
   .tree {
@@ -98,6 +312,10 @@
     min-height: 0;
     overflow: auto;
     padding: 0.3rem 0;
+  }
+
+  .tree.drop-target {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
 
   .hint,
@@ -109,6 +327,25 @@
   .error {
     color: var(--danger);
     overflow-wrap: anywhere;
+  }
+
+  .edit-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    margin: 0.5rem 0.6rem 0;
+    font-size: 0.8rem;
+  }
+
+  .edit-error span {
+    flex: 1;
+  }
+
+  .dismiss {
+    border: 0;
+    background: none;
+    padding: 0 0.3rem;
+    color: var(--muted);
   }
 
   .problems {
@@ -131,5 +368,42 @@
     max-height: 10rem;
     overflow: auto;
     overflow-wrap: anywhere;
+  }
+
+  .ghost {
+    position: fixed;
+    z-index: 30;
+    pointer-events: none;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.8rem;
+    background: var(--surface);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    opacity: 0.9;
+  }
+
+  .menu {
+    position: fixed;
+    z-index: 25;
+    display: grid;
+    min-width: 10rem;
+    padding: 0.25rem 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: 0 6px 20px rgb(0 0 0 / 0.4);
+  }
+
+  .menu button {
+    border: 0;
+    border-radius: 0;
+    background: none;
+    text-align: left;
+    padding: 0.3rem 0.9rem;
+  }
+
+  .menu button:hover {
+    filter: none;
+    background: var(--border);
   }
 </style>

@@ -10,6 +10,14 @@
 //! The files are the only source of truth. Loading never stops at a bad
 //! file: each one becomes a [`Problem`] naming the file, and the rest of the
 //! workspace loads.
+//!
+//! Edits (creating, renaming, moving and deleting folders and hosts, saving
+//! a host's fields, a folder's description) go straight to the files, and
+//! the workspace reloads its tree afterwards. Files are written so that git
+//! diffs show only real changes: keys the app does not change keep their
+//! place and their exact value, new built-in keys take a fixed place
+//! ([`HOST_KEY_ORDER`]), and saving a host with nothing changed leaves its
+//! file untouched.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -30,7 +38,42 @@ pub const FOLDER_SETTINGS_FILE: &str = "_folder.yaml";
 const NAME: &str = "name";
 const ADDRESS: &str = "address";
 const PORT: &str = "port";
+const VENDOR: &str = "vendor";
+const PLATFORM: &str = "platform";
+const MODEL: &str = "model";
+const SERIAL_NUMBER: &str = "serial_number";
+const SITE: &str = "site";
+const BUILDING: &str = "building";
+const ROOM: &str = "room";
+const RACK: &str = "rack";
+const RACK_UNIT: &str = "rack_unit";
 const DESCRIPTION: &str = "description";
+const TAGS: &str = "tags";
+const CUSTOM: &str = "custom";
+
+/// Where the app puts a built-in key that a host file does not have yet:
+/// right after the nearest key before it in this list that the file has.
+/// Keys the app does not know stay where they are.
+pub const HOST_KEY_ORDER: [&str; 15] = [
+    NAME,
+    ADDRESS,
+    PORT,
+    VENDOR,
+    PLATFORM,
+    MODEL,
+    SERIAL_NUMBER,
+    SITE,
+    BUILDING,
+    ROOM,
+    RACK,
+    RACK_UNIT,
+    DESCRIPTION,
+    TAGS,
+    CUSTOM,
+];
+
+/// The extension of host files the app creates.
+const HOST_EXTENSION: &str = "yaml";
 
 /// A loaded workspace: its tree and the problems found while loading it.
 #[derive(Debug, Clone)]
@@ -55,6 +98,13 @@ pub struct Folder {
     pub hosts: Vec<Host>,
 }
 
+impl Folder {
+    /// The hosts in this folder and all folders below it.
+    pub fn host_count(&self) -> usize {
+        self.hosts.len() + self.folders.iter().map(Folder::host_count).sum::<usize>()
+    }
+}
+
 /// Identifies a host within its workspace: the host file's path relative to
 /// the workspace root, `/`-separated.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -69,6 +119,11 @@ impl HostId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The folder path and the file name.
+    fn split(&self) -> (&str, &str) {
+        self.0.rsplit_once('/').unwrap_or(("", &self.0))
+    }
 }
 
 impl fmt::Display for HostId {
@@ -78,7 +133,10 @@ impl fmt::Display for HostId {
 }
 
 /// A host, read from its own file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// The text fields are `None` when the file does not set them. To change a
+/// host, change a copy and pass it to [`Workspace::write_host`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Host {
     pub id: HostId,
     /// `name` in the file; the file name without its extension when absent.
@@ -87,10 +145,41 @@ pub struct Host {
     pub address: String,
     /// `port` in the file, if set.
     pub port: Option<u16>,
+    pub vendor: Option<String>,
+    pub platform: Option<String>,
+    pub model: Option<String>,
+    pub serial_number: Option<String>,
+    pub site: Option<String>,
+    pub building: Option<String>,
+    pub room: Option<String>,
+    pub rack: Option<String>,
+    /// Text, as units are sometimes written `U12` or `12-13`; written as a
+    /// number when it is one.
+    pub rack_unit: Option<String>,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+    /// The user's own fields (`custom` in the file), in file order.
+    pub custom: Vec<CustomField>,
     /// Everything the file holds, in file order, so that keys this version
     /// does not know survive a rewrite.
     #[serde(skip)]
     document: Mapping,
+}
+
+/// One of a host's own key/value fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomField {
+    pub key: String,
+    pub value: String,
+}
+
+impl CustomField {
+    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
 }
 
 impl Host {
@@ -103,6 +192,22 @@ impl Host {
             username,
             password,
         }
+    }
+
+    /// The optional built-in text fields with their file keys.
+    fn text_fields(&self) -> [(&'static str, &Option<String>); 10] {
+        [
+            (VENDOR, &self.vendor),
+            (PLATFORM, &self.platform),
+            (MODEL, &self.model),
+            (SERIAL_NUMBER, &self.serial_number),
+            (SITE, &self.site),
+            (BUILDING, &self.building),
+            (ROOM, &self.room),
+            (RACK, &self.rack),
+            (RACK_UNIT, &self.rack_unit),
+            (DESCRIPTION, &self.description),
+        ]
     }
 }
 
@@ -128,13 +233,42 @@ pub struct OpenError {
     pub reason: String,
 }
 
-/// A host file could not be written.
+/// An edit that was refused or failed. A refused edit changes no file.
 #[derive(Debug, thiserror::Error)]
-#[error("cannot write {file}: {source}")]
-pub struct WriteError {
-    pub file: String,
-    #[source]
-    pub source: io::Error,
+pub enum EditError {
+    /// The folder or host is not in this workspace.
+    #[error("{0} is not in this workspace")]
+    NotFound(String),
+    /// The target folder already has an entry with this name (ignoring
+    /// case, and for hosts the file extension).
+    #[error("{0} already exists")]
+    AlreadyExists(String),
+    /// The name cannot be a file or folder name on every system.
+    #[error("\"{name}\" cannot be used as a name: {reason}")]
+    InvalidName { name: String, reason: &'static str },
+    /// The edit makes no sense (an empty address, a folder into itself, ...).
+    #[error("{0}")]
+    Invalid(String),
+    /// Deleting the folder would delete hosts, and that was not confirmed.
+    #[error("{folder} contains {hosts} {}", if *.hosts == 1 { "host" } else { "hosts" })]
+    FolderHasHosts { folder: String, hosts: usize },
+    /// The file system refused.
+    #[error("cannot write {file}: {source}")]
+    Io {
+        file: String,
+        #[source]
+        source: io::Error,
+    },
+}
+
+/// Whether deleting a folder may delete the hosts inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FolderDeletion {
+    /// Refuse with [`EditError::FolderHasHosts`] if it holds any host.
+    IfNoHosts,
+    /// The user confirmed: delete it with everything in it.
+    IncludingHosts,
 }
 
 impl Workspace {
@@ -183,63 +317,516 @@ impl Workspace {
 
     /// The host with this id, if the workspace has it.
     pub fn host(&self, id: &HostId) -> Option<&Host> {
-        fn find<'a>(folder: &'a Folder, id: &HostId) -> Option<&'a Host> {
-            folder
-                .hosts
-                .iter()
-                .find(|host| &host.id == id)
-                .or_else(|| folder.folders.iter().find_map(|child| find(child, id)))
-        }
-        find(&self.tree, id)
+        let (folder, _) = id.split();
+        self.folder(folder)?
+            .hosts
+            .iter()
+            .find(|host| &host.id == id)
     }
 
-    /// Writes `host` back to its file. Keys of the file that the host does
-    /// not model are kept, in their original order; comments are not.
-    ///
-    /// The workspace in memory is not updated; open it again to see the
-    /// change.
-    pub fn write_host(&self, host: &Host) -> Result<(), WriteError> {
-        let write_error = |source| WriteError {
-            file: host.id.to_string(),
-            source,
-        };
-        if self.host(&host.id).is_none() {
-            return Err(write_error(io::Error::new(
-                io::ErrorKind::NotFound,
-                "no such host in this workspace",
+    /// The folder at this path (empty for the root), if the workspace has it.
+    pub fn folder(&self, path: &str) -> Option<&Folder> {
+        if path.is_empty() {
+            return Some(&self.tree);
+        }
+        path.split('/').try_fold(&self.tree, |folder, name| {
+            folder.folders.iter().find(|child| child.name == name)
+        })
+    }
+
+    /// Creates folder `name` inside the folder at `parent`; returns its path.
+    pub fn create_folder(&mut self, parent: &str, name: &str) -> Result<String, EditError> {
+        self.existing_folder(parent)?;
+        let name = check_name(name)?;
+        let path = join(parent, name);
+        self.ensure_free(parent, Entry::Folder(name), None)?;
+        fs::create_dir(self.root.join(&path)).map_err(io_error(&path))?;
+        self.reload()?;
+        Ok(path)
+    }
+
+    /// Renames the folder at `path`; returns its new path.
+    pub fn rename_folder(&mut self, path: &str, name: &str) -> Result<String, EditError> {
+        self.existing_subfolder(path, "renamed")?;
+        let name = check_name(name)?;
+        let (parent, old_name) = split_path(path);
+        if name == old_name {
+            return Ok(path.to_string());
+        }
+        let new_path = join(parent, name);
+        self.ensure_free(parent, Entry::Folder(name), Some(old_name))?;
+        self.rename(path, &new_path)?;
+        Ok(new_path)
+    }
+
+    /// Moves the folder at `path`, with everything in it, into the folder at
+    /// `parent`; returns its new path.
+    pub fn move_folder(&mut self, path: &str, parent: &str) -> Result<String, EditError> {
+        self.existing_subfolder(path, "moved")?;
+        self.existing_folder(parent)?;
+        if parent == path || parent.starts_with(&format!("{path}/")) {
+            return Err(EditError::Invalid(format!(
+                "{path} cannot be moved into itself"
             )));
         }
-
-        let mut document = host.document.clone();
-        // A name taken from the file name stays implicit.
-        let file_stem = host.id.as_str().rsplit('/').next().and_then(yaml_stem);
-        if document.contains_key(NAME) || file_stem != Some(host.name.as_str()) {
-            document.insert(NAME.into(), host.name.clone().into());
+        let (old_parent, name) = split_path(path);
+        if old_parent == parent {
+            return Ok(path.to_string());
         }
-        document.insert(ADDRESS.into(), host.address.clone().into());
-        match host.port {
-            Some(port) => {
-                document.insert(PORT.into(), port.into());
+        let new_path = join(parent, name);
+        self.ensure_free(parent, Entry::Folder(name), None)?;
+        self.rename(path, &new_path)?;
+        Ok(new_path)
+    }
+
+    /// Deletes the folder at `path` and everything in it, files the app does
+    /// not show included. A folder holding hosts is only deleted with
+    /// [`FolderDeletion::IncludingHosts`].
+    pub fn delete_folder(&mut self, path: &str, deletion: FolderDeletion) -> Result<(), EditError> {
+        let hosts = self.existing_subfolder(path, "deleted")?.host_count();
+        if hosts > 0 && deletion == FolderDeletion::IfNoHosts {
+            return Err(EditError::FolderHasHosts {
+                folder: path.to_string(),
+                hosts,
+            });
+        }
+        fs::remove_dir_all(self.root.join(path)).map_err(io_error(path))?;
+        self.reload()
+    }
+
+    /// Sets (or with `None` or blank text, removes) the description of the
+    /// folder at `path`, keeping its other settings. A settings file left
+    /// empty is removed.
+    pub fn set_folder_description(
+        &mut self,
+        path: &str,
+        description: Option<&str>,
+    ) -> Result<(), EditError> {
+        let current = self.existing_folder(path)?.description.clone();
+        let description = normalize(description);
+        if description == current {
+            return Ok(());
+        }
+        let file = join(path, FOLDER_SETTINGS_FILE);
+        let full = self.root.join(&file);
+        let mut document = if full.exists() {
+            read_mapping(&full).map_err(|message| {
+                EditError::Invalid(format!("{file} cannot be updated: {message}"))
+            })?
+        } else {
+            Mapping::new()
+        };
+        match description {
+            Some(text) => {
+                document.insert(DESCRIPTION.into(), text.into());
             }
+            None => {
+                document.shift_remove(DESCRIPTION);
+            }
+        }
+        if document.is_empty() {
+            if full.exists() {
+                fs::remove_file(&full).map_err(io_error(&file))?;
+            }
+        } else {
+            write_mapping(&self.root, &file, &document)?;
+        }
+        self.reload()
+    }
+
+    /// Creates host `name` with its management address in the folder at
+    /// `folder`; returns its id.
+    pub fn create_host(
+        &mut self,
+        folder: &str,
+        name: &str,
+        address: &str,
+    ) -> Result<HostId, EditError> {
+        self.existing_folder(folder)?;
+        let name = check_name(name)?;
+        let address = required_address(address)?;
+        self.ensure_free(folder, Entry::Host(name), None)?;
+        let file = join(folder, &format!("{name}.{HOST_EXTENSION}"));
+        let mut document = Mapping::new();
+        document.insert(ADDRESS.into(), address.into());
+        write_mapping(&self.root, &file, &document)?;
+        self.reload()?;
+        Ok(HostId::new(file))
+    }
+
+    /// Renames the host `id`: its file (keeping the extension) and, if the
+    /// file names it explicitly, its `name`. Returns its new id.
+    pub fn rename_host(&mut self, id: &HostId, name: &str) -> Result<HostId, EditError> {
+        let host = self.existing_host(id)?.clone();
+        let name = check_name(name)?;
+        let (folder, file_name) = id.split();
+        let extension = file_name
+            .rsplit_once('.')
+            .map_or(HOST_EXTENSION, |(_, e)| e);
+        let new_id = HostId::new(join(folder, &format!("{name}.{extension}")));
+        if new_id != *id {
+            self.ensure_free(folder, Entry::Host(name), Some(file_name))?;
+            fs::rename(self.root.join(id.as_str()), self.root.join(new_id.as_str()))
+                .map_err(io_error(id.as_str()))?;
+        }
+        if host.document.contains_key(NAME) && host.name != name {
+            let mut document = host.document;
+            document.insert(NAME.into(), name.into());
+            write_mapping(&self.root, new_id.as_str(), &document)?;
+        }
+        self.reload()?;
+        Ok(new_id)
+    }
+
+    /// Moves the host `id` into the folder at `folder`; its file is moved
+    /// unchanged. Returns its new id.
+    pub fn move_host(&mut self, id: &HostId, folder: &str) -> Result<HostId, EditError> {
+        self.existing_host(id)?;
+        self.existing_folder(folder)?;
+        let (old_folder, file_name) = id.split();
+        if old_folder == folder {
+            return Ok(id.clone());
+        }
+        let stem = yaml_stem(file_name).unwrap_or(file_name);
+        self.ensure_free(folder, Entry::Host(stem), None)?;
+        let new_id = HostId::new(join(folder, file_name));
+        self.rename(id.as_str(), new_id.as_str())?;
+        Ok(new_id)
+    }
+
+    /// Deletes the host `id`'s file.
+    pub fn delete_host(&mut self, id: &HostId) -> Result<(), EditError> {
+        self.existing_host(id)?;
+        fs::remove_file(self.root.join(id.as_str())).map_err(io_error(id.as_str()))?;
+        self.reload()
+    }
+
+    /// Saves `host`'s fields to its file (to rename or move it, see
+    /// [`Self::rename_host`] and [`Self::move_host`]).
+    ///
+    /// Text is trimmed and blank text clears a field; blank and repeated
+    /// tags and empty custom rows are dropped. Keys of the file that the
+    /// host does not model are kept, in their original order, and unchanged
+    /// fields keep their exact value; comments are not kept. If nothing
+    /// changed, the file is not touched at all.
+    pub fn write_host(&mut self, host: &Host) -> Result<(), EditError> {
+        let current = self.existing_host(&host.id)?;
+        let document = updated_document(current, host)?;
+        if document == current.document {
+            return Ok(());
+        }
+        write_mapping(&self.root, host.id.as_str(), &document)?;
+        self.reload()
+    }
+
+    fn reload(&mut self) -> Result<(), EditError> {
+        *self = Self::open(&self.root).map_err(|error| EditError::Io {
+            file: ".".into(),
+            source: io::Error::other(error.reason),
+        })?;
+        Ok(())
+    }
+
+    fn existing_folder(&self, path: &str) -> Result<&Folder, EditError> {
+        self.folder(path)
+            .ok_or_else(|| EditError::NotFound(path.to_string()))
+    }
+
+    /// A folder other than the root, which cannot be `what` from inside.
+    fn existing_subfolder(&self, path: &str, what: &str) -> Result<&Folder, EditError> {
+        if path.is_empty() {
+            return Err(EditError::Invalid(format!(
+                "the workspace folder itself cannot be {what} here"
+            )));
+        }
+        self.existing_folder(path)
+    }
+
+    fn existing_host(&self, id: &HostId) -> Result<&Host, EditError> {
+        self.host(id)
+            .ok_or_else(|| EditError::NotFound(id.to_string()))
+    }
+
+    /// Fails if the folder at `folder` already has an entry that `entry`
+    /// would clash with, other than `except` (the entry being renamed).
+    /// Names are compared ignoring case, as on Windows and macOS.
+    fn ensure_free(
+        &self,
+        folder: &str,
+        entry: Entry<'_>,
+        except: Option<&str>,
+    ) -> Result<(), EditError> {
+        let dir = self.root.join(folder);
+        let entries = fs::read_dir(&dir).map_err(io_error(folder))?;
+        let (name, file_name) = match entry {
+            Entry::Folder(name) => (name, None),
+            Entry::Host(name) => (name, Some(format!("{name}.{HOST_EXTENSION}"))),
+        };
+        let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+        for existing in entries {
+            let existing = existing.map_err(io_error(folder))?;
+            let existing_name = existing.file_name().to_string_lossy().into_owned();
+            if Some(existing_name.as_str()) == except {
+                continue;
+            }
+            let clash = match &file_name {
+                None => same(&existing_name, name),
+                Some(file_name) => {
+                    same(&existing_name, file_name)
+                        || (existing.path().is_file()
+                            && yaml_stem(&existing_name).is_some_and(|stem| same(stem, name)))
+                }
+            };
+            if clash {
+                return Err(EditError::AlreadyExists(join(folder, &existing_name)));
+            }
+        }
+        Ok(())
+    }
+
+    fn rename(&mut self, from: &str, to: &str) -> Result<(), EditError> {
+        fs::rename(self.root.join(from), self.root.join(to)).map_err(io_error(from))?;
+        self.reload()
+    }
+}
+
+/// What is about to be created under a name.
+enum Entry<'a> {
+    Folder(&'a str),
+    Host(&'a str),
+}
+
+fn io_error(file: &str) -> impl FnOnce(io::Error) -> EditError + '_ {
+    move |source| EditError::Io {
+        file: if file.is_empty() { "." } else { file }.to_string(),
+        source,
+    }
+}
+
+/// `parent/name`, or `name` at the root.
+fn join(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}/{name}")
+    }
+}
+
+/// The parent path and the last name of a path.
+fn split_path(path: &str) -> (&str, &str) {
+    path.rsplit_once('/').unwrap_or(("", path))
+}
+
+/// A folder or host name, trimmed, if it is a file name that works on every
+/// system and that the workspace format does not reserve.
+fn check_name(name: &str) -> Result<&str, EditError> {
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    let name = name.trim();
+    let reason = if name.is_empty() {
+        Some("it is empty")
+    } else if name.starts_with('.') {
+        Some("names starting with `.` are hidden")
+    } else if name.starts_with('_') {
+        Some("names starting with `_` are reserved for workspace settings")
+    } else if name
+        .chars()
+        .any(|c| c.is_control() || "/\\:*?\"<>|".contains(c))
+    {
+        Some("file names cannot contain / \\ : * ? \" < > |")
+    } else if name.ends_with('.') {
+        Some("file names cannot end with a dot")
+    } else if RESERVED.iter().any(|reserved| {
+        name.split('.')
+            .next()
+            .unwrap_or(name)
+            .eq_ignore_ascii_case(reserved)
+    }) {
+        Some("it is a reserved device name on Windows")
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => Err(EditError::InvalidName {
+            name: name.to_string(),
+            reason,
+        }),
+        None => Ok(name),
+    }
+}
+
+fn required_address(address: &str) -> Result<&str, EditError> {
+    let address = address.trim();
+    if address.is_empty() {
+        return Err(EditError::Invalid("the management address is empty".into()));
+    }
+    Ok(address)
+}
+
+/// Trimmed text; blank is none.
+fn normalize(text: Option<&str>) -> Option<String> {
+    text.map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// `current`'s file with `edit`'s fields applied. Values that did not change
+/// keep their original YAML form.
+fn updated_document(current: &Host, edit: &Host) -> Result<Mapping, EditError> {
+    let mut document = current.document.clone();
+
+    let name = edit.name.trim();
+    if name.is_empty() {
+        return Err(EditError::Invalid("the name is empty".into()));
+    }
+    // A name taken from the file name stays implicit until it changes.
+    if name != current.name {
+        set_key(&mut document, NAME, name.into());
+    }
+
+    let address = required_address(&edit.address)?;
+    if address != current.address {
+        set_key(&mut document, ADDRESS, address.into());
+    }
+
+    if edit.port != current.port {
+        match edit.port {
+            Some(port) => set_key(&mut document, PORT, port.into()),
             None => {
                 document.shift_remove(PORT);
             }
         }
-        let text = serde_norway::to_string(&document)
-            .map_err(|error| write_error(io::Error::other(error)))?;
-
-        // Write beside the file, then replace it, so a failure never leaves
-        // a half-written host behind.
-        let path = self.root.join(host.id.as_str());
-        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-        let temporary = path.with_file_name(format!(".{file_name}.tmp"));
-        fs::write(&temporary, text)
-            .and_then(|()| fs::rename(&temporary, &path))
-            .map_err(|error| {
-                let _ = fs::remove_file(&temporary);
-                write_error(error)
-            })
     }
+
+    for ((key, old), (_, new)) in current.text_fields().into_iter().zip(edit.text_fields()) {
+        let new = normalize(new.as_deref());
+        if new == *old {
+            continue;
+        }
+        match new {
+            None => {
+                document.shift_remove(key);
+            }
+            Some(text) => {
+                // `007` stays text, so the value reads back as typed.
+                let value = match text.parse::<u64>() {
+                    Ok(number) if key == RACK_UNIT && number.to_string() == text => number.into(),
+                    _ => text.into(),
+                };
+                set_key(&mut document, key, value);
+            }
+        }
+    }
+
+    let mut tags: Vec<String> = Vec::new();
+    for tag in &edit.tags {
+        let tag = tag.trim();
+        if !tag.is_empty() && !tags.iter().any(|seen| seen == tag) {
+            tags.push(tag.to_string());
+        }
+    }
+    if tags != current.tags {
+        if tags.is_empty() {
+            document.shift_remove(TAGS);
+        } else {
+            let list = tags.into_iter().map(Value::from).collect();
+            set_key(&mut document, TAGS, Value::Sequence(list));
+        }
+    }
+
+    let mut custom: Vec<CustomField> = Vec::new();
+    for field in &edit.custom {
+        let field = CustomField::new(field.key.trim(), field.value.trim());
+        if field.key.is_empty() {
+            if field.value.is_empty() {
+                continue;
+            }
+            return Err(EditError::Invalid(
+                "a custom field has a value but no name".into(),
+            ));
+        }
+        if custom.iter().any(|seen| seen.key == field.key) {
+            return Err(EditError::Invalid(format!(
+                "custom field `{}` appears twice",
+                field.key
+            )));
+        }
+        custom.push(field);
+    }
+    if custom != current.custom {
+        if custom.is_empty() {
+            document.shift_remove(CUSTOM);
+        } else {
+            let old = current.document.get(CUSTOM).and_then(Value::as_mapping);
+            let mapping = custom
+                .into_iter()
+                .map(|field| {
+                    let unchanged = current.custom.contains(&field);
+                    let value = old
+                        .filter(|_| unchanged)
+                        .and_then(|old| old.get(field.key.as_str()))
+                        .cloned()
+                        .unwrap_or_else(|| field.value.into());
+                    (field.key.into(), value)
+                })
+                .collect();
+            set_key(&mut document, CUSTOM, Value::Mapping(mapping));
+        }
+    }
+
+    Ok(document)
+}
+
+/// Sets `key` in place if the document has it; otherwise inserts it after
+/// the nearest key before it in [`HOST_KEY_ORDER`] that the document has
+/// (or before the nearest one after it, or at the end).
+fn set_key(document: &mut Mapping, key: &str, value: Value) {
+    if let Some(slot) = document.get_mut(key) {
+        *slot = value;
+        return;
+    }
+    let rank = |key: &Value| {
+        key.as_str()
+            .and_then(|key| HOST_KEY_ORDER.iter().position(|known| *known == key))
+    };
+    let mut entries: Vec<(Value, Value)> = std::mem::take(document).into_iter().collect();
+    let position = HOST_KEY_ORDER
+        .iter()
+        .position(|known| *known == key)
+        .and_then(|mine| {
+            let ranked = entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (key, _))| rank(key).map(|rank| (rank, index)));
+            let before = ranked.clone().filter(|(rank, _)| *rank < mine).max();
+            let after = ranked.filter(|(rank, _)| *rank > mine).min();
+            before
+                .map(|(_, index)| index + 1)
+                .or(after.map(|(_, index)| index))
+        })
+        .unwrap_or(entries.len());
+    entries.insert(position, (key.into(), value));
+    *document = entries.into_iter().collect();
+}
+
+/// Writes a YAML mapping to `file` (relative to `root`): beside the file
+/// first, then over it, so a failure never leaves a half-written file.
+fn write_mapping(root: &Path, file: &str, document: &Mapping) -> Result<(), EditError> {
+    let text = serde_norway::to_string(document).map_err(|error| EditError::Io {
+        file: file.to_string(),
+        source: io::Error::other(error),
+    })?;
+    let path = root.join(file);
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temporary = path.with_file_name(format!(".{file_name}.tmp"));
+    fs::write(&temporary, text)
+        .and_then(|()| fs::rename(&temporary, &path))
+        .map_err(|error| {
+            let _ = fs::remove_file(&temporary);
+            io_error(file)(error)
+        })
 }
 
 fn load_folder(dir: &Path, name: String, path: String, problems: &mut Vec<Problem>) -> Folder {
@@ -278,11 +865,7 @@ fn load_folder(dir: &Path, name: String, path: String, problems: &mut Vec<Proble
         if entry_name.starts_with('.') {
             continue;
         }
-        let entry_path = if path.is_empty() {
-            entry_name.clone()
-        } else {
-            format!("{path}/{entry_name}")
-        };
+        let entry_path = join(&path, &entry_name);
         let is_link = entry.file_type().is_ok_and(|kind| kind.is_symlink());
         let is_dir = fs::metadata(entry.path()).is_ok_and(|metadata| metadata.is_dir());
 
@@ -363,11 +946,49 @@ fn host_from_document(id: HostId, stem: &str, document: Mapping) -> Result<Host,
         ),
         Some(_) => return Err(format!("`{PORT}` must be a number from 1 to 65535")),
     };
+    let field = |key| detail_text(&document, key);
+    let tags = match document.get(TAGS) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Sequence(items)) => items
+            .iter()
+            .map(scalar_text)
+            .collect::<Option<_>>()
+            .ok_or_else(|| format!("`{TAGS}` must be a list of text"))?,
+        Some(_) => return Err(format!("`{TAGS}` must be a list of text")),
+    };
+    let custom_error = || format!("`{CUSTOM}` must map names to text");
+    let custom = match document.get(CUSTOM) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Mapping(fields)) => fields
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    Value::Null => Some(String::new()),
+                    value => scalar_text(value),
+                };
+                Some(CustomField::new(scalar_text(key)?, value?))
+            })
+            .collect::<Option<_>>()
+            .ok_or_else(custom_error)?,
+        Some(_) => return Err(custom_error()),
+    };
     Ok(Host {
         id,
         name,
         address,
         port,
+        vendor: field(VENDOR)?,
+        platform: field(PLATFORM)?,
+        model: field(MODEL)?,
+        serial_number: field(SERIAL_NUMBER)?,
+        site: field(SITE)?,
+        building: field(BUILDING)?,
+        room: field(ROOM)?,
+        rack: field(RACK)?,
+        rack_unit: field(RACK_UNIT)?,
+        description: field(DESCRIPTION)?,
+        tags,
+        custom,
         document,
     })
 }
@@ -385,5 +1006,26 @@ fn optional_text(document: &Mapping, key: &str) -> Result<Option<String>, String
         Some(Value::String(_)) => Err(format!("`{key}` is empty")),
         Some(Value::Number(number)) => Ok(Some(number.to_string())),
         Some(_) => Err(format!("`{key}` must be text")),
+    }
+}
+
+/// An optional detail field: text, a number or a boolean, taken as its
+/// trimmed text; blank is unset.
+fn detail_text(document: &Mapping, key: &str) -> Result<Option<String>, String> {
+    match document.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => scalar_text(value)
+            .map(|text| normalize(Some(&text)))
+            .ok_or_else(|| format!("`{key}` must be text")),
+    }
+}
+
+/// The text of a scalar YAML value.
+fn scalar_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
     }
 }

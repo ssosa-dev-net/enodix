@@ -30,6 +30,8 @@
 //! Later tickets extend this file (more auth methods, host keys, ...).
 #![allow(dead_code)]
 
+pub mod workspaces;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
