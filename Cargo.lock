@@ -2855,7 +2855,7 @@ dependencies = [
 
 [[package]]
 name = "netterm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "netterm-core",
  "serde",
@@ -2869,7 +2869,7 @@ dependencies = [
 
 [[package]]
 name = "netterm-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "futures",
