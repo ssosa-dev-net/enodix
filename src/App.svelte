@@ -270,6 +270,16 @@
     return id ? hostRole(id) : session.role;
   }
 
+  /** Whether `tab` is in the multi-send group. */
+  function inGroup(tab: TabId): boolean {
+    return layout?.group.includes(tab) ?? false;
+  }
+
+  /** Adds `tab` to the multi-send group, or takes it out. */
+  function toggleGroup(tab: TabId) {
+    void edit({ kind: inGroup(tab) ? "leaveGroup" : "joinGroup", tab });
+  }
+
   function tabState(tab: TabId): TabInfo["state"] {
     const state = states[tab] ?? "connecting";
     return state === "closed" ? "disconnected" : state;
@@ -285,6 +295,7 @@
         role: roleOf(session),
         environment: safetyOf(session).environment,
         state: tabState(tab),
+        member: inGroup(tab),
       };
     },
     activate: (tab) => {
@@ -634,6 +645,9 @@
     if (event.shiftKey && letter("W")) {
       return tab === null ? null : () => closeTab(tab);
     }
+    if (event.shiftKey && letter("M")) {
+      return tab === null ? null : () => toggleGroup(tab);
+    }
     // Not Ctrl+B: that is tmux's prefix, so it must reach devices.
     if (event.shiftKey && letter("B")) {
       return () => togglePanel("left");
@@ -743,6 +757,10 @@
           <TerminalSession
             bind:this={terminals[tab]}
             source={session.source}
+            {tab}
+            groupSize={inGroup(tab) ? layout.group.length : null}
+            ontogglegroup={() => toggleGroup(tab)}
+            onendgroup={() => void edit({ kind: "endGroup" })}
             title={session.title}
             role={roleOf(session)}
             safety={safetyOf(session)}

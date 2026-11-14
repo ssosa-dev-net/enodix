@@ -30,10 +30,22 @@
     type SessionSource,
     type SessionState,
   } from "./session";
+  import type { TabId } from "./layout";
   import type { Environment, PasteSafety, Role } from "./workspace";
 
   interface Props {
     source: SessionSource;
+    /** The layout's tab this session is shown in. */
+    tab: TabId;
+    /**
+     * The multi-send group's size if this session's tab is in it, else
+     * null: what is typed here then reaches every connected member.
+     */
+    groupSize: number | null;
+    /** Adds this session's tab to the multi-send group, or takes it out. */
+    ontogglegroup: () => void;
+    /** Ends the multi-send group. */
+    onendgroup: () => void;
     /** Shown in the header, such as `user@host:port`. */
     title: string;
     /** The role of the session's host, if it has one. */
@@ -63,6 +75,10 @@
 
   let {
     source,
+    tab,
+    groupSize,
+    ontogglegroup,
+    onendgroup,
     title,
     role,
     safety,
@@ -542,20 +558,24 @@
     markReconnect = () =>
       terminal.write("\r\n\x1b[2m--- reconnecting ---\x1b[0m\r\n");
 
-    // Every origin goes to this session; only typed and pasted input is
-    // the user's own (what multi-send may share, #34).
-    input = terminalInput(terminal, ({ data, binary }) => {
+    // Only typed and pasted input is the user's own (#34): it goes through
+    // the shell's multi-send routing. The terminal's replies and mouse
+    // reports depend on this terminal's screen and go to this session only.
+    input = terminalInput(terminal, ({ data, binary, origin }) => {
       // A closed session keeps its scrollback; Enter reconnects it.
       if (status.state === "closed") {
         if (data === "\r") reconnect();
         return;
       }
-      session?.write(
-        binary
-          ? // One character per byte (some mouse reports).
-            Uint8Array.from(data, (char) => char.charCodeAt(0))
-          : encoder.encode(data),
-      );
+      const bytes = binary
+        ? // One character per byte (some mouse reports).
+          Uint8Array.from(data, (char) => char.charCodeAt(0))
+        : encoder.encode(data);
+      // Only a connected session shares (input while connecting is
+      // dropped by the core anyway, and must not reach the other members).
+      const shared = origin === "typed" || origin === "pasted";
+      if (shared && status.state === "connected") session?.input(bytes);
+      else session?.write(bytes);
     });
     // For the smoke test, which checks where input came from.
     Object.assign(container, { input });
@@ -566,27 +586,32 @@
     resizeObserver.observe(container);
 
     const requestedSize = size();
-    openSession(source, requestedSize, {
-      // Acknowledged once xterm.js has parsed it, so a flood of output
-      // never queues up faster than the terminal can show it.
-      onOutput: deliver,
-      onState: (state) => {
-        status = state;
-        if (state.state !== "connecting") {
-          prompt = null;
-          hostKey = null;
-        }
-        // Nothing is pasted into a session that ended.
-        if (state.state === "closed" && pasteQuestion) {
-          pasteQuestion.answer(false);
-          pasteQuestion = null;
-        }
+    openSession(
+      source,
+      untrack(() => tab),
+      requestedSize,
+      {
+        // Acknowledged once xterm.js has parsed it, so a flood of output
+        // never queues up faster than the terminal can show it.
+        onOutput: deliver,
+        onState: (state) => {
+          status = state;
+          if (state.state !== "connecting") {
+            prompt = null;
+            hostKey = null;
+          }
+          // Nothing is pasted into a session that ended.
+          if (state.state === "closed" && pasteQuestion) {
+            pasteQuestion.answer(false);
+            pasteQuestion = null;
+          }
+        },
+        onPrompt: (asked) => (prompt = { prompt: asked, key: ++prompts }),
+        onHostKey: (question) => (hostKey = { question, key: ++prompts }),
+        onAlgorithms: (agreed) => (algorithms = agreed),
+        onLogFailure: (reason) => (logFailure = reason),
       },
-      onPrompt: (asked) => (prompt = { prompt: asked, key: ++prompts }),
-      onHostKey: (question) => (hostKey = { question, key: ++prompts }),
-      onAlgorithms: (agreed) => (algorithms = agreed),
-      onLogFailure: (reason) => (logFailure = reason),
-    }).then(
+    ).then(
       (opened) => {
         if (disposed) {
           opened.discard();
@@ -657,8 +682,14 @@
 
 <div
   class="session"
+  class:grouped={groupSize !== null}
   data-environment={safety.environment}
   data-session-environment={safety.environment ?? "none"}
+  data-multi-send={groupSize === null
+    ? undefined
+    : status.state === "connected"
+      ? "receiving"
+      : "not-receiving"}
 >
   <header class:has-role={role} style:--role-color={role?.color}>
     {#if role}
@@ -713,6 +744,19 @@
       </button>
     {/if}
     <button
+      data-multi-send-toggle={groupSize === null ? "join" : "leave"}
+      aria-pressed={groupSize !== null}
+      onclick={() => {
+        ontogglegroup();
+        xterm?.focus();
+      }}
+      title={groupSize === null
+        ? "Add this session to the multi-send group: what you type in a member reaches every member (Ctrl+Shift+M)"
+        : "Take this session out of the multi-send group (Ctrl+Shift+M)"}
+    >
+      {groupSize === null ? "Multi-send" : "Leave group"}
+    </button>
+    <button
       onclick={() => session && onduplicate(session.id)}
       disabled={!session}
       title="Open a second session to the same host"
@@ -728,6 +772,29 @@
       </button>
     {/if}
   </header>
+  {#if groupSize !== null}
+    <div class="multi-send" data-multi-send-bar data-group-size={groupSize}>
+      <span class="what">
+        {groupSize === 1
+          ? "Multi-send group: no other member yet"
+          : `Multi-send: typing reaches all ${groupSize} sessions of the group`}
+      </span>
+      {#if status.state !== "connected"}
+        <span class="not-receiving" data-not-receiving
+          >Not receiving while {status.state === "closed"
+            ? "disconnected"
+            : "connecting"}</span
+        >
+      {/if}
+      <button
+        data-end-group
+        onclick={() => {
+          onendgroup();
+          xterm?.focus();
+        }}>End group</button
+      >
+    </div>
+  {/if}
   <div class="body">
     <div class="terminal" bind:this={container}></div>
     {#if searching}
@@ -903,6 +970,36 @@
     font-size: 0.75rem;
     white-space: nowrap;
     cursor: help;
+  }
+
+  .session.grouped {
+    grid-template-rows: auto auto 1fr;
+  }
+
+  /* A multi-send member: what is typed here reaches the whole group. */
+  .multi-send {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.2rem 0.6rem;
+    border-bottom: 2px solid var(--multi-send);
+    background: var(--multi-send-bg);
+    color: var(--text);
+    font-size: 0.8rem;
+  }
+
+  .multi-send .what {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+
+  .multi-send .not-receiving {
+    color: var(--warning);
+    white-space: nowrap;
   }
 
   .session[data-environment="production"] .environment {

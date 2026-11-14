@@ -993,7 +993,9 @@ fn nornir_import_run(
 async fn session_open(
     manager: State<'_, SessionManager>,
     shell: State<'_, Shell>,
+    tabs: State<'_, Tabs>,
     target: ConnectTarget,
+    tab: TabId,
     size: Size,
     on_output: Channel<InvokeResponseBody>,
     on_state: Channel<StateMessage>,
@@ -1048,6 +1050,7 @@ async fn session_open(
     let encrypted = target.encrypted();
     let transport = target.transport();
     let (id, events) = manager.open_logged(target, size.into(), log);
+    tabs.attach(tab, id);
     forward(
         events,
         Channels {
@@ -1224,7 +1227,9 @@ async fn session_reconnect(
 #[tauri::command]
 async fn session_duplicate(
     manager: State<'_, SessionManager>,
+    tabs: State<'_, Tabs>,
     id: u64,
+    tab: TabId,
     size: Size,
     on_output: Channel<InvokeResponseBody>,
     on_state: Channel<StateMessage>,
@@ -1236,6 +1241,7 @@ async fn session_duplicate(
     let (copy, events) = manager
         .duplicate(SessionId(id), size.into())
         .map_err(|error| error.to_string())?;
+    tabs.attach(tab, copy);
     forward(
         events,
         Channels {
@@ -1256,8 +1262,20 @@ async fn session_duplicate(
     })
 }
 
-/// The window's tabs and panes.
+/// The window's tabs and panes, and its multi-send group.
 struct Tabs(Mutex<Layout>);
+
+impl Tabs {
+    fn lock(&self) -> MutexGuard<'_, Layout> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Records the session `tab` shows. A tab closed while its session
+    /// was opening is gone; the interface discards that session.
+    fn attach(&self, tab: TabId, session: SessionId) {
+        let _ = self.lock().attach_session(tab, session);
+    }
+}
 
 /// A change to the window's tabs and panes, as `Layout`'s methods name them.
 #[derive(Deserialize)]
@@ -1304,6 +1322,13 @@ enum LayoutEdit {
     ClosePane {
         pane: PaneId,
     },
+    JoinGroup {
+        tab: TabId,
+    },
+    LeaveGroup {
+        tab: TabId,
+    },
+    EndGroup,
 }
 
 /// The layout after an edit, and the tab or pane the edit created.
@@ -1317,14 +1342,14 @@ struct LayoutChanged {
 /// sessions start afresh too when it loads).
 #[tauri::command]
 fn layout_reset(tabs: State<'_, Tabs>) -> Layout {
-    let mut layout = tabs.0.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut layout = tabs.lock();
     *layout = Layout::new();
     layout.clone()
 }
 
 #[tauri::command]
 fn layout_edit(tabs: State<'_, Tabs>, edit: LayoutEdit) -> Result<LayoutChanged, String> {
-    let mut layout = tabs.0.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut layout = tabs.lock();
     let created = apply_layout_edit(&mut layout, edit).map_err(|error| error.to_string())?;
     Ok(LayoutChanged {
         layout: layout.clone(),
@@ -1355,6 +1380,12 @@ fn apply_layout_edit(layout: &mut Layout, edit: LayoutEdit) -> Result<Option<u64
         }
         LayoutEdit::Split { pane, direction } => Some(layout.split(pane, direction)?.0),
         LayoutEdit::ClosePane { pane } => layout.close_pane(pane).map(|()| None)?,
+        LayoutEdit::JoinGroup { tab } => layout.join_group(tab).map(|()| None)?,
+        LayoutEdit::LeaveGroup { tab } => layout.leave_group(tab).map(|()| None)?,
+        LayoutEdit::EndGroup => {
+            layout.end_group();
+            None
+        }
     })
 }
 
@@ -1388,6 +1419,22 @@ fn session_decide_host_key(
         .map_err(|error| error.to_string())
 }
 
+/// What the user typed or pasted in the session `id`: if its tab is in the
+/// multi-send group, it goes to every connected member, otherwise to `id`
+/// only (`Layout::input_targets`).
+#[tauri::command]
+fn session_input(
+    manager: State<'_, SessionManager>,
+    tabs: State<'_, Tabs>,
+    id: u64,
+    data: Vec<u8>,
+) {
+    let targets = tabs.lock().input_targets(SessionId(id));
+    manager.write_to_each(&targets, &data);
+}
+
+/// Input for the session `id` alone: the terminal's own replies to the
+/// device and mouse reports, which are never shared.
 #[tauri::command]
 fn session_write(manager: State<'_, SessionManager>, id: u64, data: Vec<u8>) -> Result<(), String> {
     manager
@@ -1731,6 +1778,7 @@ pub fn run() {
             host_login,
             session_open,
             session_write,
+            session_input,
             session_answer,
             session_decide_host_key,
             session_acknowledge,

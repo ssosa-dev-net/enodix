@@ -1058,6 +1058,8 @@ async function main() {
     step,
   });
 
+  await multiSend({ evaluate, devtools, screenshot, step });
+
   await terminalComforts({
     evaluate,
     centreOf,
@@ -4572,6 +4574,169 @@ async function tabsAndPanes({
   }
   await screenshot("twenty-sessions");
   step("twenty sessions were open at once, each rendering when shown");
+}
+
+// Multi-send (#35), on three of the sessions tabsAndPanes left open: two
+// join the group (header button, Ctrl+Shift+M), what is typed in one
+// reaches both (also the hidden one) and not the third; a disconnected
+// member is marked and skipped, and receives again after reconnecting;
+// ending the group makes typing local again.
+async function multiSend({ evaluate, devtools, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const CTRL = 2;
+  const SHIFT = 8;
+  const toggleShortcut = async () => {
+    const event = {
+      key: "M",
+      code: "KeyM",
+      windowsVirtualKeyCode: 77,
+      modifiers: CTRL | SHIFT,
+    };
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...event,
+    });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+  };
+  const type = async (keys) => {
+    for (const char of keys) {
+      const key =
+        char === "\r"
+          ? { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }
+          : { key: char };
+      await devtools.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        text: char,
+        ...key,
+      });
+      await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+    }
+  };
+  // Each tab's id, state and multi-send marker, in order.
+  const tabs = () =>
+    evaluate(`[...document.querySelectorAll("[role=tab]")].map((tab) => ({
+      id: Number(tab.dataset.tab),
+      state: tab.dataset.tabState,
+      member: tab.dataset.multiSend ?? null,
+      label: !!tab.querySelector("[data-tab-multi-send]"),
+    }))`);
+  const tabOf = async (id) => (await tabs()).find((tab) => tab.id === id);
+  const slot = (tab) => `.slot[data-tab="${tab}"]`;
+  const screenOfTab = (tab) => screenOf(evaluate, slot(tab));
+  const show = async (tab) => {
+    await clickOn(`[data-tab="${tab}"]`);
+    await until(`tab ${tab} shown`, () => exists(`${slot(tab)}[data-active]`));
+  };
+  // A line the scripted shell echoes, as a command of its own.
+  const ran = async (tab, word) =>
+    new RegExp(`\\$ ${word}\\s*(\\n|$)`).test(await screenOfTab(tab));
+  const barSize = (tab) =>
+    evaluate(
+      `document.querySelector(${json(`${slot(tab)} [data-multi-send-bar]`)})?.dataset.groupSize ?? null`,
+    );
+
+  const [a, b, c] = (await tabs()).map((tab) => tab.id);
+  if (c === undefined) fail("multiSend needs three open sessions");
+  if ((await tabs()).some((tab) => tab.member !== null)) {
+    fail("a tab is in a multi-send group before any joined");
+  }
+
+  // The session header's button adds its tab; Ctrl+Shift+M (with the
+  // terminal focused) adds the next one.
+  await show(a);
+  await clickOn(`${slot(a)} [data-multi-send-toggle=join]`);
+  await until("the first member's marker", async () => {
+    const tab = await tabOf(a);
+    return tab.member === "receiving" && tab.label;
+  });
+  if ((await barSize(a)) !== "1") fail("the bar does not count one member");
+  await show(b);
+  await evaluate(
+    `document.querySelector(${json(`${slot(b)} .terminal textarea`)}).focus()`,
+  );
+  await toggleShortcut();
+  await until(
+    "both members counted",
+    async () => (await barSize(a)) === "2" && (await barSize(b)) === "2",
+  );
+  const marked = await tabs();
+  if (
+    marked.find((t) => t.id === b).member !== "receiving" ||
+    marked.find((t) => t.id === c).member !== null ||
+    (await exists(`${slot(c)} [data-multi-send-bar]`))
+  ) {
+    fail(`unexpected multi-send markers: ${json(marked)}`);
+  }
+  await screenshot("multi-send-group");
+  step(
+    "two tabs joined the multi-send group (header button, Ctrl+Shift+M), marked on their tabs and terminals",
+  );
+
+  // Typed in b: a (hidden) gets it too, c does not.
+  await type("multisend1\r");
+  await until("the typing in the member typed in", () => ran(b, "multisend1"));
+  await show(a);
+  await until("the typing in the hidden member", () => ran(a, "multisend1"));
+  await show(c);
+  await sleep(300);
+  if (await ran(c, "multisend1")) fail("the tab outside the group got it");
+  step("typing in one member reached every member, hidden ones too, only them");
+
+  // A disconnected member is marked and skipped; reconnected, it receives.
+  await show(a);
+  await evaluate(
+    `[...document.querySelectorAll(${json(`${slot(a)} header button`)})].find((b) => b.textContent.trim() === "Disconnect").click()`,
+  );
+  await until(
+    "the disconnected member marked",
+    async () =>
+      (await tabOf(a)).member === "not-receiving" &&
+      (await exists(`${slot(a)} [data-not-receiving]`)),
+  );
+  await screenshot("multi-send-not-receiving");
+  await show(b);
+  await type("multisend2\r");
+  await until("the typing in the connected member", () => ran(b, "multisend2"));
+  await show(a);
+  await sleep(300);
+  if (await ran(a, "multisend2")) fail("the disconnected member got input");
+  await type("\r");
+  await until(
+    "the member reconnected and receiving",
+    async () => (await tabOf(a)).member === "receiving",
+  );
+  await until("the reconnected member's prompt", async () =>
+    /reconnecting[\s\S]*test-ssh\$ *$/.test((await screenOfTab(a)).trimEnd()),
+  );
+  await type("multisend3\r");
+  await until("the typing from the reconnected member", () =>
+    ran(a, "multisend3"),
+  );
+  await show(b);
+  await until("that typing in the other member", () => ran(b, "multisend3"));
+  step(
+    "a disconnected member was marked and skipped, and received again after reconnecting",
+  );
+
+  // Ending the group: no markers, typing is local again.
+  await clickOn(`${slot(b)} [data-end-group]`);
+  await until(
+    "the group ended",
+    async () =>
+      (await tabs()).every((tab) => tab.member === null) &&
+      !(await exists("[data-multi-send-bar]")),
+  );
+  await type("multisend4\r");
+  await until("the local typing", () => ran(b, "multisend4"));
+  await show(a);
+  await sleep(300);
+  if (await ran(a, "multisend4")) fail("typing still reached the old member");
+  await show(b);
+  step("ending the group removed the markers and made typing local again");
 }
 
 let exitCode = 0;

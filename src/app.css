@@ -15,6 +15,9 @@
   --env-production-bg: #5a1418;
   --env-staging: #e0a030;
   --env-lab: #3fb950;
+  /* Members of the multi-send group (tab marker, terminal bar). */
+  --multi-send: #b083f0;
+  --multi-send-bg: #2e2246;
 
   color-scheme: dark;
   font-family: "Segoe UI", system-ui, sans-serif;
@@ -40,6 +43,8 @@
   --env-production-bg: #fbd5d6;
   --env-staging: #9a6700;
   --env-lab: #1a7f37;
+  --multi-send: #8250df;
+  --multi-send-bg: #ece2fd;
 
   color-scheme: light;
 }

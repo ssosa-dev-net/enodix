@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -474,6 +474,19 @@ struct Entry {
 struct SessionHandle {
     commands: mpsc::UnboundedSender<Command>,
     flow: Arc<Flow>,
+    /// Set once the session is connected (its transport sets it).
+    connected: Arc<AtomicBool>,
+}
+
+/// What [`SessionManager::write_to_each`] did, per session, in the order
+/// the sessions were given.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fanout {
+    /// The sessions the input was written to.
+    pub written: Vec<SessionId>,
+    /// The sessions that did not take it: unknown, closed or still
+    /// connecting.
+    pub skipped: Vec<SessionId>,
 }
 
 impl Inner {
@@ -614,9 +627,11 @@ impl SessionManager {
         // taking commands; flow control bounds the output queued here.
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let flow = Arc::new(Flow::new(self.inner.output.window));
+        let connected = Arc::new(AtomicBool::new(false));
         entry.open = Some(SessionHandle {
             commands: command_tx,
             flow: flow.clone(),
+            connected: connected.clone(),
         });
 
         // The task holds the manager weakly so that dropping the last manager
@@ -635,6 +650,7 @@ impl SessionManager {
                 size,
                 log,
                 logger: None,
+                connected,
             };
             link.state(SessionState::Connecting);
             let reason = match target {
@@ -690,6 +706,31 @@ impl SessionManager {
     /// Sends bytes to the device, for example keystrokes.
     pub fn write(&self, id: SessionId, bytes: Vec<u8>) -> Result<(), SessionError> {
         self.send(id, Command::Write(bytes))
+    }
+
+    /// Writes the same input to each of `sessions`, in their order, as
+    /// typed in a tab of the multi-send group: one session's failure never
+    /// stops the others. A session that is unknown, closed or still
+    /// connecting is skipped (input typed while connecting is dropped
+    /// anyway), and the result says which took it.
+    pub fn write_to_each(&self, sessions: &[SessionId], bytes: &[u8]) -> Fanout {
+        let open = self.inner.sessions();
+        let mut fanout = Fanout::default();
+        for &id in sessions {
+            let written = open_session(&open, id).is_ok_and(|session| {
+                session.connected.load(Ordering::Acquire)
+                    && session
+                        .commands
+                        .send(Command::Write(bytes.to_vec()))
+                        .is_ok()
+            });
+            if written {
+                fanout.written.push(id);
+            } else {
+                fanout.skipped.push(id);
+            }
+        }
+        fanout
     }
 
     /// Tells the device the terminal has a new size.
@@ -782,6 +823,8 @@ struct Link {
     /// connecting, or the first output).
     log: Option<SessionLog>,
     logger: Option<Logger>,
+    /// Shared with the manager's handle: set once connected.
+    connected: Arc<AtomicBool>,
 }
 
 impl Link {
@@ -888,6 +931,7 @@ impl Link {
             }
         }
         let connected = state == SessionState::Connected;
+        self.connected.store(connected, Ordering::Release);
         let _ = self.events.send(SessionEvent::State(state));
         if connected {
             self.start_log();
