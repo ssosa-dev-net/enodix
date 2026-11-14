@@ -12,6 +12,7 @@
     openBackup,
     openCsvImport,
     openJob,
+    openScript,
     openNornirImport,
     remove,
     removeFilter,
@@ -157,6 +158,12 @@
     if (ids) openJob({ kind: "hosts", ids }, `the hosts of ${name}`);
   }
 
+  /** Runs a script for the hosts the active filter shows. */
+  function scriptOnFilter(name: string) {
+    const ids = filterHosts();
+    if (ids) openScript({ kind: "hosts", ids }, `the hosts of ${name}`);
+  }
+
   /** Backs up the configs of the hosts the active filter shows. */
   function backUpFilter(name: string) {
     const ids = filterHosts();
@@ -173,6 +180,14 @@
           "Run snippet…",
           () =>
             openJob({ kind: "hosts", ids: [item.id] }, host?.name ?? item.id),
+        ],
+        [
+          "Run script…",
+          () =>
+            openScript(
+              { kind: "hosts", ids: [item.id] },
+              host?.name ?? item.id,
+            ),
         ],
         [
           "Back up config",
@@ -196,6 +211,14 @@
         "Run snippet…",
         () =>
           openJob({ kind: "folder", path: item.path }, folderLabel(item.path)),
+      ],
+      [
+        "Run script…",
+        () =>
+          openScript(
+            { kind: "folder", path: item.path },
+            folderLabel(item.path),
+          ),
       ],
       [
         "Back up configs",
@@ -338,6 +361,12 @@
           title="Run a saved snippet on the hosts this filter shows, as a job"
           disabled={!inventory.filterView?.hosts.size}
           onclick={() => runOnFilter(name)}>Run snippet…</button
+        >
+        <button
+          data-filter-run-script
+          title="Run a Python script of the workspace for the hosts this filter shows, as a job"
+          disabled={!inventory.filterView?.hosts.size}
+          onclick={() => scriptOnFilter(name)}>Run script…</button
         >
         <button
           data-filter-back-up

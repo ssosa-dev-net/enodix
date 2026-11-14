@@ -1165,6 +1165,7 @@
     label={inventory.job.label}
     planned={inventory.job.planned ?? null}
     backup={inventory.job.backup ?? false}
+    script={inventory.job.script ?? false}
     onclose={() => {
       inventory.job = null;
       focusRequest += 1;

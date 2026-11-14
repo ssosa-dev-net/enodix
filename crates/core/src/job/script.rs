@@ -1,0 +1,367 @@
+//! Script jobs: a Python script of the workspace run once for a job's
+//! hosts.
+//!
+//! The script runs as its own process: `<interpreter> -u <script>`, in the
+//! workspace folder, with no console window and no input. It learns its
+//! hosts from [`ScriptTargets`], a small JSON file named by
+//! [`TARGETS_VARIABLE`]: the headless binary (and so the Python package's
+//! inventory and its Nornir plugin) then shows the script only those hosts
+//! and hands over only their logins. [`WORKSPACE_VARIABLE`] names the
+//! workspace folder (the plugin's default) and [`CLI_VARIABLE`] the
+//! headless binary. Its output (stdout and stderr, as plain text, line by
+//! line as it comes) is one stream, reported under the host id
+//! [`SCRIPT_OUTPUT`]; the exit status decides how it ends: 0 is
+//! [`HostState::Done`], anything else [`HostState::Failed`]. Cancelling
+//! ends the process (and on Windows the processes it started), keeping the
+//! output so far. The targets file is removed when the script has ended.
+
+use std::ffi::OsString;
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::process::{ExitStatus, Stdio};
+use std::sync::mpsc as std_mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, watch};
+
+use super::run::{HostResult, HostState, JobEvent, JobReport};
+use super::{JobPlan, JobStep, PlannedScript};
+use crate::logging::PlainText;
+use crate::python::{quiet_command, stop};
+use crate::workspace::HostId;
+
+/// The host id a script job reports its output and state under (in
+/// [`JobEvent`]s, the report and kept runs). No host has it: host ids end
+/// with their file's `.yaml`/`.yml`.
+pub const SCRIPT_OUTPUT: &str = "script";
+/// Names the file listing the job's hosts ([`ScriptTargets`]).
+pub const TARGETS_VARIABLE: &str = "NETTERM_JOB_TARGETS";
+/// Names the workspace folder the script runs for.
+pub const WORKSPACE_VARIABLE: &str = "NETTERM_WORKSPACE";
+/// Names the headless binary, for the Python package.
+pub const CLI_VARIABLE: &str = "NETTERM_CLI";
+/// The version of the targets file's format.
+pub const TARGETS_FORMAT: u32 = 1;
+
+/// How a script job runs its script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptOptions {
+    /// The Python interpreter (the user's choice, checked by the caller).
+    pub interpreter: PathBuf,
+    /// The headless binary, set as [`CLI_VARIABLE`] (`None`: not set, the
+    /// package looks for it itself).
+    pub cli: Option<PathBuf>,
+    /// More environment variables for the script (the app's data folder,
+    /// say, so that the binary asks this app for credentials).
+    pub environment: Vec<(OsString, OsString)>,
+}
+
+/// The hosts a script job may see: the file [`TARGETS_VARIABLE`] names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptTargets {
+    /// [`TARGETS_FORMAT`].
+    pub format: u32,
+    /// The workspace folder the job runs in.
+    pub workspace: PathBuf,
+    /// The job's hosts, in plan order.
+    pub hosts: Vec<HostId>,
+}
+
+/// Why the targets file cannot be used.
+#[derive(Debug, thiserror::Error)]
+pub enum TargetsError {
+    #[error("the job's targets file {} cannot be read: {error}", .path.display())]
+    Read { path: PathBuf, error: io::Error },
+    #[error("the job's targets file {} is damaged: {reason}", .path.display())]
+    Damaged { path: PathBuf, reason: String },
+}
+
+impl ScriptTargets {
+    /// The targets the environment names, if it names a file: a process
+    /// started by a script job. A file that cannot be read is an error, so
+    /// that a script is never shown more than its job's hosts by mistake.
+    pub fn from_environment() -> Option<Result<Self, TargetsError>> {
+        let path = std::env::var_os(TARGETS_VARIABLE).filter(|path| !path.is_empty())?;
+        Some(Self::read(Path::new(&path)))
+    }
+
+    pub fn read(path: &Path) -> Result<Self, TargetsError> {
+        let text = fs::read_to_string(path).map_err(|error| TargetsError::Read {
+            path: path.to_path_buf(),
+            error,
+        })?;
+        let damaged = |reason: String| TargetsError::Damaged {
+            path: path.to_path_buf(),
+            reason,
+        };
+        let targets: Self =
+            serde_json::from_str(&text).map_err(|error| damaged(error.to_string()))?;
+        if targets.format != TARGETS_FORMAT {
+            return Err(damaged(format!(
+                "it is in format {}, and this version reads format {TARGETS_FORMAT}",
+                targets.format
+            )));
+        }
+        Ok(targets)
+    }
+
+    /// Whether `id` is one of the job's hosts.
+    pub fn allows(&self, id: &HostId) -> bool {
+        self.hosts.contains(id)
+    }
+}
+
+/// What a reader thread passes on: more of a pipe's output, or its end.
+enum Piece {
+    Bytes(usize, Vec<u8>),
+    End,
+}
+
+/// How the process ended.
+enum Ended {
+    Exited(ExitStatus),
+    Cancelled,
+}
+
+/// Runs the planned script on its own thread, reporting on `events`.
+pub(super) fn spawn(
+    plan: &JobPlan,
+    script: &PlannedScript,
+    options: &ScriptOptions,
+    events: mpsc::UnboundedSender<JobEvent>,
+    cancel: watch::Receiver<bool>,
+) {
+    let JobStep::Script { path } = &plan.step else {
+        unreachable!("a script is planned only for a script step")
+    };
+    let runner = Runner {
+        id: HostId::new(SCRIPT_OUTPUT),
+        name: path.clone(),
+        events,
+        texts: [PlainText::new(), PlainText::new()],
+        output: String::new(),
+    };
+    let targets = ScriptTargets {
+        format: TARGETS_FORMAT,
+        workspace: script.root.clone(),
+        hosts: plan.hosts.iter().map(|host| host.id.clone()).collect(),
+    };
+    let script = script.clone();
+    let options = options.clone();
+    let _ = runner.events.send(JobEvent::State {
+        host: runner.id.clone(),
+        state: HostState::Waiting,
+    });
+    thread::Builder::new()
+        .name("script job".into())
+        .spawn(move || runner.run(&script, &options, &targets, &cancel))
+        .expect("a thread starts");
+}
+
+struct Runner {
+    id: HostId,
+    /// The script's path, as the step names it.
+    name: String,
+    events: mpsc::UnboundedSender<JobEvent>,
+    /// stdout's and stderr's text, apart, so that their lines do not mix.
+    texts: [PlainText; 2],
+    output: String,
+}
+
+impl Runner {
+    fn run(
+        mut self,
+        script: &PlannedScript,
+        options: &ScriptOptions,
+        targets: &ScriptTargets,
+        cancel: &watch::Receiver<bool>,
+    ) {
+        let file = std::env::temp_dir().join(format!("netterm-job-{}.json", uuid::Uuid::new_v4()));
+        let (state, exit_status) = match self.execute(script, options, targets, &file, cancel) {
+            Ok(Ended::Exited(status)) => (exited(status), status.code()),
+            Ok(Ended::Cancelled) => (HostState::Cancelled, None),
+            Err(reason) => (HostState::Failed { reason }, None),
+        };
+        let _ = fs::remove_file(&file);
+        for pipe in 0..2 {
+            let rest = self.texts[pipe].finish();
+            self.add_output(rest);
+        }
+        self.state(state.clone());
+        let report = JobReport {
+            hosts: vec![HostResult {
+                id: self.id.clone(),
+                name: self.name.clone(),
+                state,
+                output: std::mem::take(&mut self.output),
+                backup: None,
+                exit_status,
+            }],
+        };
+        let _ = self.events.send(JobEvent::Finished(report));
+    }
+
+    /// Writes the targets file, starts the script and follows it until it
+    /// ends or the job is cancelled.
+    fn execute(
+        &mut self,
+        script: &PlannedScript,
+        options: &ScriptOptions,
+        targets: &ScriptTargets,
+        file: &Path,
+        cancel: &watch::Receiver<bool>,
+    ) -> Result<Ended, String> {
+        let json = serde_json::to_string_pretty(targets).expect("targets serialise");
+        fs::write(file, json).map_err(|error| {
+            format!(
+                "the job's hosts could not be written for the script to {}: {error}",
+                file.display()
+            )
+        })?;
+        if *cancel.borrow() {
+            return Ok(Ended::Cancelled);
+        }
+        let mut command = quiet_command(options.interpreter.as_os_str());
+        command
+            .arg("-u")
+            .arg(&script.file)
+            .current_dir(&script.root)
+            .stdin(Stdio::null())
+            .env("PYTHONUNBUFFERED", "1")
+            .env(TARGETS_VARIABLE, file)
+            .env(WORKSPACE_VARIABLE, &script.root);
+        if let Some(cli) = &options.cli {
+            command.env(CLI_VARIABLE, cli);
+        }
+        for (name, value) in &options.environment {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().map_err(|error| {
+            format!(
+                "the script could not be started with {}: {error}",
+                options.interpreter.display()
+            )
+        })?;
+        self.state(HostState::Running);
+
+        let (sender, pieces) = std_mpsc::channel();
+        let mut open = 0;
+        if let Some(out) = child.stdout.take() {
+            read_pipe(0, out, sender.clone());
+            open += 1;
+        }
+        if let Some(err) = child.stderr.take() {
+            read_pipe(1, err, sender.clone());
+            open += 1;
+        }
+        drop(sender);
+
+        loop {
+            match pieces.recv_timeout(Duration::from_millis(50)) {
+                Ok(piece) => self.take(piece, &mut open),
+                Err(std_mpsc::RecvTimeoutError::Timeout) => {}
+                // Both pipes closed; the process may still run.
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+            if *cancel.borrow() {
+                stop(&mut child);
+                self.drain(&pieces, &mut open, Duration::from_millis(200));
+                return Ok(Ended::Cancelled);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // What is still in the pipes, for a moment (a process
+                    // it left behind may hold them open).
+                    self.drain(&pieces, &mut open, Duration::from_millis(500));
+                    return Ok(Ended::Exited(status));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    stop(&mut child);
+                    return Err(format!("the script could not be followed: {error}"));
+                }
+            }
+        }
+    }
+
+    /// Takes what is left in the pipes until both have ended or `wait`
+    /// has passed.
+    fn drain(&mut self, pieces: &std_mpsc::Receiver<Piece>, open: &mut usize, wait: Duration) {
+        let until = Instant::now() + wait;
+        while *open > 0 {
+            let Some(left) = until.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match pieces.recv_timeout(left) {
+                Ok(piece) => self.take(piece, open),
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn take(&mut self, piece: Piece, open: &mut usize) {
+        match piece {
+            Piece::Bytes(pipe, bytes) => {
+                let lines = self.texts[pipe].push(&bytes);
+                self.add_output(lines);
+            }
+            Piece::End => *open = open.saturating_sub(1),
+        }
+    }
+
+    fn add_output(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        self.output.push_str(&text);
+        let _ = self.events.send(JobEvent::Output {
+            host: self.id.clone(),
+            text,
+        });
+    }
+
+    fn state(&self, state: HostState) {
+        let _ = self.events.send(JobEvent::State {
+            host: self.id.clone(),
+            state,
+        });
+    }
+}
+
+/// How a script that exited with `status` ended.
+fn exited(status: ExitStatus) -> HostState {
+    match status.code() {
+        Some(0) => HostState::Done,
+        Some(code) => HostState::Failed {
+            reason: format!("the script exited with status {code}"),
+        },
+        None => HostState::Failed {
+            reason: "the script was ended without an exit status (by a signal)".into(),
+        },
+    }
+}
+
+fn read_pipe(pipe: usize, mut stream: impl Read + Send + 'static, sender: std_mpsc::Sender<Piece>) {
+    thread::spawn(move || {
+        let mut buffer = vec![0; 8192];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    if sender
+                        .send(Piece::Bytes(pipe, buffer[..read].to_vec()))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+        let _ = sender.send(Piece::End);
+    });
+}

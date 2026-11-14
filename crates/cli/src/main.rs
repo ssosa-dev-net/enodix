@@ -10,8 +10,9 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use netterm_core::app_state::resolved_path;
-use netterm_core::inventory::{export, Limit};
+use netterm_core::app_state::{resolved_path, same_folder};
+use netterm_core::inventory::{export_within, Limit};
+use netterm_core::job::script::{ScriptTargets, TARGETS_VARIABLE};
 use netterm_core::workspace::Workspace;
 
 mod credentials;
@@ -44,6 +45,11 @@ Credentials come from {PRODUCT} while it runs and its vault, if it has
 one, is unlocked. Otherwise they are read here: from the keychain, or from
 the vault after asking for its master password on the terminal. With a
 vault and neither {PRODUCT} unlocked nor a terminal, they are refused.
+
+Run by a script job of {PRODUCT} ({TARGETS_VARIABLE} names the job's
+hosts), every command reads only that job's workspace, inventory shows only
+the job's hosts, and credentials are given only for them (the workspace's
+named secrets stay readable): a guard against mistakes, not a sandbox.
 "
     )
 }
@@ -123,7 +129,13 @@ fn inventory(args: &[String]) -> Result<(), Failure> {
 
     let workspace = Workspace::open(resolved_path(Path::new(root)))
         .map_err(|error| Failure::Error(error.to_string()))?;
-    let exported = export(&workspace, &limit).map_err(|error| Failure::Error(error.to_string()))?;
+    let scope = job_scope(&workspace)?;
+    let exported = export_within(
+        &workspace,
+        &limit,
+        scope.as_ref().map(|targets| targets.hosts.as_slice()),
+    )
+    .map_err(|error| Failure::Error(error.to_string()))?;
     for problem in &exported.problems {
         eprintln!("{NAME}: warning: {problem}");
     }
@@ -131,6 +143,24 @@ fn inventory(args: &[String]) -> Result<(), Failure> {
         .map_err(|error| Failure::Error(format!("cannot write the inventory: {error}")))?;
     json.push('\n');
     print(&json)
+}
+
+/// The hosts of the script job this process runs for, if it runs for one
+/// ([`TARGETS_VARIABLE`] set); refused for another workspace than the
+/// job's, or when the job's file cannot be read (never more than the job's
+/// hosts by mistake).
+pub(crate) fn job_scope(workspace: &Workspace) -> Result<Option<ScriptTargets>, Failure> {
+    let Some(targets) = ScriptTargets::from_environment() else {
+        return Ok(None);
+    };
+    let targets = targets.map_err(|error| Failure::Error(error.to_string()))?;
+    if !same_folder(&targets.workspace, workspace.root()) {
+        return Err(Failure::Error(format!(
+            "this runs for a script job of the workspace {}, and reads no other workspace",
+            targets.workspace.display()
+        )));
+    }
+    Ok(Some(targets))
 }
 
 fn set_once<'a>(slot: &mut Option<&'a str>, option: &str, value: &'a str) -> Result<(), Failure> {

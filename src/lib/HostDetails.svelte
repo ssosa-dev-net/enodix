@@ -11,6 +11,7 @@
     openBackup,
     openConfigHistory,
     openJob,
+    openScript,
     remove,
     renameTo,
     saveHost,
@@ -246,6 +247,12 @@
         title="Run a saved snippet on this host as a job, without a terminal"
         onclick={() => openJob({ kind: "hosts", ids: [host.id] }, host.name)}
         >Run snippet…</button
+      >
+      <button
+        data-host-run-script
+        title="Run a Python script of the workspace for this host, as a job"
+        onclick={() => openScript({ kind: "hosts", ids: [host.id] }, host.name)}
+        >Run script…</button
       >
       <button onclick={() => move(item)}>Move…</button>
       <button class="danger" onclick={() => remove(item)}>Delete…</button>

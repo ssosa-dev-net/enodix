@@ -1,6 +1,7 @@
 // Jobs: a saved snippet run on many hosts at once by the core, over its
-// own headless sessions (see the core's `job` module). The interface only
-// shows the pre-flight list and the progress.
+// own headless sessions (see the core's `job` module), a config backup, or
+// a Python script of the workspace run once for the hosts. The interface
+// only shows the pre-flight list and the progress.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { Environment } from "./workspace";
@@ -18,7 +19,18 @@ export type JobStep =
       answers: Record<string, string>;
     }
   /** Fetches each configuration and keeps it in the config history. */
-  | { kind: "configBackup" };
+  | { kind: "configBackup" }
+  /**
+   * Runs the workspace's Python script at `path` once; its inventory holds
+   * only the job's hosts.
+   */
+  | { kind: "script"; path: string };
+
+/**
+ * The host id a script job's one output (and state) goes under: no host
+ * has it.
+ */
+export const SCRIPT_OUTPUT = "script";
 
 /** What a config backup kept of one host's configuration. */
 export type SaveOutcome =
@@ -27,9 +39,16 @@ export type SaveOutcome =
   /** The same as the latest version, apart from ignored lines. */
   | { kind: "unchanged"; version: string };
 
-/** What a kept run is called: its snippet, or "Config backup". */
+/** What a kept run is called: its snippet, its script or "Config backup". */
 export function stepTitle(step: JobStep): string {
-  return step.kind === "snippet" ? step.name : "Config backup";
+  if (step.kind === "snippet") return step.name;
+  if (step.kind === "script") return `Script ${step.path}`;
+  return "Config backup";
+}
+
+/** The open workspace's Python scripts, by path relative to its folder. */
+export function listScripts() {
+  return invoke<string[]>("workspace_scripts");
 }
 
 /** A config backup's outcome, for the user. */
@@ -55,7 +74,10 @@ export interface PlannedHost {
   name: string;
   address: string;
   environment: Environment | null;
-  /** The platform definition that drives it. */
+  /**
+   * The platform definition that drives it (a script job: the platform as
+   * written, "" if none).
+   */
   platform: string;
 }
 
@@ -93,6 +115,8 @@ export interface HostResult {
   output: string;
   /** For a config backup that got the configuration. */
   backup: SaveOutcome | null;
+  /** For a script: its exit status, if it exited with one. */
+  exit_status: number | null;
 }
 
 export type JobEvent =
@@ -141,6 +165,8 @@ export interface RunHost {
   file: string;
   /** For a config backup: the version holding its configuration. */
   backup?: SaveOutcome;
+  /** For a script: its exit status, once it exited with one. */
+  exit_status?: number;
 }
 
 /** A kept run, as its description says. */
@@ -155,6 +181,8 @@ export interface StoredRun {
   ended: string | null;
   hosts: RunHost[];
   skipped: { id: string; name: string; reason: string }[];
+  /** For a script run: the hosts it ran for (`hosts` holds the script). */
+  targets?: { id: string; name: string; address: string }[];
 }
 
 export interface RunList {

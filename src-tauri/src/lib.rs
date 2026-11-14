@@ -892,6 +892,15 @@ fn platform_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, 
     edit(&shell, |workspace| workspace.delete_platform(&name))
 }
 
+/// The open workspace's Python scripts (`*.py` files), by path relative to
+/// its folder: what a script job can run.
+#[tauri::command]
+fn workspace_scripts(shell: State<'_, Shell>) -> Result<Vec<String>, String> {
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    Ok(workspace.scripts())
+}
+
 /// The snippets matching `query` (the Ctrl+K palette's snippet search).
 #[tauri::command]
 fn snippet_find(shell: State<'_, Shell>, query: String) -> Result<Vec<Snippet>, String> {
@@ -1310,21 +1319,48 @@ struct StartedJob {
 /// its run on disk. Its progress arrives on `on_event` until `finished`,
 /// and goes on if nobody listens.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn job_start(
     manager: State<'_, SessionManager>,
     plans: State<'_, JobPlans>,
     runs: State<'_, Runs>,
     configs: State<'_, Configs>,
     jobs: State<'_, Arc<RunningJobs>>,
+    python: State<'_, Arc<python::PythonSetup>>,
     parallel: Option<usize>,
     on_event: Channel<JobEvent>,
 ) -> Result<StartedJob, String> {
+    let peeked = {
+        let plans = plans.0.lock().unwrap_or_else(PoisonError::into_inner);
+        plans
+            .as_ref()
+            .ok_or("no job has been planned")?
+            .plan
+            .clone()
+    };
+    // A script job runs with the interpreter as it is now (checked here,
+    // which takes a moment, before the plan is taken).
+    let script = match peeked.step {
+        JobStep::Script { .. } => {
+            let python = python.inner().clone();
+            Some(
+                tauri::async_runtime::spawn_blocking(move || python.script_options())
+                    .await
+                    .map_err(|error| error.to_string())??,
+            )
+        }
+        _ => None,
+    };
     let mut plans = plans.0.lock().unwrap_or_else(PoisonError::into_inner);
     let planned = plans.as_ref().ok_or("no job has been planned")?.clone();
+    if planned.plan != peeked {
+        return Err("another job was planned meanwhile: start it again".into());
+    }
     let workspace = planned.workspace.clone().ok_or_else(no_workspace_id)?;
     let options = JobOptions {
         parallel: parallel.unwrap_or(job::DEFAULT_PARALLEL),
         configs: Some(configs.0.clone()),
+        script,
         ..JobOptions::default()
     };
     // A start that would be refused keeps no run.
@@ -2438,6 +2474,7 @@ pub fn run() {
             snippet_expand,
             snippet_expand_group,
             job_plan,
+            workspace_scripts,
             job_start,
             job_cancel,
             job_run_again,

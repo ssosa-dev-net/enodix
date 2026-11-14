@@ -112,6 +112,39 @@ read the app's known hosts); telnet and serial hosts are exported as they
 are (see `netterm.settings.protocol`), with no telnet-specific driver
 names.
 
+## Script jobs
+
+The app runs a script of the workspace (any `.py` file in the workspace
+folder or below it) as a job: "Run script…" on a folder, a saved filter or a
+host. It uses the Python chosen in Preferences → Python, runs the script
+once in the workspace folder, shows its output (stdout and stderr) as it
+comes and keeps it with the other job results; exit status 0 counts as
+succeeded, anything else as failed. Cancel ends the process.
+
+The script finds the job in its environment:
+
+| Variable              | Meaning                                                   |
+| --------------------- | --------------------------------------------------------- |
+| `NETTERM_WORKSPACE`   | The workspace folder: the default `workspace` everywhere. |
+| `NETTERM_JOB_TARGETS` | A JSON file naming the job's hosts (`hosts`: host ids).   |
+| `NETTERM_CLI`         | The headless binary beside the app.                       |
+
+While `NETTERM_JOB_TARGETS` is set, the binary (and so this package) shows
+only the job's hosts and hands over only their logins: a folder, filter or
+host limit of the script's own narrows that further, a host outside the job
+is refused, and so is any other workspace (the workspace's named secrets
+stay readable). This guards against mistakes, not against the script: it
+runs as you and could undo it. So in a job this is enough:
+
+```python
+from nornir import InitNornir
+
+nr = InitNornir(inventory={"plugin": "NettermInventory"})
+```
+
+The script has no console: a vault the running app has not unlocked is
+refused rather than asked for.
+
 ## Without Nornir
 
 ```python

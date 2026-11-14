@@ -5,7 +5,8 @@
 //! of the given version would, with or without the app's package. It
 //! ignores its arguments, so it can also stand in as the base Python of a
 //! setup (it "creates" nothing). [`FakePython::failing`] prints a line and
-//! fails; [`FakePython::sleeping`] does not end for a minute.
+//! fails; [`FakePython::sleeping`] does not end for a minute;
+//! [`FakePython::running`] runs given commands (script jobs' stand-ins).
 //!
 //! [`real_python`] is a Python 3.10+ of this machine (`NETTERM_TEST_PYTHON`,
 //! else where the app looks), for the tests that run only when one is
@@ -61,6 +62,14 @@ impl FakePython {
     pub fn sleeping(folder: &Path, name: &str) -> Self {
         let path = script_path(folder, name);
         write_script(&path, "ping -n 60 127.0.0.1 > nul", "sleep 60");
+        Self { path }
+    }
+
+    /// A program running `windows` (a batch file's lines, after `@echo
+    /// off`) or `unix` (a shell script's), which get the arguments.
+    pub fn running(folder: &Path, name: &str, windows: &str, unix: &str) -> Self {
+        let path = script_path(folder, name);
+        write_script(&path, windows, unix);
         Self { path }
     }
 

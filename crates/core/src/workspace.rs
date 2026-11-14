@@ -53,6 +53,7 @@ pub(crate) mod import;
 mod jumps;
 mod platforms;
 mod roles;
+mod scripts;
 mod search;
 mod settings;
 mod snippets;
@@ -66,6 +67,7 @@ pub use identity::WORKSPACE_FILE;
 pub use jumps::JumpChainError;
 pub use platforms::PLATFORMS_FILE;
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
+pub use scripts::{ScriptError, SCRIPT_EXTENSION};
 use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
