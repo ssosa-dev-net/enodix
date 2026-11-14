@@ -116,6 +116,7 @@ fn record_finished(recorder: &mut RunRecorder, plan: &JobPlan, outputs: &[&str])
             output: text.to_string(),
             backup: None,
             exit_status: None,
+            facts: None,
         });
     }
     recorder

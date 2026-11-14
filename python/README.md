@@ -145,6 +145,27 @@ nr = InitNornir(inventory={"plugin": "NettermInventory"})
 The script has no console: a vault the running app has not unlocked is
 refused rather than asked for.
 
+## Fill in from devices
+
+"Fill in from devices…" on a folder (or "Fill in from device…" on a host)
+asks each device for its vendor, model, serial number and OS version. The
+app runs this package's own script, `python -m netterm.enrich`, as a script
+job with the Python chosen in Preferences; it needs
+[NAPALM](https://napalm.readthedocs.io/) in that Python (`pip install
+napalm`, or tick NAPALM in the app's Python setup). Pre-flight keeps the
+hosts reached over SSH with a stored credential profile and no jump host
+whose platform definition answers to a NAPALM driver (`ios`, `eos`,
+`junos`, `nxos_ssh`, `nxos`, `iosxr`, `iosxr_netconf`; NX-OS prefers
+`nxos_ssh`). Each device is asked with its own login, on the host's SSH
+port (EOS over SSH, not eAPI; Junos over NETCONF on that port), at most 10
+at once. The script writes what it found to the file `NETTERM_FACTS_FILE`
+names; nothing is written to the workspace until you review it in the app
+and apply: empty fields are filled, typed values are replaced only on the
+hosts you tick. The OS version goes to the custom field `os_version`.
+
+Verified with NAPALM 5.2 against cEOS 4.36, IOS-XE 17.3 (CSR 1000v) and
+cJunos Evolved 25.4.
+
 ## Without Nornir
 
 ```python

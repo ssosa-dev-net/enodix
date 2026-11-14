@@ -102,6 +102,18 @@ pub enum JobStep {
     /// `/`-separated) once, for all the hosts: it reaches them itself,
     /// through the inventory plugin, which shows it only the job's hosts.
     Script { path: String },
+    /// Fetches each host's vendor, model, serial number and OS version
+    /// with NAPALM, through the script the app ships (see
+    /// [`crate::enrich`]); the facts are kept with the run, to preview and
+    /// apply.
+    Enrich,
+}
+
+impl JobStep {
+    /// Whether the step runs a Python script (once, for all its hosts).
+    pub fn runs_script(&self) -> bool {
+        matches!(self, JobStep::Script { .. } | JobStep::Enrich)
+    }
 }
 
 /// The pre-flight list of a job.
@@ -135,8 +147,17 @@ pub struct JobPlan {
 struct PlannedScript {
     /// The workspace folder: the script's working folder.
     root: PathBuf,
-    /// The script file.
-    file: PathBuf,
+    /// What the interpreter runs.
+    run: ScriptRun,
+}
+
+/// What the interpreter of a script step runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ScriptRun {
+    /// A script file of the workspace.
+    File(PathBuf),
+    /// A module of the installed packages (`-m`), such as the app's own.
+    Module(&'static str),
 }
 
 impl JobPlan {
@@ -192,6 +213,8 @@ struct HostWork {
     lines: Vec<String>,
     /// For a config backup: what fetches the configuration.
     backup: Option<BackupWork>,
+    /// For filling in from devices: the NAPALM driver.
+    napalm_driver: Option<&'static str>,
 }
 
 /// How a config backup fetches a host's configuration.
@@ -262,6 +285,14 @@ pub enum SkipReason {
     /// Its profile is not stored on this computer.
     #[error("its credential profile {profile} is not set up on this computer")]
     ProfileNotSetUp { profile: String },
+    /// Filling in from devices, and its platform definition has no NAPALM
+    /// driver.
+    #[error("its platform {platform} has no NAPALM driver, so its facts cannot be fetched")]
+    NoNapalmDriver { platform: String },
+    /// Filling in from devices, and it is reached through a jump host,
+    /// which the script cannot go through.
+    #[error("it is reached through the jump host {jump_host}, and scripts cannot go through jump hosts yet")]
+    BehindJumpHost { jump_host: String },
     /// Its jump hosts cannot be worked out (missing, a loop, not SSH).
     #[error("its jump hosts cannot be used: {error}")]
     JumpChain { error: String },
@@ -332,7 +363,11 @@ pub fn plan(
     let script = match step {
         JobStep::Script { path } => Some(PlannedScript {
             root: workspace.root().to_path_buf(),
-            file: workspace.script_file(path)?,
+            run: ScriptRun::File(workspace.script_file(path)?),
+        }),
+        JobStep::Enrich => Some(PlannedScript {
+            root: workspace.root().to_path_buf(),
+            run: ScriptRun::Module(crate::enrich::ENRICH_MODULE),
         }),
         _ => None,
     };
@@ -358,6 +393,7 @@ pub fn plan(
         };
         let runs = match step {
             JobStep::Script { .. } => script_runnable(profiles, &host),
+            JobStep::Enrich => enrich_runnable(workspace, profiles, &host),
             _ => runnable(workspace, profiles, &host, step),
         };
         match runs {
@@ -521,7 +557,7 @@ fn runnable(
             platform: host.settings.platform.as_ref().map(|p| p.value.clone()),
         })?;
     let backup = match step {
-        JobStep::Snippet { .. } | JobStep::Script { .. } => None,
+        JobStep::Snippet { .. } | JobStep::Script { .. } | JobStep::Enrich => None,
         JobStep::ConfigBackup => Some(BackupWork {
             command: given(&definition.show_config).ok_or_else(|| SkipReason::NoShowConfig {
                 platform: definition.name.clone(),
@@ -558,6 +594,7 @@ fn runnable(
         disable_paging: given(&definition.disable_paging),
         lines: Vec::new(),
         backup,
+        napalm_driver: None,
     };
     Ok((work, definition.name.clone()))
 }
@@ -591,6 +628,7 @@ fn script_runnable(
         disable_paging: None,
         lines: Vec::new(),
         backup: None,
+        napalm_driver: None,
     };
     let platform = host
         .settings
@@ -599,6 +637,57 @@ fn script_runnable(
         .map(|p| p.value.clone())
         .unwrap_or_default();
     Ok((work, platform))
+}
+
+/// How `host` takes part in filling in from devices (its NAPALM driver)
+/// and the name of its definition, or why it cannot: it is not reached
+/// over SSH, its definition has no NAPALM driver, it has no stored
+/// profile, or it is behind a jump host.
+fn enrich_runnable(
+    workspace: &Workspace,
+    profiles: &Profiles<'_>,
+    host: &ResolvedHost,
+) -> Result<(HostWork, String), SkipReason> {
+    let id = &host.host.id;
+    let protocol = host.settings.protocol.value;
+    if protocol != Protocol::Ssh {
+        return Err(SkipReason::NotSsh { protocol });
+    }
+    let definition = workspace
+        .host_platform(id)
+        .ok_or_else(|| SkipReason::NoPlatform {
+            platform: host.settings.platform.as_ref().map(|p| p.value.clone()),
+        })?;
+    let driver =
+        crate::enrich::napalm_driver(definition).ok_or_else(|| SkipReason::NoNapalmDriver {
+            platform: definition.name.clone(),
+        })?;
+    let profile = match profiles.login_with(id, Protocol::Ssh).map_err(skip)? {
+        HostLogin::Profile { profile, .. } => profile,
+        HostLogin::NotSetUp { profile } => return Err(SkipReason::ProfileNotSetUp { profile }),
+        HostLogin::Prompt | HostLogin::Telnet | HostLogin::Serial => {
+            return Err(SkipReason::NoProfile)
+        }
+    };
+    let jump_hosts = profiles.jump_hosts(id).map_err(skip)?;
+    if let Some(jump) = jump_hosts.first() {
+        return Err(SkipReason::BehindJumpHost {
+            jump_host: jump.name.clone(),
+        });
+    }
+    let work = HostWork {
+        target: None,
+        profile: Some(profile),
+        enable_secret: None,
+        prompt: String::new(),
+        privilege_command: None,
+        privilege_prompt: None,
+        disable_paging: None,
+        lines: Vec::new(),
+        backup: None,
+        napalm_driver: Some(driver),
+    };
+    Ok((work, definition.name.clone()))
 }
 
 fn skip(error: ProfileError) -> SkipReason {

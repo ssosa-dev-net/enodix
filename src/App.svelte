@@ -34,6 +34,7 @@
   import CsvImportDialog from "./lib/CsvImportDialog.svelte";
   import NornirImportDialog from "./lib/NornirImportDialog.svelte";
   import JobDialog from "./lib/JobDialog.svelte";
+  import EnrichReview from "./lib/EnrichReview.svelte";
   import JobsView from "./lib/JobsView.svelte";
   import ConfigHistory from "./lib/ConfigHistory.svelte";
   import { liveJobs } from "./lib/jobs.svelte";
@@ -1166,8 +1167,19 @@
     planned={inventory.job.planned ?? null}
     backup={inventory.job.backup ?? false}
     script={inventory.job.script ?? false}
+    enrich={inventory.job.enrich ?? false}
     onclose={() => {
       inventory.job = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if inventory.enrichReview !== null && inventory.workspace}
+  <EnrichReview
+    run={inventory.enrichReview}
+    onclose={() => {
+      inventory.enrichReview = null;
       focusRequest += 1;
     }}
   />

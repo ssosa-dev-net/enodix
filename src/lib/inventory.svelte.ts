@@ -84,7 +84,10 @@ export const inventory = $state({
     planned?: JobPlan | null;
     backup?: boolean;
     script?: boolean;
+    enrich?: boolean;
   } | null,
+  /** While the review of a "Fill in from devices" run is open: its id. */
+  enrichReview: null as string | null,
   /** While the config history is open: the host it shows. */
   configHistory: null as string | null,
 });
@@ -104,7 +107,16 @@ export function openJob(
     planned,
     backup: planned?.step.kind === "configBackup",
     script: planned?.step.kind === "script",
+    enrich: planned?.step.kind === "enrich",
   };
+}
+
+/**
+ * Opens the job dialog filling in vendor, model, serial number and OS
+ * version of `target`'s hosts from their devices.
+ */
+export function openEnrich(target: JobTarget, label: string) {
+  inventory.job = { target, label, planned: null, enrich: true };
 }
 
 /** Opens the job dialog running a Python script for `target`'s hosts. */
@@ -208,6 +220,18 @@ export async function runCsvImport(
   replace: string[],
 ): Promise<api.ImportReport> {
   return apply(await api.importCsv(mapping, target, replace));
+}
+
+/**
+ * Fills in what the preview of the "Fill in from devices" run `run`
+ * showed (see `api.applyEnrich`) and shows the reloaded workspace; returns
+ * the report. Errors propagate.
+ */
+export async function applyEnrich(
+  run: string,
+  replace: string[],
+): Promise<api.EnrichReport> {
+  return apply(await api.applyEnrich(run, replace));
 }
 
 /** Opens the Nornir import dialog with `folder` as its first target. */

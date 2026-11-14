@@ -27,7 +27,13 @@ export type JobStep =
    * Runs the workspace's Python script at `path` once; its inventory holds
    * only the job's hosts.
    */
-  | { kind: "script"; path: string };
+  | { kind: "script"; path: string }
+  /**
+   * Asks each host's device for its vendor, model, serial number and OS
+   * version with NAPALM (the app's own script); kept with the run to
+   * review and apply.
+   */
+  | { kind: "enrich" };
 
 /**
  * The host id a script job's one output (and state) goes under: no host
@@ -46,6 +52,7 @@ export type SaveOutcome =
 export function stepTitle(step: JobStep): string {
   if (step.kind === "snippet") return step.name;
   if (step.kind === "script") return `Script ${step.path}`;
+  if (step.kind === "enrich") return "Fill in from devices";
   return "Config backup";
 }
 
@@ -306,6 +313,9 @@ export interface ListedSavedJob extends SavedJob {
 export function unsaveable(step: JobStep, target: JobTarget): string | null {
   if (step.kind === "configBackup") {
     return "A config backup cannot be saved as a job.";
+  }
+  if (step.kind === "enrich") {
+    return "Filling in from devices cannot be saved as a job.";
   }
   if (target.kind === "hosts" && target.ids.length !== 1) {
     return "Only a job on a folder, a saved filter or one host can be saved.";

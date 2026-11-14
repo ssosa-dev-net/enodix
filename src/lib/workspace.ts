@@ -682,6 +682,65 @@ export function previewCsv(mapping: ColumnTarget[], target: string) {
   return invoke<ImportPreview>("csv_import_preview", { mapping, target });
 }
 
+/** One of the fields filling in from devices sets. */
+export type EnrichField = "vendor" | "model" | "serial_number" | "os_version";
+
+/** One field a host would get from its device. */
+export interface FieldChange {
+  field: EnrichField;
+  /** `new`: the field is empty; `replace`: it has another typed value. */
+  kind: "new" | "replace";
+  current: string | null;
+  value: string;
+}
+
+/** What filling in would do to one host. */
+export interface EnrichPreviewHost {
+  id: string;
+  name: string;
+  outcome:
+    | { kind: "changes" }
+    | { kind: "unchanged" }
+    | { kind: "skipped"; reason: string }
+    | { kind: "failed"; reason: string };
+  changes: FieldChange[];
+}
+
+export interface EnrichPreview {
+  hosts: EnrichPreviewHost[];
+}
+
+export interface EnrichReportedHost {
+  id: string;
+  name: string;
+  /** The fields written. */
+  fields: EnrichField[];
+  /** The fields whose typed value was kept (the host was not ticked). */
+  kept: EnrichField[];
+  reason: string | null;
+}
+
+export interface EnrichReport {
+  filled: EnrichReportedHost[];
+  unchanged: EnrichReportedHost[];
+  skipped: EnrichReportedHost[];
+  failed: EnrichReportedHost[];
+  reloadError: string | null;
+}
+
+/** What filling in the facts of the kept run `run` would change. */
+export function previewEnrich(run: string) {
+  return invoke<EnrichPreview>("enrich_preview", { run });
+}
+
+/**
+ * Fills in the preview made last of `run`: empty fields, and typed values
+ * only on the hosts in `replace`.
+ */
+export function applyEnrich(run: string, replace: string[]) {
+  return invoke<Edited<EnrichReport>>("enrich_apply", { run, replace });
+}
+
 /**
  * Imports the CSV file read last into `target`. Existing hosts are only
  * written if their id is in `replace`.

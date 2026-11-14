@@ -29,6 +29,7 @@ from these runs.
 | paging off                     | A job driven by the device's built-in platform definition runs `paging_command` (more lines than a job's 100-row terminal): no pager (`--More--`, `---(more)---`, ...) shows and the job ends at the prompt |
 | config backup                  | A config backup job keeps the configuration without the prompt (its last line matches `config_end`); a second backup of the unchanged device keeps nothing new, so the definition's ignored lines cover what changes by itself |
 | privileged mode                | Only where the definition has a privilege command: a job's `privilege_check` command shows `privilege_expect` (level 15) |
+| fill in from devices           | Only with `NETTERM_LAB_PYTHON` (a Python with NAPALM): the app's script (`python -m netterm.enrich`, from `python/`) runs as a job for every device whose definition has a NAPALM driver (cEOS, IOS-XE, Junos), through `ssh -L` tunnels opened with the system's `ssh` when there is a jump host (key file or agent); every device reports vendor, model, serial number and OS version, and applying writes them |
 | second channel and backup on login | A session opened with the host's backup on login reports it saved; then a second shell channel on that session's connection is opened: accepted (the command runs there, the terminal is untouched) or refused (then the backup used a second connection) |
 
 The output of every check (pass, fail or not checked, with the negotiated
@@ -99,13 +100,16 @@ files).
    npm run test:lab
    ```
 
-   `npm run test:lab` is
+   For `lab_enrichment`, also `export NETTERM_LAB_PYTHON=<python with napalm>`
+   (without it the check prints NOT CHECKED).
+
+   `npm run test:lab` is `cargo build -p netterm-cli && `
    `cargo test -p netterm-core --test containerlab -- --ignored --nocapture --test-threads=1`.
    Add a test name (`lab_ssh_login_and_command`, `lab_host_keys`,
    `lab_wrong_password`, `lab_terminal_size`,
    `lab_large_output_with_flow_control`, `lab_session_log`, `lab_telnet`,
    `lab_paging`, `lab_config_backup`, `lab_privilege`,
-   `lab_second_channel`) after `--test containerlab` to run one check.
+   `lab_second_channel`, `lab_enrichment`) after `--test containerlab` to run one check.
 
 Without a lab file the suite prints `containerlab suite SKIPPED: no lab
 configured ...` and passes. A lab file that exists but cannot be used (a

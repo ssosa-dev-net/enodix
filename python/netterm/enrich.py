@@ -1,0 +1,216 @@
+"""Fill in from devices: the script the app runs (``python -m
+netterm.enrich``) to fetch each host's vendor, model, serial number and OS
+version with NAPALM.
+
+The app starts it as a script job. ``NETTERM_JOB_TARGETS`` names the job's
+hosts and the NAPALM driver of each (chosen by the app from the host's
+platform definition); ``NETTERM_FACTS_FILE`` names the file the facts go
+to, rewritten after every host::
+
+    {"format": 1, "hosts": [
+        {"id": "Site/r1.yaml", "facts": {"vendor": "Arista", "model": "cEOSLab",
+                                          "serial_number": "...", "os_version": "4.36.0.1F"}},
+        {"id": "Site/r2.yaml", "error": "why there are none"}
+    ]}
+
+Each host logs in with its own credential profile, handed over by the
+app. Nothing is written to the workspace here: the app shows what the
+devices report and fills in what the user applies. NAPALM is the user's
+to install (the app's Python setup offers it); without it every host
+fails, saying so.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Mapping, Optional
+
+from . import credentials, inventory
+
+#: The variable naming the file the facts go to.
+FACTS_VARIABLE = "NETTERM_FACTS_FILE"
+#: The variable naming the job's targets file.
+TARGETS_VARIABLE = "NETTERM_JOB_TARGETS"
+#: The version of the facts file's format.
+FORMAT = 1
+#: The facts NAPALM's ``get_facts`` gives that the app fills in.
+FACTS = ("vendor", "model", "serial_number", "os_version")
+#: How many devices are asked at once.
+PARALLEL = 10
+
+DriverFinder = Callable[[str], Any]
+
+
+def driver_arguments(host: Mapping[str, Any], login: Mapping[str, Any], driver: str) -> Dict[str, Any]:
+    """The keyword arguments of NAPALM's driver class ``driver`` for the
+    exported ``host`` and its ``login`` (``netterm-cli credentials``)."""
+    settings = host.get("settings") or {}
+    optional: Dict[str, Any] = {}
+    port = settings.get("port")
+    # Every driver goes to the host's SSH port, Junos too: NETCONF over
+    # SSH's own port works where port 830 is not open.
+    if port:
+        optional["port"] = port
+    if driver == "eos":
+        # NAPALM's default is eAPI over HTTPS, which a device may not
+        # serve; every device the app knows is reached over SSH.
+        optional["transport"] = "ssh"
+    auth = login.get("auth") or {}
+    password = ""
+    kind = auth.get("kind")
+    if kind == "password":
+        password = auth.get("password") or ""
+    elif kind == "private_key":
+        optional.update(use_keys=True, key_file=auth["key_file"])
+        if auth.get("passphrase"):
+            optional["passphrase"] = auth["passphrase"]
+    elif kind == "agent":
+        optional.update(use_keys=True, allow_agent=True)
+    if login.get("enable_secret"):
+        optional["secret"] = login["enable_secret"]
+    return {
+        "hostname": host["address"],
+        "username": login.get("username") or "",
+        "password": password,
+        "timeout": settings.get("connect_timeout") or 60,
+        "optional_args": optional,
+    }
+
+
+def facts_of(reported: Mapping[str, Any]) -> Dict[str, str]:
+    """The facts the app fills in from NAPALM's ``get_facts``, as text,
+    leaving out blank ones."""
+    facts = {}
+    for key in FACTS:
+        value = reported.get(key)
+        text = "" if value is None else str(value).strip()
+        if text:
+            facts[key] = text
+    return facts
+
+
+def _reason(error: BaseException) -> str:
+    text = str(error).strip().splitlines()
+    first = text[0] if text else ""
+    name = type(error).__name__
+    return f"{name}: {first}" if first else name
+
+
+def fetch(get_driver: DriverFinder, driver: str, arguments: Dict[str, Any]) -> Dict[str, str]:
+    """The facts of one device."""
+    device = get_driver(driver)(**arguments)
+    device.open()
+    try:
+        return facts_of(device.get_facts())
+    finally:
+        try:
+            device.close()
+        except Exception:  # the facts are in; a failing close changes nothing
+            pass
+
+
+def _write(path: Path, hosts: List[Dict[str, Any]]) -> None:
+    """Writes the facts file whole (a temporary file renamed over it), so
+    that the app never reads it half written."""
+    text = json.dumps({"format": FORMAT, "hosts": hosts}, indent=2)
+    handle, temporary = tempfile.mkstemp(prefix=".facts-", dir=path.parent)
+    with os.fdopen(handle, "w", encoding="utf-8") as out:
+        out.write(text)
+    os.replace(temporary, path)
+
+
+def collect(
+    targets: Mapping[str, Any],
+    facts_file: Path,
+    get_driver: Optional[DriverFinder] = None,
+    out: Callable[[str], None] = print,
+) -> List[Dict[str, Any]]:
+    """Fetches the facts of every host in ``targets`` (the job's targets
+    file), writing ``facts_file`` after each; returns its entries.
+    ``get_driver`` is NAPALM's ``get_network_driver`` (imported if not
+    given)."""
+    ids: List[str] = list(targets.get("hosts") or [])
+    drivers: Dict[str, str] = dict(targets.get("napalm_drivers") or {})
+    entries: Dict[str, Dict[str, Any]] = {}
+
+    def save() -> List[Dict[str, Any]]:
+        listed = [entries[host] for host in ids if host in entries]
+        _write(facts_file, listed)
+        return listed
+
+    def fail_all(reason: str) -> List[Dict[str, Any]]:
+        for host in ids:
+            entries[host] = {"id": host, "error": reason}
+            out(f"{host}: {reason}")
+        return save()
+
+    save()
+    if get_driver is None:
+        try:
+            from napalm import get_network_driver
+        except ImportError as error:
+            return fail_all(
+                f"NAPALM is not installed in this Python ({sys.executable}): {error}. "
+                "Install it with the app's Python setup or with pip install napalm"
+            )
+        get_driver = get_network_driver
+    try:
+        exported = {host["id"]: host for host in inventory(hosts=ids)["hosts"]} if ids else {}
+    except Exception as error:
+        return fail_all(f"the inventory could not be read: {_reason(error)}")
+
+    def one(host_id: str) -> Dict[str, Any]:
+        driver = drivers.get(host_id)
+        host = exported.get(host_id)
+        if not driver:
+            return {"id": host_id, "error": "the app named no NAPALM driver for it"}
+        if host is None:
+            return {"id": host_id, "error": "it is not in the inventory"}
+        try:
+            login = credentials(None, host_id)
+        except Exception as error:
+            return {"id": host_id, "error": f"its login could not be had: {_reason(error)}"}
+        try:
+            facts = fetch(get_driver, driver, driver_arguments(host, login, driver))
+        except Exception as error:
+            return {"id": host_id, "error": f"NAPALM ({driver}) failed: {_reason(error)}"}
+        return {"id": host_id, "facts": facts}
+
+    with ThreadPoolExecutor(max_workers=PARALLEL) as pool:
+        running = {pool.submit(one, host): host for host in ids}
+        for done in as_completed(running):
+            entry = done.result()
+            entries[entry["id"]] = entry
+            if "facts" in entry:
+                shown = ", ".join(f"{key} {value}" for key, value in entry["facts"].items())
+                out(f"{entry['id']}: {shown or 'no facts reported'}")
+            else:
+                out(f"{entry['id']}: {entry['error']}")
+            save()
+    return save()
+
+
+def main() -> int:
+    targets_file = os.environ.get(TARGETS_VARIABLE)
+    facts_file = os.environ.get(FACTS_VARIABLE)
+    if not targets_file or not facts_file:
+        print(
+            f"run by the app's Fill in from devices, which sets {TARGETS_VARIABLE} and {FACTS_VARIABLE}",
+            file=sys.stderr,
+        )
+        return 2
+    with open(targets_file, encoding="utf-8") as source:
+        targets = json.load(source)
+    entries = collect(targets, Path(facts_file))
+    found = sum(1 for entry in entries if "facts" in entry)
+    print(f"facts of {found} of {len(entries)} hosts")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

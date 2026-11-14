@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use super::{HostState, JobEvent, JobPlan, JobStep, JobTarget, SCRIPT_OUTPUT};
 use crate::configs::SaveOutcome;
 use crate::diff::{diff_lines, DiffLine};
+use crate::enrich::{CollectedFacts, ENRICH_TITLE};
 use crate::workspace::HostId;
 
 /// The description file of a run.
@@ -62,6 +63,10 @@ pub struct StoredRun {
     /// script's one output).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<RunTarget>,
+    /// For filling in from devices, once it ended: what the script
+    /// reported for each target (see [`crate::enrich`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facts: Option<CollectedFacts>,
 }
 
 /// A host a script run ran for.
@@ -248,8 +253,15 @@ impl RunStore {
             exit_status: None,
         };
         let (hosts, targets) = match &plan.step {
-            JobStep::Script { path } => (
-                vec![run_host(&HostId::new(SCRIPT_OUTPUT), path, "")],
+            step @ (JobStep::Script { .. } | JobStep::Enrich) => (
+                vec![run_host(
+                    &HostId::new(SCRIPT_OUTPUT),
+                    match step {
+                        JobStep::Script { path } => path,
+                        _ => ENRICH_TITLE,
+                    },
+                    "",
+                )],
                 plan.hosts
                     .iter()
                     .map(|host| RunTarget {
@@ -285,6 +297,7 @@ impl RunStore {
                 })
                 .collect(),
             targets,
+            facts: None,
         };
         let recorder = RunRecorder {
             folder,
@@ -534,6 +547,9 @@ impl RunRecorder {
                     entry.state = result.state.clone();
                     entry.backup.clone_from(&result.backup);
                     entry.exit_status = result.exit_status;
+                    if result.facts.is_some() {
+                        self.run.facts.clone_from(&result.facts);
+                    }
                     // The whole output again, in case a piece was not kept.
                     let path = self.folder.join(&entry.file);
                     if let Err(error) = fs::write(&path, &result.output) {

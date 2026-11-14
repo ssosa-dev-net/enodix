@@ -1197,6 +1197,8 @@ async function main() {
 
   await pythonBridge({ evaluate, screenshot, step, ready: pythonInterpreter });
 
+  await enrichment({ evaluate, screenshot, step, ready: pythonInterpreter });
+
   await sidePanels({ evaluate, mouse, centreOf, devtools, screenshot, step });
 
   devtools.close();
@@ -2104,6 +2106,274 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
   } finally {
     rmSync(join(workspace, BRIDGE_SCRIPT), { force: true });
     rmSync(slowFile, { force: true });
+  }
+}
+
+/** A stand-in for NAPALM, put into the smoke's own Python environment. */
+const FAKE_NAPALM = `"""NAPALM stood in for by the smoke test: facts made up per driver."""
+
+
+def get_network_driver(name):
+    class Device:
+        def __init__(self, hostname, username, password, timeout=60, optional_args=None):
+            if not username or not password:
+                raise ValueError("no login was handed over")
+            self.port = (optional_args or {}).get("port")
+
+        def open(self):
+            pass
+
+        def get_facts(self):
+            return {
+                "vendor": {"ios": "Cisco", "eos": "Arista"}.get(name, name),
+                "model": name + "-smoke",
+                "serial_number": "SN-%s-%s" % (name, self.port),
+                "os_version": "1.2.3",
+                "hostname": "lab-r1",
+            }
+
+        def close(self):
+            pass
+
+    return Device
+`;
+
+/**
+ * Fill in from devices (#55): on a folder with an IOS host (a typed vendor),
+ * an EOS host and an FRR host (no NAPALM driver). Without NAPALM every host
+ * fails saying so; with a stand-in NAPALM in the smoke's environment the
+ * review shows new and replacing values, applying fills the empty ones and
+ * keeps the typed vendor, and the host's own "Fill in from device" with the
+ * host ticked replaces it. SKIPPED without Python.
+ */
+async function enrichment({ evaluate, screenshot, step, ready }) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const dialog = "[data-dialog=job]";
+  const review = "[data-dialog=enrich]";
+  const folder = join(workspace, "Enrich");
+  if (!ready) {
+    step("enrichment SKIPPED: no Python 3.10 or newer on this machine");
+    return;
+  }
+  const site = spawnSync(
+    ready,
+    ["-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (site.status !== 0)
+    fail(`the environment's site-packages: ${site.stderr}`);
+  const fakeNapalm = join(site.stdout.trim(), "napalm");
+  const r1File = join(folder, "enrich-r1.yaml");
+  try {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(
+      join(folder, "_folder.yaml"),
+      `credential_profile: jobs-login\nport: ${DEVICE_PORT}\n`,
+    );
+    writeFileSync(
+      r1File,
+      "address: 127.0.0.1\nplatform: cisco_ios\nvendor: OldVendor\nowner: noc\n",
+    );
+    writeFileSync(
+      join(folder, "enrich-r2.yaml"),
+      "address: 127.0.0.1\nplatform: eos\n",
+    );
+    writeFileSync(
+      join(folder, "enrich-frr.yaml"),
+      "address: 127.0.0.1\nplatform: frr\n",
+    );
+    const folderRow = 'nav button[data-item=folder][data-path="Enrich"]';
+    await until("the Enrich folder in the tree", () => exists(folderRow));
+
+    /** Fill in from the side panel's `button`; resolves at the review. */
+    const fillIn = async (row, button, hosts) => {
+      await clickOn(row);
+      await until("the side panel's Fill in button", () =>
+        exists(`.side ${button}`),
+      );
+      await clickOn(`.side ${button}`);
+      const plan = await until("the fill-in pre-flight", () =>
+        evaluate(`(() => {
+          const d = document.querySelector("${dialog}[data-step=preflight]");
+          return d && d.querySelector("[data-job-enrich-note]") && {
+            hosts: [...d.querySelectorAll("[data-job-host]")].map((r) => r.dataset.jobHost).sort(),
+            skipped: [...d.querySelectorAll("[data-job-skipped]")].map((r) => r.dataset.jobSkipped + " " + r.dataset.skipReason),
+            saveable: !!d.querySelector("[data-save-job]"),
+          };
+        })()`),
+      );
+      if (json(plan.hosts) !== json(hosts))
+        fail(`the fill-in pre-flight lists ${json(plan)}`);
+      if (plan.saveable) fail("filling in offers to be saved as a job");
+      await until("the fill-in's start enabled", () =>
+        evaluate(
+          `!document.querySelector("${dialog} [data-job=start]").disabled`,
+        ),
+      );
+      await clickOn(`${dialog} [data-job=start]`);
+      await until(
+        "the fill-in finished",
+        () => exists(`${dialog} [data-job=review]`),
+        60000,
+      );
+      await clickOn(`${dialog} [data-job=review]`);
+      await until("the review", () => exists(`${review}[data-step=preview]`));
+      return plan;
+    };
+    const rows = () =>
+      evaluate(`Object.fromEntries([...document.querySelectorAll("${review} [data-enrich-host]")].map((r) => [
+        r.dataset.enrichHost,
+        {
+          outcome: r.dataset.outcome,
+          reason: r.querySelector("[data-enrich-reason]")?.textContent ?? "",
+          changes: [...r.querySelectorAll("[data-enrich-change]")].map((c) => c.dataset.enrichChange + ":" + c.dataset.change),
+          tick: !!r.querySelector("[data-enrich-replace]"),
+        },
+      ]))`);
+    const report = () =>
+      evaluate(
+        `Object.fromEntries([...document.querySelectorAll("${review} [data-enrich-report]")].map((s) => [s.dataset.enrichReport, Number(s.dataset.count)]))`,
+      );
+    const closeReview = async (button) => {
+      await clickOn(`${review} [data-enrich=${button}]`);
+      await until("the review closed", async () => !(await exists(review)));
+    };
+
+    // Without NAPALM: every host fails, saying so.
+    rmSync(fakeNapalm, { recursive: true, force: true });
+    const plan = await fillIn(folderRow, "[data-folder-enrich]", [
+      "Enrich/enrich-r1.yaml",
+      "Enrich/enrich-r2.yaml",
+    ]);
+    if (json(plan.skipped) !== json(["Enrich/enrich-frr.yaml noNapalmDriver"]))
+      fail(`the fill-in skips ${json(plan.skipped)}`);
+    const without = await rows();
+    for (const id of ["Enrich/enrich-r1.yaml", "Enrich/enrich-r2.yaml"])
+      if (
+        without[id]?.outcome !== "failed" ||
+        !without[id].reason.includes("NAPALM is not installed")
+      )
+        fail(`without NAPALM, ${id}: ${json(without[id])}`);
+    if (without["Enrich/enrich-frr.yaml"]?.outcome !== "skipped")
+      fail(`the FRR host in the review: ${json(without)}`);
+    if (
+      !(await evaluate(
+        `document.querySelector("${review} [data-enrich=apply]").disabled`,
+      ))
+    )
+      fail("the review offers to fill in with nothing to fill in");
+    await screenshot("enrich-without-napalm");
+    step(
+      "without NAPALM, filling in lists every host as failed, saying why, and skips FRR",
+    );
+    await closeReview("cancel");
+
+    // With a stand-in NAPALM: new values and a typed one to replace.
+    mkdirSync(fakeNapalm, { recursive: true });
+    writeFileSync(join(fakeNapalm, "__init__.py"), FAKE_NAPALM);
+    const before = readFileSync(r1File, "utf8");
+    await fillIn(folderRow, "[data-folder-enrich]", [
+      "Enrich/enrich-r1.yaml",
+      "Enrich/enrich-r2.yaml",
+    ]);
+    const shown = await rows();
+    const r1 = shown["Enrich/enrich-r1.yaml"];
+    const r2 = shown["Enrich/enrich-r2.yaml"];
+    if (
+      json(r1?.changes) !==
+        json([
+          "vendor:replace",
+          "model:new",
+          "serial_number:new",
+          "os_version:new",
+        ]) ||
+      !r1.tick
+    )
+      fail(`the review of enrich-r1: ${json(r1)}`);
+    if (
+      r2?.changes.length !== 4 ||
+      r2.tick ||
+      r2.changes.some((change) => !change.endsWith(":new"))
+    )
+      fail(`the review of enrich-r2: ${json(r2)}`);
+    if (readFileSync(r1File, "utf8") !== before)
+      fail("the review wrote to a host file before applying");
+    await screenshot("enrich-review");
+    step(
+      "the review shows what is new and what would replace a typed value, writing nothing",
+    );
+    await clickOn(`${review} [data-enrich=apply]`);
+    await until("the fill-in report", () =>
+      exists(`${review}[data-step=report]`),
+    );
+    const counts = await report();
+    if (
+      json(counts) !== json({ filled: 2, unchanged: 0, skipped: 1, failed: 0 })
+    )
+      fail(`the fill-in report: ${json(counts)}`);
+    const r1Text = readFileSync(r1File, "utf8");
+    if (
+      !r1Text.includes("vendor: OldVendor") ||
+      !r1Text.includes("model: ios-smoke") ||
+      !r1Text.includes(`serial_number: SN-ios-${DEVICE_PORT}`) ||
+      !r1Text.includes("owner: noc") ||
+      !/custom:\n {2}os_version: 1\.2\.3/.test(r1Text)
+    )
+      fail(`enrich-r1 after filling in: ${r1Text}`);
+    const r2Text = readFileSync(join(folder, "enrich-r2.yaml"), "utf8");
+    if (
+      !r2Text.includes("vendor: Arista") ||
+      !r2Text.includes("model: eos-smoke")
+    )
+      fail(`enrich-r2 after filling in: ${r2Text}`);
+    await screenshot("enrich-report");
+    step(
+      "applying fills the empty fields (OS version as a custom field) and keeps the typed vendor",
+    );
+    await closeReview("close");
+
+    // The host's own: ticked, the typed vendor is replaced.
+    await evaluate(`(() => {
+      const row = document.querySelector(${json(folderRow)});
+      if (row.getAttribute("aria-expanded") !== "true") row.click();
+    })()`);
+    const hostRow = 'nav [data-host="Enrich/enrich-r1.yaml"]';
+    await until("enrich-r1 in the tree", () => exists(hostRow));
+    await fillIn(hostRow, "[data-host-enrich]", ["Enrich/enrich-r1.yaml"]);
+    const again = (await rows())["Enrich/enrich-r1.yaml"];
+    if (json(again?.changes) !== json(["vendor:replace"]))
+      fail(`the second review of enrich-r1: ${json(again)}`);
+    await clickOn(`${review} [data-enrich-replace="Enrich/enrich-r1.yaml"]`);
+    await clickOn(`${review} [data-enrich=apply]`);
+    await until("the second report", () =>
+      exists(`${review}[data-step=report]`),
+    );
+    if (!readFileSync(r1File, "utf8").includes("vendor: Cisco"))
+      fail(`the ticked host kept its vendor: ${readFileSync(r1File, "utf8")}`);
+    step("filling in one ticked host from its panel replaces its typed vendor");
+    await closeReview("close");
+
+    // The run stays reviewable from the jobs view.
+    await evaluate(`document.querySelector("[data-open-jobs]").click()`);
+    await until("the review action in the jobs view", () =>
+      exists("[data-dialog=jobs] [data-run-action=review]"),
+    );
+    await clickOn("[data-dialog=jobs] [data-run-action=review]");
+    await until("the review from the jobs view", () =>
+      exists(`${review}[data-step=preview]`),
+    );
+    const later = await rows();
+    if (later["Enrich/enrich-r1.yaml"]?.outcome !== "unchanged")
+      fail(`the review from the jobs view: ${json(later)}`);
+    step("a kept fill-in run can be reviewed again from the jobs view");
+    await closeReview("cancel");
+  } finally {
+    rmSync(fakeNapalm, { recursive: true, force: true });
+    rmSync(folder, { recursive: true, force: true });
   }
 }
 

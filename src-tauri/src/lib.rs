@@ -15,6 +15,7 @@ use netterm_core::credentials::{
     Secrets, VaultError, VaultStatus,
 };
 use netterm_core::diff::DiffLine;
+use netterm_core::enrich::{self, EnrichPreview, EnrichReport};
 use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
 use netterm_core::import::csv::{
     suggest_mapping, ColumnTarget, CsvImport, CsvTable, ImportPreview, Separator,
@@ -1403,7 +1404,7 @@ async fn job_start(
     // A script job runs with the interpreter as it is now (checked here,
     // which takes a moment, before the plan is taken).
     let script = match peeked.step {
-        JobStep::Script { .. } => {
+        ref step if step.runs_script() => {
             let python = python.inner().clone();
             Some(
                 tauri::async_runtime::spawn_blocking(move || python.script_options())
@@ -1490,6 +1491,71 @@ fn job_runs(shell: State<'_, Shell>, runs: State<'_, Runs>) -> Result<RunsView, 
     Ok(RunsView {
         list: runs.0.list(id).map_err(|error| error.to_string())?,
         running: runs.0.running(id),
+    })
+}
+
+/// The preview last made of a "Fill in from devices" run: applying it
+/// writes what it showed (compared again with the hosts as they are then).
+struct EnrichPreviews(Mutex<Option<KeptPreview>>);
+
+/// A preview with the workspace (its root) and the run it was made for.
+struct KeptPreview {
+    root: PathBuf,
+    run: String,
+    preview: EnrichPreview,
+}
+
+impl EnrichPreviews {
+    fn lock(&self) -> MutexGuard<'_, Option<KeptPreview>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// What filling in the facts of the kept run `run` would change in the
+/// open workspace; kept for `enrich_apply`.
+#[tauri::command]
+fn enrich_preview(
+    shell: State<'_, Shell>,
+    runs: State<'_, Runs>,
+    previews: State<'_, EnrichPreviews>,
+    run: String,
+) -> Result<EnrichPreview, String> {
+    let stored = runs
+        .0
+        .run(&workspace_id(&shell)?, &run)
+        .map_err(|error| error.to_string())?;
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    let preview = enrich::preview_run(workspace, &stored).map_err(|error| error.to_string())?;
+    *previews.lock() = Some(KeptPreview {
+        root: workspace.root().to_path_buf(),
+        run,
+        preview: preview.clone(),
+    });
+    Ok(preview)
+}
+
+/// Fills in the preview made last of the run `run`: every empty field, and
+/// typed values only on the hosts in `replace`.
+#[tauri::command]
+fn enrich_apply(
+    shell: State<'_, Shell>,
+    previews: State<'_, EnrichPreviews>,
+    run: String,
+    replace: Vec<HostId>,
+) -> Result<Edited<EnrichReport>, String> {
+    let mut guard = shell.workspace();
+    let workspace = guard.as_mut().ok_or("no workspace is open")?;
+    // Only the preview of this run in this workspace: another workspace
+    // may have hosts with the same ids.
+    let preview = match previews.lock().as_ref() {
+        Some(kept) if kept.run == run && kept.root == workspace.root() => kept.preview.clone(),
+        _ => return Err("this run has not been previewed here: review it again".into()),
+    };
+    let report = enrich::apply(workspace, &preview, &replace);
+    Ok(Edited {
+        workspace: WorkspaceView::from(&*workspace),
+        result: report,
     })
 }
 
@@ -2450,6 +2516,7 @@ pub fn run() {
             app.manage(CsvFile(Mutex::new(None)));
             app.manage(NornirFiles(Mutex::new(None)));
             app.manage(JobPlans(Mutex::new(None)));
+            app.manage(EnrichPreviews(Mutex::new(None)));
             // Job runs are per user, beside the app state, keyed by
             // workspace id.
             app.manage(Runs(RunStore::new(data_folder.join("jobs"))));
@@ -2499,6 +2566,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            enrich_preview,
+            enrich_apply,
             app_name,
             app_quit,
             vault_status,
