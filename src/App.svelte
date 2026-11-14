@@ -7,6 +7,7 @@
   import TerminalSession from "./lib/TerminalSession.svelte";
   import WorkspacePanel from "./lib/WorkspacePanel.svelte";
   import {
+    hostRole,
     inventory,
     selectedFolder,
     selectedHost,
@@ -73,6 +74,7 @@
         <TerminalSession
           target={view.target}
           title={view.title}
+          role={view.target.kind === "host" ? hostRole(view.target.id) : null}
           ondismiss={() => (view = { kind: "quick" })}
         />
       {/key}

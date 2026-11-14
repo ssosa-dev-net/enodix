@@ -10,6 +10,7 @@ import type {
   Folder,
   Host,
   Origin,
+  Role,
   Settings,
   WorkspaceView,
 } from "./workspace";
@@ -67,6 +68,11 @@ export function selectedFolder(): Folder | null {
   const { workspace, selected } = inventory;
   if (!workspace || selected?.kind !== "folder") return null;
   return api.findFolder(workspace.tree, selected.path);
+}
+
+/** The role the host `id` shows, if it has one. */
+export function hostRole(id: string): Role | null {
+  return inventory.workspace?.host_roles[id] ?? null;
 }
 
 /** The folder new items go into: the selected folder, or the selected host's. */

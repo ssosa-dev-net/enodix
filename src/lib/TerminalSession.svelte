@@ -2,22 +2,26 @@
   import { FitAddon } from "@xterm/addon-fit";
   import { Terminal } from "@xterm/xterm";
   import { onMount } from "svelte";
+  import RoleIcon from "./RoleIcon.svelte";
   import {
     openSession,
     type ConnectTarget,
     type Session,
     type SessionState,
   } from "./session";
+  import type { Role } from "./workspace";
 
   interface Props {
     target: ConnectTarget;
     /** Shown in the header, such as `user@host:port`. */
     title: string;
+    /** The role of the session's host, if it has one. */
+    role: Role | null;
     /** Called when the user leaves this session's view. */
     ondismiss: () => void;
   }
 
-  let { target, title, ondismiss }: Props = $props();
+  let { target, title, role, ondismiss }: Props = $props();
 
   let container: HTMLDivElement;
   let session = $state<Session | null>(null);
@@ -95,7 +99,13 @@
 </script>
 
 <div class="session">
-  <header>
+  <header class:has-role={role} style:--role-color={role?.color}>
+    {#if role}
+      <span class="role" data-session-role={role.id}>
+        <RoleIcon {role} />
+        {role.name}
+      </span>
+    {/if}
     <span class="title">{title}</span>
     <span class="status {status.state}" role="status">{statusText}</span>
     {#if status.state === "closed"}
@@ -124,6 +134,19 @@
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     font-size: 0.85rem;
+  }
+
+  header.has-role {
+    box-shadow: inset 3px 0 var(--role-color);
+  }
+
+  .role {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--role-color);
+    font-size: 0.8rem;
+    white-space: nowrap;
   }
 
   .title {

@@ -2,6 +2,7 @@
 //! interface. No behaviour lives here; it only translates between the
 //! interface's messages and the core's workspace and session interfaces.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -10,7 +11,7 @@ use netterm_core::session::{
     SessionEvent, SessionId, SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{
-    EditError, EffectiveSettings, Folder, FolderDeletion, Host, HostId, Problem, Settings,
+    EditError, EffectiveSettings, Folder, FolderDeletion, Host, HostId, Problem, Role, Settings,
     Workspace,
 };
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,10 @@ enum ConnectTarget {
 struct WorkspaceView {
     root: String,
     tree: Folder,
+    /// The roles a host can be given.
+    roles: Vec<Role>,
+    /// The role each host that has one shows, by host id.
+    host_roles: BTreeMap<HostId, Role>,
     problems: Vec<Problem>,
 }
 
@@ -67,6 +72,8 @@ impl From<&Workspace> for WorkspaceView {
         Self {
             root: workspace.root().display().to_string(),
             tree: workspace.tree().clone(),
+            roles: workspace.roles().to_vec(),
+            host_roles: workspace.host_roles(),
             problems: workspace.problems().to_vec(),
         }
     }

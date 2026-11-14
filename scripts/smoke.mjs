@@ -32,16 +32,25 @@ const appData = join(userData, "app-data");
 const workspace = join(userData, "smoke-workspace");
 
 /** A workspace with one host (the test server, whose port its folder
- * sets) and one malformed file. */
+ * sets, with a role of the workspace's own), a host whose role is not
+ * defined, and one malformed file. */
 function createWorkspace() {
   mkdirSync(join(workspace, "Lab"), { recursive: true });
+  writeFileSync(
+    join(workspace, "_roles.yaml"),
+    'lab_router:\n  name: Lab router\n  icon: router\n  color: "#ff8800"\n',
+  );
+  writeFileSync(
+    join(workspace, "odd.yaml"),
+    "address: 192.0.2.9\nrole: mainframe\n",
+  );
   writeFileSync(
     join(workspace, "Lab", "_folder.yaml"),
     `description: Lab\nport: ${SSH_PORT}\n`,
   );
   writeFileSync(
     join(workspace, "Lab", "smoke-r1.yaml"),
-    "name: smoke-r1\naddress: 127.0.0.1\n",
+    "name: smoke-r1\naddress: 127.0.0.1\nrole: lab_router\n",
   );
   writeFileSync(join(workspace, "broken.yaml"), "name: [\n");
   mkdirSync(appData);
@@ -397,6 +406,28 @@ async function main() {
   await screenshot("host-session");
   step("double-clicking a host opened a session to it on its folder's port");
 
+  // Each host shows its role's icon and colour in the tree, and so does its
+  // session's header; a role the workspace does not define shows neutrally.
+  const roleIcon = (selector) =>
+    evaluate(`(() => {
+      const icon = document.querySelector(${JSON.stringify(selector + " [data-role-icon]")});
+      return icon && [icon.dataset.roleIcon, getComputedStyle(icon).color];
+    })()`);
+  const orange = "rgb(255, 136, 0)";
+  const expectIcon = async (where, selector, icon, colour) => {
+    const shown = await roleIcon(selector);
+    if (shown?.[0] !== icon || (colour && shown[1] !== colour)) {
+      fail(`${where}: expected the ${icon} icon, got ${JSON.stringify(shown)}`);
+    }
+  };
+  await expectIcon("tree", hostButton, "router", orange);
+  await expectIcon("session header", ".session header", "router", orange);
+  if (!(await text(".session header")).includes("Lab router")) {
+    fail("the session header does not name the host's role");
+  }
+  await expectIcon("undefined role", '[data-host="odd.yaml"]', "unknown");
+  step("roles showed their icon and colour in the tree and the session header");
+
   await editInventory({
     evaluate,
     text,
@@ -437,7 +468,8 @@ async function editInventory({
     evaluate(`!!document.querySelector(${JSON.stringify(dialog)})`);
   const folderRow = (path) => `nav [data-item=folder][data-path="${path}"]`;
   const hostRow = (id) => `nav [data-host="${id}"]`;
-  const hostFile = "address: 10.9.0.1\nvendor: Arista\nrack_unit: 12\n";
+  const hostFile =
+    "address: 10.9.0.1\nvendor: Arista\nrack_unit: 12\nrole: firewall\n";
   // What the side panel says applies, and where it comes from.
   const shows = (key, expected) =>
     until(
@@ -479,7 +511,20 @@ async function editInventory({
   await changeField("[name=rack_unit]", "12");
   await until(
     "the rack unit in the file",
+    () =>
+      contents("Edge/edge-r1.yaml") ===
+      "address: 10.9.0.1\nvendor: Arista\nrack_unit: 12\n",
+  );
+  // The role is chosen from the list, built-in ones included.
+  await changeField("[name=role]", "firewall");
+  await until(
+    "the role in the file",
     () => contents("Edge/edge-r1.yaml") === hostFile,
+  );
+  await until("the role's icon in the tree", () =>
+    evaluate(
+      `document.querySelector(${JSON.stringify(hostRow("Edge/edge-r1.yaml") + " [data-role-icon]")})?.dataset.roleIcon === "firewall"`,
+    ),
   );
   await fillForm({ "new-tag": "edge" }, ".side form:has([name=new-tag])");
   await until("the tag in the file", () =>
@@ -507,7 +552,9 @@ async function editInventory({
     "the custom field removed from the file",
     () => contents("Edge/edge-r1.yaml") === hostFile,
   );
-  step("the side panel saved fields, tags and custom fields to the file");
+  step(
+    "the side panel saved fields, a role, tags and custom fields to the file",
+  );
 
   // One click copies a field's value.
   await devtools.send("Browser.grantPermissions", {
@@ -570,7 +617,7 @@ async function editInventory({
     "the host's own setting in its file",
     () =>
       contents("Lab/edge-r2.yaml") ===
-      "address: 10.9.0.1\nlegacy_crypto: true\nvendor: Arista\nrack_unit: 12\n",
+      "address: 10.9.0.1\nlegacy_crypto: true\nvendor: Arista\nrack_unit: 12\nrole: firewall\n",
   );
   await shows("legacy_crypto", "on · set on this host");
   await screenshot("host-settings");

@@ -1,0 +1,5 @@
+address: 192.0.2.21
+vendor: Cisco
+rack: R3
+rack_unit: 40
+description: Access, floor 2

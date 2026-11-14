@@ -1,0 +1,4 @@
+# Only the workspace root's roles file counts; this one is ignored.
+ignored:
+  icon: server
+  color: "#123456"

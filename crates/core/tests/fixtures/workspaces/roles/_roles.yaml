@@ -1,0 +1,13 @@
+# Roles of this workspace, besides the built-in ones.
+spine:
+  name: Spine
+  icon: switch
+  color: "#2563EB"
+# Replaces the built-in role of the same id.
+firewall:
+  name: Perimeter firewall
+  icon: firewall
+  color: "#b91c1c"
+leaf:
+  icon: access
+  color: "#0a0"

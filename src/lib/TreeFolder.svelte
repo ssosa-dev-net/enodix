@@ -1,6 +1,7 @@
 <script lang="ts">
+  import RoleIcon from "./RoleIcon.svelte";
   import TreeFolder from "./TreeFolder.svelte";
-  import { inventory } from "./inventory.svelte";
+  import { hostRole, inventory } from "./inventory.svelte";
   import type { Folder, Host } from "./workspace";
 
   interface Props {
@@ -62,6 +63,7 @@
     </li>
   {/each}
   {#each folder.hosts as host (host.id)}
+    {@const role = hostRole(host.id)}
     <li>
       <button
         class="host"
@@ -73,12 +75,15 @@
         data-path={host.id}
         data-drop={folder.path}
         data-label={host.name}
-        title={host.address}
+        title={role ? `${host.address} · ${role.name}` : host.address}
         onclick={() => (inventory.selected = { kind: "host", id: host.id })}
         ondblclick={() => onconnect(host)}
         onkeydown={(event) => onkeydown(event, host)}
       >
         <span class="twisty"></span>
+        {#if role}
+          <RoleIcon {role} />
+        {/if}
         <span class="label">{host.name}</span>
         <span class="address">{host.address}</span>
       </button>
