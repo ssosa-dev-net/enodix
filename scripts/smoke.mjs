@@ -191,8 +191,10 @@ async function main() {
     evaluate(
       `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ""`,
     );
-  const screen = () => text(".xterm-rows");
-  const status = () => text("[role=status]");
+  // The session on screen; others (duplicates) may run out of sight.
+  const shownSession = ".slot:not([hidden])";
+  const screen = () => text(`${shownSession} .xterm-rows`);
+  const status = () => text(`${shownSession} [role=status]`);
   const click = (label) =>
     evaluate(
       `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)}).click()`,
@@ -437,6 +439,97 @@ async function main() {
     "the Connected status",
     async () => (await status()) === "Connected",
   );
+
+  // A dropped connection keeps the terminal and its scrollback, says why,
+  // and Enter reconnects it in place.
+  await type("lines 3\r");
+  await until("output before the drop", async () =>
+    /line 3\s*test-ssh\$/.test(await screen()),
+  );
+  await type("drop\r");
+  await until(
+    "the lost connection",
+    async () => (await status()) === "Closed: connection lost",
+  );
+  await until("the reconnect hint", async () =>
+    (await text(`${shownSession} [data-session-ended]`)).includes(
+      "Press Enter to reconnect",
+    ),
+  );
+  if (!(await screen()).includes("line 3")) {
+    fail("the scrollback is gone after the connection dropped");
+  }
+  await screenshot("connection-lost");
+  await type("\r");
+  await until(
+    "the reconnected session",
+    async () => (await status()) === "Connected",
+  );
+  await until("a new prompt after the reconnect marker", async () =>
+    /reconnecting ---\s*test-ssh\$/.test(await screen()),
+  );
+  if (!(await screen()).includes("line 3")) {
+    fail("the scrollback is gone after reconnecting");
+  }
+  step("a dropped session said why and reconnected in place with Enter");
+
+  // Duplicate opens a second session to the same host beside the first.
+  const switchTo = (index) =>
+    evaluate(
+      `document.querySelectorAll("[data-session-switch]")[${index}].click()`,
+    );
+  await click("Duplicate");
+  await until("two sessions", () =>
+    evaluate(`document.querySelectorAll(".slot").length === 2`),
+  );
+  await until(
+    "the duplicate connected",
+    async () => (await status()) === "Connected",
+  );
+  await until("the duplicate's prompt", async () =>
+    (await screen()).includes("test-ssh$"),
+  );
+  if ((await screen()).includes("line 3")) {
+    fail("the duplicate shows the first session's output");
+  }
+  await type("size\r");
+  await until("the duplicate's own output", async () =>
+    /size\s*\d+x\d+/.test(await screen()),
+  );
+  await screenshot("duplicate");
+  await switchTo(0);
+  await until("the first session again", async () =>
+    (await screen()).includes("line 3"),
+  );
+  if ((await status()) !== "Connected") {
+    fail(`the first session is not connected: ${await status()}`);
+  }
+  // Closing the duplicate leaves the first session running.
+  await switchTo(1);
+  await until(
+    "the duplicate again",
+    async () => !(await screen()).includes("line 3"),
+  );
+  // The first session's buttons are there too, out of sight.
+  const clickShown = (label) =>
+    evaluate(
+      `[...document.querySelectorAll("${shownSession} button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)}).click()`,
+    );
+  await clickShown("Disconnect");
+  await until("the duplicate closed", async () =>
+    (await status()).startsWith("Closed"),
+  );
+  await clickShown("New connection");
+  await until("one session left", () =>
+    evaluate(`document.querySelectorAll(".slot").length === 1`),
+  );
+  await switchTo(0);
+  await until(
+    "the first session still connected",
+    async () => (await status()) === "Connected",
+  );
+  step("Duplicate opened a second session to the same host, each on its own");
+
   await click("Disconnect");
   await until(
     "the closed status",
@@ -452,6 +545,24 @@ async function main() {
     async () => (await status()) === "Closed: authentication failed",
   );
   step("a wrong password is reported (the remembered key was not asked about)");
+
+  // A port nobody listens on is reported as refused.
+  await click("New connection");
+  await until("the quick-connect form", () =>
+    evaluate(`!!document.querySelector("input[name=host]")`),
+  );
+  await fillForm({
+    host: "127.0.0.1",
+    port: "1",
+    username: USERNAME,
+    password: PASSWORD,
+  });
+  await until(
+    "the refused connection",
+    async () =>
+      (await status()) === "Closed: 127.0.0.1 refused the connection on port 1",
+  );
+  step(`a refused connection is reported: "${await status()}"`);
 
   // A changed key blocks the connection, shows both fingerprints, and goes
   // on only when the user replaces the stored key.
@@ -1389,6 +1500,20 @@ async function editInventory({
   await shows("port", `${SSH_PORT} · from Lab`);
   await shows("protocol", "ssh · default");
   await shows("serial.baud_rate", "9600 · default");
+  await shows("connect_timeout", "15 · default");
+  await changeField("[name=setting-connect_timeout]", "40");
+  await until(
+    "the connect timeout in the host's file",
+    () =>
+      contents("Lab/edge-r2.yaml") ===
+      "address: 10.9.0.1\nconnect_timeout: 40\nvendor: Arista\nrack_unit: 12\nrole: firewall\n",
+  );
+  await shows("connect_timeout", "40 · set on this host");
+  await clickOn('.side [aria-label="Clear Connect timeout (seconds)"]');
+  await until(
+    "the connect timeout cleared from the host's file",
+    () => contents("Lab/edge-r2.yaml") === hostFile,
+  );
   await changeField("[name=setting-legacy_crypto]", "on");
   await until(
     "the host's own setting in its file",

@@ -99,6 +99,14 @@
       effective: (e) => e.legacy_crypto,
     },
     {
+      key: "connect_timeout",
+      label: "Connect timeout (seconds)",
+      input: { kind: "number", min: 1, max: 3600 },
+      own: (s) => s.connect_timeout?.toString() ?? "",
+      set: (s, v) => ({ ...s, connect_timeout: toNumber(v) }),
+      effective: (e) => e.connect_timeout,
+    },
+    {
       key: "logging",
       label: "Logging",
       input: { kind: "choice", options: ON_OFF },

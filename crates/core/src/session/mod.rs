@@ -17,8 +17,9 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::known_hosts::{HostKey, KnownHosts};
 pub use algorithms::{
@@ -48,6 +49,10 @@ pub enum SessionTarget {
 /// The port SSH uses when nothing sets one.
 pub const DEFAULT_SSH_PORT: u16 = 22;
 
+/// How long a connection may wait on the network while it is being opened
+/// when nothing sets it: see [`SshTarget::connect_timeout`].
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// An SSH server and the login to use on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshTarget {
@@ -63,6 +68,12 @@ pub struct SshTarget {
     /// Also offer the outdated algorithms old equipment needs
     /// ([`LEGACY_ALGORITHMS`]) to the target; jump hosts have their own.
     pub legacy_crypto: bool,
+    /// How long opening the session may wait on the device: for the TCP
+    /// connection, the SSH handshake, each answer while logging in, and the
+    /// shell to start. The time the user takes to answer a question (host
+    /// key, password, one-time code) does not count, and the clock starts
+    /// again after each answer. Jump hosts have their own.
+    pub connect_timeout: Duration,
 }
 
 /// An SSH host a session tunnels through, with its own login. Its host
@@ -78,6 +89,9 @@ pub struct JumpHost {
     /// Also offer the outdated algorithms ([`LEGACY_ALGORITHMS`]) to this
     /// jump host.
     pub legacy_crypto: bool,
+    /// [`SshTarget::connect_timeout`] for reaching and logging in to this
+    /// jump host.
+    pub connect_timeout: Duration,
 }
 
 /// How an SSH session proves who the user is. `Debug` leaves the secrets
@@ -244,7 +258,23 @@ fn exit_status_suffix(exit_status: &Option<u32>) -> String {
 /// Why a session could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OpenError {
-    /// The device could not be reached (refused, unreachable, timed out, ...).
+    /// The device's name has no address (a typo, or a name the DNS does not
+    /// know).
+    #[error("the name {host} could not be resolved")]
+    NameNotResolved { host: String },
+    /// No route leads to the device's address (the system said so at once).
+    #[error("{host} cannot be reached ({reason})")]
+    Unreachable { host: String, reason: String },
+    /// The device answered that nothing listens on the port.
+    #[error("{host} refused the connection on port {port}")]
+    ConnectionRefused { host: String, port: u16 },
+    /// The device did not answer in time while the session was being
+    /// opened: no connection, no handshake, or no answer while logging in
+    /// ([`SshTarget::connect_timeout`]).
+    #[error("the device did not answer within {} s", .after.as_secs_f64())]
+    TimedOut { after: Duration },
+    /// The device could not be reached for another reason, or the
+    /// connection broke while it was being set up.
     #[error("could not connect: {0}")]
     Connect(String),
     #[error("authentication failed")]
@@ -327,9 +357,14 @@ impl CloseReason {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionError {
-    /// The session does not exist or has already closed.
+    /// The session does not exist or has already closed (for
+    /// [`SessionManager::reconnect`] and [`SessionManager::duplicate`]: does
+    /// not exist, or was discarded).
     #[error("no such session")]
     NotFound,
+    /// The session is still open, so it cannot be reconnected.
+    #[error("the session is still open")]
+    StillOpen,
 }
 
 /// Opens, tracks and closes sessions.
@@ -346,7 +381,16 @@ struct Inner {
     output: OutputOptions,
     /// The host keys SSH sessions trust without asking.
     known_hosts: KnownHosts,
-    sessions: Mutex<HashMap<SessionId, SessionHandle>>,
+    /// Every session not discarded, open or closed.
+    sessions: Mutex<HashMap<SessionId, Entry>>,
+}
+
+/// A session the manager knows: what it connects to, so that it can be
+/// reconnected or duplicated, and how to reach it while it is open.
+struct Entry {
+    target: SessionTarget,
+    /// `None` once the session has closed.
+    open: Option<SessionHandle>,
 }
 
 /// How the manager reaches an open session.
@@ -356,11 +400,15 @@ struct SessionHandle {
 }
 
 impl Inner {
-    fn forget(&self, id: SessionId) {
-        self.sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
+    fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<SessionId, Entry>> {
+        self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Marks the session closed, keeping its target.
+    fn mark_closed(&self, id: SessionId) {
+        if let Some(entry) = self.sessions().get_mut(&id) {
+            entry.open = None;
+        }
     }
 }
 
@@ -386,31 +434,85 @@ impl SessionManager {
     /// Starts opening a session and returns at once; progress and failure
     /// arrive as [`SessionState`] events, starting with `Connecting`.
     ///
+    /// Once closed, the session can be opened again with
+    /// [`Self::reconnect`] until it is [discarded](Self::discard).
+    ///
     /// Must be called from within a Tokio runtime.
     pub fn open(&self, target: SessionTarget, size: TerminalSize) -> (SessionId, SessionEvents) {
         let id = SessionId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
+        let mut sessions = self.inner.sessions();
+        let entry = sessions.entry(id).or_insert(Entry { target, open: None });
+        let events = self.start(id, entry, size);
+        (id, events)
+    }
+
+    /// Opens a closed session again, to the same target with the same
+    /// settings and login, under the same id: its owner keeps writing to
+    /// the same session. Events start again with `Connecting` on the
+    /// returned stream (the old one has ended). `size` is the terminal's
+    /// size now.
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn reconnect(
+        &self,
+        id: SessionId,
+        size: TerminalSize,
+    ) -> Result<SessionEvents, SessionError> {
+        let mut sessions = self.inner.sessions();
+        let entry = sessions.get_mut(&id).ok_or(SessionError::NotFound)?;
+        if entry.open.is_some() {
+            return Err(SessionError::StillOpen);
+        }
+        Ok(self.start(id, entry, size))
+    }
+
+    /// Opens a new session to the same target as the session `id` (open
+    /// or closed), with the same settings and login.
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn duplicate(
+        &self,
+        id: SessionId,
+        size: TerminalSize,
+    ) -> Result<(SessionId, SessionEvents), SessionError> {
+        let target = self
+            .inner
+            .sessions()
+            .get(&id)
+            .ok_or(SessionError::NotFound)?
+            .target
+            .clone();
+        Ok(self.open(target, size))
+    }
+
+    /// Forgets the session, closing it first if it is open: it can no
+    /// longer be reconnected or duplicated, and what it held (its login
+    /// included) is dropped. Nothing happens if it is unknown.
+    pub fn discard(&self, id: SessionId) {
+        let entry = self.inner.sessions().remove(&id);
+        if let Some(SessionHandle { commands, .. }) = entry.and_then(|entry| entry.open) {
+            let _ = commands.send(Command::Close);
+        }
+    }
+
+    /// Starts the transport of the session `id` described by `entry`.
+    fn start(&self, id: SessionId, entry: &mut Entry, size: TerminalSize) -> SessionEvents {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         // Unbounded, so the transport never waits on the consumer and keeps
         // taking commands; flow control bounds the output queued here.
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let flow = Arc::new(Flow::new(self.inner.output.window));
-        self.inner
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(
-                id,
-                SessionHandle {
-                    commands: command_tx,
-                    flow: flow.clone(),
-                },
-            );
+        entry.open = Some(SessionHandle {
+            commands: command_tx,
+            flow: flow.clone(),
+        });
 
         // The task holds the manager weakly so that dropping the last manager
         // handle drops the command senders, which closes every session.
         let manager = Arc::downgrade(&self.inner);
         let link_flow = flow.clone();
         let known_hosts = self.inner.known_hosts.clone();
+        let target = entry.target.clone();
         tokio::spawn(async move {
             let mut link = Link {
                 commands: command_rx,
@@ -422,26 +524,23 @@ impl SessionManager {
             let reason = match target {
                 SessionTarget::Ssh(target) => ssh::run(target, known_hosts, &mut link).await,
             };
-            // Forget the session before announcing the close, so that nobody
-            // who has seen `Closed` can still reach it.
+            // Mark the session closed before announcing it, so that nobody
+            // who has seen `Closed` can still reach it, and anybody can
+            // reconnect it.
             if let Some(manager) = manager.upgrade() {
-                manager.forget(id);
+                manager.mark_closed(id);
             }
             link.state(SessionState::Closed(reason));
         });
 
-        (id, SessionEvents::new(event_rx, flow, self.inner.output))
+        SessionEvents::new(event_rx, flow, self.inner.output)
     }
 
     /// Tells the session that `bytes` bytes of its output have been consumed,
     /// for a consumer that does not hold the [`SessionEvents`] itself.
     pub fn acknowledge(&self, id: SessionId, bytes: usize) -> Result<(), SessionError> {
-        let sessions = self
-            .inner
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let session = sessions.get(&id).ok_or(SessionError::NotFound)?;
+        let sessions = self.inner.sessions();
+        let session = open_session(&sessions, id)?;
         session.flow.acknowledge(bytes);
         Ok(())
     }
@@ -478,17 +577,23 @@ impl SessionManager {
     }
 
     fn send(&self, id: SessionId, command: Command) -> Result<(), SessionError> {
-        let sessions = self
-            .inner
-            .sessions
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let session = sessions.get(&id).ok_or(SessionError::NotFound)?;
-        session
+        let sessions = self.inner.sessions();
+        open_session(&sessions, id)?
             .commands
             .send(command)
             .map_err(|_| SessionError::NotFound)
     }
+}
+
+/// The session `id` if it is open.
+fn open_session(
+    sessions: &HashMap<SessionId, Entry>,
+    id: SessionId,
+) -> Result<&SessionHandle, SessionError> {
+    sessions
+        .get(&id)
+        .and_then(|entry| entry.open.as_ref())
+        .ok_or(SessionError::NotFound)
 }
 
 /// What a session's owner asks of its transport.
@@ -547,14 +652,17 @@ impl Link {
     fn askers(&self) -> (Prompter, HostKeyAsker, Replies) {
         let (answers_tx, answers) = mpsc::unbounded_channel();
         let (decisions_tx, decisions) = mpsc::unbounded_channel();
+        let user = UserWait::default();
         let prompter = Prompter {
             events: self.events.clone(),
             answers,
             jump_host: None,
+            user: user.clone(),
         };
         let asker = HostKeyAsker {
             events: self.events.clone(),
             decisions,
+            user,
         };
         let replies = Replies {
             answers: answers_tx,
@@ -591,6 +699,41 @@ struct Prompter {
     /// The jump host being logged in to, if any: its questions say so in
     /// their [`LoginPrompt::name`], so they are not taken for the device's.
     jump_host: Option<String>,
+    /// Says when the session waits for the user's answers.
+    user: UserWait,
+}
+
+/// Whether the session being opened waits for the user (to answer login
+/// questions or decide on a host key) rather than for the network: the
+/// connect timeout stops meanwhile. Shared by the session's askers.
+#[derive(Clone)]
+struct UserWait(Arc<watch::Sender<bool>>);
+
+impl Default for UserWait {
+    fn default() -> Self {
+        Self(Arc::new(watch::channel(false).0))
+    }
+}
+
+impl UserWait {
+    /// Follows whether the user is being waited for.
+    fn subscribe(&self) -> watch::Receiver<bool> {
+        self.0.subscribe()
+    }
+
+    /// Runs `waiting` (which waits for the user) with the flag set.
+    async fn during<T>(&self, waiting: impl std::future::Future<Output = T>) -> T {
+        /// Clears the flag however `waiting` ends, dropped included.
+        struct Clear<'a>(&'a watch::Sender<bool>);
+        impl Drop for Clear<'_> {
+            fn drop(&mut self) {
+                self.0.send_replace(false);
+            }
+        }
+        self.0.send_replace(true);
+        let _clear = Clear(&self.0);
+        waiting.await
+    }
 }
 
 impl Prompter {
@@ -608,9 +751,14 @@ impl Prompter {
         while self.answers.try_recv().is_ok() {}
         let count = prompt.questions.len();
         self.events.send(SessionEvent::Prompt(prompt)).ok()?;
-        let mut answers = self.answers.recv().await?;
+        let mut answers = self.user.during(self.answers.recv()).await?;
         answers.resize(count, String::new());
         Some(answers)
+    }
+
+    /// Follows whether the session waits for the user.
+    fn user_wait(&self) -> watch::Receiver<bool> {
+        self.user.subscribe()
     }
 }
 
@@ -625,6 +773,8 @@ struct Replies {
 struct HostKeyAsker {
     events: mpsc::UnboundedSender<SessionEvent>,
     decisions: mpsc::UnboundedReceiver<HostKeyDecision>,
+    /// Says when the session waits for the user's decision.
+    user: UserWait,
 }
 
 impl HostKeyAsker {
@@ -633,6 +783,6 @@ impl HostKeyAsker {
         // Decisions sent before this question was asked were not about it.
         while self.decisions.try_recv().is_ok() {}
         self.events.send(SessionEvent::HostKey(question)).ok()?;
-        self.decisions.recv().await
+        self.user.during(self.decisions.recv()).await
     }
 }

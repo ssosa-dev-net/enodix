@@ -41,6 +41,8 @@ export interface Settings {
   /** The id of another host to connect through. */
   jump_host: string | null;
   legacy_crypto: boolean | null;
+  /** Seconds opening a session may wait on the device. */
+  connect_timeout: number | null;
   logging: boolean | null;
   environment: Environment | null;
   web_links: WebLink[];
@@ -64,6 +66,8 @@ export interface EffectiveSettings {
   credential_profile: Effective<string> | null;
   jump_host: Effective<string> | null;
   legacy_crypto: Effective<boolean>;
+  /** In seconds. */
+  connect_timeout: Effective<number>;
   logging: Effective<boolean>;
   environment: Effective<Environment> | null;
   web_links: Effective<WebLink>[];

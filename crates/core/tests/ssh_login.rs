@@ -113,12 +113,8 @@ async fn an_agent_that_is_not_running_is_reported_before_connecting() {
     let path = support::agent::unused_path();
     let manager = support::manager();
     let target = SshTarget {
-        host: "127.0.0.1".into(),
-        port: 9,
-        username: USERNAME.into(),
         auth: SshAuth::Agent(SshAgent::At(path.clone())),
-        jump_hosts: Vec::new(),
-        legacy_crypto: false,
+        ..support::target_at("127.0.0.1", 9)
     };
 
     let (_id, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);

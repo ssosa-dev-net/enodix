@@ -8,24 +8,28 @@
   import NegotiationFailure from "./NegotiationFailure.svelte";
   import {
     openSession,
-    type ConnectTarget,
     type HostKeyDecision,
     type HostKeyQuestion,
     type LoginPrompt,
     type NegotiatedAlgorithms,
     type Session,
+    type SessionSource,
     type SessionState,
   } from "./session";
   import type { Role } from "./workspace";
 
   interface Props {
-    target: ConnectTarget;
+    source: SessionSource;
     /** Shown in the header, such as `user@host:port`. */
     title: string;
     /** The role of the session's host, if it has one. */
     role: Role | null;
+    /** Whether this session is the one on screen. */
+    shown: boolean;
     /** Called when the user leaves this session's view. */
     ondismiss: () => void;
+    /** Called with this session's id when the user duplicates it. */
+    onduplicate: (id: number) => void;
     /**
      * Called when the user asks to log in with a password after the SSH
      * agent did not work; without it, that is not offered.
@@ -33,7 +37,15 @@
     onpasswordlogin?: (reason: string) => void;
   }
 
-  let { target, title, role, ondismiss, onpasswordlogin }: Props = $props();
+  let {
+    source,
+    title,
+    role,
+    shown,
+    ondismiss,
+    onduplicate,
+    onpasswordlogin,
+  }: Props = $props();
 
   let container: HTMLDivElement;
   /** For focusing the terminal again after a login prompt. */
@@ -83,6 +95,47 @@
         : `Closed: ${status.reason}`,
   );
 
+  /** The card over the terminal that takes the closed session's keys. */
+  const closedCard = $derived(
+    status.state === "closed" &&
+      (status.negotiation !== null ||
+        (status.offersPasswordLogin && onpasswordlogin !== undefined)),
+  );
+
+  /** For reconnecting at the terminal's current size. */
+  let currentSize: () => { cols: number; rows: number } = () => ({
+    cols: 80,
+    rows: 24,
+  });
+  /** Marks where the old connection's output ends in the scrollback. */
+  let markReconnect: () => void = () => {};
+
+  /** Opens the closed session again in this terminal (same target). */
+  function reconnect() {
+    if (!session || status.state !== "closed") return;
+    const reconnecting = session;
+    status = { state: "connecting" };
+    prompt = null;
+    hostKey = null;
+    algorithms = [];
+    markReconnect();
+    reconnecting.reconnect(currentSize()).catch(
+      (error) =>
+        (status = {
+          state: "closed",
+          reason: String(error),
+          offersPasswordLogin: false,
+          negotiation: null,
+        }),
+    );
+  }
+
+  // The terminal takes the keys when it comes on screen and when the
+  // session closes (Enter reconnects), unless a card over it takes them.
+  $effect(() => {
+    if (shown && !prompt && !hostKey && !closedCard) xterm?.focus();
+  });
+
   onMount(() => {
     const terminal = new Terminal({
       cursorBlink: true,
@@ -100,8 +153,18 @@
     let disposed = false;
     const encoder = new TextEncoder();
     const size = () => ({ cols: terminal.cols, rows: terminal.rows });
+    currentSize = size;
+    markReconnect = () =>
+      terminal.write("\r\n\x1b[2m--- reconnecting ---\x1b[0m\r\n");
 
-    terminal.onData((text) => session?.write(encoder.encode(text)));
+    terminal.onData((text) => {
+      // A closed session keeps its scrollback; Enter reconnects it.
+      if (status.state === "closed") {
+        if (text === "\r") reconnect();
+        return;
+      }
+      session?.write(encoder.encode(text));
+    });
     // Binary input (some mouse reports) arrives as one character per byte.
     terminal.onBinary((text) =>
       session?.write(Uint8Array.from(text, (char) => char.charCodeAt(0))),
@@ -111,26 +174,24 @@
     resizeObserver.observe(container);
 
     const requestedSize = size();
-    openSession(
-      target,
-      requestedSize,
+    openSession(source, requestedSize, {
       // Acknowledged once xterm.js has parsed it, so a flood of output
       // never queues up faster than the terminal can show it.
-      (bytes, consumed) => terminal.write(bytes, consumed),
-      (state) => {
+      onOutput: (bytes, consumed) => terminal.write(bytes, consumed),
+      onState: (state) => {
         status = state;
         if (state.state !== "connecting") {
           prompt = null;
           hostKey = null;
         }
       },
-      (asked) => (prompt = { prompt: asked, key: ++prompts }),
-      (question) => (hostKey = { question, key: ++prompts }),
-      (agreed) => (algorithms = agreed),
-    ).then(
+      onPrompt: (asked) => (prompt = { prompt: asked, key: ++prompts }),
+      onHostKey: (question) => (hostKey = { question, key: ++prompts }),
+      onAlgorithms: (agreed) => (algorithms = agreed),
+    }).then(
       (opened) => {
         if (disposed) {
-          opened.close();
+          opened.discard();
           return;
         }
         session = opened;
@@ -142,7 +203,7 @@
         ) {
           opened.resize(current);
         }
-        terminal.focus();
+        if (shown) terminal.focus();
       },
       (error) =>
         (status = {
@@ -156,7 +217,8 @@
     return () => {
       disposed = true;
       resizeObserver.disconnect();
-      session?.close();
+      // Gone with its terminal: it can no longer be reconnected.
+      session?.discard();
       terminal.dispose();
     };
   });
@@ -180,8 +242,18 @@
         Legacy crypto
       </span>
     {/if}
-    <span class="status {status.state}" role="status">{statusText}</span>
+    <span class="status {status.state}" role="status" title={statusText}
+      >{statusText}</span
+    >
+    <button
+      onclick={() => session && onduplicate(session.id)}
+      disabled={!session}
+      title="Open a second session to the same host"
+    >
+      Duplicate
+    </button>
     {#if status.state === "closed"}
+      <button onclick={reconnect} disabled={!session}>Reconnect</button>
       <button onclick={ondismiss}>New connection</button>
     {:else}
       <button onclick={() => session?.close()} disabled={!session}>
@@ -191,6 +263,12 @@
   </header>
   <div class="body">
     <div class="terminal" bind:this={container}></div>
+    {#if status.state === "closed" && session}
+      <div class="ended" role="alert" data-session-ended>
+        <span class="reason">{status.reason}.</span>
+        <span>Press <kbd>Enter</kbd> to reconnect.</span>
+      </div>
+    {/if}
     {#if hostKey}
       {#key hostKey.key}
         <HostKeyCheck
@@ -290,8 +368,9 @@
 
   header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.4rem 0.75rem;
     padding: 0.4rem 0.6rem;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
@@ -326,7 +405,8 @@
   }
 
   .status {
-    flex: 1;
+    /* Room for the reason; the buttons wrap below when it lacks it. */
+    flex: 1 1 14rem;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -356,6 +436,29 @@
     position: relative;
     min-height: 0;
     display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .ended {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.6rem;
+    padding: 0.35rem 0.6rem;
+    background: var(--surface);
+    border-top: 1px solid var(--danger);
+    font-size: 0.85rem;
+  }
+
+  .ended .reason::first-letter {
+    text-transform: uppercase;
+  }
+
+  kbd {
+    padding: 0 0.3rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 0.8rem;
   }
 
   .terminal {

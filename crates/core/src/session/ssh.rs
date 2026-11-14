@@ -2,10 +2,12 @@
 
 use std::collections::VecDeque;
 use std::future::Future;
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use tokio::net::TcpStream;
 use tokio::sync::{watch, Mutex};
 
 use russh::client::{self, AuthResult, Handle, KeyboardInteractiveAuthResponse};
@@ -29,8 +31,9 @@ use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
 /// Terminal type requested for the remote pty; xterm.js emulates xterm.
 const TERM: &str = "xterm-256color";
 
-/// How long to wait for the TCP connection and SSH handshake together.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How many keepalives (one per connect timeout) may go unanswered before
+/// the connection counts as lost.
+const KEEPALIVES_UNANSWERED: usize = 2;
 
 /// The client side of the connection: checks the server's host key.
 struct Client {
@@ -38,10 +41,8 @@ struct Client {
     host: String,
     port: u16,
     known_hosts: KnownHosts,
+    /// Asks the user, pausing the connect timeout meanwhile.
     asker: SharedAsker,
-    /// True while the user is asked about the key: the handshake then
-    /// waits for them, not for the network, and the timeout is paused.
-    asking: watch::Sender<bool>,
     /// The algorithms the last key exchange agreed on.
     negotiated: Arc<std::sync::Mutex<Option<russh::Names>>>,
 }
@@ -96,9 +97,7 @@ impl client::Handler for Client {
             stored,
         };
         let changed = question.changed();
-        self.asking.send_replace(true);
         let decision = self.asker.lock().await.ask(question).await;
-        self.asking.send_replace(false);
         match decision {
             Some(HostKeyDecision::TrustAndRemember) => {
                 self.known_hosts
@@ -526,6 +525,7 @@ struct Hop<'a> {
     username: &'a str,
     auth: &'a SshAuth,
     legacy_crypto: bool,
+    connect_timeout: Duration,
 }
 
 /// The jump host a hop is reached through.
@@ -555,6 +555,7 @@ async fn open_shell(
             username: &jump.username,
             auth: &jump.auth,
             legacy_crypto: jump.legacy_crypto,
+            connect_timeout: jump.connect_timeout,
         };
         let through = last_via(&target.jump_hosts, &jumps);
         prompter.jump_host = Some(jump.name.clone());
@@ -575,11 +576,34 @@ async fn open_shell(
         username: &target.username,
         auth: &target.auth,
         legacy_crypto: target.legacy_crypto,
+        connect_timeout: target.connect_timeout,
     };
     let through = last_via(&target.jump_hosts, &jumps);
     let (connection, agreed) = connect(hop, through, &known_hosts, &asker, prompter).await?;
     algorithms.push(agreed);
 
+    let (channel, early_output) = within(
+        target.connect_timeout,
+        prompter.user_wait(),
+        start_shell(&connection, size),
+    )
+    .await?;
+
+    Ok(Shell {
+        connection,
+        jumps,
+        channel,
+        early_output,
+        algorithms,
+    })
+}
+
+/// Opens the shell channel with a pty, and waits for the server to confirm
+/// the shell, keeping anything it prints in the meantime.
+async fn start_shell(
+    connection: &Handle<Client>,
+    size: TerminalSize,
+) -> Result<(Channel<client::Msg>, Vec<u8>), OpenError> {
     let mut channel = connection.channel_open_session().await.map_err(protocol)?;
     channel
         .request_pty(false, TERM, size.cols, size.rows, 0, 0, &[])
@@ -587,12 +611,10 @@ async fn open_shell(
         .map_err(protocol)?;
     channel.request_shell(true).await.map_err(protocol)?;
 
-    // Wait for the server to confirm the shell, keeping anything it prints
-    // in the meantime.
     let mut early_output = Vec::new();
     loop {
         match channel.wait().await {
-            Some(ChannelMsg::Success) => break,
+            Some(ChannelMsg::Success) => return Ok((channel, early_output)),
             Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
                 early_output.extend_from_slice(&data);
             }
@@ -609,14 +631,6 @@ async fn open_shell(
             }
         }
     }
-
-    Ok(Shell {
-        connection,
-        jumps,
-        channel,
-        early_output,
-        algorithms,
-    })
 }
 
 /// The last jump host connected so far, to reach the next hop through.
@@ -629,8 +643,26 @@ fn last_via<'a>(jump_hosts: &'a [JumpHost], connections: &'a [Handle<Client>]) -
 }
 
 /// Connects to `hop` (directly, or through the jump host `via`), checks
-/// its host key and logs in. Also gives the algorithms agreed on.
+/// its host key and logs in, within the hop's connect timeout. Also gives
+/// the algorithms agreed on.
 async fn connect(
+    hop: Hop<'_>,
+    via: Option<Via<'_>>,
+    known_hosts: &KnownHosts,
+    asker: &SharedAsker,
+    prompter: &mut Prompter,
+) -> Result<(Handle<Client>, NegotiatedAlgorithms), OpenError> {
+    let user = prompter.user_wait();
+    within(
+        hop.connect_timeout,
+        user,
+        connect_and_log_in(hop, via, known_hosts, asker, prompter),
+    )
+    .await
+}
+
+/// [`connect`] without the timeout.
+async fn connect_and_log_in(
     hop: Hop<'_>,
     via: Option<Via<'_>>,
     known_hosts: &KnownHosts,
@@ -640,26 +672,26 @@ async fn connect(
     let login = login(hop.auth).await?;
     let config = Arc::new(client::Config {
         preferred: algorithms::preferred(hop.legacy_crypto),
+        // A link that goes silent is lost once the device has answered no
+        // keepalive for about three connect timeouts.
+        keepalive_interval: Some(hop.connect_timeout),
+        keepalive_max: KEEPALIVES_UNANSWERED,
         ..client::Config::default()
     });
-    let (asking, asking_rx) = watch::channel(false);
     let negotiated = Arc::default();
     let client = Client {
         host: hop.host.to_owned(),
         port: hop.port,
         known_hosts: known_hosts.clone(),
         asker: asker.clone(),
-        asking,
         negotiated: Arc::clone(&negotiated),
     };
     // What the server sends first, for reporting a failed negotiation.
     let first_bytes = FirstBytes::new();
-    let connecting = async {
+    let connected = async {
         let connected = match via {
             None => {
-                let socket = tokio::net::TcpStream::connect((hop.host, hop.port))
-                    .await
-                    .map_err(|error| OpenError::Connect(error.to_string()))?;
+                let socket = connect_tcp(hop.host, hop.port, hop.connect_timeout).await?;
                 let stream = Recording::new(socket, first_bytes.clone());
                 client::connect_stream(config, stream, client).await
             }
@@ -682,19 +714,14 @@ async fn connect(
         match connected {
             Ok(connection) => Ok(connection),
             Err(ClientError::Refused(error)) => Err(error),
-            Err(ClientError::Ssh(russh::Error::IO(error))) => {
-                Err(OpenError::Connect(error.to_string()))
-            }
+            Err(ClientError::Ssh(russh::Error::IO(error))) => Err(handshake_broke(&error)),
             Err(ClientError::Ssh(russh::Error::NoCommonAlgo { kind, theirs, .. })) => Err(
                 negotiation_failure(kind, theirs, &first_bytes.take(), hop.legacy_crypto),
             ),
             Err(ClientError::Ssh(error)) => Err(protocol(error)),
         }
-    };
-    let connected = tokio::select! {
-        connected = connecting => connected,
-        () = handshake_deadline(asking_rx) => Err(OpenError::Connect("timed out".into())),
-    };
+    }
+    .await;
     // Needed only for a failed negotiation: stop keeping what arrives.
     drop(first_bytes.take());
     let mut connection = connected?;
@@ -799,21 +826,90 @@ fn forwarding_failure(error: &russh::Error) -> String {
     }
 }
 
-/// Resolves when the connection and handshake have taken
-/// [`CONNECT_TIMEOUT`], not counting the time the user takes to decide on a
-/// host key: the clock stops while `asking` is true and starts again from
-/// zero after the decision.
-async fn handshake_deadline(mut asking: watch::Receiver<bool>) {
+/// Resolves to the TCP connection to `host` on `port`, trying each address
+/// the name resolves to in turn, each for its share of `timeout` (so an
+/// address that never answers, often an IPv6 one, leaves time for the
+/// next); a failure says which kind it was (from the last address tried).
+async fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, OpenError> {
+    let not_resolved = || OpenError::NameNotResolved {
+        host: host.to_owned(),
+    };
+    let addresses: Vec<_> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| not_resolved())?
+        .collect();
+    let count = u32::try_from(addresses.len()).unwrap_or(u32::MAX).max(1);
+    let share = timeout / count;
+    let started = Instant::now();
+    let mut last = None;
+    for address in addresses {
+        match tokio::time::timeout(share, TcpStream::connect(address)).await {
+            Ok(Ok(socket)) => return Ok(socket),
+            Ok(Err(error)) => last = Some(error),
+            Err(_) => last = Some(io::ErrorKind::TimedOut.into()),
+        }
+    }
+    let Some(error) = last else {
+        return Err(not_resolved());
+    };
+    Err(match error.kind() {
+        io::ErrorKind::ConnectionRefused => OpenError::ConnectionRefused {
+            host: host.to_owned(),
+            port,
+        },
+        io::ErrorKind::HostUnreachable
+        | io::ErrorKind::NetworkUnreachable
+        | io::ErrorKind::AddrNotAvailable => OpenError::Unreachable {
+            host: host.to_owned(),
+            reason: error.to_string(),
+        },
+        // No address answered within its share (or the system gave up).
+        io::ErrorKind::TimedOut => OpenError::TimedOut {
+            after: Duration::from_secs(started.elapsed().as_secs_f64().round() as u64),
+        },
+        _ => OpenError::Connect(error.to_string()),
+    })
+}
+
+/// What a broken connection during the SSH handshake reports.
+fn handshake_broke(error: &io::Error) -> OpenError {
+    match error.kind() {
+        io::ErrorKind::UnexpectedEof
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted => {
+            OpenError::Connect("the device closed the connection during the SSH handshake".into())
+        }
+        _ => OpenError::Connect(error.to_string()),
+    }
+}
+
+/// Runs `work`, unless it waits on the network for `timeout` first: that
+/// is [`OpenError::TimedOut`].
+async fn within<T>(
+    timeout: Duration,
+    user: watch::Receiver<bool>,
+    work: impl Future<Output = Result<T, OpenError>>,
+) -> Result<T, OpenError> {
+    tokio::select! {
+        done = work => done,
+        () = deadline(user, timeout) => Err(OpenError::TimedOut { after: timeout }),
+    }
+}
+
+/// Resolves once `timeout` has passed without the user being waited for
+/// (`user` true while they are asked something): the clock stops while
+/// they are, and starts again from zero after they answer.
+async fn deadline(mut user: watch::Receiver<bool>, timeout: Duration) {
     loop {
-        // Gone means the handshake is over: nothing to time out.
-        if asking.wait_for(|asking| !*asking).await.is_err() {
-            return std::future::pending().await;
+        // Gone means nobody can be asked any more: only the clock counts.
+        if user.wait_for(|waiting| !*waiting).await.is_err() {
+            return tokio::time::sleep(timeout).await;
         }
         tokio::select! {
-            () = tokio::time::sleep(CONNECT_TIMEOUT) => return,
-            changed = asking.changed() => {
+            () = tokio::time::sleep(timeout) => return,
+            changed = user.changed() => {
                 if changed.is_err() {
-                    return std::future::pending().await;
+                    return tokio::time::sleep(timeout).await;
                 }
             }
         }

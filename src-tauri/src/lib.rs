@@ -14,8 +14,8 @@ use netterm_core::credentials::{
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
-    NegotiatedAlgorithms, SessionEvent, SessionId, SessionManager, SessionState, SessionTarget,
-    SshAuth, SshTarget, TerminalSize,
+    NegotiatedAlgorithms, SessionEvent, SessionEvents, SessionId, SessionManager, SessionState,
+    SessionTarget, SshAuth, SshTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT,
 };
 use netterm_core::workspace::{
     EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem, Role,
@@ -613,6 +613,7 @@ async fn session_open(
             jump_hosts: Vec::new(),
             // Quick connections have no settings to switch it on.
             legacy_crypto: false,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         },
         ConnectTarget::Host {
             id,
@@ -635,15 +636,39 @@ async fn session_open(
                 .map_err(|error| error.to_string())?
         }
     });
-    let (id, mut events) = manager.open(target, size.into());
+    let (id, events) = manager.open(target, size.into());
+    forward(
+        events,
+        Channels {
+            output: on_output,
+            state: on_state,
+            prompt: on_prompt,
+            host_key: on_host_key,
+            algorithms: on_algorithms,
+        },
+    );
+    Ok(id.0)
+}
+
+/// Where a session's events go in the interface.
+struct Channels {
+    output: Channel<InvokeResponseBody>,
+    state: Channel<StateMessage>,
+    prompt: Channel<LoginPrompt>,
+    host_key: Channel<HostKeyQuestion>,
+    algorithms: Channel<Vec<NegotiatedAlgorithms>>,
+}
+
+/// Passes the session's events on to the interface until they end.
+fn forward(mut events: SessionEvents, channels: Channels) {
     tauri::async_runtime::spawn(async move {
         while let Some(event) = events.next().await {
             let delivered = match event {
-                SessionEvent::Output(bytes) => on_output.send(InvokeResponseBody::Raw(bytes)),
-                SessionEvent::State(state) => on_state.send(state.into()),
-                SessionEvent::Prompt(prompt) => on_prompt.send(prompt),
-                SessionEvent::HostKey(question) => on_host_key.send(question),
-                SessionEvent::Algorithms(algorithms) => on_algorithms.send(algorithms),
+                SessionEvent::Output(bytes) => channels.output.send(InvokeResponseBody::Raw(bytes)),
+                SessionEvent::State(state) => channels.state.send(state.into()),
+                SessionEvent::Prompt(prompt) => channels.prompt.send(prompt),
+                SessionEvent::HostKey(question) => channels.host_key.send(question),
+                SessionEvent::Algorithms(algorithms) => channels.algorithms.send(algorithms),
             };
             // The webview is gone; dropping the events closes the session.
             if delivered.is_err() {
@@ -651,7 +676,73 @@ async fn session_open(
             }
         }
     });
-    Ok(id.0)
+}
+
+/// Opens a session that has closed again, in place: the same target,
+/// settings and login, the same id. Its events arrive on new channels, as
+/// for `session_open`.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn session_reconnect(
+    manager: State<'_, SessionManager>,
+    id: u64,
+    size: Size,
+    on_output: Channel<InvokeResponseBody>,
+    on_state: Channel<StateMessage>,
+    on_prompt: Channel<LoginPrompt>,
+    on_host_key: Channel<HostKeyQuestion>,
+    on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
+) -> Result<(), String> {
+    let events = manager
+        .reconnect(SessionId(id), size.into())
+        .map_err(|error| error.to_string())?;
+    forward(
+        events,
+        Channels {
+            output: on_output,
+            state: on_state,
+            prompt: on_prompt,
+            host_key: on_host_key,
+            algorithms: on_algorithms,
+        },
+    );
+    Ok(())
+}
+
+/// Opens a new session to the same target as the session `id`, with the
+/// same settings and login; returns its id. Events as for `session_open`.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn session_duplicate(
+    manager: State<'_, SessionManager>,
+    id: u64,
+    size: Size,
+    on_output: Channel<InvokeResponseBody>,
+    on_state: Channel<StateMessage>,
+    on_prompt: Channel<LoginPrompt>,
+    on_host_key: Channel<HostKeyQuestion>,
+    on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
+) -> Result<u64, String> {
+    let (copy, events) = manager
+        .duplicate(SessionId(id), size.into())
+        .map_err(|error| error.to_string())?;
+    forward(
+        events,
+        Channels {
+            output: on_output,
+            state: on_state,
+            prompt: on_prompt,
+            host_key: on_host_key,
+            algorithms: on_algorithms,
+        },
+    );
+    Ok(copy.0)
+}
+
+/// Forgets the session (closing it if it is open): its terminal is gone.
+#[tauri::command]
+fn session_discard(manager: State<'_, SessionManager>, id: u64) {
+    manager.discard(SessionId(id));
 }
 
 /// Answers the questions the session's server asked last.
@@ -776,7 +867,10 @@ pub fn run() {
             session_decide_host_key,
             session_acknowledge,
             session_resize,
-            session_close
+            session_close,
+            session_reconnect,
+            session_duplicate,
+            session_discard
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the app");
