@@ -397,6 +397,9 @@
 
   .toolbar {
     display: flex;
+    /* The panel is at most 18rem wide: the buttons go on a second row
+       rather than out of sight. */
+    flex-wrap: wrap;
     gap: 0.4rem;
     padding: 0.35rem 0.6rem;
     border-bottom: 1px solid var(--border);
@@ -406,6 +409,7 @@
   .filters button {
     padding: 0.15rem 0.55rem;
     font-size: 0.8rem;
+    white-space: nowrap;
   }
 
   .toolbar .search {

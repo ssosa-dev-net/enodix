@@ -3749,6 +3749,23 @@ async function editInventory({
         (await text(`.side [data-origin="${key}"]`)).trim() === expected,
     );
 
+  // Every toolbar button is fully inside the panel (it is narrower than
+  // the buttons on one row, so they must wrap rather than be cut off).
+  const clipped = await evaluate(`(() => {
+    const panel = document.querySelector("aside").getBoundingClientRect();
+    return [...document.querySelectorAll("aside .toolbar button")]
+      .filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.width === 0 || r.left < panel.left || r.right > panel.right + 0.5
+          || b.scrollWidth > b.clientWidth + 1 || r.height > 2 * parseFloat(getComputedStyle(b).lineHeight) + 8;
+      })
+      .map((b) => b.textContent.trim());
+  })()`);
+  if (clipped.length > 0) {
+    fail(`toolbar buttons cut off or wrapped: ${clipped.join(", ")}`);
+  }
+  step("every workspace toolbar button is visible");
+
   // A folder and a host, created from the toolbar at the top level.
   await clickOn("aside header .name");
   await click("+ Folder");
