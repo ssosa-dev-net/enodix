@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
 use netterm_core::configs::{ConfigStore, ConfigVersion};
 use netterm_core::credentials::{
-    prepare_workspace, vault_file, ActiveStore, CredentialStore, HostLogin, KeychainStore,
-    MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles, Secrets, VaultError,
-    VaultStatus,
+    prepare_workspace, vault_file, ActiveStore, AgentEndpoint, AgentServer, CredentialStore,
+    HostLogin, KeychainStore, MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles,
+    Secrets, VaultError, VaultStatus,
 };
 use netterm_core::diff::DiffLine;
 use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
@@ -73,6 +73,9 @@ const UPDATE_ENDPOINT_VARIABLE: &str = "NETTERM_UPDATE_ENDPOINT";
 /// outside the app.
 const WORKSPACE_CHANGED_EVENT: &str = "workspace-changed";
 
+/// The credential agent, kept for as long as the app runs.
+struct CredentialAgent(#[allow(dead_code)] Option<AgentServer>);
+
 /// Where app-level state lives, the open workspace, and where credential
 /// profiles are kept.
 struct Shell {
@@ -83,7 +86,7 @@ struct Shell {
     logs: LogFolder,
     /// The keychain, or the vault once its file exists (locked until the
     /// interface's unlock screen unlocks it).
-    credentials: ActiveStore,
+    credentials: Arc<ActiveStore>,
     workspace: Mutex<Option<Workspace>>,
     /// Reports changes to the open workspace's files; replaced with it.
     watcher: Mutex<Option<WorkspaceWatcher>>,
@@ -102,7 +105,7 @@ impl Shell {
         // Its profiles are kept under its own identifier (written to the
         // folder if it has none yet). Without one they stay under its path;
         // the interface shows why with the files that could not be loaded.
-        let unprepared = prepare_workspace(&self.credentials, &mut workspace).err();
+        let unprepared = prepare_workspace(&*self.credentials, &mut workspace).err();
         let root = workspace.root().to_path_buf();
         *self.workspace() = Some(workspace);
         let app = app.clone();
@@ -598,8 +601,8 @@ fn with_profiles<E: std::fmt::Display>(
 ) -> Result<ProfilesView, String> {
     let guard = shell.workspace();
     let workspace = guard.as_ref().ok_or("no workspace is open")?;
-    let profiles = Profiles::new(&shell.credentials, workspace);
-    let secrets = Secrets::new(&shell.credentials, workspace);
+    let profiles = Profiles::new(&*shell.credentials, workspace);
+    let secrets = Secrets::new(&*shell.credentials, workspace);
     action(&profiles, &secrets).map_err(|error| error.to_string())?;
     let text = |error: ProfileError| error.to_string();
     Ok(ProfilesView {
@@ -791,7 +794,7 @@ fn with_open_profiles<T>(
 ) -> Result<T, String> {
     let guard = shell.workspace();
     let workspace = guard.as_ref().ok_or("no workspace is open")?;
-    query(&Profiles::new(&shell.credentials, workspace)).map_err(|error| error.to_string())
+    query(&Profiles::new(&*shell.credentials, workspace)).map_err(|error| error.to_string())
 }
 
 /// The hosts of the open workspace matching `query` (the Ctrl+K palette).
@@ -1232,7 +1235,7 @@ fn keep_plan(
         let workspace = guard.as_ref().ok_or("no workspace is open")?;
         PlannedJob {
             workspace: workspace.id().map(str::to_string),
-            plan: plan(workspace, &Profiles::new(&shell.credentials, workspace))?,
+            plan: plan(workspace, &Profiles::new(&*shell.credentials, workspace))?,
             target,
         }
     };
@@ -1647,7 +1650,7 @@ fn login_backup(shell: &Shell, configs: &Configs, target: &ConnectTarget) -> Opt
     };
     let guard = shell.workspace();
     let workspace = guard.as_ref()?;
-    let profiles = Profiles::new(&shell.credentials, workspace);
+    let profiles = Profiles::new(&*shell.credentials, workspace);
     LoginBackup::plan(workspace, &profiles, id, login, configs.0.clone())
 }
 
@@ -2327,7 +2330,18 @@ pub fn run() {
                 };
             // The vault, if its file is in the data folder, replaces the
             // keychain (layered the same way over the smoke's memory store).
-            let credentials = ActiveStore::new(keychain, vault_file(&data_folder));
+            let credentials = Arc::new(ActiveStore::new(keychain, vault_file(&data_folder)));
+            // Scripts get credentials from the running app over a pipe only
+            // this user can open (the headless binary asks there first).
+            // Without it (another instance serves already) they read the
+            // store themselves.
+            let agent = AgentServer::start(
+                AgentEndpoint::for_data_folder(&data_folder),
+                credentials.clone(),
+            )
+            .inspect_err(|error| eprintln!("scripts cannot ask for credentials: {error}"))
+            .ok();
+            app.manage(CredentialAgent(agent));
             // Trusted host keys are per user, beside the app state.
             app.manage(SessionManager::new(KnownHosts::in_data_folder(
                 &data_folder,

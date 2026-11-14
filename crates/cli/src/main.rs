@@ -1,5 +1,6 @@
-//! The headless binary: the core from the command line, with no window and
-//! no running app. Its command line is a contract (the Python bridge
+//! The headless binary: the core from the command line, with no window. It
+//! needs no running app, but asks it for credentials while it runs (see
+//! `credentials`). Its command line is a contract (the Python bridge
 //! builds on it, `tests/` checks it); see `usage`.
 //!
 //! Exit status: 0 done, 1 refused or failed (the reason on stderr), 2 a
@@ -13,6 +14,10 @@ use netterm_core::app_state::resolved_path;
 use netterm_core::inventory::{export, Limit};
 use netterm_core::workspace::Workspace;
 
+mod credentials;
+
+use credentials::PRODUCT;
+
 const NAME: &str = env!("CARGO_BIN_NAME");
 
 fn usage() -> String {
@@ -20,6 +25,8 @@ fn usage() -> String {
         "\
 Usage:
   {NAME} inventory <workspace folder> [--folder <path> | --filter <name> | --host <id>...]
+  {NAME} credentials <workspace folder> <host id>
+  {NAME} secret <workspace folder> <name>
   {NAME} --help | --version
 
 inventory   prints the workspace's hosts as JSON, each with the settings that
@@ -28,12 +35,21 @@ inventory   prints the workspace's hosts as JSON, each with the settings that
             (--folder), to a saved filter's (--filter), or to host ids
             (--host, repeated). Problems with workspace files go to stderr
             and into the JSON's \"problems\"; they do not stop the export.
+credentials prints, as JSON, the login of the credential profile a host
+            uses: username, then password, private key file and passphrase,
+            or nothing for the SSH agent; and any enable secret.
+secret      prints, as JSON, the value of the workspace's named secret.
+
+Credentials come from {PRODUCT} while it runs and its vault, if it has
+one, is unlocked. Otherwise they are read here: from the keychain, or from
+the vault after asking for its master password on the terminal. With a
+vault and neither {PRODUCT} unlocked nor a terminal, they are refused.
 "
     )
 }
 
 /// What went wrong, and the exit status it gives.
-enum Failure {
+pub(crate) enum Failure {
     /// The command line makes no sense: status 2, with a hint.
     Usage(String),
     /// The command was understood but cannot be done: status 1.
@@ -61,6 +77,8 @@ fn run(args: &[String]) -> Result<(), Failure> {
         Some("--help" | "-h" | "help") => print(&usage()),
         Some("--version" | "-V") => print(&format!("{NAME} {}\n", env!("CARGO_PKG_VERSION"))),
         Some("inventory") => inventory(&args[1..]),
+        Some("credentials") => credentials::host(&args[1..]),
+        Some("secret") => credentials::secret(&args[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown command {other:?}"))),
     }
 }
@@ -123,7 +141,7 @@ fn set_once<'a>(slot: &mut Option<&'a str>, option: &str, value: &'a str) -> Res
 }
 
 /// Writes `text` to stdout. A reader that went away (`| head`) is no error.
-fn print(text: &str) -> Result<(), Failure> {
+pub(crate) fn print(text: &str) -> Result<(), Failure> {
     let mut stdout = io::stdout().lock();
     match stdout
         .write_all(text.as_bytes())

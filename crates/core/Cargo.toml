@@ -46,7 +46,7 @@ uuid = { version = "1", features = ["v4"] }
 
 # The Windows keychain (Credential Manager) for credential profiles.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # Streams of connections for the in-process SSH agent (tests/support).
@@ -57,4 +57,4 @@ tempfile = "3"
 # The in-process stand-in for Pageant needs Pageant's pipe name.
 [target.'cfg(windows)'.dev-dependencies]
 sha2 = "0.11"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Authentication_Identity", "Win32_Security_Cryptography", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
