@@ -21,6 +21,7 @@ fn a_first_launch_follows_the_system_theme_with_the_default_terminal() {
     assert_eq!(preferences.scrollback, 10_000);
     assert!(!preferences.copy_on_select);
     assert!(!preferences.right_click_paste);
+    assert!(preferences.highlighting);
 }
 
 #[test]
@@ -33,6 +34,7 @@ fn preferences_are_remembered_across_restarts() {
         scrollback: 50_000,
         copy_on_select: true,
         right_click_paste: true,
+        highlighting: false,
     };
 
     chosen.save(data.path()).unwrap();
@@ -55,6 +57,28 @@ fn the_file_is_readable_yaml_in_the_data_folder() {
     assert!(text.contains("theme: dark"), "{text}");
     assert!(text.contains("font_size: 14"), "{text}");
     assert!(text.contains("copy_on_select: false"), "{text}");
+    assert!(text.contains("highlighting: true"), "{text}");
+}
+
+#[test]
+fn highlighting_can_be_turned_off_for_every_terminal() {
+    let data = TempDir::new().unwrap();
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "highlighting: false
+",
+    )
+    .unwrap();
+    assert!(!Preferences::load(data.path()).highlighting);
+
+    // A value that is not a switch keeps highlighting on.
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "highlighting: maybe
+",
+    )
+    .unwrap();
+    assert!(Preferences::load(data.path()).highlighting);
 }
 
 #[test]

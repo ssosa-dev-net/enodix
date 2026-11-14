@@ -16,6 +16,8 @@ export interface Preferences {
   scrollback: number;
   copyOnSelect: boolean;
   rightClickPaste: boolean;
+  /** Keyword highlighting in every terminal. */
+  highlighting: boolean;
 }
 
 /** The core's limits (`netterm_core::preferences`), for the form. */
@@ -46,6 +48,7 @@ export const preferences = $state({
     scrollback: 10_000,
     copyOnSelect: false,
     rightClickPaste: false,
+    highlighting: true,
   } as Preferences,
   /** Whether the operating system is set to dark. */
   systemDark: systemDark.matches,
@@ -122,6 +125,8 @@ export function terminalTheme(dark: boolean): ITheme {
   return dark ? DARK_TERMINAL : LIGHT_TERMINAL;
 }
 
+// xterm.js's own ANSI colours (Tango), written out so that highlight
+// rules naming a palette colour get the same one as the device's own.
 const DARK_TERMINAL: ITheme = {
   background: "#0e1116",
   foreground: "#d7dce2",
@@ -129,7 +134,34 @@ const DARK_TERMINAL: ITheme = {
   cursorAccent: "#0e1116",
   selectionBackground: "#3a5a8c",
   selectionForeground: "#ffffff",
+  black: "#2e3436",
+  red: "#cc0000",
+  green: "#4e9a06",
+  yellow: "#c4a000",
+  blue: "#3465a4",
+  magenta: "#75507b",
+  cyan: "#06989a",
+  white: "#d3d7cf",
+  brightBlack: "#555753",
+  brightRed: "#ef2929",
+  brightGreen: "#8ae234",
+  brightYellow: "#fce94f",
+  brightBlue: "#729fcf",
+  brightMagenta: "#ad7fa8",
+  brightCyan: "#34e2e2",
+  brightWhite: "#eeeeec",
 };
+
+/**
+ * A highlight rule's colour as `#rrggbb`: a palette name (`bright-cyan`)
+ * becomes the theme's colour.
+ */
+export function highlightColor(color: string, dark: boolean): string {
+  if (color.startsWith("#")) return color;
+  const key = color.replace(/-(\w)/g, (_, c: string) => c.toUpperCase());
+  const value = terminalTheme(dark)[key as keyof ITheme];
+  return typeof value === "string" ? value : terminalTheme(dark).foreground!;
+}
 
 // Darker ANSI colours than xterm's, so that yellow, cyan and white stay
 // readable on a light background.

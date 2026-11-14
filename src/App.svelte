@@ -6,6 +6,7 @@
   import CredentialsPrompt from "./lib/CredentialsPrompt.svelte";
   import Dialog from "./lib/Dialog.svelte";
   import FolderDetails from "./lib/FolderDetails.svelte";
+  import HighlightRulesDialog from "./lib/HighlightRulesDialog.svelte";
   import HostDetails from "./lib/HostDetails.svelte";
   import PaneView, {
     type PaneHandlers,
@@ -25,6 +26,7 @@
     workspaceChanged,
   } from "./lib/inventory.svelte";
   import { hostLogin } from "./lib/credentials";
+  import { highlighting, trackHighlightRules } from "./lib/highlight.svelte";
   import { profiles, refreshProfiles } from "./lib/profiles.svelte";
   import {
     isDark,
@@ -254,6 +256,7 @@
   const folder = $derived(selectedFolder());
 
   void loadPreferences();
+  trackHighlightRules();
 
   // Ctrl+scroll sizes the terminal font (TerminalSession), never the page.
   // (Svelte's own wheel listeners are passive, so this one is added here.)
@@ -469,6 +472,7 @@
       inventory.dialog ||
       profiles.dialog ||
       preferences.dialog ||
+      highlighting.dialog ||
       inventory.palette ||
       closing !== null;
     const action = zoomShortcut(event) ?? (busy ? null : shortcut(event));
@@ -611,6 +615,15 @@
   <PreferencesDialog
     onclose={() => {
       preferences.dialog = false;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if highlighting.dialog}
+  <HighlightRulesDialog
+    onclose={() => {
+      highlighting.dialog = false;
       focusRequest += 1;
     }}
   />

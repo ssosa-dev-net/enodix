@@ -11,6 +11,8 @@ rust-version.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # File system notifications, for reloading on external changes (git pull).
 notify = "8"
+# Highlight rules' patterns.
+regex = "1"
 # Pinned exactly: the russh API changes roughly monthly (see docs/spec-v1.md).
 # `ring` backend (no extra native build tooling on Windows); `des` and `dsa`
 # compile in the legacy algorithms, `rsa` the RSA host/user keys.
