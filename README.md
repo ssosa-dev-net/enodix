@@ -74,6 +74,18 @@ The app sends no telemetry and has no crash reporting. The update check is a
 plain request for the release manifest (`latest.json`) and sends nothing
 about you, your machine or your inventory.
 
+## Tested platforms
+
+netterm claims only the device platforms below, each verified by the
+containerlab device suite ([docs/containerlab.md](docs/containerlab.md))
+at the version shown. Anything else may work, but has not been tested.
+
+| Platform | Version | SSH | Telnet | Date |
+| -------- | ------- | --- | ------ | ---- |
+
+None yet: the suite has not been run against a real device. Nokia SR Linux,
+Arista cEOS and FRR are next, as soon as the lab server can run containers.
+
 ## Building from source
 
 For the layout and commands (`npm install`, `npm run check`,

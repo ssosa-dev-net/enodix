@@ -22,14 +22,16 @@ unverified guesses and the app claims no tested platforms from it.
 | terminal size                  | `size_command` prints the size the session opened with, and the new size after a resize (only where `size_command` is set)                       |
 | large output with flow control | `large_command` prints at least `large_min_bytes`; while the reader stalls for 3 s, no more than the flow-control window (256 KiB + a batch) arrives |
 | session log                    | The session's log file holds the command output as plain text (no control sequences)                                                             |
-| telnet                         | Log in by telnet (answers typed into the terminal), run `command`; only where `telnet` is set and there is no jump host (telnet is not tunnelled) |
+| telnet                         | Log in by telnet (answers typed into the terminal), run `command`; only where `telnet` is set, and behind a jump host only with `telnet_address` (telnet is not tunnelled) |
 
 The output of every check (pass, fail or not checked, with the negotiated
 algorithms) is printed, so run it with `--nocapture` (the npm script does).
 A check that applies to no device still passes, but prints `NOT CHECKED on
-any device`: with the example lab, the telnet check (no device has telnet,
-and telnet is not tunnelled through a jump host) and the terminal-size check
-on SR Linux and cEOS (no size command). The large-output check says when the
+any device`: with the example lab, the terminal-size check on SR Linux and
+cEOS (no size command). Telnet is checked on cEOS, which the topology
+configures for telnet and publishes on the server's port 2323, because the
+app does not tunnel telnet through a jump host; the lab file's
+`telnet_address` sends the telnet check there directly. The large-output check says when the
 output fitted in the flow-control window, so flow control was not exercised.
 
 A prompt counts once the output ends with it and nothing more arrives for
@@ -49,9 +51,23 @@ files).
    NETTERM_LAB_PASSWORD=<frr root password> sudo -E containerlab deploy -t lab/netterm-test.clab.yml
    ```
 
-   cEOS must be imported into Docker first (`docker import`), as Arista
-   distributes it only to registered users. Remove a node from the
-   topology (and the lab file) if its image is not available.
+   cEOS (`ceos:4.36.0.1F` in the topology) must be imported into Docker
+   first (`docker import`), as Arista distributes it only to registered
+   users. Remove a node from the topology (and the lab file) if its image
+   is not available.
+
+   **Docker inside an LXC container** (such as a Proxmox CT): if every
+   container fails with `AppArmor enabled on system but the docker-default
+   profile could not be loaded`, Docker on that server cannot start
+   containers at all, so neither `docker build` nor `containerlab deploy`
+   works. That is the server's setup, not the suite's; fix it on the LXC
+   host (the usual fix is the container's AppArmor profile, for example
+   `lxc.apparmor.profile: unconfined` with nesting enabled) and check with
+   `docker run --rm alpine true`. While it persists, `docker run
+   --security-opt apparmor=unconfined` still works, so the FRR image can be
+   built by hand: run the Dockerfile's `RUN` line in an unconfined
+   container, `docker cp` `start.sh` to `/usr/local/bin/netterm-start`, and
+   `docker commit` it with the Dockerfile's `ENTRYPOINT`.
 
 2. Write a lab file, outside git: copy `lab/lab.example.yaml` to
    `lab/lab.yaml` (ignored by git) or anywhere else, and fill in the
@@ -106,7 +122,10 @@ variables. Every check setting can be overridden per device: `username`,
 control sequences removed), `setup` (lines sent after login), `command`,
 `expect` (a regular expression), `large_command`, `large_min_bytes`,
 `size_command`, `size_output` (with `{cols}` and `{rows}`), `exit`,
-`telnet` (`true` or a port), `login_prompt`, `password_prompt`.
+`telnet` (`true` or a port), `telnet_address` (where telnet is reached
+directly, not through the jump host: for the topology's cEOS, the
+containerlab server's address with `telnet: 2323`), `login_prompt`,
+`password_prompt`.
 
 ## Platform defaults (unverified)
 

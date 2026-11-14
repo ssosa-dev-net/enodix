@@ -339,6 +339,27 @@ async fn every_check_passes_through_a_jump_host() {
 }
 
 #[tokio::test]
+async fn telnet_behind_a_jump_host_is_checked_at_its_own_address() {
+    // A lab reached through its server, whose telnet is published on an
+    // address of its own (containerlab's `ports:`): telnet goes there
+    // directly while SSH still goes through the jump host.
+    let server = TestSshServer::start().await;
+    let device = TestSshServer::start().await;
+    let telnet = TestTelnetServer::start().await;
+    let mut lab = loopback_lab(device.port(), Some(telnet.port()), Some(server.port()));
+    let text = "devices:\n  - name: d\n    platform: frr\n    address: 10.9.9.9\n    password: p\n    telnet: 2323\n    telnet_address: 192.0.2.1\n";
+    let parsed = Lab::parse(text, &env_with(&[])).unwrap();
+    assert_eq!(
+        parsed.devices[0].telnet_address.as_deref(),
+        Some("192.0.2.1")
+    );
+    lab.devices[0].telnet_address = Some("127.0.0.1".into());
+    let run = LabRun::new(lab).unwrap();
+    let outcome = Check::Telnet.run(&run, &run.lab.devices[0]).await;
+    assert!(matches!(outcome, Outcome::Passed(_)), "{outcome:?}");
+}
+
+#[tokio::test]
 async fn a_device_that_does_not_answer_as_expected_fails_the_check() {
     let ssh = TestSshServer::start().await;
     let mut lab = loopback_lab(ssh.port(), None, None);
