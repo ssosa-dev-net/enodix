@@ -153,6 +153,155 @@ function fail(message) {
   throw new Error(message);
 }
 
+/** The workspace panel's width the sidePanels part leaves for the restart. */
+const SIDE_PANEL_WIDTH = 400;
+
+// The side panels: dragging a panel's edge resizes it (saved when the drag
+// ends), double-clicking resets it, the terminal keeps its room, and both
+// panels fold away and come back by button and by keyboard.
+async function sidePanels({
+  evaluate,
+  mouse,
+  centreOf,
+  devtools,
+  screenshot,
+  step,
+}) {
+  const width = (selector) =>
+    evaluate(
+      `Math.round(document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect().width ?? -1)`,
+    );
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const left = ".layout > aside:first-child";
+  const drag = async (selector, dx) => {
+    const from = await centreOf(selector);
+    // Off the hide button in the middle of the handle.
+    const start = { x: from.x, y: from.y - 80 };
+    await mouse("mouseMoved", start);
+    await mouse("mousePressed", start, { button: "left", clickCount: 1 });
+    for (let step = 1; step <= 5; step++) {
+      await mouse(
+        "mouseMoved",
+        { x: start.x + (dx * step) / 5, y: start.y },
+        { button: "left", buttons: 1 },
+      );
+    }
+    await mouse(
+      "mouseReleased",
+      { x: start.x + dx, y: start.y },
+      { button: "left", clickCount: 1 },
+    );
+  };
+  const shortcut = async (letter) => {
+    const press = {
+      key: letter,
+      code: `Key${letter}`,
+      windowsVirtualKeyCode: letter.charCodeAt(0),
+      modifiers: 2 | 8,
+    };
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...press,
+    });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...press });
+  };
+
+  // Room for wider panels: the window is widened for this part (the
+  // terminal keeps 320 px, so at 800 px neither panel could grow).
+  const { windowId, bounds } = await devtools.send(
+    "Browser.getWindowForTarget",
+  );
+  await devtools.send("Browser.setWindowBounds", {
+    windowId,
+    bounds: { width: 1400, height: bounds.height },
+  });
+  await until(
+    "the wider window",
+    async () => (await evaluate("window.innerWidth")) >= 1300,
+  );
+
+  // A host is selected, so both panels are there.
+  await evaluate(`document.querySelector("nav [data-host]").click()`);
+  await until("the details panel", () => exists(".layout > aside.side"));
+
+  const before = await width(left);
+  await drag("[data-panel-resizer=left]", 150);
+  await until(
+    "the wider workspace panel",
+    async () => Math.abs((await width(left)) - (before + 150)) <= 2,
+  );
+  step(
+    `dragging the workspace panel's edge widened it (${before} to ${before + 150} px)`,
+  );
+
+  const rightBefore = await width(".layout > aside.side");
+  await drag("[data-panel-resizer=right]", -100);
+  await until(
+    "the wider details panel",
+    async () =>
+      Math.abs((await width(".layout > aside.side")) - (rightBefore + 100)) <=
+      2,
+  );
+  step("dragging the details panel's edge widened it");
+
+  // As far as it goes: the terminal keeps at least 320 px.
+  await drag("[data-panel-resizer=left]", 3000);
+  await until(
+    "the terminal area keeps its room",
+    async () => (await width(".layout > .centre")) >= 318,
+  );
+  step("a panel cannot squeeze the terminal below 320 px");
+
+  await evaluate(
+    `document.querySelector("[data-panel-resizer=left]").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`,
+  );
+  await until(
+    "the default width after a double-click",
+    async () => (await width(left)) === 288,
+  );
+  step("double-clicking the edge restored the default width");
+
+  // Folding away: the panel's own button, then the strip brings it back.
+  await evaluate(`document.querySelector("[data-hide-panel=left]").click()`);
+  await until(
+    "the workspace panel hidden",
+    async () =>
+      !(await exists(left)) && (await exists("[data-reveal-panel=left]")),
+  );
+  await screenshot("panel-hidden");
+  await evaluate(`document.querySelector("[data-reveal-panel=left]").click()`);
+  await until("the workspace panel back", () => exists(left));
+  await shortcut("D");
+  await until("the details panel hidden by Ctrl+Shift+D", () =>
+    exists("[data-reveal-panel=right]"),
+  );
+  await shortcut("D");
+  await until("the details panel back by Ctrl+Shift+D", () =>
+    exists(".layout > aside.side"),
+  );
+  await shortcut("B");
+  await until("the workspace panel hidden by Ctrl+Shift+B", () =>
+    exists("[data-reveal-panel=left]"),
+  );
+  await shortcut("B");
+  await until("the workspace panel back by Ctrl+Shift+B", () => exists(left));
+  step("both panels fold away and come back, by button and by keyboard");
+
+  // A width for the restart to find, set by dragging.
+  await drag(
+    "[data-panel-resizer=left]",
+    SIDE_PANEL_WIDTH - (await width(left)),
+  );
+  await until(
+    `the workspace panel at ${SIDE_PANEL_WIDTH} px`,
+    async () => (await width(left)) === SIDE_PANEL_WIDTH,
+  );
+  await sleep(500); // the save goes through the core after the drag ends
+  await screenshot("panels-resized");
+  await devtools.send("Browser.setWindowBounds", { windowId, bounds });
+}
+
 async function until(description, probe) {
   const deadline = Date.now() + TIMEOUT_MS;
   let last;
@@ -961,6 +1110,8 @@ async function main() {
     step,
   });
 
+  await sidePanels({ evaluate, mouse, centreOf, devtools, screenshot, step });
+
   devtools.close();
 
   // The restarted app is a portable copy, with the update check off.
@@ -994,8 +1145,19 @@ async function main() {
   await evaluateAgain(
     `document.querySelector("[data-open-preferences]").click()`,
   );
-  const kept = await until("the preferences dialog after a restart", () =>
-    evaluateAgain(`(() => {
+  const expected = {
+    theme: "light",
+    family: "Consolas",
+    size: "15",
+    scrollback: "2000",
+    copyOnSelect: true,
+    rightClickPaste: true,
+    confirmMultiLinePaste: false,
+  };
+  const kept = await until(
+    "the preferences dialog after a restart",
+    async () => {
+      const shown = await evaluateAgain(`(() => {
       const dialog = document.querySelector("[data-dialog=preferences]");
       const field = (name) => dialog?.querySelector("[name=" + name + "]");
       return dialog && {
@@ -1007,21 +1169,25 @@ async function main() {
         rightClickPaste: field("preference-right-click-paste").checked,
         confirmMultiLinePaste: field("preference-confirm-multi-line-paste").checked,
       };
-    })()`),
+    })()`);
+      // The dialog shows the defaults until the core's answer arrives.
+      return JSON.stringify(shown) === JSON.stringify(expected) ? shown : null;
+    },
   );
-  const expected = {
-    theme: "light",
-    family: "Consolas",
-    size: "15",
-    scrollback: "2000",
-    copyOnSelect: true,
-    rightClickPaste: true,
-    confirmMultiLinePaste: false,
-  };
   if (JSON.stringify(kept) !== JSON.stringify(expected)) {
     fail(`preferences after a restart: ${JSON.stringify(kept)}`);
   }
   step("the preferences were kept across a restart");
+  const panels = await until("the side panels after a restart", () =>
+    evaluateAgain(`(() => {
+      const left = document.querySelector(".layout > aside:first-child");
+      return left && { left: Math.round(left.getBoundingClientRect().width) };
+    })()`),
+  );
+  if (panels.left !== SIDE_PANEL_WIDTH) {
+    fail(`the workspace panel after a restart: ${JSON.stringify(panels)}`);
+  }
+  step("the side panel width was kept across a restart");
 
   // The known workspaces survive it too, and the last one opened reopens.
   await until(

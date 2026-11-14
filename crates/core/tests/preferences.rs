@@ -4,7 +4,9 @@
 use std::fs;
 
 use netterm_core::preferences::{
-    FontZoom, Preferences, Theme, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MAX_SCROLLBACK, MIN_FONT_SIZE,
+    FontZoom, Preferences, Theme, DEFAULT_FONT_SIZE, DEFAULT_LEFT_PANEL_WIDTH,
+    DEFAULT_RIGHT_PANEL_WIDTH, MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK, MIN_FONT_SIZE,
+    MIN_PANEL_WIDTH,
 };
 use tempfile::TempDir;
 
@@ -37,6 +39,7 @@ fn preferences_are_remembered_across_restarts() {
         highlighting: false,
         confirm_multi_line_paste: false,
         check_for_updates: false,
+        ..Preferences::default()
     };
 
     chosen.save(data.path()).unwrap();
@@ -202,4 +205,61 @@ fn the_interface_sees_camel_case_names() {
     assert_eq!(json["rightClickPaste"], false);
     let back: Preferences = serde_json::from_value(json).unwrap();
     assert_eq!(back, Preferences::default());
+}
+
+#[test]
+fn side_panels_start_at_their_default_widths_and_shown() {
+    let preferences = Preferences::default();
+    assert_eq!(preferences.left_panel_width, DEFAULT_LEFT_PANEL_WIDTH);
+    assert_eq!(preferences.right_panel_width, DEFAULT_RIGHT_PANEL_WIDTH);
+    assert!(!preferences.left_panel_hidden);
+    assert!(!preferences.right_panel_hidden);
+}
+
+#[test]
+fn side_panel_widths_and_visibility_are_remembered_across_restarts() {
+    let data = TempDir::new().unwrap();
+    let chosen = Preferences {
+        left_panel_width: 420,
+        right_panel_width: 380,
+        left_panel_hidden: true,
+        right_panel_hidden: false,
+        ..Preferences::default()
+    };
+
+    chosen.save(data.path()).unwrap();
+
+    assert_eq!(Preferences::load(data.path()), chosen);
+}
+
+#[test]
+fn side_panel_widths_are_kept_within_their_range() {
+    let narrow = Preferences {
+        left_panel_width: 10,
+        right_panel_width: 0,
+        ..Preferences::default()
+    }
+    .normalized();
+    assert_eq!(narrow.left_panel_width, MIN_PANEL_WIDTH);
+    assert_eq!(narrow.right_panel_width, MIN_PANEL_WIDTH);
+
+    let wide = Preferences {
+        left_panel_width: 5000,
+        right_panel_width: 900,
+        ..Preferences::default()
+    }
+    .normalized();
+    assert_eq!(wide.left_panel_width, MAX_PANEL_WIDTH);
+    assert_eq!(wide.right_panel_width, MAX_PANEL_WIDTH);
+
+    let data = TempDir::new().unwrap();
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "left_panel_width: 99999999999\nright_panel_width: wide\nleft_panel_hidden: maybe\n",
+    )
+    .unwrap();
+    let loaded = Preferences::load(data.path());
+    assert_eq!(loaded.left_panel_width, MAX_PANEL_WIDTH);
+    assert_eq!(loaded.right_panel_width, DEFAULT_RIGHT_PANEL_WIDTH);
+    assert!(!loaded.left_panel_hidden);
 }
