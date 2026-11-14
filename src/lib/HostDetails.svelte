@@ -17,11 +17,13 @@
     HOST_TEXT_FIELDS,
     type CustomField,
     type Host,
+    type Protocol,
   } from "./workspace";
 
   interface Props {
     host: Host;
-    onconnect: (host: Host) => void;
+    /** Connects over `protocol`, or over the host's own if none is given. */
+    onconnect: (host: Host, protocol?: Protocol) => void;
   }
 
   let { host, onconnect }: Props = $props();
@@ -37,6 +39,30 @@
           .filter((id) => id !== host.id)
       : [],
   );
+
+  const protocolNames: Record<Protocol, string> = {
+    ssh: "SSH",
+    telnet: "Telnet",
+    serial: "Serial",
+  };
+  /** The ways in besides the host's own protocol (serial: not yet). */
+  const otherWays = $derived(
+    (["ssh", "telnet"] as const).filter(
+      (protocol) => protocol !== effective.current?.protocol.value,
+    ),
+  );
+  const ownWay = $derived(
+    effective.current ? protocolNames[effective.current.protocol.value] : null,
+  );
+  /**
+   * The jump host the host is reached through, which telnet cannot use
+   * (the core refuses it). A host that inherits itself as its jump host
+   * connects directly.
+   */
+  const jumpHost = $derived.by(() => {
+    const jump = effective.current?.jump_host?.value;
+    return jump && jump.toLowerCase() !== host.id.toLowerCase() ? jump : null;
+  });
 
   let newKey = $state("");
   let newValue = $state("");
@@ -90,7 +116,23 @@
     <h2>{host.name}</h2>
     <span class="file" title="The host's file in the workspace">{host.id}</span>
     <div class="actions">
-      <button onclick={() => onconnect(host)}>Connect</button>
+      <button
+        data-connect="default"
+        title={ownWay ? `Connect by ${ownWay}, the host's protocol` : "Connect"}
+        onclick={() => onconnect(host)}>Connect</button
+      >
+      {#each otherWays as protocol (protocol)}
+        {@const blocked = protocol === "telnet" && jumpHost !== null}
+        <button
+          data-connect={protocol}
+          disabled={blocked}
+          title={blocked
+            ? `Telnet cannot go through the jump host ${jumpHost}`
+            : `Connect by ${protocolNames[protocol]} instead`}
+          onclick={() => onconnect(host, protocol)}
+          >{protocolNames[protocol]}</button
+        >
+      {/each}
       <button onclick={() => move(item)}>Move…</button>
       <button class="danger" onclick={() => remove(item)}>Delete…</button>
     </div>

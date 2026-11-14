@@ -5,9 +5,8 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use tokio::net::TcpStream;
 use tokio::sync::{watch, Mutex};
 
 use russh::client::{self, AuthResult, Handle, KeyboardInteractiveAuthResponse};
@@ -21,15 +20,13 @@ use russh::{
 
 use super::algorithms::{self, AlgorithmKind, NegotiationFailure};
 use super::recording::{FirstBytes, Recording};
+use super::tcp;
 use super::{
     agent, AgentError, CloseReason, Command, HostKeyAsker, HostKeyDecision, HostKeyQuestion,
     JumpHost, Link, LoginPrompt, LoginQuestion, NegotiatedAlgorithms, OpenError, Prompter,
-    SessionState, SshAuth, SshTarget, TerminalSize,
+    SessionState, SshAuth, SshTarget, TerminalSize, TERM,
 };
 use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
-
-/// Terminal type requested for the remote pty; xterm.js emulates xterm.
-const TERM: &str = "xterm-256color";
 
 /// How many keepalives (one per connect timeout) may go unanswered before
 /// the connection counts as lost.
@@ -691,7 +688,7 @@ async fn connect_and_log_in(
     let connected = async {
         let connected = match via {
             None => {
-                let socket = connect_tcp(hop.host, hop.port, hop.connect_timeout).await?;
+                let socket = tcp::connect(hop.host, hop.port, hop.connect_timeout).await?;
                 let stream = Recording::new(socket, first_bytes.clone());
                 client::connect_stream(config, stream, client).await
             }
@@ -824,51 +821,6 @@ fn forwarding_failure(error: &russh::Error) -> String {
         russh::Error::ChannelOpenFailure(failure) => format!("{failure:?}"),
         other => other.to_string(),
     }
-}
-
-/// Resolves to the TCP connection to `host` on `port`, trying each address
-/// the name resolves to in turn, each for its share of `timeout` (so an
-/// address that never answers, often an IPv6 one, leaves time for the
-/// next); a failure says which kind it was (from the last address tried).
-async fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, OpenError> {
-    let not_resolved = || OpenError::NameNotResolved {
-        host: host.to_owned(),
-    };
-    let addresses: Vec<_> = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|_| not_resolved())?
-        .collect();
-    let count = u32::try_from(addresses.len()).unwrap_or(u32::MAX).max(1);
-    let share = timeout / count;
-    let started = Instant::now();
-    let mut last = None;
-    for address in addresses {
-        match tokio::time::timeout(share, TcpStream::connect(address)).await {
-            Ok(Ok(socket)) => return Ok(socket),
-            Ok(Err(error)) => last = Some(error),
-            Err(_) => last = Some(io::ErrorKind::TimedOut.into()),
-        }
-    }
-    let Some(error) = last else {
-        return Err(not_resolved());
-    };
-    Err(match error.kind() {
-        io::ErrorKind::ConnectionRefused => OpenError::ConnectionRefused {
-            host: host.to_owned(),
-            port,
-        },
-        io::ErrorKind::HostUnreachable
-        | io::ErrorKind::NetworkUnreachable
-        | io::ErrorKind::AddrNotAvailable => OpenError::Unreachable {
-            host: host.to_owned(),
-            reason: error.to_string(),
-        },
-        // No address answered within its share (or the system gave up).
-        io::ErrorKind::TimedOut => OpenError::TimedOut {
-            after: Duration::from_secs(started.elapsed().as_secs_f64().round() as u64),
-        },
-        _ => OpenError::Connect(error.to_string()),
-    })
 }
 
 /// What a broken connection during the SSH handshake reports.

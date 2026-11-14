@@ -18,8 +18,9 @@ use netterm_core::session::{
     SessionTarget, SshAuth, SshTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT,
 };
 use netterm_core::workspace::{
-    EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem, Role,
-    SavedFilter, SearchResults, Settings, WatchOptions, Workspace, WorkspaceWatcher,
+    EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem,
+    Protocol, Role, SavedFilter, SearchResults, Settings, WatchOptions, Workspace,
+    WorkspaceWatcher,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -120,6 +121,9 @@ enum ConnectTarget {
         id: HostId,
         credentials: Option<Prompted>,
     },
+    /// A host of the open workspace, by telnet (whatever its protocol
+    /// setting): the device asks for the login in the terminal.
+    Telnet { id: HostId },
 }
 
 /// A username and password the user typed.
@@ -481,26 +485,48 @@ enum LoginView {
     NotSetUp { profile: String },
     /// Ask for a username and password.
     Prompt,
+    /// Over telnet: connect at once; the device asks in the terminal.
+    Telnet,
 }
 
+/// How the host `id` logs in over `protocol`, or over its own protocol
+/// setting if none is given.
 #[tauri::command]
-fn host_login(shell: State<'_, Shell>, id: HostId) -> Result<LoginView, String> {
-    Ok(match profile_login(&shell, &id)? {
+fn host_login(
+    shell: State<'_, Shell>,
+    id: HostId,
+    protocol: Option<Protocol>,
+) -> Result<LoginView, String> {
+    Ok(match profile_login(&shell, &id, protocol)? {
         HostLogin::Profile { profile, target } => LoginView::Profile {
             profile,
             username: target.username,
         },
         HostLogin::NotSetUp { profile } => LoginView::NotSetUp { profile },
         HostLogin::Prompt => LoginView::Prompt,
+        HostLogin::Telnet => LoginView::Telnet,
     })
 }
 
-fn profile_login(shell: &Shell, id: &HostId) -> Result<HostLogin, String> {
+fn profile_login(
+    shell: &Shell,
+    id: &HostId,
+    protocol: Option<Protocol>,
+) -> Result<HostLogin, String> {
+    with_open_profiles(shell, |profiles| match protocol {
+        Some(protocol) => profiles.login_with(id, protocol),
+        None => profiles.login(id),
+    })
+}
+
+/// Asks the open workspace's credential profiles something.
+fn with_open_profiles<T>(
+    shell: &Shell,
+    query: impl FnOnce(&Profiles<'_>) -> Result<T, ProfileError>,
+) -> Result<T, String> {
     let guard = shell.workspace();
     let workspace = guard.as_ref().ok_or("no workspace is open")?;
-    Profiles::new(shell.credentials.as_ref(), workspace)
-        .login(id)
-        .map_err(|error| error.to_string())
+    query(&Profiles::new(shell.credentials.as_ref(), workspace)).map_err(|error| error.to_string())
 }
 
 /// The hosts of the open workspace matching `query` (the Ctrl+K palette).
@@ -585,6 +611,7 @@ fn host_save(shell: State<'_, Shell>, host: Host) -> Result<Edited<()>, String> 
 /// (just before `connected`) on `on_algorithms`; terminal data never goes
 /// through the event system.
 /// The interface acknowledges output with `session_acknowledge`.
+/// Returns the session's id and whether it is encrypted (telnet is not).
 // One argument per channel is how Tauri commands receive them.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -598,14 +625,19 @@ async fn session_open(
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
-) -> Result<u64, String> {
-    let target = SessionTarget::Ssh(match target {
+) -> Result<Opened, String> {
+    let target = match target {
+        ConnectTarget::Telnet { id } => {
+            SessionTarget::Telnet(with_open_profiles(&shell, |profiles| {
+                profiles.telnet_target(&id)
+            })?)
+        }
         ConnectTarget::Quick {
             host,
             port,
             username,
             password,
-        } => SshTarget {
+        } => SessionTarget::Ssh(SshTarget {
             host,
             port,
             username,
@@ -614,28 +646,21 @@ async fn session_open(
             // Quick connections have no settings to switch it on.
             legacy_crypto: false,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
-        },
+        }),
         ConnectTarget::Host {
             id,
             credentials: Some(Prompted { username, password }),
-        } => {
-            let guard = shell.workspace();
-            let workspace = guard.as_ref().ok_or("no workspace is open")?;
-            Profiles::new(shell.credentials.as_ref(), workspace)
-                .prompted_target(&id, username, password)
-                .map_err(|error| error.to_string())?
-        }
+        } => SessionTarget::Ssh(with_open_profiles(&shell, |profiles| {
+            profiles.prompted_target(&id, username, password)
+        })?),
         ConnectTarget::Host {
             id,
             credentials: None,
-        } => {
-            let guard = shell.workspace();
-            let workspace = guard.as_ref().ok_or("no workspace is open")?;
-            Profiles::new(shell.credentials.as_ref(), workspace)
-                .profile_target(&id)
-                .map_err(|error| error.to_string())?
-        }
-    });
+        } => SessionTarget::Ssh(with_open_profiles(&shell, |profiles| {
+            profiles.profile_target(&id)
+        })?),
+    };
+    let encrypted = target.encrypted();
     let (id, events) = manager.open(target, size.into());
     forward(
         events,
@@ -647,7 +672,18 @@ async fn session_open(
             algorithms: on_algorithms,
         },
     );
-    Ok(id.0)
+    Ok(Opened {
+        id: id.0,
+        encrypted,
+    })
+}
+
+/// A session just opened, as the interface receives it.
+#[derive(Serialize)]
+struct Opened {
+    id: u64,
+    /// Whether its traffic is encrypted on the network; telnet's is not.
+    encrypted: bool,
 }
 
 /// Where a session's events go in the interface.
@@ -710,7 +746,8 @@ async fn session_reconnect(
 }
 
 /// Opens a new session to the same target as the session `id`, with the
-/// same settings and login; returns its id. Events as for `session_open`.
+/// same settings and login; returns it as `session_open` does. Events as
+/// for `session_open`.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn session_duplicate(
@@ -722,7 +759,7 @@ async fn session_duplicate(
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
-) -> Result<u64, String> {
+) -> Result<Opened, String> {
     let (copy, events) = manager
         .duplicate(SessionId(id), size.into())
         .map_err(|error| error.to_string())?;
@@ -736,7 +773,11 @@ async fn session_duplicate(
             algorithms: on_algorithms,
         },
     );
-    Ok(copy.0)
+    let encrypted = manager.encrypted(copy).map_err(|error| error.to_string())?;
+    Ok(Opened {
+        id: copy.0,
+        encrypted,
+    })
 }
 
 /// Forgets the session (closing it if it is open): its terminal is gone.

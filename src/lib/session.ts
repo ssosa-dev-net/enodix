@@ -20,7 +20,9 @@ export type ConnectTarget =
       id: string;
       /** What the user typed; null logs in with the host's profile. */
       credentials: { username: string; password: string } | null;
-    };
+    }
+  /** A host of the open workspace by telnet, whatever its protocol. */
+  | { kind: "telnet"; id: string };
 
 export interface TerminalSize {
   cols: number;
@@ -109,6 +111,8 @@ export type HostKeyDecision = "trustAndRemember" | "trustOnce" | "cancel";
 export interface Session {
   /** The core's id for the session, for duplicating it. */
   readonly id: number;
+  /** Whether its traffic is encrypted on the network (telnet's is not). */
+  readonly encrypted: boolean;
   write(data: Uint8Array): void;
   /** Answers the last login prompt, one answer per question. */
   answer(answers: string[]): void;
@@ -201,6 +205,12 @@ function send(id: number, command: string, args: Record<string, unknown>) {
   invoke(command, { id, ...args }).catch(() => {});
 }
 
+/** A session just opened, as the shell returns it. */
+interface Opened {
+  id: number;
+  encrypted: boolean;
+}
+
 /** Opens a session, to a target or as a copy of another session. */
 export async function openSession(
   source: SessionSource,
@@ -208,14 +218,14 @@ export async function openSession(
   handlers: SessionHandlers,
 ): Promise<Session> {
   const { ready, ...events } = channels(handlers);
-  const id =
+  const { id, encrypted } =
     source.kind === "target"
-      ? await invoke<number>("session_open", {
+      ? await invoke<Opened>("session_open", {
           target: source.target,
           size,
           ...events,
         })
-      : await invoke<number>("session_duplicate", {
+      : await invoke<Opened>("session_duplicate", {
           id: source.of,
           size,
           ...events,
@@ -224,6 +234,7 @@ export async function openSession(
 
   return {
     id,
+    encrypted,
     write: (data) => send(id, "session_write", { data: Array.from(data) }),
     answer: (answers) => send(id, "session_answer", { answers }),
     decideHostKey: (decision) =>

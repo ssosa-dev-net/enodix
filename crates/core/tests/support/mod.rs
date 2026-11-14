@@ -35,10 +35,14 @@
 //! the process is trusted in [`known_hosts`], which [`manager`] uses, so
 //! tests about something else are not asked about host keys; host-key tests
 //! use a `KnownHosts` of their own.
+//!
+//! [`telnet`] has the telnet server (a scripted device behind real telnet
+//! option negotiation).
 #![allow(dead_code)]
 
 pub mod agent;
 pub mod algorithms;
+pub mod telnet;
 pub mod workspaces;
 
 use std::collections::HashMap;
