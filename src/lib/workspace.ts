@@ -263,6 +263,22 @@ export interface HighlightSpan {
   rule: string;
 }
 
+/**
+ * A named piece of text to send to a session. Its text is a template:
+ * `{{address}}`, `{{name}}`, `{{custom.<key>}}` and the host's other fields
+ * are filled in; the user is asked for any other `{{variable}}`.
+ */
+export interface Snippet {
+  name: string;
+  /** What the panel lists it under; null: no group. */
+  group: string | null;
+  text: string;
+}
+
+/** A snippet made ready to send: its lines, or the variables to ask for. */
+export type Expansion =
+  { kind: "lines"; lines: string[] } | { kind: "missing"; names: string[] };
+
 export interface WorkspaceView {
   /** Higher is newer: a view older than the one shown is stale. */
   revision: number;
@@ -276,6 +292,8 @@ export interface WorkspaceView {
   filters: SavedFilter[];
   /** The highlight rules: the workspace's own first, then the built-in. */
   highlight_rules: ListedRule[];
+  /** The snippets, in file order. */
+  snippets: Snippet[];
   problems: Problem[];
 }
 
@@ -440,6 +458,33 @@ export function saveHighlightRule(
 /** Deletes a workspace rule, or a built-in rule's changes. */
 export function deleteHighlightRule(name: string) {
   return invoke<Edited<null>>("highlight_rule_delete", { name });
+}
+
+/** The snippets with every word of `query` in their name, group or text. */
+export function findSnippets(query: string) {
+  return invoke<Snippet[]>("snippet_find", { query });
+}
+
+/** Saves a snippet in place of the one called `previous`, or as a new one. */
+export function saveSnippet(previous: string | null, snippet: Snippet) {
+  return invoke<Edited<null>>("snippet_save", { previous, snippet });
+}
+
+export function deleteSnippet(name: string) {
+  return invoke<Edited<null>>("snippet_delete", { name });
+}
+
+/**
+ * The lines of the snippet `name` for a session to the inventory host
+ * `host` (null: no inventory host), its variables filled from the host's
+ * fields and then from `answers`; or the variables still to ask for.
+ */
+export function expandSnippet(
+  name: string,
+  host: string | null,
+  answers: Record<string, string>,
+) {
+  return invoke<Expansion>("snippet_expand", { name, host, answers });
 }
 
 export function findFolder(tree: Folder, path: string): Folder | null {

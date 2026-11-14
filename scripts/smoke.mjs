@@ -212,7 +212,10 @@ async function main() {
       "Runtime.evaluate",
       { expression, returnByValue: true },
     );
-    if (exceptionDetails) fail(`page error: ${exceptionDetails.text}`);
+    if (exceptionDetails) {
+      const detail = exceptionDetails.exception?.description ?? "";
+      fail(`page error: ${exceptionDetails.text} ${detail}`);
+    }
     return result.value;
   };
   const text = (selector) =>
@@ -862,6 +865,17 @@ async function main() {
 
   await highlighting({ evaluate, fillForm, type, screenshot, step });
 
+  await snippets({
+    evaluate,
+    fillForm,
+    doubleClick,
+    text,
+    status,
+    screen,
+    screenshot,
+    step,
+  });
+
   devtools.close();
 
   // Preferences survive a restart: the app comes back light, with the
@@ -1129,6 +1143,161 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
   await closeDialog("highlights");
   rmSync(rulesFile);
   step("a broken pattern was reported and skipped; the other rules work");
+}
+
+/**
+ * Snippets: one is created in the panel and saved to the workspace, sent
+ * to a host session from the panel and from the palette (its host's
+ * fields filled in, the other variable asked for, line by line), edited,
+ * deleted, and one written on disk shows in the panel.
+ */
+async function snippets({
+  evaluate,
+  fillForm,
+  doubleClick,
+  text,
+  status,
+  screen,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const file = join(workspace, "_snippets.yaml");
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const fileText = () => (existsSync(file) ? readFileSync(file, "utf8") : "");
+
+  // A session to an inventory host (added on disk: earlier parts deleted
+  // the others), whose fields fill the variables.
+  const hostFile = join(workspace, "snip-r1.yaml");
+  writeFileSync(
+    hostFile,
+    `address: 127.0.0.1\nport: ${SSH_PORT}\nsite: SMK1\n`,
+  );
+  const hostButton = '[data-host="snip-r1.yaml"]';
+  await until("the host in the tree", () => exists(hostButton));
+  await doubleClick(hostButton);
+  await until("the credentials prompt", async () =>
+    (await text("main h2")).includes("snip-r1"),
+  );
+  await fillForm({ username: USERNAME, password: PASSWORD });
+  await until(
+    "the Connected status",
+    async () => (await status()) === "Connected",
+  );
+  await until("the shell prompt", async () =>
+    (await screen()).includes("test-ssh$"),
+  );
+
+  // Created in the panel, saved to the workspace's snippets file.
+  await clickOn("[data-snippet-new]");
+  await until("the snippet form", () => exists("[data-snippet-form]"));
+  await fillForm(
+    {
+      "snippet-name": "Smoke check",
+      "snippet-group": "Smoke",
+      "snippet-text": "snipA {{address}} {{name}} {{site}}\nsnipB {{vlan}}\n",
+    },
+    "[data-snippet-form]",
+  );
+  await until(
+    "the snippet in the workspace",
+    () =>
+      fileText() ===
+      "Smoke check:\n  group: Smoke\n  text: |\n    snipA {{address}} {{name}} {{site}}\n    snipB {{vlan}}\n",
+  );
+  await until("the snippet in the panel", () =>
+    exists('[data-snippet-group=Smoke] [data-snippet="Smoke check"]'),
+  );
+  step("a snippet created in the panel was saved to the workspace");
+
+  // Sent from the panel: the host's address, name and site are filled in,
+  // the unknown variable is asked for, and each line arrives as its own.
+  const sent = async (vlan) => {
+    const shown = await screen();
+    const lines = `test-ssh$ snipA 127.0.0.1 snip-r1 SMK1\ntest-ssh$ snipB ${vlan}\ntest-ssh$`;
+    if (shown.includes(lines)) return true;
+    const error = await text(".edit-error");
+    throw new Error(`${json(shown.trimEnd().slice(-300))} ${error}`);
+  };
+  const answer = async (vlan) => {
+    const asked = await until("the variables asked for", () =>
+      evaluate(`(() => {
+        const dialog = document.querySelector("[data-dialog=snippet-variables]");
+        return dialog && [...dialog.querySelectorAll("[data-variable]")].map((i) => i.dataset.variable);
+      })()`),
+    );
+    if (json(asked) !== json(["vlan"])) fail(`asked for ${json(asked)}`);
+    await fillForm(
+      { "variable-0": vlan },
+      "[data-dialog=snippet-variables] form",
+    );
+  };
+  await clickOn('[data-snippet="Smoke check"]');
+  await answer("42");
+  await until("the snippet's lines in the session", () => sent("42"));
+  await screenshot("snippet-sent");
+  step(
+    "a snippet sent from the panel filled the host's fields, asked the rest",
+  );
+
+  // Sent from the palette: `>` searches the snippets, Enter sends.
+  await evaluate(
+    `[...document.querySelectorAll("button")].find((b) => b.title === "Search hosts (Ctrl+K)").click()`,
+  );
+  await until("the palette", () => exists("input[name=palette-query]"));
+  await evaluate(`(() => {
+    const input = document.querySelector("input[name=palette-query]");
+    input.value = ">smoke";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await until("the snippet in the palette", () =>
+    exists('[data-snippet-hit="Smoke check"]'),
+  );
+  await evaluate(
+    `document.querySelector("input[name=palette-query]").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))`,
+  );
+  await answer("43");
+  await until("the snippet's lines sent from the palette", () => sent("43"));
+  step("a snippet sent from the command palette");
+
+  // Edited (renamed) and deleted from the panel.
+  await clickOn('[data-snippet-edit="Smoke check"]');
+  await until("the snippet form", () => exists("[data-snippet-form]"));
+  await fillForm({ "snippet-name": "Smoke renamed" }, "[data-snippet-form]");
+  await until("the renamed snippet in the workspace", () =>
+    fileText().startsWith("Smoke renamed:\n  group: Smoke\n"),
+  );
+  await clickOn('[data-snippet-delete="Smoke renamed"]');
+  await until("the delete confirmation", () =>
+    evaluate(
+      `[...document.querySelectorAll("[role=dialog] button")].some((b) => b.textContent.trim() === "Delete")`,
+    ),
+  );
+  await evaluate(
+    `[...document.querySelectorAll("[role=dialog] button")].find((b) => b.textContent.trim() === "Delete").click()`,
+  );
+  await until("the snippets file gone", () => !existsSync(file));
+  await until(
+    "the snippet gone from the panel",
+    async () => !(await exists("[data-snippet]")),
+  );
+  step("a snippet was renamed and deleted from the panel");
+
+  // Written on disk (a teammate's, from git): shown in the panel.
+  writeFileSync(file, "From disk: show clock\n");
+  await until("the snippet from disk in the panel", () =>
+    exists('[data-snippet="From disk"]'),
+  );
+  rmSync(file);
+  await until(
+    "the snippet from disk gone",
+    async () => !(await exists("[data-snippet]")),
+  );
+  step("a snippet written on disk showed in the panel");
+  rmSync(hostFile);
 }
 
 /** Reads the system clipboard's text (independently of the app). */

@@ -43,6 +43,7 @@ use crate::session::{
     SerialParameters, SerialTarget, SshAuth, SshTarget, TelnetTarget, DEFAULT_SSH_PORT,
     DEFAULT_TELNET_PORT,
 };
+use crate::template::Variables;
 
 mod filters;
 mod highlights;
@@ -50,6 +51,7 @@ mod jumps;
 mod roles;
 mod search;
 mod settings;
+mod snippets;
 mod watch;
 
 pub use filters::{Condition, SavedFilter, FILTERS_FILE};
@@ -68,6 +70,7 @@ pub use settings::{
     DEFAULT_CONNECT_TIMEOUT_SECONDS, DEFAULT_DATA_BITS, DEFAULT_STOP_BITS,
     MAX_CONNECT_TIMEOUT_SECONDS,
 };
+pub use snippets::{ExpandError, Snippet, SNIPPETS_FILE};
 pub use watch::{Changes, WatchError, WatchOptions, WorkspaceWatcher};
 
 /// The settings file a directory may hold: its description, tags and
@@ -154,6 +157,8 @@ pub struct Workspace {
     highlights: Vec<ListedRule>,
     /// `highlights` compiled.
     highlighter: Highlighter,
+    /// The snippets, in file order.
+    snippets: Vec<Snippet>,
     index: SearchIndex,
     problems: Vec<Problem>,
     /// See [`Workspace::revision`].
@@ -295,6 +300,48 @@ pub struct ResolvedHost {
 }
 
 impl ResolvedHost {
+    /// The values snippets and web links fill their variables with (see
+    /// [`crate::template`]): `name`, `address` and the other built-in fields
+    /// by their file keys (`vendor`, `serial_number`, `rack_unit`, `role`
+    /// (its id), ...), `tags` (inherited ones included, comma-separated),
+    /// and each custom field as `custom.<key>` and, unless a built-in field
+    /// has that name, `<key>`. Fields without a value (unset or blank) are
+    /// left out, so that the user is asked for them.
+    pub fn variables(&self) -> Variables {
+        let host = &self.host;
+        let mut values = Variables::new();
+        let mut set = |name: &str, value: &str| {
+            if !value.trim().is_empty() {
+                values.set(name, value);
+            }
+        };
+        set(NAME, &host.name);
+        set(ADDRESS, &host.address);
+        for (key, value) in host.text_fields() {
+            set(key, value.as_deref().unwrap_or_default());
+        }
+        let tags: Vec<&str> = self
+            .settings
+            .tags
+            .iter()
+            .map(|tag| tag.value.as_str())
+            .collect();
+        set(TAGS, &tags.join(", "));
+        let built_in = |key: &str| {
+            [NAME, ADDRESS, TAGS]
+                .into_iter()
+                .chain(host.text_fields().map(|(name, _)| name))
+                .any(|name| name.eq_ignore_ascii_case(key))
+        };
+        for field in &host.custom {
+            set(&format!("{CUSTOM}.{}", field.key), &field.value);
+        }
+        for field in host.custom.iter().filter(|field| !built_in(&field.key)) {
+            set(&field.key, &field.value);
+        }
+        values
+    }
+
     /// The SSH target for this host with a password login (as prompted
     /// for), on the resolved port, or SSH's default port when nothing sets
     /// one, with its legacy-crypto switch and connect timeout. The host alone: its jump hosts
@@ -443,6 +490,7 @@ impl Workspace {
         let filters = load_filters(&root, &mut problems);
         let highlights = load_highlights(&root, &mut problems);
         let highlighter = compile_highlights(&highlights);
+        let snippets = load_snippets(&root, &mut problems);
         let index = SearchIndex::build(&tree, |id| roles::find(&roles, id).map(|r| r.name.clone()));
         problems.sort_by(|a, b| a.file.cmp(&b.file));
         Ok(Self {
@@ -452,6 +500,7 @@ impl Workspace {
             filters,
             highlights,
             highlighter,
+            snippets,
             index,
             problems,
             revision: 0,
@@ -661,6 +710,109 @@ impl Workspace {
         self.highlights
             .iter()
             .find(|listed| highlights::same(&listed.rule.name, name))
+    }
+
+    /// The snippets, in the order of the snippets file.
+    pub fn snippets(&self) -> &[Snippet] {
+        &self.snippets
+    }
+
+    /// The snippet called `name` (ignoring case).
+    pub fn snippet(&self, name: &str) -> Option<&Snippet> {
+        self.snippets
+            .iter()
+            .find(|snippet| snippets::same(&snippet.name, name))
+    }
+
+    /// The snippets having every word of `query` in their name, group or
+    /// text (ignoring case): those with all of them in the name first, each
+    /// part in file order. An empty query gives them all.
+    pub fn find_snippets(&self, query: &str) -> Vec<&Snippet> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let mut found: Vec<(bool, &Snippet)> = self
+            .snippets
+            .iter()
+            .filter_map(|snippet| snippet.matches(&words).map(|by_name| (by_name, snippet)))
+            .collect();
+        found.sort_by_key(|(by_name, _)| !by_name);
+        found.into_iter().map(|(_, snippet)| snippet).collect()
+    }
+
+    /// Saves `snippet` to the snippets file, in place of the snippet called
+    /// `previous` (ignoring case), or as a new one after the others when
+    /// `previous` is `None`. Its name and group are trimmed (a blank group
+    /// is none). A snippet without a name or text, or with the name of
+    /// another snippet, is refused.
+    pub fn save_snippet(
+        &mut self,
+        previous: Option<&str>,
+        snippet: &Snippet,
+    ) -> Result<(), EditError> {
+        let snippet = snippets::clean(snippet).map_err(|message| {
+            EditError::Invalid(format!("the snippet cannot be saved: {message}"))
+        })?;
+        let replaced = match previous {
+            Some(previous) => Some(
+                self.snippet(previous)
+                    .ok_or_else(|| EditError::NotFound(format!("snippet {}", previous.trim())))?
+                    .name
+                    .clone(),
+            ),
+            None => None,
+        };
+        let clash = self.snippets.iter().any(|other| {
+            snippets::same(&other.name, &snippet.name)
+                && replaced
+                    .as_deref()
+                    .is_none_or(|old| !snippets::same(old, &other.name))
+        });
+        if clash {
+            return Err(EditError::AlreadyExists(format!(
+                "snippet {}",
+                snippet.name
+            )));
+        }
+        self.edit_file(SNIPPETS_FILE.into(), |document| {
+            snippets::write(document, replaced.as_deref(), &snippet)
+                .map_err(|name| EditError::AlreadyExists(format!("snippet {name}")))
+        })
+    }
+
+    /// Deletes the snippet called `name` (ignoring case); the file goes when
+    /// no snippet is left.
+    pub fn delete_snippet(&mut self, name: &str) -> Result<(), EditError> {
+        self.edit_file(SNIPPETS_FILE.into(), |document| {
+            if snippets::remove(document, name) {
+                Ok(())
+            } else {
+                Err(EditError::NotFound(format!("snippet {}", name.trim())))
+            }
+        })
+    }
+
+    /// The lines to send for the snippet called `name` to a session with
+    /// `host` (`None`: a session to no host of the workspace). Its variables
+    /// are filled from the host's fields ([`ResolvedHost::variables`]), the
+    /// rest from `answers`; without values for all of them, which ones are
+    /// missing ([`ExpandError::Missing`]), for the user to be asked.
+    pub fn expand_snippet(
+        &self,
+        name: &str,
+        host: Option<&HostId>,
+        answers: &Variables,
+    ) -> Result<Vec<String>, ExpandError> {
+        let snippet = self
+            .snippet(name)
+            .ok_or_else(|| ExpandError::NoSuchSnippet(name.to_string()))?;
+        let mut values = match host {
+            Some(id) => self
+                .resolve_host(id)
+                .ok_or_else(|| ExpandError::NoSuchHost(id.clone()))?
+                .variables(),
+            None => Variables::new(),
+        };
+        values.fill_gaps(answers);
+        snippet.expand(&values).map_err(ExpandError::Missing)
     }
 
     /// Files that could not be loaded, ordered by path.
@@ -971,6 +1123,7 @@ impl Workspace {
             || fresh.roles != self.roles
             || fresh.filters != self.filters
             || fresh.highlights != self.highlights
+            || fresh.snippets != self.snippets
             || fresh.problems != self.problems;
         if changed {
             self.replace_with(fresh);
@@ -1382,6 +1535,30 @@ fn compile_highlights(rules: &[ListedRule]) -> Highlighter {
         .map(|listed| listed.rule.clone())
         .collect();
     Highlighter::new(&usable)
+}
+
+/// The workspace's snippets, if it has a snippets file. A bad file or
+/// snippet definition becomes a problem; the rest load.
+fn load_snippets(root: &Path, problems: &mut Vec<Problem>) -> Vec<Snippet> {
+    let path = root.join(SNIPPETS_FILE);
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let problem = |message| Problem {
+        file: SNIPPETS_FILE.into(),
+        message,
+    };
+    match read_mapping(&path) {
+        Ok(document) => {
+            let (snippets, errors) = snippets::load(&document);
+            problems.extend(errors.into_iter().map(problem));
+            snippets
+        }
+        Err(message) => {
+            problems.push(problem(message));
+            Vec::new()
+        }
+    }
 }
 
 /// The workspace's saved filters, if it has a filters file. A bad file or

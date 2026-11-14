@@ -222,6 +222,20 @@
   let reveal: () => void = () => {};
   /** Keeps the terminal's output aside while it is out of sight. */
   let conceal: () => void = () => {};
+  /** Sends text as pasted (set up on mount); see `sendText`. */
+  let pasteText: (text: string) => void = () => {};
+
+  /**
+   * Sends `text` to the session the way a paste is sent (a snippet's
+   * lines, each ending in a line break). Only while connected; returns
+   * whether it was sent.
+   */
+  export function sendText(text: string): boolean {
+    if (!session || status.state !== "connected") return false;
+    pasteText(text);
+    return true;
+  }
+
   /** Gives the terminal the font, scrollback and colours chosen. */
   let applyPreferences: (chosen: Preferences, dark: boolean) => void = () => {};
   /** Turns keyword highlighting on or off, for the theme's colours. */
@@ -345,14 +359,17 @@
     clearSearch = () => search.clearDecorations();
 
     // Copy and paste. Every paste (shortcut, right click, the browser's own
-    // paste) goes through `pasteText`, then the terminal's own (bracketed
-    // paste, line endings), so later checks have one way in.
+    // paste) and every snippet goes through `pasteText`, then the
+    // terminal's own (bracketed paste, line endings), so later checks have
+    // one way in. Text is sent line by line, each line (with its line
+    // break) as a write of its own.
     const copySelection = () => {
       const text = terminal.getSelection();
       if (text) void navigator.clipboard.writeText(text).catch(() => {});
     };
-    const pasteText = (text: string) => {
-      if (text) terminal.paste(text);
+    pasteText = (text: string) => {
+      const lines = text.match(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g) ?? [];
+      for (const line of lines) terminal.paste(line);
     };
     const paste = async () => {
       try {

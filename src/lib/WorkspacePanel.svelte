@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SnippetsPanel from "./SnippetsPanel.svelte";
   import TreeFolder from "./TreeFolder.svelte";
   import {
     canMoveInto,
@@ -23,9 +24,12 @@
   interface Props {
     onopen: () => void;
     onconnect: (host: Host) => void;
+    /** The session snippets go to, by name; null: none. */
+    snippetTarget: string | null;
+    onsnippet: (name: string) => void;
   }
 
-  let { onopen, onconnect }: Props = $props();
+  let { onopen, onconnect, snippetTarget, onsnippet }: Props = $props();
 
   const workspace = $derived(inventory.workspace);
 
@@ -292,6 +296,7 @@
         <p class="hint">No host matches this filter.</p>
       {/if}
     </nav>
+    <SnippetsPanel target={snippetTarget} onsend={onsnippet} />
   {:else if !inventory.openError}
     <p class="hint">Open a workspace folder to see its hosts.</p>
   {/if}

@@ -264,6 +264,29 @@ export async function deleteHighlightRule(name: string) {
   apply(await api.deleteHighlightRule(name));
 }
 
+/** Saves a snippet (in place of `previous`); rejects with why not. */
+export async function saveSnippet(
+  previous: string | null,
+  snippet: api.Snippet,
+) {
+  apply(await api.saveSnippet(previous, snippet));
+}
+
+/** Asks before deleting the snippet `name` from the workspace. */
+export function removeSnippet(name: string) {
+  inventory.dialog = {
+    title: "Delete snippet",
+    message: `Delete the snippet ${name} from the workspace?`,
+    fields: [],
+    confirm: "Delete",
+    danger: true,
+    onconfirm: () =>
+      inDialog(async () => {
+        apply(await api.deleteSnippet(name));
+      }),
+  };
+}
+
 function itemPath(item: Item) {
   return item.kind === "host" ? item.id : item.path;
 }

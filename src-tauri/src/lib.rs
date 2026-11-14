@@ -22,10 +22,11 @@ use netterm_core::session::{
     SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth, SshTarget,
     TerminalSize, Transport, DEFAULT_CONNECT_TIMEOUT,
 };
+use netterm_core::template::Variables;
 use netterm_core::workspace::{
-    EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem,
-    Protocol, Role, SavedFilter, SearchResults, Settings, WatchOptions, Workspace,
-    WorkspaceWatcher,
+    EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion, Host, HostId,
+    Problem, Protocol, Role, SavedFilter, SearchResults, Settings, Snippet, WatchOptions,
+    Workspace, WorkspaceWatcher,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -165,6 +166,8 @@ struct WorkspaceView {
     filters: Vec<SavedFilter>,
     /// The highlight rules, the workspace's own first.
     highlight_rules: Vec<ListedRule>,
+    /// The snippets, in file order.
+    snippets: Vec<Snippet>,
     problems: Vec<Problem>,
 }
 
@@ -178,6 +181,7 @@ impl From<&Workspace> for WorkspaceView {
             host_roles: workspace.host_roles(),
             filters: workspace.filters().to_vec(),
             highlight_rules: workspace.highlight_rules().to_vec(),
+            snippets: workspace.snippets().to_vec(),
             problems: workspace.problems().to_vec(),
         }
     }
@@ -623,6 +627,67 @@ fn highlight_rule_save(
 #[tauri::command]
 fn highlight_rule_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, String> {
     edit(&shell, |workspace| workspace.delete_highlight_rule(&name))
+}
+
+/// The snippets matching `query` (the Ctrl+K palette's snippet search).
+#[tauri::command]
+fn snippet_find(shell: State<'_, Shell>, query: String) -> Result<Vec<Snippet>, String> {
+    read(&shell, |workspace| {
+        workspace
+            .find_snippets(&query)
+            .into_iter()
+            .cloned()
+            .collect()
+    })
+}
+
+/// Saves a snippet in place of the one called `previous`, or as a new one.
+#[tauri::command]
+fn snippet_save(
+    shell: State<'_, Shell>,
+    previous: Option<String>,
+    snippet: Snippet,
+) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| {
+        workspace.save_snippet(previous.as_deref(), &snippet)
+    })
+}
+
+#[tauri::command]
+fn snippet_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| workspace.delete_snippet(&name))
+}
+
+/// A snippet made ready to send, as the interface receives it.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum Expansion {
+    /// Send these, each as a line.
+    Lines { lines: Vec<String> },
+    /// Ask the user for these variables first, then expand again.
+    Missing { names: Vec<String> },
+}
+
+/// The lines of the snippet `name` for a session to `host` (none: not an
+/// inventory host), with `answers` for the variables the host has no value
+/// for.
+#[tauri::command]
+fn snippet_expand(
+    shell: State<'_, Shell>,
+    name: String,
+    host: Option<HostId>,
+    answers: BTreeMap<String, String>,
+) -> Result<Expansion, String> {
+    let answers: Variables = answers.into_iter().collect();
+    read(&shell, |workspace| {
+        match workspace.expand_snippet(&name, host.as_ref(), &answers) {
+            Ok(lines) => Ok(Expansion::Lines { lines }),
+            Err(ExpandError::Missing(missing)) => Ok(Expansion::Missing {
+                names: missing.names,
+            }),
+            Err(error) => Err(error.to_string()),
+        }
+    })?
 }
 
 #[tauri::command]
@@ -1210,6 +1275,10 @@ pub fn run() {
             highlight_built_in_rules,
             highlight_rule_save,
             highlight_rule_delete,
+            snippet_find,
+            snippet_save,
+            snippet_delete,
+            snippet_expand,
             host_create,
             host_rename,
             host_move,
