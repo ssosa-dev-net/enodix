@@ -95,6 +95,22 @@ export. It exits with 1 (and says why) for a missing workspace or an
 unknown folder, filter or host, and with 2 for a command line it does not
 understand. `netterm-cli --help` lists the options.
 
+## Python and Nornir
+
+The `python` folder beside `netterm.exe` (and in the portable zip) holds a
+small pure-Python package that presents a workspace as a Nornir inventory,
+with the logins of your credential profiles, and reads named secrets. Its
+version always matches the app's; install it from that file:
+
+```powershell
+pip install "$env:LOCALAPPDATA\netterm\python\netterm-<version>-py3-none-any.whl"
+```
+
+Then use the `NettermInventory` plugin in `InitNornir`. See
+[python/README.md](python/README.md) for the options, the mapping and the
+limits (hosts behind jump hosts are marked, but the Python libraries cannot
+reach them yet).
+
 ## Tested platforms
 
 netterm claims support only for the device platforms below, each verified by the

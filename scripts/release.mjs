@@ -37,6 +37,8 @@ import {
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { wheelName } from "./build-wheel.mjs";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_KEY_FILE = join(ROOT, "src-tauri", "updater-key.pub");
 /** The file that makes a copy portable (`netterm_core::update::PORTABLE_MARKER`). */
@@ -167,6 +169,8 @@ if (npmVersion !== version) {
     `package.json has version ${npmVersion}, Cargo.toml ${version}: make them agree`,
   );
 }
+/** The Python bridge's wheel, of the same version. */
+const wheel = wheelName(version);
 
 const privateKey = required("TAURI_SIGNING_PRIVATE_KEY");
 if (existsSync(privateKey) && insideRepository(privateKey)) {
@@ -213,9 +217,12 @@ writeFileSync(
         active: true,
         targets: ["nsis"],
         createUpdaterArtifacts: true,
-        // The headless binary (built by `beforeBuildCommand`), installed
-        // beside the app.
-        resources: { [`../target/release/${CLI_EXE}`]: CLI_EXE },
+        // The headless binary and the Python bridge's wheel (both built by
+        // `beforeBuildCommand`), installed beside the app.
+        resources: {
+          [`../target/release/${CLI_EXE}`]: CLI_EXE,
+          [`../target/release/python/${wheel}`]: `python/${wheel}`,
+        },
         windows: { nsis: { installMode: "currentUser" } },
       },
       plugins: {
@@ -266,8 +273,9 @@ mkdirSync(dist, { recursive: true });
 copyFileSync(installer, join(dist, installerName));
 copyFileSync(`${installer}.sig`, join(dist, `${installerName}.sig`));
 
-// The portable zip: the program, the headless binary, the marker that makes
-// it portable (it only announces updates) and the README.
+// The portable zip: the program, the headless binary, the Python bridge's
+// wheel, the marker that makes it portable (it only announces updates) and
+// the README.
 const exeName = `${tauriConfig.mainBinaryName ?? "netterm"}.exe`;
 const portableName = `${productName}_${version}_x64-portable`;
 const stage = join(ROOT, "target", "dist", "stage", portableName);
@@ -275,6 +283,11 @@ rmSync(dirname(stage), { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 copyFileSync(join(ROOT, "target", "release", exeName), join(stage, exeName));
 copyFileSync(join(ROOT, "target", "release", CLI_EXE), join(stage, CLI_EXE));
+mkdirSync(join(stage, "python"));
+copyFileSync(
+  join(ROOT, "target", "release", "python", wheel),
+  join(stage, "python", wheel),
+);
 writeFileSync(
   join(stage, PORTABLE_MARKER),
   `This file makes this copy of ${productName} portable: it tells you when a new\r\n` +

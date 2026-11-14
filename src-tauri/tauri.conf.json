@@ -5,7 +5,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && cargo build --release -p netterm-cli",
+    "beforeBuildCommand": "npm run build && cargo build --release -p netterm-cli && node scripts/build-wheel.mjs",
     "frontendDist": "../dist"
   },
   "app": {
