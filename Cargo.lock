@@ -2800,6 +2800,7 @@ dependencies = [
  "futures",
  "notify",
  "rand",
+ "regex",
  "russh",
  "serde",
  "serde_json",

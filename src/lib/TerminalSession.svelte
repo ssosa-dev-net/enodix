@@ -4,6 +4,7 @@
   import { Terminal } from "@xterm/xterm";
   import { onMount, tick, untrack } from "svelte";
   import { webglRenderer } from "./renderer";
+  import { highlighting, highlightTerminal } from "./highlight.svelte";
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
@@ -223,6 +224,8 @@
   let conceal: () => void = () => {};
   /** Gives the terminal the font, scrollback and colours chosen. */
   let applyPreferences: (chosen: Preferences, dark: boolean) => void = () => {};
+  /** Turns keyword highlighting on or off, for the theme's colours. */
+  let updateHighlights: (on: boolean, dark: boolean) => void = () => {};
 
   onMount(() => {
     const chosen = untrack(() => preferences.current);
@@ -242,9 +245,12 @@
     terminal.loadAddon(search);
     terminal.open(container);
     fit.fit();
-    // For the smoke test, which reads the screen from the buffer: the WebGL
-    // renderer draws no text into the page.
-    Object.assign(container, { xterm: terminal });
+    // Decoration over what the screen shows; the bytes are not touched.
+    const highlights = highlightTerminal(terminal);
+    updateHighlights = (on, dark) => highlights.update(on, dark);
+    // For the smoke test, which reads the screen from the buffer (the WebGL
+    // renderer draws no text into the page) and the highlighted cells.
+    Object.assign(container, { xterm: terminal, highlights });
     const webgl = webglRenderer(terminal);
 
     // Output reaches the terminal only while it is on screen; meanwhile it
@@ -519,6 +525,7 @@
       resizeObserver.disconnect();
       // Gone with its terminal: it can no longer be reconnected.
       session?.discard();
+      highlights.dispose();
       webgl.dispose();
       terminal.dispose();
     };
@@ -531,6 +538,11 @@
   });
 
   $effect(() => applyPreferences(preferences.current, isDark()));
+
+  $effect(() => {
+    void highlighting.version;
+    updateHighlights(preferences.current.highlighting, isDark());
+  });
 
   // A changed option (or theme: the match colours) searches again from
   // where the search is.

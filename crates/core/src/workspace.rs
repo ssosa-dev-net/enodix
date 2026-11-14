@@ -38,12 +38,14 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_norway::{Mapping, Value};
 
+use crate::highlight::{HighlightRule, HighlightSource, Highlighter, ListedRule};
 use crate::session::{
     SerialParameters, SerialTarget, SshAuth, SshTarget, TelnetTarget, DEFAULT_SSH_PORT,
     DEFAULT_TELNET_PORT,
 };
 
 mod filters;
+mod highlights;
 mod jumps;
 mod roles;
 mod search;
@@ -51,6 +53,7 @@ mod settings;
 mod watch;
 
 pub use filters::{Condition, SavedFilter, FILTERS_FILE};
+pub use highlights::HIGHLIGHTS_FILE;
 pub use jumps::JumpChainError;
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
 use search::SearchIndex;
@@ -147,6 +150,10 @@ pub struct Workspace {
     roles: Vec<Role>,
     /// The saved filters, in file order.
     filters: Vec<SavedFilter>,
+    /// The workspace's highlight rules, then the built-in ones.
+    highlights: Vec<ListedRule>,
+    /// `highlights` compiled.
+    highlighter: Highlighter,
     index: SearchIndex,
     problems: Vec<Problem>,
     /// See [`Workspace::revision`].
@@ -434,6 +441,8 @@ impl Workspace {
         let tree = load_folder(&root, name, String::new(), &mut problems);
         let roles = load_roles(&root, &mut problems);
         let filters = load_filters(&root, &mut problems);
+        let highlights = load_highlights(&root, &mut problems);
+        let highlighter = compile_highlights(&highlights);
         let index = SearchIndex::build(&tree, |id| roles::find(&roles, id).map(|r| r.name.clone()));
         problems.sort_by(|a, b| a.file.cmp(&b.file));
         Ok(Self {
@@ -441,6 +450,8 @@ impl Workspace {
             tree,
             roles,
             filters,
+            highlights,
+            highlighter,
             index,
             problems,
             revision: 0,
@@ -565,6 +576,91 @@ impl Workspace {
                 Err(EditError::NotFound(format!("filter {}", name.trim())))
             }
         })
+    }
+
+    /// The highlight rules: the workspace's own (file order), then the
+    /// built-in ones (as the workspace changes them). Rules whose pattern
+    /// cannot be used are listed with why; they highlight nothing.
+    pub fn highlight_rules(&self) -> &[ListedRule] {
+        &self.highlights
+    }
+
+    /// The highlight rules that apply, compiled: those turned on whose
+    /// pattern can be used.
+    pub fn highlighter(&self) -> &Highlighter {
+        &self.highlighter
+    }
+
+    /// Saves `rule` to the highlights file, in place of the rule called
+    /// `previous` (ignoring case), or as a new rule after the others when
+    /// `previous` is `None`. A built-in rule keeps its name, and only what
+    /// differs from the built-in one is written. A rule without a name, an
+    /// unknown colour, a name another rule has, a new rule with a built-in
+    /// name, or a rule turned on whose pattern cannot be used is refused (a
+    /// rule with a broken pattern can be turned off).
+    pub fn save_highlight_rule(
+        &mut self,
+        previous: Option<&str>,
+        rule: &HighlightRule,
+    ) -> Result<(), EditError> {
+        let rule = highlights::clean(rule).map_err(EditError::Invalid)?;
+        let replaced = match previous {
+            Some(previous) => Some(self.highlight_rule(previous).ok_or_else(|| {
+                EditError::NotFound(format!("highlight rule {}", previous.trim()))
+            })?),
+            None => None,
+        };
+        if let Some(old) = replaced {
+            if old.source != HighlightSource::Workspace
+                && !highlights::same(&old.rule.name, &rule.name)
+            {
+                return Err(EditError::Invalid(format!(
+                    "the built-in highlight rule {} cannot be renamed",
+                    old.rule.name
+                )));
+            }
+        }
+        let clash = self.highlights.iter().any(|listed| {
+            highlights::same(&listed.rule.name, &rule.name)
+                && replaced.is_none_or(|old| !highlights::same(&old.rule.name, &listed.rule.name))
+        });
+        if clash {
+            return Err(EditError::AlreadyExists(format!(
+                "highlight rule {}",
+                rule.name
+            )));
+        }
+        let previous = replaced.map_or(rule.name.clone(), |old| old.rule.name.clone());
+        self.edit_file(HIGHLIGHTS_FILE.into(), |document| {
+            highlights::write(document, &previous, &rule);
+            Ok(())
+        })
+    }
+
+    /// Deletes the workspace's highlight rule called `name` (ignoring
+    /// case), or for a built-in rule the workspace changes, its changes. A
+    /// built-in rule as built in cannot be deleted (it can be turned off).
+    pub fn delete_highlight_rule(&mut self, name: &str) -> Result<(), EditError> {
+        let listed = self
+            .highlight_rule(name)
+            .ok_or_else(|| EditError::NotFound(format!("highlight rule {}", name.trim())))?;
+        if listed.source == HighlightSource::BuiltIn {
+            return Err(EditError::Invalid(format!(
+                "the highlight rule {} is built in: turn it off instead",
+                listed.rule.name
+            )));
+        }
+        let name = listed.rule.name.clone();
+        self.edit_file(HIGHLIGHTS_FILE.into(), |document| {
+            highlights::remove(document, &name);
+            Ok(())
+        })
+    }
+
+    fn highlight_rule(&self, name: &str) -> Option<&ListedRule> {
+        self.highlights
+            .iter()
+            .find(|listed| highlights::same(&listed.rule.name, name))
     }
 
     /// Files that could not be loaded, ordered by path.
@@ -874,6 +970,7 @@ impl Workspace {
         let changed = fresh.tree != self.tree
             || fresh.roles != self.roles
             || fresh.filters != self.filters
+            || fresh.highlights != self.highlights
             || fresh.problems != self.problems;
         if changed {
             self.replace_with(fresh);
@@ -1252,6 +1349,39 @@ fn load_roles(root: &Path, problems: &mut Vec<Problem>) -> Vec<Role> {
             roles::built_in()
         }
     }
+}
+
+/// The workspace's highlight rules and the built-in ones. A bad file or rule
+/// definition becomes a problem; the rest load.
+fn load_highlights(root: &Path, problems: &mut Vec<Problem>) -> Vec<ListedRule> {
+    let path = root.join(HIGHLIGHTS_FILE);
+    if !path.is_file() {
+        return crate::highlight::built_in_rules();
+    }
+    let problem = |message| Problem {
+        file: HIGHLIGHTS_FILE.into(),
+        message,
+    };
+    match read_mapping(&path) {
+        Ok(document) => {
+            let (rules, errors) = highlights::load(&document);
+            problems.extend(errors.into_iter().map(problem));
+            rules
+        }
+        Err(message) => {
+            problems.push(problem(message));
+            crate::highlight::built_in_rules()
+        }
+    }
+}
+
+fn compile_highlights(rules: &[ListedRule]) -> Highlighter {
+    let usable: Vec<HighlightRule> = rules
+        .iter()
+        .filter(|listed| listed.error.is_none())
+        .map(|listed| listed.rule.clone())
+        .collect();
+    Highlighter::new(&usable)
 }
 
 /// The workspace's saved filters, if it has a filters file. A bad file or

@@ -11,6 +11,7 @@ use netterm_core::credentials::{
     CredentialStore, HostLogin, KeychainStore, MemoryStore, ProfileDraft, ProfileError,
     ProfileSummary, Profiles,
 };
+use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
 use netterm_core::logging::{LogFolder, SessionLog};
@@ -162,6 +163,8 @@ struct WorkspaceView {
     host_roles: BTreeMap<HostId, Role>,
     /// The saved filters, in file order.
     filters: Vec<SavedFilter>,
+    /// The highlight rules, the workspace's own first.
+    highlight_rules: Vec<ListedRule>,
     problems: Vec<Problem>,
 }
 
@@ -174,6 +177,7 @@ impl From<&Workspace> for WorkspaceView {
             roles: workspace.roles().to_vec(),
             host_roles: workspace.host_roles(),
             filters: workspace.filters().to_vec(),
+            highlight_rules: workspace.highlight_rules().to_vec(),
             problems: workspace.problems().to_vec(),
         }
     }
@@ -578,6 +582,47 @@ fn filter_save(shell: State<'_, Shell>, filter: SavedFilter) -> Result<Edited<()
 #[tauri::command]
 fn filter_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, String> {
     edit(&shell, |workspace| workspace.delete_filter(&name))
+}
+
+/// What to highlight in each of `lines` (text shown in a terminal), by
+/// the open workspace's rules, or the built-in ones when none is open.
+#[tauri::command]
+fn highlight_lines(shell: State<'_, Shell>, lines: Vec<String>) -> Vec<Vec<Span>> {
+    let guard = shell.workspace();
+    let built_in;
+    let highlighter = match guard.as_ref() {
+        Some(workspace) => workspace.highlighter(),
+        None => {
+            built_in = Highlighter::default();
+            &built_in
+        }
+    };
+    lines.iter().map(|line| highlighter.spans(line)).collect()
+}
+
+/// The highlight rules when no workspace is open: the built-in ones.
+#[tauri::command]
+fn highlight_built_in_rules() -> Vec<ListedRule> {
+    netterm_core::highlight::built_in_rules()
+}
+
+/// Saves a highlight rule in place of the one called `previous`, or as a
+/// new one.
+#[tauri::command]
+fn highlight_rule_save(
+    shell: State<'_, Shell>,
+    previous: Option<String>,
+    rule: HighlightRule,
+) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| {
+        workspace.save_highlight_rule(previous.as_deref(), &rule)
+    })
+}
+
+/// Deletes a workspace highlight rule, or a built-in rule's changes.
+#[tauri::command]
+fn highlight_rule_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| workspace.delete_highlight_rule(&name))
 }
 
 #[tauri::command]
@@ -1161,6 +1206,10 @@ pub fn run() {
             filter_apply,
             filter_save,
             filter_delete,
+            highlight_lines,
+            highlight_built_in_rules,
+            highlight_rule_save,
+            highlight_rule_delete,
             host_create,
             host_rename,
             host_move,

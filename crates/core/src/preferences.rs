@@ -1,5 +1,6 @@
 //! The user's preferences: the app's theme, the terminal's font and
-//! scrollback, and how copy and paste behave. They live per user in the
+//! scrollback, how copy and paste behave, and whether keywords are
+//! highlighted. They live per user in the
 //! application data folder (`preferences.yaml`), never in a workspace; the
 //! caller chooses that folder.
 //!
@@ -63,6 +64,9 @@ pub struct Preferences {
     pub copy_on_select: bool,
     /// A right click in a terminal pastes.
     pub right_click_paste: bool,
+    /// Keyword highlighting in terminals, all rules at once (each rule can
+    /// also be turned off on its own, in the workspace).
+    pub highlighting: bool,
 }
 
 impl Default for Preferences {
@@ -74,6 +78,7 @@ impl Default for Preferences {
             scrollback: DEFAULT_SCROLLBACK,
             copy_on_select: false,
             right_click_paste: false,
+            highlighting: true,
         }
     }
 }
@@ -96,6 +101,7 @@ impl Preferences {
             copy_on_select: read(&mapping, "copy_on_select").unwrap_or(defaults.copy_on_select),
             right_click_paste: read(&mapping, "right_click_paste")
                 .unwrap_or(defaults.right_click_paste),
+            highlighting: read(&mapping, "highlighting").unwrap_or(defaults.highlighting),
         }
         .normalized()
     }
@@ -117,6 +123,7 @@ impl Preferences {
         put("scrollback", preferences.scrollback.into());
         put("copy_on_select", preferences.copy_on_select.into());
         put("right_click_paste", preferences.right_click_paste.into());
+        put("highlighting", preferences.highlighting.into());
         let text = serde_norway::to_string(&mapping).map_err(io::Error::other)?;
         fs::create_dir_all(data_folder)?;
         let temporary = data_folder.join(format!("{FILE_NAME}.tmp"));

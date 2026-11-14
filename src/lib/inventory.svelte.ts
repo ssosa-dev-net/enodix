@@ -251,6 +251,19 @@ export function removeFilter(name: string) {
   };
 }
 
+/** Saves a highlight rule (in place of `previous`); rejects with why not. */
+export async function saveHighlightRule(
+  previous: string | null,
+  rule: api.HighlightRule,
+) {
+  apply(await api.saveHighlightRule(previous, rule));
+}
+
+/** Deletes a workspace highlight rule, or resets a built-in one. */
+export async function deleteHighlightRule(name: string) {
+  apply(await api.deleteHighlightRule(name));
+}
+
 function itemPath(item: Item) {
   return item.kind === "host" ? item.id : item.path;
 }

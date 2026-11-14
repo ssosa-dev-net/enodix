@@ -860,6 +860,8 @@ async function main() {
     step,
   });
 
+  await highlighting({ evaluate, fillForm, type, screenshot, step });
+
   devtools.close();
 
   // Preferences survive a restart: the app comes back light, with the
@@ -915,6 +917,218 @@ async function main() {
   }
   step("the preferences were kept across a restart");
   restarted.close();
+}
+
+/**
+ * Keyword highlighting: the built-in rules colour what the shown session
+ * prints (typed text echoed a character at a time included), the screen's
+ * text and the log stay as they were, the preference turns it off, and a
+ * workspace rule is added, turned off and broken from the app and on disk.
+ */
+async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const rulesFile = join(workspace, "_highlights.yaml");
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  // The last row holding `mark`, its text, the cells coloured on it, and
+  // the terminal's palette colours the rules below name.
+  const row = (mark) =>
+    evaluate(`(() => {
+      const slot = document.querySelector("${SHOWN_SESSION} .terminal");
+      const terminal = slot.xterm;
+      const buffer = terminal.buffer.active;
+      const theme = terminal.options.theme;
+      for (let y = buffer.length - 1; y >= 0; y--) {
+        const text = buffer.getLine(y).translateToString(true);
+        if (!text.includes(${json(mark)})) continue;
+        const cells = slot.highlights.shown().filter((cell) => cell.line === y);
+        return {
+          text,
+          cells,
+          palette: {
+            red: theme.red,
+            cyan: theme.cyan,
+            "bright-blue": theme.brightBlue,
+            magenta: theme.magenta,
+          },
+        };
+      }
+      return null;
+    })()`);
+  // Whether the row holding `mark` has exactly `expected` ([word, colour]).
+  const coloured = async (mark, expected) => {
+    const found = await row(mark);
+    if (!found) return false;
+    const want = expected
+      .map(([word, color]) => ({
+        col: found.text.indexOf(word),
+        width: word.length,
+        color: found.palette[color],
+      }))
+      .sort((a, b) => a.col - b.col);
+    const got = found.cells
+      .map(({ col, width, color }) => ({ col, width, color }))
+      .sort((a, b) => a.col - b.col);
+    return json(got) === json(want) || Promise.reject(json(got));
+  };
+  const setPreference = (name, value) =>
+    evaluate(`(() => {
+      const field = document.querySelector("[data-dialog=preferences] [name=${name}]");
+      field.checked = ${json(value)};
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+  const closeDialog = async (dialog) => {
+    await evaluate(
+      `[...document.querySelectorAll("[data-dialog=${dialog}] button")].find((b) => b.textContent.trim() === "Close").click()`,
+    );
+    await until(
+      `the ${dialog} dialog closed`,
+      async () => !(await exists(`[data-dialog=${dialog}]`)),
+    );
+  };
+  const openRules = async () => {
+    // From the preferences, which name the rules beside the switch.
+    await evaluate(`document.querySelector("[data-open-preferences]").click()`);
+    await until("the preferences dialog", () =>
+      exists("[data-dialog=preferences]"),
+    );
+    await evaluate(
+      `document.querySelector("[data-dialog=preferences] [data-open-highlights]").click()`,
+    );
+    await until("the highlights dialog", () =>
+      exists("[data-dialog=highlights]"),
+    );
+  };
+  const focusTerminal = () =>
+    evaluate(
+      `document.querySelector("${SHOWN_SESSION} .xterm textarea").focus()`,
+    );
+
+  // Built-in rules: an interface, a state, IPv4 and IPv6 addresses. The
+  // echo arrives a character at a time; the whole words are still found.
+  const line = "hlcheck Gi0/1 is down via 10.0.0.1 and 2001:db8::1";
+  const builtIn = [
+    ["Gi0/1", "bright-blue"],
+    ["down", "red"],
+    ["10.0.0.1", "cyan"],
+    ["2001:db8::1", "cyan"],
+  ];
+  await focusTerminal();
+  await type(`${line}\r`);
+  await until("the built-in highlights", () => coloured("hlcheck", builtIn));
+  const shown = await row("hlcheck");
+  if (!shown.text.endsWith(line)) {
+    fail(`the screen's text changed: ${shown.text}`);
+  }
+  await screenshot("highlighting");
+  step("the built-in rules highlighted an interface, a state and addresses");
+
+  // The log holds the line as it came, highlighting or not.
+  const logs = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.name.endsWith(".log")) logs.push(path);
+    }
+  };
+  await until("the highlighted line in a session log", () => {
+    logs.length = 0;
+    walk(join(appData, "logs"));
+    const seen = logs.flatMap((log) =>
+      readFileSync(log, "utf8")
+        .split("\n")
+        .filter((row) => row.includes("hlcheck")),
+    );
+    // Plain text, as typed (the prompt may sit on the line before it).
+    if (seen.some((row) => row.endsWith(line) && !row.includes("\x1b"))) {
+      return true;
+    }
+    throw new Error(`${logs.length} logs; lines: ${JSON.stringify(seen)}`);
+  });
+  step("the session log holds the line unchanged");
+
+  // Turned off in the preferences: nothing is coloured; on again: back.
+  await evaluate(`document.querySelector("[data-open-preferences]").click()`);
+  await until("the preferences dialog", () =>
+    exists("[data-dialog=preferences]"),
+  );
+  await setPreference("preference-highlighting", false);
+  await until("no highlights", () => coloured("hlcheck", []));
+  await until("highlighting off saved", () =>
+    readFileSync(join(appData, "preferences.yaml"), "utf8").includes(
+      "highlighting: false",
+    ),
+  );
+  await setPreference("preference-highlighting", true);
+  await until("the highlights back", () => coloured("hlcheck", builtIn));
+  await closeDialog("preferences");
+  step("the preference turned highlighting off and on again");
+
+  // A workspace rule, added in the app, is saved to the workspace.
+  await openRules();
+  await evaluate(`document.querySelector("[data-rule=new]").click()`);
+  await until("the rule form", () => exists("[data-rule-form]"));
+  await evaluate(`(() => {
+    const select = document.querySelector("[data-rule-form] [name=rule-color]");
+    select.value = "magenta";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await fillForm(
+    { "rule-name": "smoke-word", "rule-pattern": "SMOKEWORD" },
+    "[data-rule-form]",
+  );
+  await until(
+    "the rule in the workspace",
+    () =>
+      existsSync(rulesFile) &&
+      readFileSync(rulesFile, "utf8") ===
+        "smoke-word:\n  pattern: SMOKEWORD\n  color: magenta\n",
+  );
+  await until("the rule listed", () =>
+    exists("[data-highlight-rule=smoke-word][data-highlight-source=workspace]"),
+  );
+  await closeDialog("highlights");
+  await focusTerminal();
+  await type("hlrule SMOKEWORD\r");
+  await until("the workspace rule's highlight", () =>
+    coloured("hlrule", [["SMOKEWORD", "magenta"]]),
+  );
+  step("a rule added in the app was saved to the workspace and applied");
+
+  // One rule turned off: only its highlights go.
+  await openRules();
+  await evaluate(`(() => {
+    const box = document.querySelector("[data-highlight-rule=smoke-word] [name=rule-enabled]");
+    box.checked = false;
+    box.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await until("the rule saved as off", () =>
+    readFileSync(rulesFile, "utf8").includes("enabled: false"),
+  );
+  await until("the rule's highlight gone", () => coloured("hlrule", []));
+  await until("the other highlights kept", () => coloured("hlcheck", builtIn));
+  step("turning one rule off removed only its highlights");
+
+  // A broken pattern written on disk is reported and skipped; the other
+  // rules keep working.
+  writeFileSync(
+    rulesFile,
+    "smoke-word:\n  pattern: SMOKEWORD\n  color: magenta\nbroken:\n  pattern: 'Gi('\n  color: red\n",
+  );
+  await until("the broken rule reported", () =>
+    exists("[data-highlight-rule=broken] [data-rule-error]"),
+  );
+  await until("the rule's highlight back", () =>
+    coloured("hlrule", [["SMOKEWORD", "magenta"]]),
+  );
+  await until("the built-in highlights kept", () =>
+    coloured("hlcheck", builtIn),
+  );
+  await screenshot("highlight-rules");
+  await closeDialog("highlights");
+  rmSync(rulesFile);
+  step("a broken pattern was reported and skipped; the other rules work");
 }
 
 /** Reads the system clipboard's text (independently of the app). */

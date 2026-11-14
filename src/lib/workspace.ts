@@ -213,6 +213,56 @@ export interface SearchResults {
   total: number;
 }
 
+/**
+ * A highlight rule: text matching `pattern` (a regular expression of the
+ * core's syntax; `(?i)` ignores case) shows in `color`.
+ */
+export interface HighlightRule {
+  name: string;
+  pattern: string;
+  /** `#rrggbb`, or a terminal palette colour (`HIGHLIGHT_COLOR_NAMES`). */
+  color: string;
+  enabled: boolean;
+}
+
+/** The palette colours a rule can use; they follow the terminal's theme. */
+export const HIGHLIGHT_COLOR_NAMES = [
+  "black",
+  "red",
+  "green",
+  "yellow",
+  "blue",
+  "magenta",
+  "cyan",
+  "white",
+  "bright-black",
+  "bright-red",
+  "bright-green",
+  "bright-yellow",
+  "bright-blue",
+  "bright-magenta",
+  "bright-cyan",
+  "bright-white",
+] as const;
+
+/** A rule as the workspace lists it. */
+export interface ListedRule {
+  rule: HighlightRule;
+  /** `changed`: a built-in rule the workspace changes. */
+  source: "builtIn" | "changed" | "workspace";
+  /** Why its pattern cannot be used; such a rule highlights nothing. */
+  error: string | null;
+}
+
+/** A highlighted part of a line, in code points from its start. */
+export interface HighlightSpan {
+  start: number;
+  /** Exclusive. */
+  end: number;
+  color: string;
+  rule: string;
+}
+
 export interface WorkspaceView {
   /** Higher is newer: a view older than the one shown is stale. */
   revision: number;
@@ -224,6 +274,8 @@ export interface WorkspaceView {
   host_roles: Record<string, Role>;
   /** The saved filters, in file order. */
   filters: SavedFilter[];
+  /** The highlight rules: the workspace's own first, then the built-in. */
+  highlight_rules: ListedRule[];
   problems: Problem[];
 }
 
@@ -365,6 +417,29 @@ export function saveFilter(filter: SavedFilter) {
 
 export function deleteFilter(name: string) {
   return invoke<Edited<null>>("filter_delete", { name });
+}
+
+/** What to highlight in each line, by the open workspace's rules. */
+export function highlightLines(lines: string[]) {
+  return invoke<HighlightSpan[][]>("highlight_lines", { lines });
+}
+
+/** The built-in highlight rules (for when no workspace is open). */
+export function builtInHighlightRules() {
+  return invoke<ListedRule[]>("highlight_built_in_rules");
+}
+
+/** Saves a rule in place of the one called `previous`, or as a new one. */
+export function saveHighlightRule(
+  previous: string | null,
+  rule: HighlightRule,
+) {
+  return invoke<Edited<null>>("highlight_rule_save", { previous, rule });
+}
+
+/** Deletes a workspace rule, or a built-in rule's changes. */
+export function deleteHighlightRule(name: string) {
+  return invoke<Edited<null>>("highlight_rule_delete", { name });
 }
 
 export function findFolder(tree: Folder, path: string): Folder | null {

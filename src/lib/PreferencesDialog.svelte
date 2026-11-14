@@ -7,6 +7,7 @@
     SUGGESTED_FONTS,
     type Theme,
   } from "./preferences.svelte";
+  import { highlighting } from "./highlight.svelte";
 
   interface Props {
     onclose: () => void;
@@ -135,6 +136,28 @@
         />
         Paste with a right click in the terminal
       </label>
+
+      <span></span>
+      <span class="check">
+        <label class="check">
+          <input
+            type="checkbox"
+            name="preference-highlighting"
+            checked={current.highlighting}
+            onchange={(event) =>
+              changePreferences({ highlighting: event.currentTarget.checked })}
+          />
+          Highlight keywords in output
+        </label>
+        <button
+          type="button"
+          data-open-highlights
+          onclick={() => {
+            onclose();
+            highlighting.dialog = true;
+          }}>Rules…</button
+        >
+      </span>
     </div>
 
     {#if preferences.error}
