@@ -11,7 +11,8 @@ export interface ProfileSummary {
   username: string;
   auth:
     | { kind: "password" }
-    | { kind: "private_key"; key_file: string; has_passphrase: boolean };
+    | { kind: "private_key"; key_file: string; has_passphrase: boolean }
+    | { kind: "agent" };
   has_enable_secret: boolean;
 }
 
@@ -31,7 +32,8 @@ export interface ProfileDraft {
   username: string;
   auth:
     | { kind: "password"; password: string | null }
-    | { kind: "private_key"; key_file: string; passphrase: string | null };
+    | { kind: "private_key"; key_file: string; passphrase: string | null }
+    | { kind: "agent" };
   enable_secret: string | null;
 }
 

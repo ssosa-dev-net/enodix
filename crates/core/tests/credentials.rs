@@ -12,9 +12,10 @@ use netterm_core::credentials::{
     ProfileAuth, ProfileDraft, ProfileError, ProfileSummary, Profiles,
 };
 use netterm_core::session::{
-    SessionManager, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
+    SessionManager, SessionState, SessionTarget, SshAgent, SshAuth, SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{HostId, Settings, Workspace};
+use support::agent::TestAgent;
 use support::workspaces::files;
 use support::{next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT, USERNAME};
 use tempfile::TempDir;
@@ -147,6 +148,47 @@ async fn a_private_key_profile_logs_in_with_the_key_and_its_passphrase() {
         }
     );
     connects(target).await;
+}
+
+#[tokio::test]
+async fn an_agent_profile_logs_in_with_the_agents_keys_and_stores_no_secret() {
+    let server = TestSshServer::start().await;
+    let (_temp, workspace) = lab_workspace(server.port());
+    let store = MemoryStore::new();
+    let profiles = Profiles::new(&store, &workspace);
+    let summary = profiles
+        .save(
+            None,
+            &ProfileDraft {
+                name: "Key-Login".into(),
+                username: USERNAME.into(),
+                auth: AuthDraft::Agent,
+                enable_secret: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(summary.auth, AuthSummary::Agent);
+    assert_eq!(
+        store
+            .get(&workspace.credential_scope(), "key-login")
+            .unwrap()
+            .unwrap()
+            .auth,
+        ProfileAuth::Agent
+    );
+
+    let target = profile_target(&profiles, "Lab/r2.yaml");
+
+    // The computer's own agent, whichever runs.
+    assert_eq!(target.auth, SshAuth::Agent(SshAgent::System));
+    // That is the user's agent, which tests leave alone: one inside the
+    // test stands in for it.
+    let agent = TestAgent::start(&[server.client_key().clone()]).await;
+    connects(SshTarget {
+        auth: SshAuth::Agent(SshAgent::At(agent.path().to_path_buf())),
+        ..target
+    })
+    .await;
 }
 
 #[test]

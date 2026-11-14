@@ -22,7 +22,9 @@
     const login =
       profile.auth.kind === "password"
         ? "password"
-        : `key ${profile.auth.key_file}`;
+        : profile.auth.kind === "agent"
+          ? "SSH agent"
+          : `key ${profile.auth.key_file}`;
     const enable = profile.has_enable_secret ? ", enable secret" : "";
     return `${profile.username}, ${login}${enable}`;
   }

@@ -30,10 +30,26 @@ export interface TerminalSize {
 export type SessionState =
   | { state: "connecting" }
   | { state: "connected" }
-  | { state: "closed"; reason: string };
+  | {
+      state: "closed";
+      reason: string;
+      /** Logging in with a password might work (the SSH agent did not). */
+      offersPasswordLogin: boolean;
+    };
+
+/** Questions the server asks while logging in (keyboard-interactive). */
+export interface LoginPrompt {
+  /** A title; often empty. */
+  name: string;
+  /** What to tell the user first; often empty. */
+  instructions: string;
+  questions: { text: string; echo: boolean }[];
+}
 
 export interface Session {
   write(data: Uint8Array): void;
+  /** Answers the last login prompt, one answer per question. */
+  answer(answers: string[]): void;
   resize(size: TerminalSize): void;
   close(): void;
 }
@@ -46,12 +62,15 @@ export function appName(): Promise<string> {
  * Opens a session. `onOutput` must call `consumed` once the bytes have been
  * processed (for xterm.js, from the write callback): flow control in the
  * core stops reading from the device while too much output is unconsumed.
+ * `onPrompt` receives the server's login questions; answer them with
+ * `Session.answer`, or close the session to refuse.
  */
 export async function openSession(
   target: ConnectTarget,
   size: TerminalSize,
   onOutput: (bytes: Uint8Array, consumed: () => void) => void,
   onState: (state: SessionState) => void,
+  onPrompt: (prompt: LoginPrompt) => void,
 ): Promise<Session> {
   let id: number | null = null;
   // Output can be consumed before the session id is known.
@@ -66,6 +85,7 @@ export async function openSession(
     onOutput(new Uint8Array(buffer), () => acknowledge(buffer.byteLength)),
   );
   const stateChannel = new Channel<SessionState>(onState);
+  const promptChannel = new Channel<LoginPrompt>(onPrompt);
 
   // A call can lose a race with the session closing; the closed state has
   // already told the interface, so that failure is not reported again.
@@ -78,11 +98,13 @@ export async function openSession(
     size,
     onOutput: outputChannel,
     onState: stateChannel,
+    onPrompt: promptChannel,
   });
   if (consumedEarly > 0) acknowledge(consumedEarly);
 
   return {
     write: (data) => send("session_write", { data: Array.from(data) }),
+    answer: (answers) => send("session_answer", { answers }),
     resize: (size) => send("session_resize", { size }),
     close: () => send("session_close", {}),
   };

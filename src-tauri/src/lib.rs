@@ -12,8 +12,8 @@ use netterm_core::credentials::{
     ProfileSummary, Profiles,
 };
 use netterm_core::session::{
-    SessionEvent, SessionId, SessionManager, SessionState, SessionTarget, SshAuth, SshTarget,
-    TerminalSize,
+    LoginPrompt, SessionEvent, SessionId, SessionManager, SessionState, SessionTarget, SshAuth,
+    SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{
     EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem, Role,
@@ -179,7 +179,13 @@ impl From<Size> for TerminalSize {
 enum StateMessage {
     Connecting,
     Connected,
-    Closed { reason: String },
+    #[serde(rename_all = "camelCase")]
+    Closed {
+        reason: String,
+        /// Logging in with a password might get past the failure (the SSH
+        /// agent did not work).
+        offers_password_login: bool,
+    },
 }
 
 impl From<SessionState> for StateMessage {
@@ -188,6 +194,7 @@ impl From<SessionState> for StateMessage {
             SessionState::Connecting => Self::Connecting,
             SessionState::Connected => Self::Connected,
             SessionState::Closed(reason) => Self::Closed {
+                offers_password_login: reason.offers_password_login(),
                 reason: reason.to_string(),
             },
         }
@@ -539,9 +546,10 @@ fn host_save(shell: State<'_, Shell>, host: Host) -> Result<Edited<()>, String> 
 }
 
 /// Opens a session. Output arrives on `on_output` as raw bytes, already
-/// batched by the core, and state changes on `on_state`; terminal data never
-/// goes through the event system. The interface acknowledges output with
-/// `session_acknowledge`.
+/// batched by the core, state changes on `on_state`, and questions the
+/// server asks while logging in on `on_prompt` (answered with
+/// `session_answer`); terminal data never goes through the event system.
+/// The interface acknowledges output with `session_acknowledge`.
 #[tauri::command]
 async fn session_open(
     manager: State<'_, SessionManager>,
@@ -550,6 +558,7 @@ async fn session_open(
     size: Size,
     on_output: Channel<InvokeResponseBody>,
     on_state: Channel<StateMessage>,
+    on_prompt: Channel<LoginPrompt>,
 ) -> Result<u64, String> {
     let target = SessionTarget::Ssh(match target {
         ConnectTarget::Quick {
@@ -589,6 +598,7 @@ async fn session_open(
             let delivered = match event {
                 SessionEvent::Output(bytes) => on_output.send(InvokeResponseBody::Raw(bytes)),
                 SessionEvent::State(state) => on_state.send(state.into()),
+                SessionEvent::Prompt(prompt) => on_prompt.send(prompt),
             };
             // The webview is gone; dropping the events closes the session.
             if delivered.is_err() {
@@ -597,6 +607,18 @@ async fn session_open(
         }
     });
     Ok(id.0)
+}
+
+/// Answers the questions the session's server asked last.
+#[tauri::command]
+fn session_answer(
+    manager: State<'_, SessionManager>,
+    id: u64,
+    answers: Vec<String>,
+) -> Result<(), String> {
+    manager
+        .answer(SessionId(id), answers)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -690,6 +712,7 @@ pub fn run() {
             host_login,
             session_open,
             session_write,
+            session_answer,
             session_acknowledge,
             session_resize,
             session_close

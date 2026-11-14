@@ -24,6 +24,12 @@ const SSH_PORT = 22722;
 const DEVTOOLS_PORT = 9333;
 const USERNAME = "engineer";
 const PASSWORD = "correct horse";
+// The test server's user who also needs a one-time code, and the code.
+const OTP_USERNAME = "engineer-otp";
+const ONE_TIME_CODE = "424242";
+// The test server's SSH agent, which the app reaches through SSH_AUTH_SOCK:
+// the user's own agent is never used.
+const AGENT_PIPE = String.raw`\\.\pipe\netterm-smoke-agent-${process.pid}`;
 const TIMEOUT_MS = 15000;
 
 const children = [];
@@ -90,7 +96,7 @@ function startServer() {
   if (build.status !== 0) fail("could not build the test SSH server");
   const server = spawn(
     "target/debug/examples/test_ssh_server.exe",
-    [String(SSH_PORT)],
+    [String(SSH_PORT), "--agent", AGENT_PIPE],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
   children.push(server);
@@ -111,6 +117,8 @@ function startApp() {
       // Credential profiles stay in memory: the smoke test never touches
       // the keychain.
       NETTERM_CREDENTIAL_STORE: "memory",
+      // Agent profiles use the test server's agent.
+      SSH_AUTH_SOCK: AGENT_PIPE,
     },
   });
   children.push(app);
@@ -458,6 +466,19 @@ async function main() {
     step,
   });
 
+  await agentAndKeyboardInteractive({
+    evaluate,
+    text,
+    click,
+    fillForm,
+    changeField,
+    doubleClick,
+    status,
+    screen,
+    screenshot,
+    step,
+  });
+
   await editInventory({
     evaluate,
     text,
@@ -790,6 +811,155 @@ async function credentialProfiles({
   step("no secret was written to the workspace or the app's data folder");
 
   // Back as it was, for the inventory edits that follow.
+  await changeField("[name=setting-credential_profile]", "");
+  await until(
+    "the profile cleared from the host file",
+    () => !readFileSync(hostFile, "utf8").includes("credential_profile"),
+  );
+}
+
+/** A one-time code the server asks for is shown and answered; a profile
+ * that uses the SSH agent (the test server's, through SSH_AUTH_SOCK) logs
+ * in with it; when the agent has no key the server accepts, the user is
+ * told and logs in with a password instead. */
+async function agentAndKeyboardInteractive({
+  evaluate,
+  text,
+  click,
+  fillForm,
+  changeField,
+  doubleClick,
+  status,
+  screen,
+  screenshot,
+  step,
+}) {
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const hostRow = 'nav [data-host="Lab/smoke-r1.yaml"]';
+  const hostFile = join(workspace, "Lab", "smoke-r1.yaml");
+  const profilesDialog = "[data-dialog=profiles]";
+  const loginPrompt = "[data-login-prompt]";
+  const connected = async () => {
+    await until(
+      "the Connected status",
+      async () => (await status()) === "Connected",
+    );
+    await until("the shell prompt", async () =>
+      (await screen()).includes("test-ssh$"),
+    );
+  };
+  const useProfile = async (name) => {
+    await changeField("[name=setting-credential_profile]", name);
+    await until(`${name} in the host file`, () =>
+      readFileSync(hostFile, "utf8").includes(`credential_profile: ${name}
+`),
+    );
+  };
+
+  // Keyboard-interactive: after the password, the server asks for a code,
+  // which the user is shown and answers.
+  await click("Disconnect").catch(() => {});
+  await click("New connection").catch(() => {});
+  await until("the quick-connect form", () => exists("input[name=host]"));
+  await fillForm(
+    {
+      host: "127.0.0.1",
+      port: String(SSH_PORT),
+      username: OTP_USERNAME,
+      password: PASSWORD,
+    },
+    "main form",
+  );
+  await until("the server's question", async () =>
+    (await text(loginPrompt)).includes("Verification code:"),
+  );
+  if (!(await text(loginPrompt)).includes("authenticator app")) {
+    fail("the question's instructions are not shown");
+  }
+  await screenshot("login-question");
+  await fillForm({ "answer-0": ONE_TIME_CODE }, loginPrompt);
+  await connected();
+  if (await exists(loginPrompt)) fail("the question stayed on screen");
+  step("a one-time code the server asked for was shown and answered");
+  await click("Disconnect");
+
+  // Profiles that log in with the SSH agent.
+  const createAgentProfile = async (name, username) => {
+    await click("Profiles");
+    await until("the profiles dialog", () => exists(profilesDialog));
+    await click("New profile…");
+    await until("the profile form", () =>
+      exists(`${profilesDialog} [name=profile-auth]`),
+    );
+    await evaluate(`(() => {
+      const select = document.querySelector("${profilesDialog} [name=profile-auth]");
+      select.value = "agent";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await until("the agent note", () =>
+      exists(`${profilesDialog} [data-agent-note]`),
+    );
+    if (await exists(`${profilesDialog} [name=profile-password]`)) {
+      fail("an agent profile asks for a password");
+    }
+    await fillForm(
+      { "profile-name": name, "profile-username": username },
+      `${profilesDialog} form`,
+    );
+    await until("the agent profile listed", async () =>
+      (await text(`${profilesDialog} [data-profile="${name}"]`)).includes(
+        `${username}, SSH agent`,
+      ),
+    );
+    await click("Close");
+    await until(
+      "the profiles dialog closed",
+      async () => !(await exists(profilesDialog)),
+    );
+  };
+  await createAgentProfile("agent-login", USERNAME);
+  await createAgentProfile("agent-stranger", "stranger");
+  step("profiles that use the SSH agent were created");
+
+  await useProfile("agent-login");
+  await doubleClick(hostRow);
+  await connected();
+  if (!(await text(".session header")).includes(`${USERNAME}@smoke-r1`)) {
+    fail("the agent session is not titled with the profile's username");
+  }
+  step("a profile using the SSH agent logged in with the agent's key");
+  await click("Disconnect");
+
+  // The server takes none of the agent's keys for this user: the user is
+  // told why and logs in with a password instead.
+  await useProfile("agent-stranger");
+  await doubleClick(hostRow);
+  await until("the agent failure", async () =>
+    (await status()).includes("accepted none of the SSH agent's keys"),
+  );
+  await until("the failure explained over the terminal", async () =>
+    (await text("[data-password-fallback]")).includes(
+      "accepted none of the SSH agent's keys",
+    ),
+  );
+  await screenshot("agent-refused");
+  await click("Log in with a password");
+  await until("the password prompt", () => exists("main input[name=password]"));
+  if (!(await text("main [role=alert]")).includes("SSH agent")) {
+    fail("the password prompt does not say why it is asked");
+  }
+  const prefilled = await evaluate(
+    `document.querySelector("main input[name=username]").value`,
+  );
+  if (prefilled !== "stranger") {
+    fail(`the profile's username is not filled in (${prefilled})`);
+  }
+  await fillForm({ username: USERNAME, password: PASSWORD }, "main form");
+  await connected();
+  step("an agent without an accepted key fell back to a password prompt");
+  await click("Disconnect");
+
   await changeField("[name=setting-credential_profile]", "");
   await until(
     "the profile cleared from the host file",

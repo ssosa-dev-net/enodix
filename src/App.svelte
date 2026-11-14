@@ -30,8 +30,21 @@
   /** What the centre of the window shows. */
   type View =
     | { kind: "quick" }
-    | { kind: "prompt"; host: Host; missingProfile: string | null }
-    | { kind: "session"; target: ConnectTarget; title: string; key: number };
+    | {
+        kind: "prompt";
+        host: Host;
+        missingProfile: string | null;
+        /** Why the host's profile could not log in, and its username. */
+        fallback?: { reason: string; username: string };
+      }
+    | {
+        kind: "session";
+        target: ConnectTarget;
+        title: string;
+        key: number;
+        /** The host and username, when logging in with a profile. */
+        profileLogin?: { host: Host; username: string };
+      };
 
   let name = $state("");
   let view = $state<View>({ kind: "quick" });
@@ -65,8 +78,12 @@
     }
   }
 
-  function connect(target: ConnectTarget, title: string) {
-    view = { kind: "session", target, title, key: ++sessions };
+  function connect(
+    target: ConnectTarget,
+    title: string,
+    profileLogin?: { host: Host; username: string },
+  ) {
+    view = { kind: "session", target, title, key: ++sessions, profileLogin };
   }
 
   // The profiles a workspace names change with its files, and each
@@ -94,11 +111,29 @@
       connect(
         { kind: "host", id: host.id, credentials: null },
         `${login.username}@${host.name}`,
+        { host, username: login.username },
       );
     } else {
       const missingProfile = login.kind === "notSetUp" ? login.profile : null;
       view = { kind: "prompt", host, missingProfile };
     }
+  }
+
+  /**
+   * For a session logging in with a profile: asks for a password instead,
+   * after the profile (its SSH agent) could not log in.
+   */
+  function passwordLogin(session: View & { kind: "session" }) {
+    const login = session.profileLogin;
+    if (!login) return undefined;
+    return (reason: string) => {
+      view = {
+        kind: "prompt",
+        host: login.host,
+        missingProfile: null,
+        fallback: { reason, username: login.username },
+      };
+    };
   }
 
   // Ctrl+K opens the palette from anywhere, the terminal included, so it is
@@ -132,6 +167,7 @@
           title={view.title}
           role={view.target.kind === "host" ? hostRole(view.target.id) : null}
           ondismiss={() => (view = { kind: "quick" })}
+          onpasswordlogin={passwordLogin(view)}
         />
       {/key}
     {:else if view.kind === "prompt"}
@@ -140,6 +176,7 @@
         <CredentialsPrompt
           {host}
           missingProfile={view.missingProfile}
+          fallback={view.fallback}
           oncancel={() => (view = { kind: "quick" })}
           onconnect={(credentials) =>
             connect(

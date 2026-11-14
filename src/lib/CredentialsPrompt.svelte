@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount, untrack } from "svelte";
   import { effectiveSettings } from "./inventory.svelte";
   import ProfileForm from "./ProfileForm.svelte";
   import type { Host } from "./workspace";
@@ -10,22 +11,41 @@
      * computer; null when it has none.
      */
     missingProfile: string | null;
+    /**
+     * Why the host's profile could not log in (its SSH agent did not
+     * work), and the profile's username to start from.
+     */
+    fallback?: { reason: string; username: string };
     onconnect: (credentials: { username: string; password: string }) => void;
     /** The missing profile has been set up: connect with it. */
     onprofile: () => void;
     oncancel: () => void;
   }
 
-  let { host, missingProfile, onconnect, onprofile, oncancel }: Props =
-    $props();
+  let {
+    host,
+    missingProfile,
+    fallback,
+    onconnect,
+    onprofile,
+    oncancel,
+  }: Props = $props();
 
   // The port the session will use: the resolved one, else SSH's default.
   const effective = effectiveSettings(() => ({ kind: "host", id: host.id }));
 
-  let username = $state("");
+  let username = $state(untrack(() => fallback?.username) ?? "");
   let password = $state("");
   /** Log in by hand although the host has a profile. */
   let byHand = $state(false);
+  let passwordInput = $state<HTMLInputElement>();
+
+  // After a failed agent login the terminal had focus, and the username
+  // is known: start at the password. (`autofocus` cannot take focus from
+  // the terminal.)
+  onMount(() => {
+    if (fallback) passwordInput?.focus();
+  });
 
   function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -55,6 +75,12 @@
         >Log in once without saving a profile</button
       >
     {:else}
+      {#if fallback}
+        <p class="notice" role="alert">
+          Logging in with the SSH agent did not work: {fallback.reason}. Log in
+          with a password instead.
+        </p>
+      {/if}
       <form onsubmit={submit}>
         <label>
           Username
@@ -63,7 +89,7 @@
             name="username"
             bind:value={username}
             required
-            autofocus
+            autofocus={!fallback}
             autocomplete="off"
             spellcheck="false"
           />
@@ -74,6 +100,7 @@
             name="password"
             type="password"
             bind:value={password}
+            bind:this={passwordInput}
             autocomplete="off"
           />
         </label>

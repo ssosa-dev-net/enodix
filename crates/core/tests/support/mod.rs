@@ -30,6 +30,7 @@
 //! Later tickets extend this file (more auth methods, host keys, ...).
 #![allow(dead_code)]
 
+pub mod agent;
 pub mod workspaces;
 
 use std::collections::HashMap;
@@ -37,14 +38,31 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use netterm_core::session::{SessionEvent, SessionEvents, SessionState, SshAuth, SshTarget};
+use netterm_core::session::{
+    LoginPrompt, SessionEvent, SessionEvents, SessionState, SshAuth, SshTarget,
+};
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
-use russh::server::{Auth, ChannelOpenHandle, Handler, Msg, Server, Session, VerifiedPublicKey};
-use russh::{Channel, ChannelId, Pty};
+use russh::server::{
+    Auth, ChannelOpenHandle, Handler, Msg, Response, Server, Session, VerifiedPublicKey,
+};
+use russh::{Channel, ChannelId, MethodKind, MethodSet, Pty};
 use tokio::net::TcpListener;
 
 pub const USERNAME: &str = "engineer";
 pub const PASSWORD: &str = "correct horse";
+
+/// A user who logs in with [`PASSWORD`] and then a one-time code.
+///
+/// After the password method accepts the password, keyboard-interactive
+/// asks [`CODE_QUESTION`]. Keyboard-interactive on its own asks
+/// [`PASSWORD_QUESTION`] first, then [`CODE_QUESTION`]: two rounds.
+pub const OTP_USERNAME: &str = "engineer-otp";
+pub const ONE_TIME_CODE: &str = "424242";
+pub const PASSWORD_QUESTION: &str = "Password: ";
+pub const CODE_QUESTION: &str = "Verification code: ";
+/// The title and instructions of the code round.
+pub const CODE_NAME: &str = "Two-factor login";
+pub const CODE_INSTRUCTIONS: &str = "Enter the code from your authenticator app.";
 pub const PROMPT: &[u8] = b"test-ssh$ ";
 
 /// The byte a terminal sends for Ctrl+C.
@@ -87,6 +105,17 @@ impl TestSshServer {
         Self::start_on(0).await
     }
 
+    /// Starts a server on a free loopback port that offers only `methods`
+    /// at first (as a device that only takes keyboard-interactive does).
+    pub async fn start_offering(methods: &[MethodKind]) -> Self {
+        Self::start_with(0, Some(MethodSet::from(methods))).await
+    }
+
+    /// The Ed25519 client key the server accepts for [`USERNAME`].
+    pub fn client_key(&self) -> &PrivateKey {
+        &self.client_key
+    }
+
     /// Writes the Ed25519 client key the server accepts to `file`, in
     /// OpenSSH format, encrypted with `passphrase` if one is given.
     pub fn write_client_key(&self, file: &std::path::Path, passphrase: Option<&str>) {
@@ -105,19 +134,25 @@ impl TestSshServer {
 
     /// Starts a server on the given loopback port (0 picks a free one).
     pub async fn start_on(port: u16) -> Self {
+        Self::start_with(port, None).await
+    }
+
+    async fn start_with(port: u16, methods: Option<MethodSet>) -> Self {
         let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let rsa_key = russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap();
         let authorized_keys = Arc::new(vec![
             client_key.public_key().clone(),
             rsa_key.public_key().clone(),
         ]);
+        let defaults = russh::server::Config::default();
         let config = Arc::new(russh::server::Config {
+            methods: methods.unwrap_or(defaults.methods.clone()),
             auth_rejection_time: Duration::ZERO,
             // A small receive window, as on network devices: input larger
             // than this has to wait for the server to make room.
             window_size: 16 * 1024,
             keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()],
-            ..Default::default()
+            ..defaults
         });
         let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -164,6 +199,7 @@ impl Server for ScriptedServer {
         ScriptedShell {
             authorized_keys: self.authorized_keys.clone(),
             channels: HashMap::new(),
+            interactive: Interactive::Start,
         }
     }
 }
@@ -173,6 +209,30 @@ struct ScriptedShell {
     authorized_keys: Arc<Vec<PublicKey>>,
     /// Pty size and pending input line, per channel.
     channels: HashMap<ChannelId, ShellState>,
+    /// Where [`OTP_USERNAME`]'s login has got to.
+    interactive: Interactive,
+}
+
+/// The login of [`OTP_USERNAME`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Interactive {
+    Start,
+    /// The password method accepted the password.
+    PasswordAccepted,
+    AskedPassword,
+    AskedCode,
+}
+
+fn ask(name: &'static str, instructions: &'static str, question: &'static str, echo: bool) -> Auth {
+    Auth::Partial {
+        name: name.into(),
+        instructions: instructions.into(),
+        prompts: vec![(question.into(), echo)].into(),
+    }
+}
+
+fn ask_code() -> Auth {
+    ask(CODE_NAME, CODE_INSTRUCTIONS, CODE_QUESTION, true)
 }
 
 #[derive(Default)]
@@ -242,9 +302,41 @@ impl Handler for ScriptedShell {
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         if user == USERNAME && password == PASSWORD {
             Ok(Auth::Accept)
+        } else if user == OTP_USERNAME && password == PASSWORD {
+            self.interactive = Interactive::PasswordAccepted;
+            Ok(Auth::Reject {
+                proceed_with_methods: Some(MethodSet::from(&[MethodKind::KeyboardInteractive][..])),
+                partial_success: true,
+            })
         } else {
             Ok(Auth::reject())
         }
+    }
+
+    async fn auth_keyboard_interactive<'a>(
+        &'a mut self,
+        user: &str,
+        _submethods: &str,
+        response: Option<Response<'a>>,
+    ) -> Result<Auth, Self::Error> {
+        if user != OTP_USERNAME {
+            return Ok(Auth::reject());
+        }
+        let answer = response
+            .and_then(|mut answers| answers.next())
+            .map(|answer| String::from_utf8_lossy(&answer).into_owned());
+        let (next, auth) = match (self.interactive, answer.as_deref()) {
+            (Interactive::Start, None) => (
+                Interactive::AskedPassword,
+                ask("", "", PASSWORD_QUESTION, false),
+            ),
+            (Interactive::PasswordAccepted, None) => (Interactive::AskedCode, ask_code()),
+            (Interactive::AskedPassword, Some(PASSWORD)) => (Interactive::AskedCode, ask_code()),
+            (Interactive::AskedCode, Some(ONE_TIME_CODE)) => (Interactive::Start, Auth::Accept),
+            _ => (Interactive::Start, Auth::reject()),
+        };
+        self.interactive = next;
+        Ok(auth)
     }
 
     async fn auth_publickey(
@@ -362,12 +454,26 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
             match events.next().await {
                 Some(SessionEvent::State(state)) => return state,
                 Some(SessionEvent::Output(bytes)) => events.acknowledge(bytes.len()),
+                Some(SessionEvent::Prompt(prompt)) => {
+                    panic!("expected a state change, got the login prompt {prompt:?}")
+                }
                 None => panic!("session events ended while waiting for a state change"),
             }
         }
     })
     .await
     .expect("timed out waiting for a state change")
+}
+
+/// Waits for the server's next login questions.
+pub async fn next_prompt(events: &mut SessionEvents) -> LoginPrompt {
+    let event = tokio::time::timeout(WAIT, events.next())
+        .await
+        .expect("timed out waiting for a login prompt");
+    match event {
+        Some(SessionEvent::Prompt(prompt)) => prompt,
+        other => panic!("expected a login prompt, got {other:?}"),
+    }
 }
 
 /// Collects output until it ends with `expected`, and returns all of it.

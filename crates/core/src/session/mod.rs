@@ -6,6 +6,7 @@
 //! is underneath once a session is open. Output goes through the
 //! output pipeline: batching and flow control (see [`OutputOptions`]).
 
+mod agent;
 mod output;
 mod ssh;
 
@@ -61,6 +62,23 @@ pub enum SshAuth {
         key_file: PathBuf,
         passphrase: Option<String>,
     },
+    /// Public-key authentication with the keys an SSH agent holds: the
+    /// agent signs, and the private keys never leave it.
+    Agent(SshAgent),
+}
+
+/// Which SSH agent to ask for keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshAgent {
+    /// The agent this computer runs: the one `SSH_AUTH_SOCK` names if it is
+    /// set; otherwise, on Windows, the Windows OpenSSH agent and Pageant
+    /// (the keys of both, if both run).
+    System,
+    /// The OpenSSH-protocol agent listening on this named pipe (Windows) or
+    /// Unix socket.
+    At(PathBuf),
+    /// Pageant (Windows only).
+    Pageant,
 }
 
 impl fmt::Debug for SshAuth {
@@ -75,6 +93,7 @@ impl fmt::Debug for SshAuth {
                 .field("key_file", key_file)
                 .field("passphrase", &passphrase.as_ref().map(|_| ".."))
                 .finish(),
+            Self::Agent(agent) => f.debug_tuple("Agent").field(agent).finish(),
         }
     }
 }
@@ -85,6 +104,30 @@ pub enum SessionEvent {
     /// Bytes from the device, exactly as received.
     Output(Vec<u8>),
     State(SessionState),
+    /// While connecting, the server asks the user something
+    /// (keyboard-interactive login: a password, a one-time code, ...).
+    /// Answer with [`SessionManager::answer`]; a server may ask several
+    /// times in a row.
+    Prompt(LoginPrompt),
+}
+
+/// Questions the server asks the user while logging in.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LoginPrompt {
+    /// A title for the questions; often empty.
+    pub name: String,
+    /// What to tell the user before the questions; often empty.
+    pub instructions: String,
+    /// The questions, in order; the answers go back in the same order.
+    pub questions: Vec<LoginQuestion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LoginQuestion {
+    /// What the server asks, such as `Password: `.
+    pub text: String,
+    /// Whether the answer may be shown as it is typed; `false` for secrets.
+    pub echo: bool,
 }
 
 /// A session goes `Connecting`, then `Connected`, then `Closed`; or straight
@@ -132,9 +175,39 @@ pub enum OpenError {
     /// The private key to log in with could not be read or decrypted.
     #[error("cannot use the private key {file}: {reason}")]
     PrivateKey { file: String, reason: String },
+    /// Logging in with the SSH agent did not work. The user can still log
+    /// in another way, such as with a password.
+    #[error("{0}")]
+    Agent(AgentError),
     /// The device was reached but the session could not be set up.
     #[error("could not open the session: {0}")]
     Protocol(String),
+}
+
+/// Why logging in with an SSH agent did not work.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AgentError {
+    /// No agent could be reached; says which were tried and why.
+    #[error("no SSH agent is running ({0})")]
+    NotRunning(String),
+    /// The agent runs but holds no keys.
+    #[error("the SSH agent holds no keys")]
+    NoKeys,
+    /// The server accepted none of the agent's keys.
+    #[error("the server accepted none of the SSH agent's keys")]
+    KeysRefused,
+    /// The agent failed while signing (or refused to).
+    #[error("the SSH agent failed: {0}")]
+    Failed(String),
+}
+
+impl CloseReason {
+    /// Whether the session failed in a way that logging in with a password
+    /// might get past: the SSH agent was not running or had no key the
+    /// server accepts.
+    pub fn offers_password_login(&self) -> bool {
+        matches!(self, Self::Failed(OpenError::Agent(_)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -262,6 +335,13 @@ impl SessionManager {
         self.send(id, Command::Resize(size))
     }
 
+    /// Answers the questions of the last [`SessionEvent::Prompt`], in their
+    /// order. Missing answers count as empty; extra ones are dropped. To
+    /// refuse to answer, close the session.
+    pub fn answer(&self, id: SessionId, answers: Vec<String>) -> Result<(), SessionError> {
+        self.send(id, Command::Answer(answers))
+    }
+
     /// Closes the session. The `Closed` state follows on its event stream.
     pub fn close(&self, id: SessionId) -> Result<(), SessionError> {
         self.send(id, Command::Close)
@@ -285,6 +365,8 @@ impl SessionManager {
 enum Command {
     Write(Vec<u8>),
     Resize(TerminalSize),
+    /// Answers to a login prompt.
+    Answer(Vec<String>),
     Close,
 }
 
@@ -309,15 +391,31 @@ impl Link {
     }
 
     /// Resolves when the session should be abandoned while it is still being
-    /// opened. Input typed meanwhile is dropped; resizes are remembered.
-    async fn close_requested(&mut self) {
+    /// opened. Input typed meanwhile is dropped; resizes are remembered;
+    /// answers to login prompts go to `answers`.
+    async fn close_requested(&mut self, answers: &mpsc::UnboundedSender<Vec<String>>) {
         loop {
             match self.command().await {
                 Command::Close => return,
                 Command::Resize(size) => self.size = size,
+                Command::Answer(given) => {
+                    let _ = answers.send(given);
+                }
                 Command::Write(_) => {}
             }
         }
+    }
+
+    /// Something that asks the user login questions while the session is
+    /// being opened, and the sender [`Link::close_requested`] passes their
+    /// answers to.
+    fn prompter(&self) -> (Prompter, mpsc::UnboundedSender<Vec<String>>) {
+        let (answers_tx, answers) = mpsc::unbounded_channel();
+        let prompter = Prompter {
+            events: self.events.clone(),
+            answers,
+        };
+        (prompter, answers_tx)
     }
 
     /// The session's flow control, for waiting until there is room to read.
@@ -334,5 +432,25 @@ impl Link {
 
     fn state(&mut self, state: SessionState) {
         let _ = self.events.send(SessionEvent::State(state));
+    }
+}
+
+/// Asks the session's owner login questions and waits for the answers.
+struct Prompter {
+    events: mpsc::UnboundedSender<SessionEvent>,
+    answers: mpsc::UnboundedReceiver<Vec<String>>,
+}
+
+impl Prompter {
+    /// The answers to `prompt`, exactly one per question; `None` if nobody
+    /// is listening any more.
+    async fn ask(&mut self, prompt: LoginPrompt) -> Option<Vec<String>> {
+        // Answers sent before this prompt was asked were for an earlier one.
+        while self.answers.try_recv().is_ok() {}
+        let count = prompt.questions.len();
+        self.events.send(SessionEvent::Prompt(prompt)).ok()?;
+        let mut answers = self.answers.recv().await?;
+        answers.resize(count, String::new());
+        Some(answers)
     }
 }
