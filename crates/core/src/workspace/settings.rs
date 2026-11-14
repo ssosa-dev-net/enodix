@@ -32,6 +32,7 @@ pub(super) const SERIAL: &str = "serial";
 pub(super) const WEB_LINKS: &str = "web_links";
 
 /// Serial parameter keys, inside `serial`.
+const SERIAL_PORT: &str = "port";
 const BAUD_RATE: &str = "baud_rate";
 const DATA_BITS: &str = "data_bits";
 const PARITY: &str = "parity";
@@ -77,6 +78,9 @@ pub struct Settings {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SerialSettings {
+    /// The serial port to open, as the system names it (`COM3`,
+    /// `/dev/ttyUSB0`); never blank.
+    pub port: Option<String>,
     pub baud_rate: Option<u32>,
     /// 5 to 8.
     pub data_bits: Option<u8>,
@@ -215,6 +219,8 @@ pub struct EffectiveSettings {
 /// Effective serial line parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EffectiveSerial {
+    /// `None` when nothing sets one: a session has to be told which.
+    pub port: Option<Effective<String>>,
     pub baud_rate: Effective<u32>,
     pub data_bits: Effective<u8>,
     pub parity: Effective<Parity>,
@@ -288,6 +294,7 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
         environment: nearest(levels, |s| s.environment),
         web_links,
         serial: EffectiveSerial {
+            port: nearest(levels, |s| s.serial.port.clone()),
             baud_rate: or_default(nearest(levels, |s| s.serial.baud_rate), DEFAULT_BAUD_RATE),
             data_bits: or_default(nearest(levels, |s| s.serial.data_bits), DEFAULT_DATA_BITS),
             parity: or_default(nearest(levels, |s| s.serial.parity), Parity::None),
@@ -383,6 +390,12 @@ fn serial_from_mapping(serial: &Mapping) -> Result<SerialSettings, String> {
         })
     };
     Ok(SerialSettings {
+        port: optional_text(serial, SERIAL_PORT).map_err(|_| {
+            format!(
+                "`{}` must be the name of a serial port, such as COM3",
+                key(SERIAL_PORT)
+            )
+        })?,
         baud_rate: number(BAUD_RATE, 1, u64::from(u32::MAX))?.map(|n| n as u32),
         data_bits: number(DATA_BITS, 5, 8)?.map(|n| n as u8),
         parity: read_choice(serial, PARITY, Parity::parse, Parity::expected)
@@ -505,6 +518,10 @@ fn checked(edit: &Settings) -> Result<Settings, EditError> {
         credential_profile: normalize(edit.credential_profile.as_deref()),
         jump_host: normalize(edit.jump_host.as_deref()),
         web_links,
+        serial: SerialSettings {
+            port: normalize(edit.serial.port.as_deref()),
+            ..edit.serial.clone()
+        },
         ..edit.clone()
     })
 }
@@ -577,7 +594,8 @@ pub(super) fn apply_settings(
             .and_then(Value::as_mapping)
             .cloned()
             .unwrap_or_default();
-        let parameters: [(&str, Option<Value>); 5] = [
+        let parameters: [(&str, Option<Value>); 6] = [
+            (SERIAL_PORT, edit.serial.port.clone().map(Value::from)),
             (BAUD_RATE, edit.serial.baud_rate.map(Value::from)),
             (DATA_BITS, edit.serial.data_bits.map(Value::from)),
             (PARITY, text(edit.serial.parity.map(Parity::as_str))),

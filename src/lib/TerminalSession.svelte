@@ -254,6 +254,18 @@
     <span class="status {status.state}" role="status" title={statusText}
       >{statusText}</span
     >
+    {#if session?.transport === "serial" && status.state === "connected"}
+      <button
+        data-send-break
+        onclick={() => {
+          session?.sendBreak();
+          xterm?.focus();
+        }}
+        title="Send a break signal on the line (to interrupt a device's boot)"
+      >
+        Send break
+      </button>
+    {/if}
     <button
       onclick={() => session && onduplicate(session.id)}
       disabled={!session}

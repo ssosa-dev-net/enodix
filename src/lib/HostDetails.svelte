@@ -45,9 +45,9 @@
     telnet: "Telnet",
     serial: "Serial",
   };
-  /** The ways in besides the host's own protocol (serial: not yet). */
+  /** The ways in besides the host's own protocol. */
   const otherWays = $derived(
-    (["ssh", "telnet"] as const).filter(
+    (["ssh", "telnet", "serial"] as const).filter(
       (protocol) => protocol !== effective.current?.protocol.value,
     ),
   );
@@ -63,6 +63,16 @@
     const jump = effective.current?.jump_host?.value;
     return jump && jump.toLowerCase() !== host.id.toLowerCase() ? jump : null;
   });
+
+  /** Serial needs a port, which nothing sets by default. */
+  const noSerialPort = $derived(
+    effective.current !== null && effective.current.serial.port === null,
+  );
+
+  /** The host's own way in is serial, but no port is set. */
+  const serialWithoutPort = $derived(
+    noSerialPort && effective.current?.protocol.value === "serial",
+  );
 
   let newKey = $state("");
   let newValue = $state("");
@@ -118,17 +128,26 @@
     <div class="actions">
       <button
         data-connect="default"
-        title={ownWay ? `Connect by ${ownWay}, the host's protocol` : "Connect"}
+        disabled={serialWithoutPort}
+        title={serialWithoutPort
+          ? "Choose the serial port in the serial line settings first"
+          : ownWay
+            ? `Connect by ${ownWay}, the host's protocol`
+            : "Connect"}
         onclick={() => onconnect(host)}>Connect</button
       >
       {#each otherWays as protocol (protocol)}
-        {@const blocked = protocol === "telnet" && jumpHost !== null}
+        {@const blocked =
+          (protocol === "telnet" && jumpHost !== null) ||
+          (protocol === "serial" && noSerialPort)}
         <button
           data-connect={protocol}
           disabled={blocked}
-          title={blocked
-            ? `Telnet cannot go through the jump host ${jumpHost}`
-            : `Connect by ${protocolNames[protocol]} instead`}
+          title={!blocked
+            ? `Connect by ${protocolNames[protocol]} instead`
+            : protocol === "serial"
+              ? "Choose the serial port in the serial line settings first"
+              : `Telnet cannot go through the jump host ${jumpHost}`}
           onclick={() => onconnect(host, protocol)}
           >{protocolNames[protocol]}</button
         >

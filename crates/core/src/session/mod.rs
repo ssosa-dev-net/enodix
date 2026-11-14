@@ -10,12 +10,14 @@ mod agent;
 mod algorithms;
 mod output;
 mod recording;
+mod serial;
 mod ssh;
 mod tcp;
 mod telnet;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -30,6 +32,10 @@ pub use algorithms::{
 };
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
+pub use serial::{
+    SerialLine, SerialParameters, SerialPortInfo, SerialPortKind, SerialPorts, SerialTarget,
+    SystemSerialPorts, BREAK_DURATION, SERIAL_POLL,
+};
 
 /// Identifies one session within its [`SessionManager`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,17 +53,38 @@ pub struct TerminalSize {
 pub enum SessionTarget {
     Ssh(SshTarget),
     Telnet(TelnetTarget),
+    Serial(SerialTarget),
 }
 
 impl SessionTarget {
-    /// Whether the session's traffic is encrypted on the network. Telnet
-    /// sends everything, passwords included, in the clear.
+    /// Whether the session's traffic is safe from eavesdroppers on the
+    /// network: SSH encrypts it; telnet sends everything, passwords
+    /// included, in the clear. A serial line does not cross a network, so
+    /// it counts as safe.
     pub fn encrypted(&self) -> bool {
         match self {
-            Self::Ssh(_) => true,
+            Self::Ssh(_) | Self::Serial(_) => true,
             Self::Telnet(_) => false,
         }
     }
+
+    /// The transport the session uses.
+    pub fn transport(&self) -> Transport {
+        match self {
+            Self::Ssh(_) => Transport::Ssh,
+            Self::Telnet(_) => Transport::Telnet,
+            Self::Serial(_) => Transport::Serial,
+        }
+    }
+}
+
+/// How a session reaches its device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Transport {
+    Ssh,
+    Telnet,
+    Serial,
 }
 
 /// The port SSH uses when nothing sets one.
@@ -274,6 +301,10 @@ pub enum CloseReason {
     /// The connection went away while the session was open.
     #[error("connection lost")]
     ConnectionLost,
+    /// The serial port stopped working while the session was open: most
+    /// often, its USB adapter was unplugged.
+    #[error("the serial port {port} stopped working; was the adapter unplugged? ({reason})")]
+    PortLost { port: String, reason: String },
     /// The session never got as far as `Connected`.
     #[error("{0}")]
     Failed(OpenError),
@@ -328,6 +359,10 @@ pub enum OpenError {
     /// saved.
     #[error("{0}")]
     KnownHosts(String),
+    /// The serial port could not be opened: it does not exist, another
+    /// program holds it, or it refused the line parameters.
+    #[error("cannot open the serial port {port}: {reason}")]
+    SerialPort { port: String, reason: String },
     /// The device was reached but the session could not be set up.
     #[error("could not open the session: {0}")]
     Protocol(String),
@@ -396,6 +431,9 @@ pub enum SessionError {
     /// The session is still open, so it cannot be reconnected.
     #[error("the session is still open")]
     StillOpen,
+    /// Only serial sessions can send a break.
+    #[error("only serial sessions can send a break")]
+    BreakUnsupported,
 }
 
 /// Opens, tracks and closes sessions.
@@ -412,6 +450,8 @@ struct Inner {
     output: OutputOptions,
     /// The host keys SSH sessions trust without asking.
     known_hosts: KnownHosts,
+    /// Where serial sessions find their ports.
+    serial_ports: Arc<dyn SerialPorts>,
     /// Every session not discarded, open or closed.
     sessions: Mutex<HashMap<SessionId, Entry>>,
 }
@@ -452,14 +492,31 @@ impl SessionManager {
 
     /// A manager whose sessions batch and pace their output as `options` say.
     pub fn with_output_options(known_hosts: KnownHosts, options: OutputOptions) -> Self {
+        Self::with_serial_ports(known_hosts, options, Arc::new(SystemSerialPorts))
+    }
+
+    /// A manager whose serial sessions open their ports through
+    /// `serial_ports` (the others use the system's, [`SystemSerialPorts`]).
+    pub fn with_serial_ports(
+        known_hosts: KnownHosts,
+        options: OutputOptions,
+        serial_ports: Arc<dyn SerialPorts>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 next_id: AtomicU64::new(0),
                 output: options,
                 known_hosts,
+                serial_ports,
                 sessions: Mutex::default(),
             }),
         }
+    }
+
+    /// The serial ports there are now, with their adapters' descriptions,
+    /// in port order (`COM3` before `COM10`). Call again to refresh.
+    pub fn serial_ports(&self) -> io::Result<Vec<SerialPortInfo>> {
+        Ok(serial::sorted(self.inner.serial_ports.list()?))
     }
 
     /// Starts opening a session and returns at once; progress and failure
@@ -543,6 +600,7 @@ impl SessionManager {
         let manager = Arc::downgrade(&self.inner);
         let link_flow = flow.clone();
         let known_hosts = self.inner.known_hosts.clone();
+        let serial_ports = self.inner.serial_ports.clone();
         let target = entry.target.clone();
         tokio::spawn(async move {
             let mut link = Link {
@@ -555,6 +613,7 @@ impl SessionManager {
             let reason = match target {
                 SessionTarget::Ssh(target) => ssh::run(target, known_hosts, &mut link).await,
                 SessionTarget::Telnet(target) => telnet::run(target, &mut link).await,
+                SessionTarget::Serial(target) => serial::run(target, serial_ports, &mut link).await,
             };
             // Mark the session closed before announcing it, so that nobody
             // who has seen `Closed` can still reach it, and anybody can
@@ -571,10 +630,24 @@ impl SessionManager {
     /// Whether the session `id` (open or closed, until it is discarded) is
     /// encrypted on the network: see [`SessionTarget::encrypted`].
     pub fn encrypted(&self, id: SessionId) -> Result<bool, SessionError> {
+        self.target(id, SessionTarget::encrypted)
+    }
+
+    /// The transport of the session `id` (open or closed, until it is
+    /// discarded).
+    pub fn transport(&self, id: SessionId) -> Result<Transport, SessionError> {
+        self.target(id, SessionTarget::transport)
+    }
+
+    fn target<T>(
+        &self,
+        id: SessionId,
+        get: impl FnOnce(&SessionTarget) -> T,
+    ) -> Result<T, SessionError> {
         self.inner
             .sessions()
             .get(&id)
-            .map(|entry| entry.target.encrypted())
+            .map(|entry| get(&entry.target))
             .ok_or(SessionError::NotFound)
     }
 
@@ -613,6 +686,21 @@ impl SessionManager {
         self.send(id, Command::HostKey(decision))
     }
 
+    /// Sends a break on a serial session's line (held for
+    /// [`BREAK_DURATION`]), after the input written before it; for
+    /// interrupting a device's boot. Other sessions refuse it.
+    pub fn send_break(&self, id: SessionId) -> Result<(), SessionError> {
+        let sessions = self.inner.sessions();
+        let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
+        if entry.target.transport() != Transport::Serial {
+            return Err(SessionError::BreakUnsupported);
+        }
+        open_session(&sessions, id)?
+            .commands
+            .send(Command::Break)
+            .map_err(|_| SessionError::NotFound)
+    }
+
     /// Closes the session. The `Closed` state follows on its event stream.
     pub fn close(&self, id: SessionId) -> Result<(), SessionError> {
         self.send(id, Command::Close)
@@ -646,6 +734,8 @@ enum Command {
     Answer(Vec<String>),
     /// The decision on a host key.
     HostKey(HostKeyDecision),
+    /// A break on a serial line.
+    Break,
     Close,
 }
 
@@ -683,7 +773,7 @@ impl Link {
                 Command::HostKey(decision) => {
                     let _ = replies.decisions.send(decision);
                 }
-                Command::Write(_) => {}
+                Command::Write(_) | Command::Break => {}
             }
         }
     }
@@ -722,6 +812,13 @@ impl Link {
     /// listening any more.
     fn output(&mut self, bytes: Vec<u8>) -> bool {
         self.flow.read(bytes.len());
+        self.events.send(SessionEvent::Output(bytes)).is_ok()
+    }
+
+    /// Passes on output that another thread read from the device and
+    /// already counted in [`Link::flow`]. Returns `false` if nobody is
+    /// listening any more.
+    fn forward_counted(&mut self, bytes: Vec<u8>) -> bool {
         self.events.send(SessionEvent::Output(bytes)).is_ok()
     }
 

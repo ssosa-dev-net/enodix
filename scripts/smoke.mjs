@@ -722,6 +722,17 @@ async function main() {
     step,
   });
 
+  await serial({
+    evaluate,
+    text,
+    click,
+    fillForm,
+    doubleClick,
+    status,
+    screenshot,
+    step,
+  });
+
   await editInventory({
     evaluate,
     text,
@@ -1461,6 +1472,111 @@ async function telnet({
   rmSync(hostFile);
   await until(
     "the telnet host gone from the tree",
+    async () => !(await exists(hostRow)),
+  );
+}
+
+/** Serial consoles: the quick-connect form lists the detected ports with
+ * their adapters and can refresh them, defaults to 9600 8N1, and opens a
+ * port without an inventory host; a serial host opens its own port on
+ * double-click. The smoke machine has no port to talk to, so the sessions
+ * open a port that does not exist and the failure names it (break and
+ * unplug need a real adapter). */
+async function serial({
+  evaluate,
+  text,
+  click,
+  fillForm,
+  doubleClick,
+  status,
+  screenshot,
+  step,
+}) {
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const value = (selector) =>
+    evaluate(`document.querySelector(${JSON.stringify(selector)}).value`);
+  const missingPort = "COM250";
+  const failure = `Closed: cannot open the serial port ${missingPort}`;
+
+  await until("the quick-connect form", () => exists("[data-quick-mode]"));
+  await clickOn("[data-quick-mode=serial]");
+  await until("the serial port list", async () => {
+    const listed = await exists("[data-serial-port]");
+    return listed || (await exists("[data-serial-none]"));
+  });
+  const ports = await evaluate(
+    `[...document.querySelectorAll("[data-serial-port]")].map((b) => b.textContent.trim().replace(/\s+/g, " "))`,
+  );
+  await clickOn("[data-quick-serial] [data-serial-refresh]");
+  await until("the refreshed list", async () => {
+    const refreshing = await evaluate(
+      `document.querySelector("[data-quick-serial] [data-serial-refresh]").disabled`,
+    );
+    return !refreshing && (await exists("[data-serial-ports]"));
+  });
+  if (ports.length > 0) {
+    await clickOn(`[data-serial-port="${ports[0].split(" ")[0]}"]`);
+    if ((await value("[name=serial-port]")) !== ports[0].split(" ")[0]) {
+      fail("picking a detected port did not choose it");
+    }
+  }
+  const defaults = [
+    await value("[name=baud-rate]"),
+    await value("[name=data-bits]"),
+    await value("[name=parity]"),
+    await value("[name=stop-bits]"),
+    await value("[name=flow-control]"),
+  ].join(" ");
+  if (defaults !== "9600 8 none 1 none") {
+    fail(
+      `the serial defaults are ${defaults}, not 9600 8N1 without flow control`,
+    );
+  }
+  await screenshot("serial-quick-connect");
+  step(
+    `the serial form lists ${ports.length ? ports.join(", ") : "no ports"} (refreshable), defaulting to 9600 8N1`,
+  );
+
+  await fillForm({ "serial-port": missingPort }, "[data-quick-serial]");
+  await until(`"${failure}"`, async () => (await status()).startsWith(failure));
+  if (await exists(".slot:not([hidden]) [data-unencrypted]")) {
+    fail("a serial session is marked unencrypted");
+  }
+  step(
+    `a serial port opened without a host; a missing one is named: "${await status()}"`,
+  );
+  await click("New connection");
+
+  // A host whose protocol is serial opens its own port and line settings,
+  // with no credentials prompt.
+  const hostRow = 'nav [data-host="Lab/serial-sw.yaml"]';
+  const hostFile = join(workspace, "Lab", "serial-sw.yaml");
+  writeFileSync(
+    hostFile,
+    `name: serial-sw\naddress: 192.0.2.50\nprotocol: serial\nserial:\n  port: ${missingPort}\n  baud_rate: 115200\n`,
+  );
+  await until("the serial host in the tree", () => exists(hostRow));
+  await clickOn(hostRow);
+  await until("its serial port in the side panel", async () =>
+    (await text('.side [data-origin="serial.port"]')).includes(
+      `${missingPort} · `,
+    ),
+  );
+  await doubleClick(hostRow);
+  await until(`"${failure}" for the host`, async () =>
+    (await status()).startsWith(failure),
+  );
+  if (await exists("main input[name=password]")) {
+    fail("a serial host asked for credentials");
+  }
+  step("double-clicking a serial host opened the port its settings name");
+  await click("New connection");
+  rmSync(hostFile);
+  await until(
+    "the serial host gone from the tree",
     async () => !(await exists(hostRow)),
   );
 }

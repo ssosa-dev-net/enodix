@@ -1,6 +1,7 @@
 <script lang="ts">
   import { describeOrigin, isOwn, type Item } from "./inventory.svelte";
   import { profileNames } from "./profiles.svelte";
+  import { serialPorts, type SerialPortInfo } from "./session";
   import type { Effective, EffectiveSettings, Settings } from "./workspace";
 
   interface Props {
@@ -148,11 +149,13 @@
     own: (s) => s.serial[key]?.toString() ?? "",
     set: (s, v) => ({ ...s, serial: { ...s.serial, [key]: parse(v) } }),
     effective: (e) => e.serial[key],
+    unset: key === "port" ? "none: choose one to open by serial" : undefined,
   });
   const choices = (...values: string[]): Options =>
     values.map((value) => [value, value]);
 
   const serial: Row[] = [
+    serialRow("port", "Port", { kind: "text", list: "serial-ports" }, toText),
     serialRow(
       "baud_rate",
       "Baud rate",
@@ -170,7 +173,14 @@
       "Parity",
       {
         kind: "choice",
-        options: choices("none", "odd", "even", "mark", "space"),
+        // Kept for files that name them; serial ports refuse to open so.
+        options: [
+          ["none", "none"],
+          ["odd", "odd"],
+          ["even", "even"],
+          ["mark", "mark (not supported by serial ports)"],
+          ["space", "space (not supported by serial ports)"],
+        ],
       },
       (v) => v || null,
     ),
@@ -187,6 +197,19 @@
       (v) => v || null,
     ),
   ];
+
+  /** The detected serial ports, offered for the port setting. */
+  let ports = $state<SerialPortInfo[]>([]);
+  let portsError = $state<string | null>(null);
+  async function refreshPorts() {
+    try {
+      ports = await serialPorts();
+      portsError = null;
+    } catch (error) {
+      portsError = `Cannot list the serial ports: ${error}`;
+    }
+  }
+  void refreshPorts();
 
   const BAUD_RATES = [
     1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400,
@@ -315,8 +338,24 @@
 </section>
 
 <section aria-label="Serial line">
-  <h3>Serial line</h3>
+  <h3>
+    Serial line
+    <button
+      class="small"
+      data-serial-refresh
+      title="Look for serial ports again"
+      onclick={refreshPorts}>Refresh ports</button
+    >
+  </h3>
   {@render rowsOf(serial)}
+  {#if portsError}
+    <span class="origin" role="alert">{portsError}</span>
+  {/if}
+  <datalist id="serial-ports">
+    {#each ports as port (port.name)}
+      <option value={port.name}>{port.description || port.name}</option>
+    {/each}
+  </datalist>
   <datalist id="baud-rates">
     {#each BAUD_RATES as rate (rate)}
       <option value={rate}></option>
@@ -386,6 +425,9 @@
   }
 
   h3 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin: 0 0 0.4rem;
     font-size: 0.8rem;
     font-weight: 600;

@@ -44,7 +44,9 @@ export type HostLogin =
   | { kind: "notSetUp"; profile: string }
   | { kind: "prompt" }
   /** Over telnet: connect at once; the device asks in the terminal. */
-  | { kind: "telnet" };
+  | { kind: "telnet" }
+  /** On its serial console: connect at once, as for telnet. */
+  | { kind: "serial" };
 
 export function listProfiles() {
   return invoke<ProfilesView>("profiles_list");
