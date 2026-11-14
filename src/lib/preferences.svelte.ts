@@ -22,11 +22,23 @@ export interface Preferences {
   confirmMultiLinePaste: boolean;
   /** Look for a newer version at start (off: no connection on its own). */
   checkForUpdates: boolean;
+  /** Side panel widths in pixels (`PANEL_WIDTHS`). */
+  leftPanelWidth: number;
+  rightPanelWidth: number;
+  /** A side panel folded away, for a wider terminal. */
+  leftPanelHidden: boolean;
+  rightPanelHidden: boolean;
 }
 
 /** The core's limits (`netterm_core::preferences`), for the form. */
 export const FONT_SIZES = { min: 8, max: 36 } as const;
 export const MAX_SCROLLBACK = 100_000;
+export const PANEL_WIDTHS = {
+  min: 200,
+  max: 800,
+  left: 288,
+  right: 304,
+} as const;
 
 /** Offered in the font field; any installed font can be typed. */
 export const SUGGESTED_FONTS = [
@@ -55,6 +67,10 @@ export const preferences = $state({
     highlighting: true,
     confirmMultiLinePaste: true,
     checkForUpdates: true,
+    leftPanelWidth: PANEL_WIDTHS.left,
+    rightPanelWidth: PANEL_WIDTHS.right,
+    leftPanelHidden: false,
+    rightPanelHidden: false,
   } as Preferences,
   /** Whether the operating system is set to dark. */
   systemDark: systemDark.matches,
@@ -82,17 +98,30 @@ let queue: Promise<void> = Promise.resolve();
 
 /** Runs `request` after the earlier ones and shows what the core saved; on
  * failure, says why and shows what the core still has. */
-function adopt(request: () => Promise<Preferences>): Promise<void> {
+/** Changes shown but not saved yet. Every answer from the core is shown
+ * with these over it, so an earlier request's answer cannot undo a newer
+ * change (two quick toggles would otherwise end where they started). */
+let pending: Partial<Preferences>[] = [];
+
+function adopt(
+  request: () => Promise<Preferences>,
+  saving?: Partial<Preferences>,
+): Promise<void> {
   queue = queue.then(async () => {
+    const shown = (answer: Preferences) => {
+      if (saving) pending = pending.filter((change) => change !== saving);
+      preferences.current = Object.assign({}, answer, ...pending);
+    };
     try {
-      preferences.current = await request();
+      shown(await request());
       preferences.error = null;
     } catch (error) {
       preferences.error = String(error);
       try {
-        preferences.current = await invoke<Preferences>("preferences_get");
+        shown(await invoke<Preferences>("preferences_get"));
       } catch {
         // Keep what is shown; the error says it was not saved.
+        if (saving) pending = pending.filter((change) => change !== saving);
       }
     }
   });
@@ -106,12 +135,15 @@ export function loadPreferences() {
 /** Saves `changes` over the current preferences (the core normalises). */
 export function changePreferences(changes: Partial<Preferences>) {
   // Shown at once; the core's answer then replaces it.
+  pending.push(changes);
   preferences.current = { ...preferences.current, ...changes };
-  return adopt(() =>
-    invoke<Preferences>("preferences_save", {
-      // Over what the earlier requests left, when this one's turn comes.
-      preferences: { ...preferences.current, ...changes },
-    }),
+  return adopt(
+    () =>
+      invoke<Preferences>("preferences_save", {
+        // Over what the earlier requests left, when this one's turn comes.
+        preferences: { ...preferences.current, ...changes },
+      }),
+    changes,
   );
 }
 

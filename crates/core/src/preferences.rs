@@ -26,6 +26,12 @@ pub const MAX_FONT_SIZE: u16 = 36;
 pub const DEFAULT_SCROLLBACK: u32 = 10_000;
 /// Lines kept per terminal at most; each terminal holds its own.
 pub const MAX_SCROLLBACK: u32 = 100_000;
+/// Side panel widths, in CSS pixels: the workspace panel (left) and the
+/// host or folder panel (right).
+pub const DEFAULT_LEFT_PANEL_WIDTH: u16 = 288;
+pub const DEFAULT_RIGHT_PANEL_WIDTH: u16 = 304;
+pub const MIN_PANEL_WIDTH: u16 = 200;
+pub const MAX_PANEL_WIDTH: u16 = 800;
 
 /// The app's colours.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +79,15 @@ pub struct Preferences {
     /// The app looks for a newer release once at start (see
     /// [`crate::update`]). Off, it makes no connection on its own.
     pub check_for_updates: bool,
+    /// The workspace panel's width (pixels, `MIN_PANEL_WIDTH` to
+    /// `MAX_PANEL_WIDTH`).
+    pub left_panel_width: u16,
+    /// The host or folder panel's width (same range).
+    pub right_panel_width: u16,
+    /// The workspace panel is folded away, for a wider terminal.
+    pub left_panel_hidden: bool,
+    /// The host or folder panel is folded away.
+    pub right_panel_hidden: bool,
 }
 
 impl Default for Preferences {
@@ -87,6 +102,10 @@ impl Default for Preferences {
             highlighting: true,
             confirm_multi_line_paste: true,
             check_for_updates: true,
+            left_panel_width: DEFAULT_LEFT_PANEL_WIDTH,
+            right_panel_width: DEFAULT_RIGHT_PANEL_WIDTH,
+            left_panel_hidden: false,
+            right_panel_hidden: false,
         }
     }
 }
@@ -114,6 +133,14 @@ impl Preferences {
                 .unwrap_or(defaults.confirm_multi_line_paste),
             check_for_updates: read(&mapping, "check_for_updates")
                 .unwrap_or(defaults.check_for_updates),
+            left_panel_width: read_number(&mapping, "left_panel_width", u16::MAX)
+                .unwrap_or(defaults.left_panel_width),
+            right_panel_width: read_number(&mapping, "right_panel_width", u16::MAX)
+                .unwrap_or(defaults.right_panel_width),
+            left_panel_hidden: read(&mapping, "left_panel_hidden")
+                .unwrap_or(defaults.left_panel_hidden),
+            right_panel_hidden: read(&mapping, "right_panel_hidden")
+                .unwrap_or(defaults.right_panel_hidden),
         }
         .normalized()
     }
@@ -141,6 +168,10 @@ impl Preferences {
             preferences.confirm_multi_line_paste.into(),
         );
         put("check_for_updates", preferences.check_for_updates.into());
+        put("left_panel_width", preferences.left_panel_width.into());
+        put("right_panel_width", preferences.right_panel_width.into());
+        put("left_panel_hidden", preferences.left_panel_hidden.into());
+        put("right_panel_hidden", preferences.right_panel_hidden.into());
         let text = serde_norway::to_string(&mapping).map_err(io::Error::other)?;
         fs::create_dir_all(data_folder)?;
         let temporary = data_folder.join(format!("{FILE_NAME}.tmp"));
@@ -154,6 +185,12 @@ impl Preferences {
     pub fn normalized(mut self) -> Self {
         self.font_size = self.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         self.scrollback = self.scrollback.min(MAX_SCROLLBACK);
+        self.left_panel_width = self
+            .left_panel_width
+            .clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
+        self.right_panel_width = self
+            .right_panel_width
+            .clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
         let family = self.font_family.trim();
         self.font_family = if family.is_empty() {
             DEFAULT_FONT_FAMILY.into()

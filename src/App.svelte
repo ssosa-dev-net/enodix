@@ -13,6 +13,7 @@
     type PaneHandlers,
     type TabInfo,
   } from "./lib/PaneView.svelte";
+  import PanelResizer from "./lib/PanelResizer.svelte";
   import PreferencesDialog from "./lib/PreferencesDialog.svelte";
   import ProfilesDialog from "./lib/ProfilesDialog.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
@@ -40,8 +41,10 @@
   import { snippets } from "./lib/snippets.svelte";
   import { NO_SAFETY } from "./lib/paste";
   import {
+    changePreferences,
     isDark,
     loadPreferences,
+    PANEL_WIDTHS,
     preferences,
     zoomFont,
   } from "./lib/preferences.svelte";
@@ -328,6 +331,45 @@
   const host = $derived(selectedHost());
   const folder = $derived(selectedFolder());
 
+  // Side panels: widths from the preferences, or the one being dragged.
+  let liveLeft = $state<number | null>(null);
+  let liveRight = $state<number | null>(null);
+  let windowWidth = $state(window.innerWidth);
+  /** The terminal area keeps at least this much when panels widen. */
+  const MIN_CENTRE = 320;
+  const REVEAL_STRIP = 14;
+  const leftShown = $derived(!preferences.current.leftPanelHidden);
+  const hasDetails = $derived(Boolean(host || folder));
+  const rightShown = $derived(
+    hasDetails && !preferences.current.rightPanelHidden,
+  );
+  const leftWidth = $derived(liveLeft ?? preferences.current.leftPanelWidth);
+  const rightWidth = $derived(liveRight ?? preferences.current.rightPanelWidth);
+  const leftColumn = $derived(leftShown ? leftWidth : REVEAL_STRIP);
+  const rightColumn = $derived(
+    hasDetails ? (rightShown ? rightWidth : REVEAL_STRIP) : 0,
+  );
+  /** How wide a panel may get without squeezing the terminal. */
+  const widest = (other: number) =>
+    Math.min(PANEL_WIDTHS.max, windowWidth - other - MIN_CENTRE);
+  const columns = $derived(
+    hasDetails
+      ? `${leftColumn}px minmax(0, 1fr) ${rightColumn}px`
+      : `${leftColumn}px minmax(0, 1fr)`,
+  );
+
+  function togglePanel(side: "left" | "right") {
+    if (side === "left") {
+      void changePreferences({
+        leftPanelHidden: !preferences.current.leftPanelHidden,
+      });
+    } else {
+      void changePreferences({
+        rightPanelHidden: !preferences.current.rightPanelHidden,
+      });
+    }
+  }
+
   void loadPreferences();
   trackHighlightRules();
   void startUpdates();
@@ -592,6 +634,13 @@
     if (event.shiftKey && letter("W")) {
       return tab === null ? null : () => closeTab(tab);
     }
+    // Not Ctrl+B: that is tmux's prefix, so it must reach devices.
+    if (event.shiftKey && letter("B")) {
+      return () => togglePanel("left");
+    }
+    if (event.shiftKey && letter("D")) {
+      return hasDetails ? () => togglePanel("right") : null;
+    }
     return null;
   }
 
@@ -643,15 +692,25 @@
   }
 </script>
 
-<svelte:window {onkeydowncapture} />
+<svelte:window {onkeydowncapture} bind:innerWidth={windowWidth} />
 
-<div class="layout" class:with-details={host || folder}>
-  <WorkspacePanel
-    onopen={() => (switcher = true)}
-    onconnect={prompt}
-    {snippetTarget}
-    onsnippet={(snippet) => void sendSnippet(snippet)}
-  />
+<div class="layout" style:grid-template-columns={columns}>
+  {#if leftShown}
+    <WorkspacePanel
+      onopen={() => (switcher = true)}
+      onconnect={prompt}
+      {snippetTarget}
+      onsnippet={(snippet) => void sendSnippet(snippet)}
+    />
+  {:else}
+    <button
+      class="reveal"
+      data-reveal-panel="left"
+      title="Show the workspace panel (Ctrl+Shift+B)"
+      aria-label="Show the workspace panel"
+      onclick={() => togglePanel("left")}>›</button
+    >
+  {/if}
 
   <section class="centre" bind:this={area}>
     {#if layout}
@@ -748,7 +807,15 @@
     {/if}
   </section>
 
-  {#if host}
+  {#if hasDetails && !rightShown}
+    <button
+      class="reveal"
+      data-reveal-panel="right"
+      title="Show the details panel (Ctrl+Shift+D)"
+      aria-label="Show the details panel"
+      onclick={() => togglePanel("right")}>‹</button
+    >
+  {:else if host}
     <aside class="side">
       <HostDetails {host} onconnect={prompt} />
     </aside>
@@ -756,6 +823,37 @@
     <aside class="side">
       <FolderDetails {folder} />
     </aside>
+  {/if}
+
+  {#if leftShown}
+    <div class="edge" style:left="{leftWidth}px">
+      <PanelResizer
+        side="left"
+        width={leftWidth}
+        min={PANEL_WIDTHS.min}
+        max={widest(rightColumn)}
+        onlive={(width) => (liveLeft = width)}
+        oncommit={(width) => void changePreferences({ leftPanelWidth: width })}
+        onreset={() =>
+          void changePreferences({ leftPanelWidth: PANEL_WIDTHS.left })}
+        onhide={() => togglePanel("left")}
+      />
+    </div>
+  {/if}
+  {#if rightShown}
+    <div class="edge" style:right="{rightWidth}px">
+      <PanelResizer
+        side="right"
+        width={rightWidth}
+        min={PANEL_WIDTHS.min}
+        max={widest(leftColumn)}
+        onlive={(width) => (liveRight = width)}
+        oncommit={(width) => void changePreferences({ rightPanelWidth: width })}
+        onreset={() =>
+          void changePreferences({ rightPanelWidth: PANEL_WIDTHS.right })}
+        onhide={() => togglePanel("right")}
+      />
+    </div>
   {/if}
 </div>
 
@@ -888,13 +986,42 @@
 
 <style>
   .layout {
+    position: relative;
     height: 100%;
     display: grid;
-    grid-template-columns: minmax(14rem, 18rem) 1fr;
   }
 
-  .layout.with-details {
-    grid-template-columns: minmax(14rem, 18rem) 1fr minmax(15rem, 19rem);
+  /* Holds a panel's resize handle, on the panel's inner edge. */
+  .edge {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+  }
+
+  /* A folded panel: a thin strip that brings it back. */
+  .reveal {
+    min-width: 0;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: var(--bg);
+    color: var(--muted);
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  .reveal[data-reveal-panel="left"] {
+    border-right: 1px solid var(--border);
+  }
+
+  .reveal[data-reveal-panel="right"] {
+    border-left: 1px solid var(--border);
+  }
+
+  .reveal:hover {
+    color: inherit;
+    background: var(--border);
   }
 
   .centre {
