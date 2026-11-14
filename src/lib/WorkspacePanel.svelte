@@ -20,6 +20,7 @@
     viewThrough,
     type Item,
   } from "./inventory.svelte";
+  import { openJobsView, runningCount } from "./jobs.svelte";
   import { preferences } from "./preferences.svelte";
   import { profiles } from "./profiles.svelte";
   import { allHosts, findHost, type Host } from "./workspace";
@@ -211,6 +212,22 @@
     >
       {workspace?.tree.name ?? "No workspace"}
     </button>
+    <button
+      class="jobs"
+      class:running={runningCount() > 0}
+      data-open-jobs
+      data-jobs-running={runningCount()}
+      disabled={!workspace}
+      title={(runningCount() > 0
+        ? `${runningCount()} job${runningCount() === 1 ? "" : "s"} running: open the jobs view`
+        : "Jobs: past runs, their output, search, compare and save") +
+        (runningCount(true) > 0
+          ? ` (${runningCount(true)} more running in other workspaces)`
+          : "")}
+      onclick={() => openJobsView()}
+      >{#if runningCount() > 0}<span class="dot" aria-hidden="true"
+        ></span>{runningCount()} running{:else}Jobs{/if}</button
+    >
     <button
       data-open-workspaces
       title="Switch, create or add workspaces (Ctrl+Shift+O)"
@@ -411,6 +428,38 @@
     display: inline-grid;
     place-items: center;
     padding: 0.3rem 0.4rem;
+  }
+
+  header .jobs {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    white-space: nowrap;
+  }
+
+  header .jobs.running {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  header .jobs .dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    header .jobs .dot {
+      animation: none;
+    }
   }
 
   header .name {

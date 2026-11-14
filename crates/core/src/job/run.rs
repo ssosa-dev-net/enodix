@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch, Semaphore};
 use tokio::time::Instant;
 
@@ -56,7 +56,7 @@ impl Default for JobOptions {
 }
 
 /// Where a host of a running job has got to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum HostState {
     /// Not started yet: other hosts take all the room.
@@ -162,6 +162,20 @@ impl JobCanceller {
     }
 }
 
+/// Why [`start`] would refuse `plan` with `options`, if it would.
+pub fn check(plan: &JobPlan, options: &JobOptions) -> Result<(), StartError> {
+    if !plan.missing_variables.is_empty() {
+        return Err(StartError::MissingVariables(plan.missing_variables.clone()));
+    }
+    if !(1..=MAX_PARALLEL).contains(&options.parallel) {
+        return Err(StartError::Parallel(options.parallel));
+    }
+    if plan.hosts.is_empty() {
+        return Err(StartError::NothingToRun);
+    }
+    Ok(())
+}
+
 /// Starts running `plan` (which must be [ready](JobPlan::ready)) with
 /// sessions opened by `manager`; returns at once.
 ///
@@ -171,15 +185,7 @@ pub fn start(
     plan: JobPlan,
     options: JobOptions,
 ) -> Result<Job, StartError> {
-    if !plan.missing_variables.is_empty() {
-        return Err(StartError::MissingVariables(plan.missing_variables));
-    }
-    if !(1..=MAX_PARALLEL).contains(&options.parallel) {
-        return Err(StartError::Parallel(options.parallel));
-    }
-    if plan.hosts.is_empty() {
-        return Err(StartError::NothingToRun);
-    }
+    check(&plan, &options)?;
     let (events_tx, events) = mpsc::unbounded_channel();
     let (cancel_tx, cancel) = watch::channel(false);
     let room = Arc::new(Semaphore::new(options.parallel));

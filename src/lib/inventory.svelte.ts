@@ -3,7 +3,7 @@
 // edits. Every edit is made by the core, which writes the files and returns
 // the reloaded workspace.
 
-import type { JobTarget } from "./jobs";
+import type { JobPlan, JobTarget } from "./jobs";
 import * as api from "./workspace";
 import type {
   Edited,
@@ -67,13 +67,27 @@ export const inventory = $state({
   nornirImport: null as string | null,
   /** Whether the platform definitions dialog is open. */
   platforms: false,
-  /** While the run-snippet dialog is open: the hosts it runs on. */
-  job: null as { target: JobTarget; label: string } | null,
+  /**
+   * While the run-snippet dialog is open: the hosts it runs on, and the
+   * plan it starts from ("Run again"), if any.
+   */
+  job: null as {
+    target: JobTarget;
+    label: string;
+    planned?: JobPlan | null;
+  } | null,
 });
 
-/** Opens the run-snippet dialog for `target`, called `label`. */
-export function openJob(target: JobTarget, label: string) {
-  inventory.job = { target, label };
+/**
+ * Opens the run-snippet dialog for `target`, called `label`; at the
+ * pre-flight of `planned` if given.
+ */
+export function openJob(
+  target: JobTarget,
+  label: string,
+  planned: JobPlan | null = null,
+) {
+  inventory.job = { target, label, planned };
 }
 
 /** Opens the CSV import dialog with `folder` as its first target. */

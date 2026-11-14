@@ -13,12 +13,14 @@ use netterm_core::credentials::{
     MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles, Secrets, VaultError,
     VaultStatus,
 };
+use netterm_core::diff::DiffLine;
 use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
 use netterm_core::import::csv::{
     suggest_mapping, ColumnTarget, CsvImport, CsvTable, ImportPreview, Separator,
 };
 use netterm_core::import::nornir::{NornirImport, NornirInventory, NornirPreview};
 use netterm_core::import::ImportReport;
+use netterm_core::job::results::{OutputRef, RunList, RunStore, SearchHit, StoredRun};
 use netterm_core::job::{self, JobCanceller, JobEvent, JobOptions, JobPlan, JobStep, JobTarget};
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
@@ -1165,7 +1167,19 @@ fn nornir_import_run(
 
 /// The job plan last shown in pre-flight: starting runs exactly what the
 /// user saw and confirmed, even if the workspace changes meanwhile.
-struct JobPlans(Mutex<Option<JobPlan>>);
+struct JobPlans(Mutex<Option<PlannedJob>>);
+
+/// A plan, with what it was made for: the workspace (by id, `None` if it
+/// has none) and the target, both kept with the run.
+#[derive(Clone)]
+struct PlannedJob {
+    workspace: Option<String>,
+    target: JobTarget,
+    plan: JobPlan,
+}
+
+/// Where job runs are kept: per user, outside every workspace.
+struct Runs(RunStore);
 
 /// Running jobs, by the id `job_start` gave them, until they finish.
 #[derive(Default)]
@@ -1182,6 +1196,44 @@ impl RunningJobs {
     }
 }
 
+/// Why a workspace without an id cannot keep job runs.
+fn no_workspace_id() -> String {
+    format!(
+        "job results are kept by the workspace's id, and this workspace has none: see {WORKSPACE_FILE}"
+    )
+}
+
+/// The open workspace's id, which its job runs are kept under.
+fn workspace_id(shell: &Shell) -> Result<String, String> {
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    workspace
+        .id()
+        .map(str::to_string)
+        .ok_or_else(no_workspace_id)
+}
+
+/// Plans in the open workspace and keeps the plan for `job_start`.
+fn keep_plan(
+    shell: &Shell,
+    plans: &JobPlans,
+    target: JobTarget,
+    plan: impl FnOnce(&Workspace, &Profiles<'_>) -> Result<JobPlan, String>,
+) -> Result<JobPlan, String> {
+    let planned = {
+        let guard = shell.workspace();
+        let workspace = guard.as_ref().ok_or("no workspace is open")?;
+        PlannedJob {
+            workspace: workspace.id().map(str::to_string),
+            plan: plan(workspace, &Profiles::new(&shell.credentials, workspace))?,
+            target,
+        }
+    };
+    let plan = planned.plan.clone();
+    *plans.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(planned);
+    Ok(plan)
+}
+
 /// The pre-flight list of running `step` on `target` in the open
 /// workspace: who runs, who is skipped and why, the production hosts, and
 /// the snippet variables still to ask for. Connects to nothing; kept for
@@ -1193,54 +1245,103 @@ fn job_plan(
     target: JobTarget,
     step: JobStep,
 ) -> Result<JobPlan, String> {
-    let plan = {
-        let guard = shell.workspace();
-        let workspace = guard.as_ref().ok_or("no workspace is open")?;
-        job::plan(
-            workspace,
-            &Profiles::new(&shell.credentials, workspace),
-            &target,
-            &step,
-        )
-        .map_err(|error| error.to_string())?
-    };
-    *plans.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(plan.clone());
-    Ok(plan)
+    keep_plan(&shell, &plans, target.clone(), |workspace, profiles| {
+        job::plan(workspace, profiles, &target, &step).map_err(|error| error.to_string())
+    })
+}
+
+/// A kept run planned again for "Run again".
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlannedAgain {
+    target: JobTarget,
+    plan: JobPlan,
+}
+
+/// Plans the kept run `run` again on its target, as the open workspace is
+/// now; kept for `job_start` like `job_plan`'s.
+#[tauri::command]
+fn job_run_again(
+    shell: State<'_, Shell>,
+    runs: State<'_, Runs>,
+    plans: State<'_, JobPlans>,
+    run: String,
+) -> Result<PlannedAgain, String> {
+    let stored = runs
+        .0
+        .run(&workspace_id(&shell)?, &run)
+        .map_err(|error| error.to_string())?;
+    let plan = keep_plan(
+        &shell,
+        &plans,
+        stored.target.clone(),
+        |workspace, profiles| {
+            job::plan_again(workspace, profiles, &stored).map_err(|error| error.to_string())
+        },
+    )?;
+    Ok(PlannedAgain {
+        target: stored.target,
+        plan,
+    })
+}
+
+/// A started job: its id (for `job_cancel`) and its kept run's.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartedJob {
+    id: u64,
+    run: String,
 }
 
 /// Starts the job last planned, with its own sessions (never logged, never
-/// a terminal's), at most `parallel` hosts at once (default 10). Its
-/// progress arrives on `on_event` until `finished`; returns its id, for
-/// `job_cancel`.
+/// a terminal's), at most `parallel` hosts at once (default 10), keeping
+/// its run on disk. Its progress arrives on `on_event` until `finished`,
+/// and goes on if nobody listens.
 #[tauri::command]
 async fn job_start(
     manager: State<'_, SessionManager>,
     plans: State<'_, JobPlans>,
+    runs: State<'_, Runs>,
     jobs: State<'_, Arc<RunningJobs>>,
     parallel: Option<usize>,
     on_event: Channel<JobEvent>,
-) -> Result<u64, String> {
+) -> Result<StartedJob, String> {
     let mut plans = plans.0.lock().unwrap_or_else(PoisonError::into_inner);
-    let plan = plans.as_ref().ok_or("no job has been planned")?.clone();
+    let planned = plans.as_ref().ok_or("no job has been planned")?.clone();
+    let workspace = planned.workspace.clone().ok_or_else(no_workspace_id)?;
     let options = JobOptions {
         parallel: parallel.unwrap_or(job::DEFAULT_PARALLEL),
         ..JobOptions::default()
     };
-    let mut job = job::start(&manager, plan, options).map_err(|e| e.to_string())?;
+    // A start that would be refused keeps no run.
+    job::check(&planned.plan, &options).map_err(|error| error.to_string())?;
+    let mut recorder = runs
+        .0
+        .begin(&workspace, &planned.target, &planned.plan)
+        .map_err(|error| format!("the run cannot be kept, so the job did not start: {error}"))?;
+    let mut job = job::start(&manager, planned.plan, options).map_err(|e| e.to_string())?;
     // Started: the plan is used up (a refused start keeps it).
     plans.take();
     drop(plans);
     let id = jobs.next.fetch_add(1, Ordering::Relaxed);
+    let run = recorder.id().to_string();
     jobs.cancellers().insert(id, job.canceller());
     let jobs = Arc::clone(&jobs);
     tauri::async_runtime::spawn(async move {
+        let mut unkept = false;
         // The job keeps running if the interface stops listening.
         while let Some(event) = job.next().await {
+            if let Err(error) = recorder.record(&event) {
+                if !unkept {
+                    eprintln!("the job run {} is not kept whole: {error}", recorder.id());
+                    unkept = true;
+                }
+            }
             let _ = on_event.send(event);
         }
         jobs.cancellers().remove(&id);
     });
-    Ok(id)
+    Ok(StartedJob { id, run })
 }
 
 /// Cancels the running job `id`: its sessions close, unfinished hosts end
@@ -1250,6 +1351,110 @@ fn job_cancel(jobs: State<'_, Arc<RunningJobs>>, id: u64) {
     if let Some(canceller) = jobs.cancellers().get(&id) {
         canceller.cancel();
     }
+}
+
+/// The open workspace's kept runs, and which of them still run.
+#[derive(Serialize)]
+struct RunsView {
+    #[serde(flatten)]
+    list: RunList,
+    running: Vec<String>,
+}
+
+/// The open workspace's kept runs, newest first (none without an id).
+#[tauri::command]
+fn job_runs(shell: State<'_, Shell>, runs: State<'_, Runs>) -> Result<RunsView, String> {
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    let Some(id) = workspace.id() else {
+        return Ok(RunsView {
+            list: RunList {
+                runs: Vec::new(),
+                damaged: Vec::new(),
+            },
+            running: Vec::new(),
+        });
+    };
+    Ok(RunsView {
+        list: runs.0.list(id).map_err(|error| error.to_string())?,
+        running: runs.0.running(id),
+    })
+}
+
+/// One kept run of the open workspace.
+#[tauri::command]
+fn job_run(
+    shell: State<'_, Shell>,
+    runs: State<'_, Runs>,
+    run: String,
+) -> Result<StoredRun, String> {
+    runs.0
+        .run(&workspace_id(&shell)?, &run)
+        .map_err(|error| error.to_string())
+}
+
+/// One host's output in a kept run of the open workspace.
+#[tauri::command]
+fn job_run_output(
+    shell: State<'_, Shell>,
+    runs: State<'_, Runs>,
+    output: OutputRef,
+) -> Result<String, String> {
+    runs.0
+        .output(&workspace_id(&shell)?, &output)
+        .map_err(|error| error.to_string())
+}
+
+/// The hosts of a kept run whose output holds `text`, ignoring case.
+#[tauri::command]
+fn job_run_search(
+    shell: State<'_, Shell>,
+    runs: State<'_, Runs>,
+    run: String,
+    text: String,
+) -> Result<Vec<SearchHit>, String> {
+    runs.0
+        .search(&workspace_id(&shell)?, &run, &text)
+        .map_err(|error| error.to_string())
+}
+
+/// A line diff of two hosts' output (of one run, or of two).
+#[tauri::command]
+fn job_compare(
+    shell: State<'_, Shell>,
+    runs: State<'_, Runs>,
+    old: OutputRef,
+    new: OutputRef,
+) -> Result<Vec<DiffLine>, String> {
+    runs.0
+        .compare(&workspace_id(&shell)?, &old, &new)
+        .map_err(|error| error.to_string())
+}
+
+/// Copies a kept run into `folder`; the copy's path.
+#[tauri::command]
+fn job_run_export(
+    shell: State<'_, Shell>,
+    runs: State<'_, Runs>,
+    run: String,
+    folder: PathBuf,
+) -> Result<String, String> {
+    runs.0
+        .export(&workspace_id(&shell)?, &run, &folder)
+        .map(|copy| copy.display().to_string())
+        .map_err(|error| error.to_string())
+}
+
+/// Deletes a kept run from disk; refused while it runs.
+#[tauri::command]
+fn job_run_delete(
+    shell: State<'_, Shell>,
+    runs: State<'_, Runs>,
+    run: String,
+) -> Result<(), String> {
+    runs.0
+        .delete(&workspace_id(&shell)?, &run)
+        .map_err(|error| error.to_string())
 }
 
 /// Opens a session. Output arrives on `on_output` as raw bytes, already
@@ -2022,6 +2227,9 @@ pub fn run() {
             app.manage(CsvFile(Mutex::new(None)));
             app.manage(NornirFiles(Mutex::new(None)));
             app.manage(JobPlans(Mutex::new(None)));
+            // Job runs are per user, beside the app state, keyed by
+            // workspace id.
+            app.manage(Runs(RunStore::new(data_folder.join("jobs"))));
             app.manage(Arc::new(RunningJobs::default()));
             let preferences = Preferences::load(&data_folder);
             let theme = window_theme(preferences.theme);
@@ -2100,6 +2308,14 @@ pub fn run() {
             job_plan,
             job_start,
             job_cancel,
+            job_run_again,
+            job_runs,
+            job_run,
+            job_run_output,
+            job_run_search,
+            job_compare,
+            job_run_export,
+            job_run_delete,
             host_create,
             host_rename,
             host_move,

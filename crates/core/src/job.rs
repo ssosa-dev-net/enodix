@@ -23,7 +23,12 @@
 //! question is not answered, and either fails that host with a reason that
 //! names it. One host's failure never stops the others. Job sessions are
 //! never logged and never touch open terminals (each is its own session).
+//!
+//! Every run is kept, outside the workspace, by [`results::RunStore`]:
+//! listed newest first, searched, compared line by line, exported, deleted,
+//! and planned again on the same target with [`plan_again`].
 
+pub mod results;
 mod run;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,8 +43,9 @@ use crate::workspace::{
 };
 
 pub use run::{
-    start, HostResult, HostState, Job, JobCanceller, JobEvent, JobOptions, JobReport, StartError,
-    DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL, JOB_TERMINAL_SIZE, MAX_PARALLEL, PROMPT_SETTLE,
+    check, start, HostResult, HostState, Job, JobCanceller, JobEvent, JobOptions, JobReport,
+    StartError, DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL, JOB_TERMINAL_SIZE, MAX_PARALLEL,
+    PROMPT_SETTLE,
 };
 
 /// Which hosts a job runs on.
@@ -294,6 +300,18 @@ pub fn plan(
         Err(ExpandError::NoSuchHost(_)) => unreachable!("a planned host is in the workspace"),
     }
     Ok(plan)
+}
+
+/// Plans the step of the kept run `run` again on its target, as the
+/// workspace is now: hosts added to its folder since run too, hosts gone or
+/// no longer runnable are skipped, and the answers it was given are
+/// reused (a variable a new host lacks is missing again).
+pub fn plan_again(
+    workspace: &Workspace,
+    profiles: &Profiles<'_>,
+    run: &results::StoredRun,
+) -> Result<JobPlan, PlanError> {
+    plan(workspace, profiles, &run.target, &run.step)
 }
 
 /// The hosts `target` names, each once, in order.

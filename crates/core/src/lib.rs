@@ -7,6 +7,7 @@
 
 pub mod app_state;
 pub mod credentials;
+pub mod diff;
 pub mod highlight;
 pub mod import;
 pub mod job;

@@ -32,6 +32,8 @@
   import CsvImportDialog from "./lib/CsvImportDialog.svelte";
   import NornirImportDialog from "./lib/NornirImportDialog.svelte";
   import JobDialog from "./lib/JobDialog.svelte";
+  import JobsView from "./lib/JobsView.svelte";
+  import { liveJobs } from "./lib/jobs.svelte";
   import {
     hostRole,
     hostSafety,
@@ -1155,8 +1157,19 @@
   <JobDialog
     target={inventory.job.target}
     label={inventory.job.label}
+    planned={inventory.job.planned ?? null}
     onclose={() => {
       inventory.job = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if liveJobs.view && inventory.workspace}
+  <JobsView
+    onclose={() => {
+      liveJobs.view = false;
+      liveJobs.select = null;
       focusRequest += 1;
     }}
   />
