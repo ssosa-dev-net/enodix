@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_norway::{Mapping, Value};
 
-use crate::session::{SshTarget, DEFAULT_SSH_PORT};
+use crate::session::{SshAuth, SshTarget, DEFAULT_SSH_PORT};
 
 mod filters;
 mod roles;
@@ -279,9 +279,15 @@ pub struct ResolvedHost {
 }
 
 impl ResolvedHost {
-    /// The SSH target for this host with the given credentials, on the
-    /// resolved port, or SSH's default port when nothing sets one.
+    /// The SSH target for this host with a password login (as prompted
+    /// for), on the resolved port, or SSH's default port when nothing sets
+    /// one.
     pub fn ssh_target(&self, username: String, password: String) -> SshTarget {
+        self.ssh_target_with(username, SshAuth::Password(password))
+    }
+
+    /// [`Self::ssh_target`] with any kind of login.
+    pub fn ssh_target_with(&self, username: String, auth: SshAuth) -> SshTarget {
         SshTarget {
             host: self.host.address.clone(),
             port: self
@@ -290,7 +296,7 @@ impl ResolvedHost {
                 .as_ref()
                 .map_or(DEFAULT_SSH_PORT, |port| port.value),
             username,
-            password,
+            auth,
         }
     }
 }
@@ -402,6 +408,22 @@ impl Workspace {
     /// The folder this workspace was opened from.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// What a credential store keeps this workspace's profiles under: the
+    /// folder's full path, the same however it was opened (relative,
+    /// different case on Windows, through a symbolic link).
+    pub fn credential_scope(&self) -> String {
+        let path = fs::canonicalize(&self.root)
+            .or_else(|_| std::path::absolute(&self.root))
+            .unwrap_or_else(|_| self.root.clone());
+        let path = path.display().to_string();
+        // Windows gives canonical paths as `\\?\C:\...`; the plain form is
+        // the same folder and reads better in the keychain.
+        match path.strip_prefix(r"\\?\") {
+            Some(plain) if plain.as_bytes().get(1) == Some(&b':') => plain.to_owned(),
+            _ => path,
+        }
     }
 
     /// The root folder of the tree.

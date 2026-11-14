@@ -5,9 +5,11 @@ mod support;
 
 use netterm_core::session::{
     CloseReason, OpenError, SessionError, SessionEvents, SessionId, SessionManager, SessionState,
-    SessionTarget, SshTarget, TerminalSize,
+    SessionTarget, SshAuth, SshTarget, TerminalSize,
 };
-use support::{next_state, numbered_lines, output_ending_with, TestSshServer, PROMPT};
+use support::{
+    next_state, numbered_lines, output_ending_with, TestSshServer, PROMPT, RSA_CLIENT_KEY,
+};
 
 const SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
 
@@ -218,7 +220,7 @@ async fn a_wrong_password_fails_the_session() {
     let server = TestSshServer::start().await;
     let manager = SessionManager::new();
     let target = SshTarget {
-        password: "wrong".into(),
+        auth: SshAuth::Password("wrong".into()),
         ..server.target()
     };
 
@@ -227,6 +229,115 @@ async fn a_wrong_password_fails_the_session() {
     assert_eq!(next_state(&mut events).await, SessionState::Connecting);
     assert_eq!(
         next_state(&mut events).await,
+        SessionState::Closed(CloseReason::Failed(OpenError::AuthenticationFailed))
+    );
+}
+
+/// Opens a session with `auth` and returns the state that follows
+/// `Connecting`.
+async fn state_after_connecting(server: &TestSshServer, auth: SshAuth) -> SessionState {
+    let manager = SessionManager::new();
+    let target = SshTarget {
+        auth,
+        ..server.target()
+    };
+    let (_id, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    let state = next_state(&mut events).await;
+    if state == SessionState::Connected {
+        output_ending_with(&mut events, PROMPT).await;
+    }
+    state
+}
+
+fn key_login(key_file: impl Into<std::path::PathBuf>, passphrase: Option<&str>) -> SshAuth {
+    SshAuth::PrivateKey {
+        key_file: key_file.into(),
+        passphrase: passphrase.map(Into::into),
+    }
+}
+
+#[tokio::test]
+async fn an_ed25519_private_key_logs_in() {
+    let server = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+    let key = temp.path().join("id_ed25519");
+    server.write_client_key(&key, None);
+
+    let state = state_after_connecting(&server, key_login(&key, None)).await;
+
+    assert_eq!(state, SessionState::Connected);
+}
+
+#[tokio::test]
+async fn an_rsa_private_key_logs_in() {
+    let server = TestSshServer::start().await;
+
+    let state = state_after_connecting(&server, key_login(RSA_CLIENT_KEY, None)).await;
+
+    assert_eq!(state, SessionState::Connected);
+}
+
+#[tokio::test]
+async fn an_encrypted_private_key_logs_in_with_its_passphrase() {
+    let server = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+    let key = temp.path().join("id_ed25519");
+    server.write_client_key(&key, Some("open sesame"));
+
+    let state = state_after_connecting(&server, key_login(&key, Some("open sesame"))).await;
+
+    assert_eq!(state, SessionState::Connected);
+}
+
+#[tokio::test]
+async fn an_encrypted_private_key_without_the_right_passphrase_is_reported() {
+    let server = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+    let key = temp.path().join("id_ed25519");
+    server.write_client_key(&key, Some("open sesame"));
+
+    for passphrase in [None, Some("wrong")] {
+        let state = state_after_connecting(&server, key_login(&key, passphrase)).await;
+        assert!(
+            matches!(
+                &state,
+                SessionState::Closed(CloseReason::Failed(OpenError::PrivateKey { file, .. }))
+                    if file == &key.display().to_string()
+            ),
+            "passphrase {passphrase:?}: got {state:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_missing_key_file_is_reported() {
+    let server = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+
+    let state = state_after_connecting(&server, key_login(temp.path().join("nope"), None)).await;
+
+    assert!(
+        matches!(
+            state,
+            SessionState::Closed(CloseReason::Failed(OpenError::PrivateKey { .. }))
+        ),
+        "got {state:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_key_the_server_does_not_know_fails_authentication() {
+    let server = TestSshServer::start().await;
+    let other = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+    let key = temp.path().join("id_ed25519");
+    other.write_client_key(&key, None);
+
+    let state = state_after_connecting(&server, key_login(&key, None)).await;
+
+    assert_eq!(
+        state,
         SessionState::Closed(CloseReason::Failed(OpenError::AuthenticationFailed))
     );
 }
@@ -245,7 +356,7 @@ async fn a_port_nobody_listens_on_fails_the_session() {
         host: "127.0.0.1".into(),
         port: closed_port,
         username: "engineer".into(),
-        password: "irrelevant".into(),
+        auth: SshAuth::Password("irrelevant".into()),
     };
 
     let (_id, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);

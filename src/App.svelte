@@ -4,6 +4,7 @@
   import Dialog from "./lib/Dialog.svelte";
   import FolderDetails from "./lib/FolderDetails.svelte";
   import HostDetails from "./lib/HostDetails.svelte";
+  import ProfilesDialog from "./lib/ProfilesDialog.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
   import WorkspacePanel from "./lib/WorkspacePanel.svelte";
@@ -15,6 +16,8 @@
     setWorkspace,
     workspaceChanged,
   } from "./lib/inventory.svelte";
+  import { hostLogin } from "./lib/credentials";
+  import { profiles, refreshProfiles } from "./lib/profiles.svelte";
   import { appName, type ConnectTarget } from "./lib/session";
   import {
     openWorkspace,
@@ -27,7 +30,7 @@
   /** What the centre of the window shows. */
   type View =
     | { kind: "quick" }
-    | { kind: "prompt"; host: Host }
+    | { kind: "prompt"; host: Host; missingProfile: string | null }
     | { kind: "session"; target: ConnectTarget; title: string; key: number };
 
   let name = $state("");
@@ -66,9 +69,36 @@
     view = { kind: "session", target, title, key: ++sessions };
   }
 
-  function prompt(host: Host) {
+  // The profiles a workspace names change with its files, and each
+  // workspace has its own.
+  $effect(() => {
+    if (inventory.workspace) void refreshProfiles();
+  });
+
+  /**
+   * Connects to an inventory host: at once with its credential profile,
+   * else after asking for credentials (or for the profile to set up).
+   */
+  async function prompt(host: Host) {
     inventory.selected = { kind: "host", id: host.id };
-    view = { kind: "prompt", host };
+    let login;
+    try {
+      login = await hostLogin(host.id);
+    } catch (error) {
+      // The profiles cannot be read (the keychain refused, say): say so,
+      // and let the user log in by hand meanwhile.
+      inventory.editError = `Cannot read the credential profiles: ${error}`;
+      login = { kind: "prompt" } as const;
+    }
+    if (login.kind === "profile") {
+      connect(
+        { kind: "host", id: host.id, credentials: null },
+        `${login.username}@${host.name}`,
+      );
+    } else {
+      const missingProfile = login.kind === "notSetUp" ? login.profile : null;
+      view = { kind: "prompt", host, missingProfile };
+    }
   }
 
   // Ctrl+K opens the palette from anywhere, the terminal included, so it is
@@ -81,7 +111,8 @@
       !event.metaKey &&
       // By position too, so that it works on any keyboard layout.
       (event.code === "KeyK" || event.key.toLowerCase() === "k");
-    if (!ctrlK || !inventory.workspace || inventory.dialog) return;
+    if (!ctrlK || !inventory.workspace || inventory.dialog || profiles.dialog)
+      return;
     event.preventDefault();
     event.stopPropagation();
     inventory.palette = true;
@@ -108,12 +139,14 @@
       {#key host.id}
         <CredentialsPrompt
           {host}
+          missingProfile={view.missingProfile}
           oncancel={() => (view = { kind: "quick" })}
-          onconnect={({ username, password }) =>
+          onconnect={(credentials) =>
             connect(
-              { kind: "host", id: host.id, username, password },
-              `${username}@${host.name}`,
+              { kind: "host", id: host.id, credentials },
+              `${credentials.username}@${host.name}`,
             )}
+          onprofile={() => prompt(host)}
         />
       {/key}
     {:else}
@@ -144,6 +177,10 @@
     onconnect={prompt}
     onclose={() => (inventory.palette = false)}
   />
+{/if}
+
+{#if profiles.dialog}
+  <ProfilesDialog onclose={() => (profiles.dialog = false)} />
 {/if}
 
 {#if inventory.dialog}

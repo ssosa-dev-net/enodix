@@ -16,6 +16,7 @@
     viewThrough,
     type Item,
   } from "./inventory.svelte";
+  import { profiles } from "./profiles.svelte";
   import { findHost, type Host } from "./workspace";
 
   interface Props {
@@ -182,6 +183,11 @@
       >
       <button title="New host" onclick={() => newHost(targetFolder())}
         >+ Host</button
+      >
+      <button
+        title="Credential profiles"
+        onclick={() => (profiles.dialog = true)}
+        >Profiles{profiles.view.missing.length > 0 ? " (!)" : ""}</button
       >
       <button
         class="search"

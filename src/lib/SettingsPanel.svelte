@@ -1,5 +1,6 @@
 <script lang="ts">
   import { describeOrigin, isOwn, type Item } from "./inventory.svelte";
+  import { profileNames } from "./profiles.svelte";
   import type { Effective, EffectiveSettings, Settings } from "./workspace";
 
   interface Props {
@@ -74,7 +75,7 @@
     {
       key: "credential_profile",
       label: "Credential profile",
-      input: { kind: "text" },
+      input: { kind: "text", list: "credential-profiles" },
       own: (s) => s.credential_profile ?? "",
       set: (s, v) => ({ ...s, credential_profile: toText(v) }),
       effective: (e) => e.credential_profile,
@@ -296,6 +297,11 @@
   <datalist id="jump-hosts">
     {#each hostIds as id (id)}
       <option value={id}></option>
+    {/each}
+  </datalist>
+  <datalist id="credential-profiles">
+    {#each profileNames() as name (name)}
+      <option value={name}></option>
     {/each}
   </datalist>
 </section>

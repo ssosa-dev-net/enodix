@@ -37,9 +37,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use netterm_core::session::{SessionEvent, SessionEvents, SessionState, SshTarget};
-use russh::keys::{Algorithm, PrivateKey};
-use russh::server::{Auth, ChannelOpenHandle, Handler, Msg, Server, Session};
+use netterm_core::session::{SessionEvent, SessionEvents, SessionState, SshAuth, SshTarget};
+use russh::keys::{Algorithm, PrivateKey, PublicKey};
+use russh::server::{Auth, ChannelOpenHandle, Handler, Msg, Server, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId, Pty};
 use tokio::net::TcpListener;
 
@@ -67,9 +67,18 @@ pub const INTERRUPTED: &[u8] = b"^C\r\n";
 /// How long a test waits for something the server should send.
 pub const WAIT: Duration = Duration::from_secs(10);
 
+/// An RSA client key (OpenSSH format, no passphrase) that the server
+/// accepts for [`USERNAME`]. RSA keys are slow to generate, so it is a file.
+pub const RSA_CLIENT_KEY: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/keys/rsa_client"
+);
+
 pub struct TestSshServer {
     port: u16,
     task: tokio::task::JoinHandle<()>,
+    /// An Ed25519 client key the server accepts for [`USERNAME`].
+    client_key: PrivateKey,
 }
 
 impl TestSshServer {
@@ -78,8 +87,30 @@ impl TestSshServer {
         Self::start_on(0).await
     }
 
+    /// Writes the Ed25519 client key the server accepts to `file`, in
+    /// OpenSSH format, encrypted with `passphrase` if one is given.
+    pub fn write_client_key(&self, file: &std::path::Path, passphrase: Option<&str>) {
+        let key = match passphrase {
+            Some(passphrase) => self
+                .client_key
+                .encrypt(&mut rand::rng(), passphrase)
+                .unwrap(),
+            None => self.client_key.clone(),
+        };
+        let text = key
+            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+            .unwrap();
+        std::fs::write(file, text.as_bytes()).unwrap();
+    }
+
     /// Starts a server on the given loopback port (0 picks a free one).
     pub async fn start_on(port: u16) -> Self {
+        let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let rsa_key = russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap();
+        let authorized_keys = Arc::new(vec![
+            client_key.public_key().clone(),
+            rsa_key.public_key().clone(),
+        ]);
         let config = Arc::new(russh::server::Config {
             auth_rejection_time: Duration::ZERO,
             // A small receive window, as on network devices: input larger
@@ -91,10 +122,14 @@ impl TestSshServer {
         let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(async move {
-            let mut server = ScriptedServer;
+            let mut server = ScriptedServer { authorized_keys };
             let _ = server.run_on_socket(config, &listener).await;
         });
-        Self { port, task }
+        Self {
+            port,
+            task,
+            client_key,
+        }
     }
 
     pub fn port(&self) -> u16 {
@@ -107,7 +142,7 @@ impl TestSshServer {
             host: "127.0.0.1".into(),
             port: self.port,
             username: USERNAME.into(),
-            password: PASSWORD.into(),
+            auth: SshAuth::Password(PASSWORD.into()),
         }
     }
 }
@@ -118,18 +153,24 @@ impl Drop for TestSshServer {
     }
 }
 
-struct ScriptedServer;
+struct ScriptedServer {
+    authorized_keys: Arc<Vec<PublicKey>>,
+}
 
 impl Server for ScriptedServer {
     type Handler = ScriptedShell;
 
     fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> ScriptedShell {
-        ScriptedShell::default()
+        ScriptedShell {
+            authorized_keys: self.authorized_keys.clone(),
+            channels: HashMap::new(),
+        }
     }
 }
 
-#[derive(Default)]
 struct ScriptedShell {
+    /// The public keys [`USERNAME`] may log in with.
+    authorized_keys: Arc<Vec<PublicKey>>,
     /// Pty size and pending input line, per channel.
     channels: HashMap<ChannelId, ShellState>,
 }
@@ -200,6 +241,22 @@ impl Handler for ScriptedShell {
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         if user == USERNAME && password == PASSWORD {
+            Ok(Auth::Accept)
+        } else {
+            Ok(Auth::reject())
+        }
+    }
+
+    async fn auth_publickey(
+        &mut self,
+        user: &str,
+        key: VerifiedPublicKey<'_>,
+    ) -> Result<Auth, Self::Error> {
+        let known = self
+            .authorized_keys
+            .iter()
+            .any(|authorized| authorized.key_data() == key.public_key.key_data());
+        if user == USERNAME && known {
             Ok(Auth::Accept)
         } else {
             Ok(Auth::reject())

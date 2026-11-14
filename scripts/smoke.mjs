@@ -11,6 +11,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -107,6 +108,9 @@ function startApp() {
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEVTOOLS_PORT}`,
       WEBVIEW2_USER_DATA_FOLDER: userData,
       NETTERM_DATA_DIR: appData,
+      // Credential profiles stay in memory: the smoke test never touches
+      // the keychain.
+      NETTERM_CREDENTIAL_STORE: "memory",
     },
   });
   children.push(app);
@@ -390,10 +394,10 @@ async function main() {
   );
   await doubleClick(hostButton);
   await until("the credentials prompt", async () =>
-    (await text("h2")).includes("smoke-r1"),
+    (await text("main h2")).includes("smoke-r1"),
   );
   await until("the inherited port in the prompt", async () =>
-    (await text("main form p")).includes(`127.0.0.1:${SSH_PORT}`),
+    (await text("main p")).includes(`127.0.0.1:${SSH_PORT}`),
   );
   await fillForm({ username: USERNAME, password: PASSWORD });
   await until(
@@ -440,6 +444,19 @@ async function main() {
   });
 
   await liveReload({ evaluate, text, screenshot, step });
+
+  await credentialProfiles({
+    evaluate,
+    text,
+    click,
+    fillForm,
+    changeField,
+    doubleClick,
+    status,
+    screen,
+    screenshot,
+    step,
+  });
 
   await editInventory({
     evaluate,
@@ -537,7 +554,7 @@ async function searchAndFilter({
   }
   await key(enter);
   await until("the credentials prompt", async () =>
-    (await text("h2")).includes("smoke-r1"),
+    (await text("main h2")).includes("smoke-r1"),
   );
   await click("Cancel");
   step("a search on the role found the host and Enter connected to it");
@@ -619,6 +636,165 @@ async function liveReload({ evaluate, text, screenshot, step }) {
   );
   if (!(await oddSelected())) fail("the reload lost the selection");
   step("a host deleted on disk left the tree; the selection stayed");
+}
+
+/** A credential profile is created in the profiles dialog and assigned to
+ * a host, which then connects without a prompt; a profile the workspace
+ * names but nobody set up is asked for, saved and used; no secret reaches
+ * a file. The app runs with its in-memory credential store, so the
+ * keychain is never touched. */
+async function credentialProfiles({
+  evaluate,
+  text,
+  click,
+  fillForm,
+  changeField,
+  doubleClick,
+  status,
+  screen,
+  screenshot,
+  step,
+}) {
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const hostRow = 'nav [data-host="Lab/smoke-r1.yaml"]';
+  const hostFile = join(workspace, "Lab", "smoke-r1.yaml");
+  const profilesDialog = "[data-dialog=profiles]";
+  const profileRow = (name) => `${profilesDialog} [data-profile="${name}"]`;
+  const connected = async () => {
+    await until(
+      "the Connected status",
+      async () => (await status()) === "Connected",
+    );
+    await until("the shell prompt", async () =>
+      (await screen()).includes("test-ssh$"),
+    );
+  };
+  // Every file of the workspace and the app's data folder, for secrets.
+  const everyFile = () =>
+    [workspace, appData]
+      .flatMap((root) =>
+        readdirSync(root, { recursive: true, withFileTypes: true })
+          .filter((entry) => entry.isFile())
+          .map((entry) => join(entry.parentPath, entry.name)),
+      )
+      .map((path) => readFileSync(path, "utf8"))
+      .join("\n");
+
+  // A profile is created in the profiles dialog.
+  await click("Profiles");
+  await until("the profiles dialog", () => exists(profilesDialog));
+  await click("New profile…");
+  await until("the profile form", () =>
+    exists(`${profilesDialog} [name=profile-name]`),
+  );
+  await fillForm(
+    {
+      "profile-name": "lab-login",
+      "profile-username": USERNAME,
+      "profile-password": PASSWORD,
+      "profile-enable": "en4ble-s3cret",
+    },
+    `${profilesDialog} form`,
+  );
+  await until("the new profile listed", async () =>
+    (await text(profileRow("lab-login"))).includes(
+      `${USERNAME}, password, enable secret`,
+    ),
+  );
+  await screenshot("profiles");
+  await click("Close");
+  await until(
+    "the profiles dialog closed",
+    async () => !(await exists(profilesDialog)),
+  );
+  step("a credential profile was created in the profiles dialog");
+
+  // Assigned to a host, the profile logs in without a prompt.
+  await until("the host in the tree", () => exists(hostRow));
+  await clickOn(hostRow);
+  await until("the host's side panel", async () =>
+    (await text(".side h2")).includes("smoke-r1"),
+  );
+  await changeField("[name=setting-credential_profile]", "lab-login");
+  await until("the profile's name in the host file", () =>
+    readFileSync(hostFile, "utf8").includes("credential_profile: lab-login\n"),
+  );
+  await doubleClick(hostRow);
+  await connected();
+  if (!(await text(".session header")).includes(`${USERNAME}@smoke-r1`)) {
+    fail(`the session is not titled with the profile's username`);
+  }
+  if (await exists("input[name=password]")) fail("a password was asked for");
+  step("a host with a profile connected without a prompt");
+
+  // A profile the workspace names but this computer lacks is asked for by
+  // name, saved, and used.
+  await click("Disconnect");
+  await changeField("[name=setting-credential_profile]", "team-login");
+  await until("the new profile name in the host file", () =>
+    readFileSync(hostFile, "utf8").includes("credential_profile: team-login\n"),
+  );
+  await doubleClick(hostRow);
+  await until("the missing profile named", async () =>
+    (await text("main .notice")).includes("team-login"),
+  );
+  await screenshot("profile-not-set-up");
+  await fillForm(
+    { "profile-username": USERNAME, "profile-password": PASSWORD },
+    "main form.profile",
+  );
+  await connected();
+  step("a profile that was not set up was asked for by name, saved and used");
+
+  // Profiles are edited and deleted in the dialog; a deleted profile the
+  // workspace names shows as missing.
+  await click("Disconnect");
+  await click("Profiles");
+  await until(
+    "both profiles listed",
+    async () =>
+      (await exists(profileRow("lab-login"))) &&
+      (await exists(profileRow("team-login"))),
+  );
+  await clickOn(`${profileRow("lab-login")} button`);
+  await until("the edit form", () =>
+    evaluate(
+      `document.querySelector("${profilesDialog} [name=profile-username]")?.value === ${JSON.stringify(USERNAME)}`,
+    ),
+  );
+  await fillForm({ "profile-username": "operator" }, `${profilesDialog} form`);
+  await until("the edited username listed", async () =>
+    (await text(profileRow("lab-login"))).includes("operator, password"),
+  );
+  await evaluate(
+    `[...document.querySelectorAll(${JSON.stringify(`${profileRow("team-login")} button`)})].find((b) => b.textContent === "Delete").click()`,
+  );
+  await until("the delete confirmation", async () =>
+    (await text(`${profilesDialog} h2`)).includes("Delete team-login"),
+  );
+  await evaluate(
+    `document.querySelector("${profilesDialog} button.danger").click()`,
+  );
+  await until("the deleted profile shown as missing", async () =>
+    (await text(profileRow("team-login"))).includes("not set up"),
+  );
+  await click("Close");
+  step("a profile was edited and another deleted in the profiles dialog");
+
+  for (const secret of [PASSWORD, "en4ble-s3cret"]) {
+    if (everyFile().includes(secret)) fail(`a secret was written to a file`);
+  }
+  step("no secret was written to the workspace or the app's data folder");
+
+  // Back as it was, for the inventory edits that follow.
+  await changeField("[name=setting-credential_profile]", "");
+  await until(
+    "the profile cleared from the host file",
+    () => !readFileSync(hostFile, "utf8").includes("credential_profile"),
+  );
 }
 
 /** The inventory is edited from the tree and the side panel, and each

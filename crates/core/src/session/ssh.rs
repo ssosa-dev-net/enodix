@@ -7,10 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use russh::client::{self, Handle};
-use russh::keys::PublicKeyOrCertificate;
+use russh::keys::{load_secret_key, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{Channel, ChannelMsg, ChannelWriteHalf, Disconnect};
 
-use super::{CloseReason, Command, Link, OpenError, SessionState, SshTarget, TerminalSize};
+use super::{
+    CloseReason, Command, Link, OpenError, SessionState, SshAuth, SshTarget, TerminalSize,
+};
 
 /// Terminal type requested for the remote pty; xterm.js emulates xterm.
 const TERM: &str = "xterm-256color";
@@ -138,7 +140,70 @@ async fn finish(sending: &mut Option<Sending<'_>>) -> Result<(), russh::Error> {
     }
 }
 
+/// The secret to log in with, ready to use.
+enum Login<'a> {
+    Password(&'a str),
+    Key(Arc<PrivateKey>),
+}
+
+/// Reads the private key, if the target logs in with one, before anything
+/// goes over the network.
+fn login(auth: &SshAuth) -> Result<Login<'_>, OpenError> {
+    match auth {
+        SshAuth::Password(password) => Ok(Login::Password(password)),
+        SshAuth::PrivateKey {
+            key_file,
+            passphrase,
+        } => {
+            let unusable = |reason: String| OpenError::PrivateKey {
+                file: key_file.display().to_string(),
+                reason,
+            };
+            let passphrase = passphrase.as_deref().filter(|p| !p.is_empty());
+            match load_secret_key(key_file, passphrase) {
+                Ok(key) => Ok(Login::Key(Arc::new(key))),
+                Err(russh::keys::Error::KeyIsEncrypted) => {
+                    Err(unusable("it is encrypted and no passphrase is set".into()))
+                }
+                Err(russh::keys::Error::IO(error)) => Err(unusable(error.to_string())),
+                Err(error) if passphrase.is_some() => Err(unusable(format!(
+                    "wrong passphrase, or not a private key ({error})"
+                ))),
+                Err(error) => Err(unusable(error.to_string())),
+            }
+        }
+    }
+}
+
+async fn authenticate(
+    connection: &mut Handle<Client>,
+    username: &str,
+    login: Login<'_>,
+) -> Result<bool, OpenError> {
+    let result = match login {
+        Login::Password(password) => connection.authenticate_password(username, password).await,
+        Login::Key(key) => {
+            // RSA keys sign with the best SHA-2 hash the server accepts, else
+            // SHA-1 (`ssh-rsa`); other key types have one algorithm.
+            let hash = if key.algorithm().is_rsa() {
+                connection
+                    .best_supported_rsa_hash()
+                    .await
+                    .map_err(protocol)?
+                    .flatten()
+            } else {
+                None
+            };
+            connection
+                .authenticate_publickey(username, PrivateKeyWithHashAlg::new(key, hash))
+                .await
+        }
+    };
+    Ok(result.map_err(protocol)?.success())
+}
+
 async fn open_shell(target: &SshTarget, size: TerminalSize) -> Result<Shell, OpenError> {
+    let login = login(&target.auth)?;
     let config = Arc::new(client::Config::default());
     let address = (target.host.as_str(), target.port);
     let mut connection =
@@ -150,11 +215,7 @@ async fn open_shell(target: &SshTarget, size: TerminalSize) -> Result<Shell, Ope
             Err(_) => return Err(OpenError::Connect("timed out".into())),
         };
 
-    let auth = connection
-        .authenticate_password(target.username.as_str(), target.password.as_str())
-        .await
-        .map_err(protocol)?;
-    if !auth.success() {
+    if !authenticate(&mut connection, &target.username, login).await? {
         return Err(OpenError::AuthenticationFailed);
     }
 
