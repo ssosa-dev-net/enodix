@@ -92,6 +92,8 @@ export interface Host {
   room: string | null;
   rack: string | null;
   rack_unit: string | null;
+  /** The id of the host's role, as its file names it. */
+  role: string | null;
   description: string | null;
   tags: string[];
   custom: CustomField[];
@@ -125,6 +127,34 @@ export interface Folder {
   hosts: Host[];
 }
 
+/** The icons a role can have; see `RoleIcon.svelte`. */
+export type RoleIcon =
+  | "core"
+  | "distribution"
+  | "access"
+  | "router"
+  | "firewall"
+  | "load_balancer"
+  | "wireless_controller"
+  | "access_point"
+  | "console_server"
+  | "server"
+  | "switch"
+  | "cloud"
+  | "storage"
+  | "generic"
+  | "unknown";
+
+/** A role a host can have: built in, the workspace's own, or undefined. */
+export interface Role {
+  id: string;
+  name: string;
+  icon: RoleIcon;
+  /** `#rrggbb`. */
+  color: string;
+  source: "built_in" | "workspace" | "undefined";
+}
+
 export interface Problem {
   file: string;
   message: string;
@@ -133,6 +163,10 @@ export interface Problem {
 export interface WorkspaceView {
   root: string;
   tree: Folder;
+  /** The roles a host can be given. */
+  roles: Role[];
+  /** The role each host that has one shows (neutral if undefined), by id. */
+  host_roles: Record<string, Role>;
   problems: Problem[];
 }
 

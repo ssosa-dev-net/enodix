@@ -382,8 +382,10 @@ fn edited_fields_are_saved_in_a_fixed_key_order_keeping_everything_else() {
     core.description = Some("Spine switch\nreplaced in 2026".into());
     workspace.write_host(&core).unwrap();
 
-    // New keys take their place among the built-in fields; the unknown
-    // `role` and the untouched values (`rack_unit` stays a number) are kept.
+    // New keys go right after the nearest built-in key before them that
+    // the file has: `description` after `role`, which this file holds out
+    // of order, before `rack_unit`. Untouched values keep their place and
+    // form (`rack_unit` stays a number).
     assert_eq!(
         read(&root, "Core/core-r1.yaml"),
         "\
@@ -396,10 +398,10 @@ serial_number: '0012345'
 site: MAD1
 rack: A1
 role: core
-rack_unit: 12
 description: |-
   Spine switch
   replaced in 2026
+rack_unit: 12
 tags:
 - core
 - dc1

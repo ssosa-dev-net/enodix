@@ -1,9 +1,11 @@
 <script lang="ts">
   import CopyButton from "./CopyButton.svelte";
+  import RoleIcon from "./RoleIcon.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
   import TagEditor from "./TagEditor.svelte";
   import {
     effectiveSettings,
+    hostRole,
     inventory,
     move,
     remove,
@@ -26,6 +28,8 @@
 
   const item = $derived({ kind: "host" as const, id: host.id });
   const effective = effectiveSettings(() => item);
+  const roles = $derived(inventory.workspace?.roles ?? []);
+  const role = $derived(hostRole(host.id));
   const otherHosts = $derived(
     inventory.workspace
       ? allHosts(inventory.workspace.tree)
@@ -124,6 +128,31 @@
             )}
         />
         <CopyButton value={host.address} what="management address" />
+      </span>
+    </label>
+    <label class="field">
+      <span>Role</span>
+      <span class="row">
+        {#if role}
+          <RoleIcon {role} />
+        {/if}
+        <select
+          name="role"
+          value={role?.id ?? ""}
+          onchange={async (event) => {
+            const select = event.currentTarget;
+            await save({ role: select.value === "" ? null : select.value });
+            select.value = role?.id ?? "";
+          }}
+        >
+          <option value="">No role</option>
+          {#each roles as option (option.id)}
+            <option value={option.id}>{option.name}</option>
+          {/each}
+          {#if role?.source === "undefined"}
+            <option value={role.id}>{role.name} (not defined)</option>
+          {/if}
+        </select>
       </span>
     </label>
     {#each HOST_TEXT_FIELDS as [key, label] (key)}
@@ -311,6 +340,7 @@
   }
 
   .row input,
+  .row select,
   .row textarea {
     flex: 1;
     width: 100%;

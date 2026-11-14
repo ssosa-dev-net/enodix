@@ -21,6 +21,7 @@
 //! file untouched.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io;
@@ -31,8 +32,10 @@ use serde_norway::{Mapping, Value};
 
 use crate::session::{SshTarget, DEFAULT_SSH_PORT};
 
+mod roles;
 mod settings;
 
+pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
 use settings::{
     apply_settings, settings_from_document, Level, CREDENTIAL_PROFILE, ENVIRONMENT, JUMP_HOST,
     LEGACY_CRYPTO, LOGGING, PORT, PROTOCOL, SERIAL, WEB_LINKS,
@@ -59,6 +62,7 @@ const BUILDING: &str = "building";
 const ROOM: &str = "room";
 const RACK: &str = "rack";
 const RACK_UNIT: &str = "rack_unit";
+const ROLE: &str = "role";
 const DESCRIPTION: &str = "description";
 const TAGS: &str = "tags";
 const CUSTOM: &str = "custom";
@@ -66,7 +70,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 23] = [
+pub const HOST_KEY_ORDER: [&str; 24] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -86,6 +90,7 @@ pub const HOST_KEY_ORDER: [&str; 23] = [
     ROOM,
     RACK,
     RACK_UNIT,
+    ROLE,
     DESCRIPTION,
     TAGS,
     WEB_LINKS,
@@ -115,6 +120,8 @@ const HOST_EXTENSION: &str = "yaml";
 pub struct Workspace {
     root: PathBuf,
     tree: Folder,
+    /// The built-in roles, then the workspace's own.
+    roles: Vec<Role>,
     problems: Vec<Problem>,
 }
 
@@ -193,6 +200,9 @@ pub struct Host {
     /// Text, as units are sometimes written `U12` or `12-13`; written as a
     /// number when it is one.
     pub rack_unit: Option<String>,
+    /// The id of the host's role (`role` in the file), as written; see
+    /// [`Workspace::host_role`] for the role it names.
+    pub role: Option<String>,
     pub description: Option<String>,
     pub tags: Vec<String>,
     /// The user's own fields (`custom` in the file), in file order.
@@ -225,7 +235,7 @@ impl CustomField {
 
 impl Host {
     /// The optional built-in text fields with their file keys.
-    fn text_fields(&self) -> [(&'static str, &Option<String>); 10] {
+    fn text_fields(&self) -> [(&'static str, &Option<String>); 11] {
         [
             (VENDOR, &self.vendor),
             (PLATFORM, &self.platform),
@@ -236,6 +246,7 @@ impl Host {
             (ROOM, &self.room),
             (RACK, &self.rack),
             (RACK_UNIT, &self.rack_unit),
+            (ROLE, &self.role),
             (DESCRIPTION, &self.description),
         ]
     }
@@ -346,10 +357,12 @@ impl Workspace {
             .unwrap_or_else(|| root.display().to_string());
         let mut problems = Vec::new();
         let tree = load_folder(&root, name, String::new(), &mut problems);
+        let roles = load_roles(&root, &mut problems);
         problems.sort_by(|a, b| a.file.cmp(&b.file));
         Ok(Self {
             root,
             tree,
+            roles,
             problems,
         })
     }
@@ -362,6 +375,50 @@ impl Workspace {
     /// The root folder of the tree.
     pub fn tree(&self) -> &Folder {
         &self.tree
+    }
+
+    /// The roles hosts can have: the built-in ones, then the workspace's
+    /// own (one with a built-in id replaces it in place).
+    pub fn roles(&self) -> &[Role] {
+        &self.roles
+    }
+
+    /// The role with this id (ignoring case), if the workspace has it.
+    pub fn role(&self, id: &str) -> Option<&Role> {
+        roles::find(&self.roles, id)
+    }
+
+    /// The role the host `id` names, if it has one: the workspace's role of
+    /// that id, else a neutral one ([`RoleSource::Undefined`]), so a host
+    /// with a role the workspace does not define still shows.
+    pub fn host_role(&self, id: &HostId) -> Option<Role> {
+        self.role_shown(self.host(id)?)
+    }
+
+    /// [`Self::host_role`] for every host that has a role, by host id.
+    pub fn host_roles(&self) -> BTreeMap<HostId, Role> {
+        fn walk(workspace: &Workspace, folder: &Folder, roles: &mut BTreeMap<HostId, Role>) {
+            for host in &folder.hosts {
+                if let Some(role) = workspace.role_shown(host) {
+                    roles.insert(host.id.clone(), role);
+                }
+            }
+            for child in &folder.folders {
+                walk(workspace, child, roles);
+            }
+        }
+        let mut roles = BTreeMap::new();
+        walk(self, &self.tree, &mut roles);
+        roles
+    }
+
+    fn role_shown(&self, host: &Host) -> Option<Role> {
+        let role = host.role.as_deref()?;
+        Some(
+            self.role(role)
+                .cloned()
+                .unwrap_or_else(|| Role::undefined(role)),
+        )
     }
 
     /// Files that could not be loaded, ordered by path.
@@ -986,6 +1043,30 @@ fn write_mapping(root: &Path, file: &str, document: &Mapping) -> Result<(), Edit
         })
 }
 
+/// The built-in roles with those of the workspace's roles file, if it has
+/// one. A bad file or role definition becomes a problem; the rest load.
+fn load_roles(root: &Path, problems: &mut Vec<Problem>) -> Vec<Role> {
+    let path = root.join(ROLES_FILE);
+    if !path.is_file() {
+        return roles::built_in();
+    }
+    let problem = |message| Problem {
+        file: ROLES_FILE.into(),
+        message,
+    };
+    match read_mapping(&path) {
+        Ok(document) => {
+            let (roles, errors) = roles::with_workspace_roles(&document);
+            problems.extend(errors.into_iter().map(problem));
+            roles
+        }
+        Err(message) => {
+            problems.push(problem(message));
+            roles::built_in()
+        }
+    }
+}
+
 fn load_folder(dir: &Path, name: String, path: String, problems: &mut Vec<Problem>) -> Folder {
     let mut folder = Folder {
         name,
@@ -1136,6 +1217,7 @@ fn host_from_document(id: HostId, stem: &str, document: Mapping) -> Result<Host,
         room: field(ROOM)?,
         rack: field(RACK)?,
         rack_unit: field(RACK_UNIT)?,
+        role: field(ROLE)?,
         description: field(DESCRIPTION)?,
         tags,
         custom,
