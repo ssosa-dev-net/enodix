@@ -35,11 +35,11 @@ download.
 
 ### "Windows protected your PC" (SmartScreen)
 
-Early releases are **not code-signed** (signing starts at the public launch).
+Early releases are not code-signed (signing starts at the public launch).
 The first time you run the installer or `netterm.exe`, Windows SmartScreen
 may show a blue "Windows protected your PC" window saying the app is from an
-"Unknown publisher". This is expected for an unsigned program and does not
-mean a virus was found. To go on:
+"Unknown publisher". Windows shows this for any unsigned program; it does
+not mean a virus was found. To go on:
 
 1. Check the file's SHA-256 checksum against `SHA256SUMS.txt` (above).
 2. Click **More info**, then **Run anyway**.
@@ -76,9 +76,9 @@ about you, your machine or your inventory.
 
 ## Tested platforms
 
-netterm claims only the device platforms below, each verified by the
+netterm claims support only for the device platforms below, each verified by the
 containerlab device suite ([docs/containerlab.md](docs/containerlab.md))
-at the version shown. Anything else may work, but has not been tested.
+at the version shown. Other platforms may work but have not been tested.
 
 | Platform       | Version   | SSH | Telnet     | Verified   |
 | -------------- | --------- | --- | ---------- | ---------- |
