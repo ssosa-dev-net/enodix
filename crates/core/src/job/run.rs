@@ -38,8 +38,8 @@ pub const JOB_TERMINAL_SIZE: TerminalSize = TerminalSize {
 /// How a job runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JobOptions {
-    /// How many hosts run at once, 1 to [`MAX_PARALLEL`] (other values are
-    /// brought into that range).
+    /// How many hosts run at once (each with its one connection open), 1
+    /// to [`MAX_PARALLEL`]; [`start`] refuses other values.
     pub parallel: usize,
     /// How long a host may take to show its prompt after each line; a host
     /// that takes longer fails.
@@ -121,6 +121,9 @@ pub enum StartError {
     /// The plan still lacks values for these variables.
     #[error("no value for {}", .0.join(", "))]
     MissingVariables(Vec<String>),
+    /// [`JobOptions::parallel`] is not between 1 and [`MAX_PARALLEL`].
+    #[error("between 1 and {MAX_PARALLEL} hosts can run at once, not {0}")]
+    Parallel(usize),
 }
 
 /// A running job: its events, and a way to cancel it. Dropping it does not
@@ -171,12 +174,15 @@ pub fn start(
     if !plan.missing_variables.is_empty() {
         return Err(StartError::MissingVariables(plan.missing_variables));
     }
+    if !(1..=MAX_PARALLEL).contains(&options.parallel) {
+        return Err(StartError::Parallel(options.parallel));
+    }
     if plan.hosts.is_empty() {
         return Err(StartError::NothingToRun);
     }
     let (events_tx, events) = mpsc::unbounded_channel();
     let (cancel_tx, cancel) = watch::channel(false);
-    let room = Arc::new(Semaphore::new(options.parallel.clamp(1, MAX_PARALLEL)));
+    let room = Arc::new(Semaphore::new(options.parallel));
 
     for host in &plan.hosts {
         let _ = events_tx.send(JobEvent::State {
@@ -194,7 +200,6 @@ pub fn start(
                 events: events_tx.clone(),
                 id: host.id.clone(),
                 options,
-                session: None,
                 text: PlainText::new(),
                 output: String::new(),
             };
@@ -237,18 +242,39 @@ struct HostRunner {
     events: mpsc::UnboundedSender<JobEvent>,
     id: HostId,
     options: JobOptions,
-    /// The host's session, once opened.
-    session: Option<SessionId>,
     text: PlainText,
     /// The plain text so far.
     output: String,
 }
 
+/// The host's session, once opened.
+type Opened = Option<(SessionId, SessionEvents)>;
+
 /// How waiting for a prompt ended, if not with the prompt.
 enum NoPrompt {
     TimedOut,
     Closed(CloseReason),
+    /// The line could not be sent: the session had ended.
+    NotSent,
 }
+
+/// The patterns a host is driven by.
+struct Patterns {
+    /// The prompt, at the end of the line being shown.
+    prompt: Regex,
+    /// The privilege password question, likewise.
+    privilege_prompt: Option<Regex>,
+}
+
+/// What came back after something was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    Prompt,
+    PrivilegePrompt,
+}
+
+/// How long a closed session may take to say so before it is let go.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 impl HostRunner {
     async fn run(
@@ -263,13 +289,24 @@ impl HostRunner {
                 std::future::pending::<()>().await;
             }
         };
+        // Held until the session has closed, so that no more than
+        // `parallel` connections are ever open.
+        let mut permit = None;
+        let mut session: Opened = None;
         let state = tokio::select! {
-            state = self.drive(&host, room) => state,
+            state = async {
+                match room.acquire_owned().await {
+                    Ok(room) => permit = Some(room),
+                    Err(_) => return HostState::Cancelled,
+                }
+                self.drive(&host, &mut session).await
+            } => state,
             () = cancelled => HostState::Cancelled,
         };
-        if let Some(id) = self.session.take() {
-            self.manager.discard(id);
+        if let Some((id, events)) = session.take() {
+            self.close(id, events).await;
         }
+        drop(permit);
         let rest = self.text.finish();
         self.add_output(rest);
         self.state(state.clone());
@@ -281,70 +318,191 @@ impl HostRunner {
         }
     }
 
-    /// Waits for room, connects, sends every line; the host's final state.
-    async fn drive(&mut self, host: &PlannedHost, room: Arc<Semaphore>) -> HostState {
-        let Ok(_permit) = room.acquire_owned().await else {
-            return HostState::Cancelled;
-        };
-        let prompt = match Regex::new(&format!(r"(?:{})[ \t]*\z", host.work.prompt)) {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                return failed(format!(
-                    "the prompt pattern of the platform {} cannot be used: {error}",
-                    host.platform
-                ))
-            }
+    /// Closes the session `id` and waits (a little) until it has, keeping
+    /// the output that still arrives; then forgets it.
+    async fn close(&mut self, id: SessionId, mut events: SessionEvents) {
+        if self.manager.close(id).is_ok() {
+            let _ = tokio::time::timeout(CLOSE_WAIT, async {
+                while let Some(event) = events.next().await {
+                    match event {
+                        SessionEvent::Output(bytes) => self.take(&events, &bytes),
+                        SessionEvent::State(SessionState::Closed(_)) => break,
+                        _ => {}
+                    }
+                }
+            })
+            .await;
+        }
+        self.manager.discard(id);
+    }
+
+    /// Connects, gets ready (privileged mode, no paging) and sends every
+    /// line; the host's final state.
+    async fn drive(&mut self, host: &PlannedHost, session: &mut Opened) -> HostState {
+        let work = &host.work;
+        let patterns = match self.patterns(host) {
+            Ok(patterns) => patterns,
+            Err(reason) => return failed(reason),
         };
         self.state(HostState::Connecting);
-        let (id, mut events) = self.manager.open(
-            SessionTarget::Ssh(host.work.target.clone()),
-            JOB_TERMINAL_SIZE,
+        let (id, events) = session.insert(
+            self.manager
+                .open(SessionTarget::Ssh(work.target.clone()), JOB_TERMINAL_SIZE),
         );
-        self.session = Some(id);
-        if let Err(reason) = self.connect(id, &mut events).await {
+        let id = *id;
+        if let Err(reason) = self.connect(id, events).await {
             return failed(reason);
         }
         self.state(HostState::Running);
 
-        if let Err(error) = self.wait_for_prompt(&mut events, &prompt, false).await {
+        if let Err(error) = self.wait_for(events, &patterns, false).await {
             return failed(match error {
                 NoPrompt::TimedOut => format!(
-                    "no prompt within {} s of logging in (does the platform {}'s prompt pattern match?)",
-                    self.options.command_timeout.as_secs(),
+                    "no prompt within {} of logging in (does the platform {}'s prompt pattern match?)",
+                    seconds(self.options.command_timeout),
                     host.platform
                 ),
                 NoPrompt::Closed(reason) => {
                     format!("the session ended before the first prompt: {reason}")
                 }
+                NoPrompt::NotSent => unreachable!("nothing was sent"),
             });
         }
-        let count = host.work.lines.len();
-        for (index, line) in host.work.lines.iter().enumerate() {
-            if self
-                .manager
-                .write(id, format!("{line}\r").into_bytes())
-                .is_err()
+        if let Some(command) = &work.privilege_command {
+            if let Err(reason) = self
+                .enter_privileged(id, events, host, command, &patterns)
+                .await
             {
-                return failed(format!("the session ended before {line:?} was sent"));
+                return failed(reason);
             }
-            match self.wait_for_prompt(&mut events, &prompt, true).await {
-                Ok(()) => {}
-                Err(NoPrompt::TimedOut) => {
-                    return failed(format!(
-                        "no prompt within {} s after {line:?}",
-                        self.options.command_timeout.as_secs()
-                    ))
-                }
+        }
+        if let Some(command) = &work.disable_paging {
+            match self.send(id, events, command, &patterns).await {
+                Ok(Shown::Prompt) => {}
+                Ok(Shown::PrivilegePrompt) => return failed(asked_for_password(command)),
+                Err(error) => return failed(self.no_prompt_after(&quoted(command), error)),
+            }
+        }
+        let count = work.lines.len();
+        for (index, line) in work.lines.iter().enumerate() {
+            match self.send(id, events, line, &patterns).await {
+                Ok(Shown::Prompt) => {}
+                // A job never types into a password question.
+                Ok(Shown::PrivilegePrompt) => return failed(asked_for_password(line)),
                 // A snippet may end by logging out.
                 Err(NoPrompt::Closed(CloseReason::RemoteExited { .. })) if index + 1 == count => {
                     return HostState::Done
                 }
-                Err(NoPrompt::Closed(reason)) => {
-                    return failed(format!("the session ended after {line:?}: {reason}"))
-                }
+                Err(error) => return failed(self.no_prompt_after(&quoted(line), error)),
             }
         }
         HostState::Done
+    }
+
+    /// The host's patterns, or why one cannot be used.
+    fn patterns(&self, host: &PlannedHost) -> Result<Patterns, String> {
+        let at_end = |pattern: &str, what: &str| {
+            Regex::new(&format!(r"(?:{pattern})[ \t]*\z")).map_err(|error| {
+                format!(
+                    "the {what} pattern of the platform {} cannot be used: {error}",
+                    host.platform
+                )
+            })
+        };
+        Ok(Patterns {
+            prompt: at_end(&host.work.prompt, "prompt")?,
+            privilege_prompt: match &host.work.privilege_prompt {
+                Some(pattern) => Some(at_end(pattern, "privilege password")?),
+                None => None,
+            },
+        })
+    }
+
+    /// Sends the privilege command `command`, answering its password
+    /// question with the profile's enable secret; why not, if the host does
+    /// not get back to its prompt, or gets back to the very prompt it had
+    /// before (the device refused the secret without asking again).
+    async fn enter_privileged(
+        &mut self,
+        id: SessionId,
+        events: &mut SessionEvents,
+        host: &PlannedHost,
+        command: &str,
+        patterns: &Patterns,
+    ) -> Result<(), String> {
+        let work = &host.work;
+        let before = self.text.current_line().trim().to_string();
+        match self.send(id, events, command, patterns).await {
+            Ok(Shown::Prompt) => return Ok(()),
+            Ok(Shown::PrivilegePrompt) => {}
+            Err(NoPrompt::TimedOut) if patterns.privilege_prompt.is_none() => {
+                return Err(format!(
+                    "no prompt within {} after {command:?}; if it asked for a password, the platform {} has no privilege password pattern to recognise it",
+                    seconds(self.options.command_timeout),
+                    host.platform
+                ))
+            }
+            Err(error) => return Err(self.no_prompt_after(&quoted(command), error)),
+        }
+        let Some(secret) = &work.enable_secret else {
+            return Err(format!(
+                "{command:?} asked for a password, and the credential profile {} has no enable secret stored",
+                work.profile
+            ));
+        };
+        let refused = || {
+            format!(
+                "the device refused the enable secret of the credential profile {}",
+                work.profile
+            )
+        };
+        let shown = if self
+            .manager
+            .write(id, format!("{}\r", secret.0).into_bytes())
+            .is_err()
+        {
+            Err(NoPrompt::NotSent)
+        } else {
+            self.wait_for(events, patterns, true).await
+        };
+        match shown {
+            Ok(Shown::Prompt) if self.text.current_line().trim() == before => Err(refused()),
+            Ok(Shown::Prompt) => Ok(()),
+            Ok(Shown::PrivilegePrompt) => Err(refused()),
+            Err(error) => Err(self.no_prompt_after("the enable secret", error)),
+        }
+    }
+
+    /// Sends `line` and waits for the device to answer with its prompt (or
+    /// its privilege password question).
+    async fn send(
+        &mut self,
+        id: SessionId,
+        events: &mut SessionEvents,
+        line: &str,
+        patterns: &Patterns,
+    ) -> Result<Shown, NoPrompt> {
+        if self
+            .manager
+            .write(id, format!("{line}\r").into_bytes())
+            .is_err()
+        {
+            return Err(NoPrompt::NotSent);
+        }
+        self.wait_for(events, patterns, true).await
+    }
+
+    /// Why the host failed when `what` (a quoted line, or a description
+    /// such as "the enable secret") got no prompt back.
+    fn no_prompt_after(&self, what: &str, error: NoPrompt) -> String {
+        match error {
+            NoPrompt::TimedOut => format!(
+                "no prompt within {} after {what}",
+                seconds(self.options.command_timeout)
+            ),
+            NoPrompt::Closed(reason) => format!("the session ended after {what}: {reason}"),
+            NoPrompt::NotSent => format!("the session ended before {what} was sent"),
+        }
     }
 
     /// Follows the session `id` until it is connected; why not, if it does
@@ -374,28 +532,43 @@ impl HostRunner {
         }
     }
 
-    /// Takes output until the line being shown ends with the prompt and
-    /// nothing more arrives for [`PROMPT_SETTLE`]. With `after_input`, the
-    /// prompt already shown does not count: the device must answer first.
-    async fn wait_for_prompt(
+    /// Takes output until the line being shown ends with the prompt (or
+    /// the privilege password question) and nothing more arrives for
+    /// [`PROMPT_SETTLE`]. With `after_input`, what is already shown does
+    /// not count: the device must answer first.
+    async fn wait_for(
         &mut self,
         events: &mut SessionEvents,
-        prompt: &Regex,
+        patterns: &Patterns,
         after_input: bool,
-    ) -> Result<(), NoPrompt> {
+    ) -> Result<Shown, NoPrompt> {
         let deadline = Instant::now() + self.options.command_timeout;
         let mut answered = !after_input;
         loop {
-            let at_prompt = answered && prompt.is_match(&self.text.current_line());
-            let until = if at_prompt {
+            let shown = if answered {
+                let line = self.text.current_line();
+                if patterns.prompt.is_match(&line) {
+                    Some(Shown::Prompt)
+                } else if patterns
+                    .privilege_prompt
+                    .as_ref()
+                    .is_some_and(|question| question.is_match(&line))
+                {
+                    Some(Shown::PrivilegePrompt)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let until = if shown.is_some() {
                 (Instant::now() + PROMPT_SETTLE).min(deadline)
             } else {
                 deadline
             };
             match tokio::time::timeout_at(until, events.next()).await {
                 // Quiet at the prompt (even if only just in time).
-                Err(_) if at_prompt => return Ok(()),
-                Err(_) => return Err(NoPrompt::TimedOut),
+                Err(_) => return shown.ok_or(NoPrompt::TimedOut),
                 Ok(Some(SessionEvent::Output(bytes))) => {
                     self.take(events, &bytes);
                     answered = true;
@@ -437,6 +610,21 @@ impl HostRunner {
 
 fn failed(reason: String) -> HostState {
     HostState::Failed { reason }
+}
+
+/// `line` quoted, for messages.
+fn quoted(line: &str) -> String {
+    format!("{line:?}")
+}
+
+/// Why a host failed whose device asked for a password after `line`.
+fn asked_for_password(line: &str) -> String {
+    format!("{line:?} asked for a password, and a job only answers the privilege command's")
+}
+
+/// `duration` in seconds, for the user: `60 s`, `0.5 s`.
+fn seconds(duration: Duration) -> String {
+    format!("{} s", duration.as_secs_f64())
 }
 
 /// Why a host whose key was not trusted failed.

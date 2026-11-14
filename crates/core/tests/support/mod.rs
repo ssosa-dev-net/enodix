@@ -25,6 +25,23 @@
 //! ([`device_prompt`]) instead of [`PROMPT`], and besides the lines above it
 //! understands `show hostname` (prints the hostname) and `echo <text>`
 //! (prints the text); any other line prints [`UNKNOWN_COMMAND`] and the line.
+//! Device mode also behaves like a device a job has to cope with:
+//!
+//! | line                  | effect                                          |
+//! |-----------------------|-------------------------------------------------|
+//! | `lines <n>`           | paged: [`PAGE_LENGTH`] lines, then [`MORE`]; any key but `q` shows the next page |
+//! | `terminal length <n>` | pages of `n` lines; `0` turns paging off        |
+//! | `enable`              | asks [`ENABLE_QUESTION`] (input not echoed); [`ENABLE_SECRET`] gives the `#` prompt, a wrong one asks again, three wrong print [`BAD_SECRETS`] |
+//! | `disable`             | back to the unprivileged prompt                 |
+//! | `hang`                | never answers (Ctrl+C gives the prompt back)    |
+//! | `pause <ms>`          | prints the prompt after `<ms>` milliseconds     |
+//!
+//! [`TestSshServer::start_device`] starts privileged (`<hostname># `);
+//! [`TestSshServer::start_unprivileged_device`] starts at `<hostname>> `
+//! ([`unprivileged_prompt`]) and needs `enable`.
+//! [`TestSshServer::connections_open`] and
+//! [`TestSshServer::most_connections_open`] count the connections that
+//! opened a session channel, while they last.
 //!
 //! Every server also forwards `direct-tcpip` channels to the address asked
 //! for, so it can be a jump host; [`TestSshServer::forwarded`] counts them.
@@ -112,10 +129,34 @@ pub const FLOOD_LINE: &[u8] = b"flood flood flood flood flood flood flood\r\n";
 /// What a device-mode shell prints before a line it does not know.
 pub const UNKNOWN_COMMAND: &str = "% Unknown command: ";
 
-/// The prompt of a device-mode shell called `hostname`.
+/// The (privileged) prompt of a device-mode shell called `hostname`.
 pub fn device_prompt(hostname: &str) -> Vec<u8> {
     format!("{hostname}# ").into_bytes()
 }
+
+/// The unprivileged prompt of a device-mode shell called `hostname`.
+pub fn unprivileged_prompt(hostname: &str) -> Vec<u8> {
+    format!("{hostname}> ").into_bytes()
+}
+
+/// The secret `enable` takes on a device-mode shell.
+pub const ENABLE_SECRET: &str = "enable sesame";
+/// What `enable` asks on a device-mode shell.
+pub const ENABLE_QUESTION: &str = "Password: ";
+/// An enable secret a device-mode shell denies at once, back at the
+/// unprivileged prompt, without asking again.
+pub const DENIED_SECRET: &str = "denied at once";
+/// What a device-mode shell prints for [`DENIED_SECRET`].
+pub const ACCESS_DENIED: &str = "% Access denied";
+/// What a device-mode shell prints after three wrong enable secrets.
+pub const BAD_SECRETS: &str = "% Bad secrets";
+/// How many lines a device-mode shell shows before [`MORE`] until
+/// `terminal length` says otherwise.
+pub const PAGE_LENGTH: u32 = 24;
+/// What a device-mode shell shows at the end of a page of output.
+pub const MORE: &str = " --More-- ";
+/// How a device-mode shell wipes [`MORE`] before the next page.
+const ERASE_MORE: &[u8] = b"\r\x1b[K";
 
 /// What Ctrl+C prints before the next prompt.
 pub const INTERRUPTED: &[u8] = b"^C\r\n";
@@ -162,8 +203,35 @@ pub struct TestSshServer {
     forwarded: Arc<AtomicUsize>,
     /// The first bytes each client sent, one entry per connection.
     received: Received,
-    /// The hostname of a device-mode shell.
-    device: Option<String>,
+    /// How a device-mode shell starts.
+    device: Option<Device>,
+    open: Arc<OpenConnections>,
+}
+
+/// How a device-mode shell starts.
+#[derive(Debug, Clone)]
+struct Device {
+    hostname: String,
+    /// Whether it starts at the privileged prompt.
+    privileged: bool,
+}
+
+/// The connections that opened a session channel, while they last.
+#[derive(Default)]
+struct OpenConnections {
+    now: AtomicUsize,
+    most: AtomicUsize,
+}
+
+impl OpenConnections {
+    fn opened(&self) {
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+    }
+
+    fn closed(&self) {
+        self.now.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl TestSshServer {
@@ -180,7 +248,27 @@ impl TestSshServer {
 
     /// [`Self::start_device`] on the given loopback port.
     pub async fn start_device_on(port: u16, hostname: &str) -> Self {
-        Self::start_with(port, None, Preferred::default(), Some(hostname.into())).await
+        let device = Device {
+            hostname: hostname.into(),
+            privileged: true,
+        };
+        Self::start_with(port, None, Preferred::default(), Some(device)).await
+    }
+
+    /// Like [`Self::start_device`], but the shell starts at the
+    /// unprivileged prompt ([`unprivileged_prompt`]): `enable` with
+    /// [`ENABLE_SECRET`] gives the privileged one.
+    pub async fn start_unprivileged_device(hostname: &str) -> Self {
+        Self::start_unprivileged_device_on(0, hostname).await
+    }
+
+    /// [`Self::start_unprivileged_device`] on the given loopback port.
+    pub async fn start_unprivileged_device_on(port: u16, hostname: &str) -> Self {
+        let device = Device {
+            hostname: hostname.into(),
+            privileged: false,
+        };
+        Self::start_with(port, None, Preferred::default(), Some(device)).await
     }
 
     /// Starts a server on a free loopback port that offers only `methods`
@@ -260,7 +348,7 @@ impl TestSshServer {
         port: u16,
         methods: Option<MethodSet>,
         preferred: Preferred,
-        device: Option<String>,
+        device: Option<Device>,
     ) -> Self {
         let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let rsa_key = russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap();
@@ -295,18 +383,14 @@ impl TestSshServer {
         let received = Received::default();
         let counter = forwarded.clone();
         let connections = received.clone();
-        let prompt: Arc<[u8]> = match &device {
-            Some(hostname) => device_prompt(hostname).into(),
-            None => PROMPT.into(),
+        let open = Arc::<OpenConnections>::default();
+        let mut server = ScriptedServer {
+            authorized_keys,
+            forwarded: counter,
+            device: device.clone(),
+            open: open.clone(),
         };
-        let hostname = device.clone();
         let task = tokio::spawn(async move {
-            let mut server = ScriptedServer {
-                authorized_keys,
-                forwarded: counter,
-                prompt,
-                device: hostname,
-            };
             // `run_on_socket`, but keeping what each client sends first.
             while let Ok((socket, address)) = listener.accept().await {
                 let _ = socket.set_nodelay(true);
@@ -330,15 +414,25 @@ impl TestSshServer {
             forwarded,
             received,
             device,
+            open,
         }
     }
 
-    /// The prompt its shell prints: [`PROMPT`], or a device's.
+    /// The prompt its shell starts with: [`PROMPT`], or a device's.
     pub fn prompt(&self) -> Vec<u8> {
-        match &self.device {
-            Some(hostname) => device_prompt(hostname),
-            None => PROMPT.to_vec(),
-        }
+        let privileged = self.device.as_ref().is_none_or(|d| d.privileged);
+        prompt_for(&self.device, privileged)
+    }
+
+    /// How many connections to this server have a session channel open (a
+    /// shell) now: from their first session channel until they end.
+    pub fn connections_open(&self) -> usize {
+        self.open.now.load(Ordering::SeqCst)
+    }
+
+    /// The most connections [`Self::connections_open`] has counted at once.
+    pub fn most_connections_open(&self) -> usize {
+        self.open.most.load(Ordering::SeqCst)
     }
 
     pub fn port(&self) -> u16 {
@@ -423,8 +517,8 @@ pub fn target_at(host: &str, port: u16) -> SshTarget {
 struct ScriptedServer {
     authorized_keys: Arc<Vec<PublicKey>>,
     forwarded: Arc<AtomicUsize>,
-    prompt: Arc<[u8]>,
-    device: Option<String>,
+    device: Option<Device>,
+    open: Arc<OpenConnections>,
 }
 
 impl Server for ScriptedServer {
@@ -436,8 +530,19 @@ impl Server for ScriptedServer {
             forwarded: self.forwarded.clone(),
             channels: HashMap::new(),
             interactive: Interactive::Start,
-            prompt: self.prompt.clone(),
             device: self.device.clone(),
+            open: self.open.clone(),
+            counted: false,
+        }
+    }
+}
+
+impl Device {
+    fn prompt(&self, privileged: bool) -> Vec<u8> {
+        if privileged {
+            device_prompt(&self.hostname)
+        } else {
+            unprivileged_prompt(&self.hostname)
         }
     }
 }
@@ -451,10 +556,20 @@ struct ScriptedShell {
     channels: HashMap<ChannelId, ShellState>,
     /// Where [`OTP_USERNAME`]'s login has got to.
     interactive: Interactive,
-    /// What the shell prints when it waits for a line.
-    prompt: Arc<[u8]>,
-    /// The hostname, in device mode.
-    device: Option<String>,
+    /// How the shell starts, in device mode.
+    device: Option<Device>,
+    /// The server's count of open connections.
+    open: Arc<OpenConnections>,
+    /// Whether this connection is in `open`.
+    counted: bool,
+}
+
+impl Drop for ScriptedShell {
+    fn drop(&mut self) {
+        if self.counted {
+            self.open.closed();
+        }
+    }
 }
 
 /// The login of [`OTP_USERNAME`].
@@ -479,17 +594,50 @@ fn ask_code() -> Auth {
     ask(CODE_NAME, CODE_INSTRUCTIONS, CODE_QUESTION, true)
 }
 
-#[derive(Default)]
 struct ShellState {
     cols: u32,
     rows: u32,
     line: Vec<u8>,
     /// Set while a flood is running; setting the flag stops it.
     flood: Option<Arc<AtomicBool>>,
+    /// In device mode: at the privileged prompt.
+    privileged: bool,
+    /// In device mode: lines per page of `lines` output (0: no paging).
+    page_length: u32,
+    /// In device mode: what typed input goes to instead of a line.
+    waiting: Waiting,
+}
+
+impl Default for ShellState {
+    fn default() -> Self {
+        Self {
+            cols: 0,
+            rows: 0,
+            line: Vec::new(),
+            flood: None,
+            privileged: true,
+            page_length: PAGE_LENGTH,
+            waiting: Waiting::Line,
+        }
+    }
+}
+
+/// What a device-mode shell does with typed input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Waiting {
+    /// A command line (as in every mode).
+    Line,
+    /// The enable secret (not echoed), the `tries`th time it is asked.
+    Secret { typed: Vec<u8>, tries: u32 },
+    /// A key at [`MORE`]: `lines` output goes on with line `next`, up to
+    /// line `last`.
+    More { next: u32, last: u32 },
+    /// Nothing: `hang` (Ctrl+C ends it) or `pause`.
+    Nothing,
 }
 
 /// Sends [`FLOOD_LINE`] until `stop` is set, then the interrupt and a prompt.
-fn start_flood(channel: ChannelId, session: &Session, prompt: Arc<[u8]>) -> Arc<AtomicBool> {
+fn start_flood(channel: ChannelId, session: &Session, prompt: Vec<u8>) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
     let handle = session.handle();
     let flooding = stop.clone();
@@ -506,7 +654,14 @@ fn start_flood(channel: ChannelId, session: &Session, prompt: Arc<[u8]>) -> Arc<
 }
 
 impl ScriptedShell {
+    /// What the shell prints on `channel` when it waits for a line.
+    fn prompt(&self, channel: ChannelId) -> Vec<u8> {
+        let privileged = self.channels.get(&channel).is_none_or(|s| s.privileged);
+        prompt_for(&self.device, privileged)
+    }
+
     fn run_line(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), russh::Error> {
+        let device = self.device.is_some();
         let state = self.channels.entry(channel).or_default();
         let line = String::from_utf8_lossy(&std::mem::take(&mut state.line)).into_owned();
         let mut words = line.split_whitespace();
@@ -534,10 +689,22 @@ impl ScriptedShell {
             }
             Some("lines") => {
                 let count: u32 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                if device && state.page_length > 0 && count > state.page_length {
+                    let page = state.page_length;
+                    state.waiting = Waiting::More {
+                        next: page + 1,
+                        last: count,
+                    };
+                    session.data(channel, numbered_range(1, page))?;
+                    session.data(channel, MORE.as_bytes().to_vec())?;
+                    return Ok(());
+                }
                 session.data(channel, numbered_lines(count))?;
             }
             Some("flood") => {
-                state.flood = Some(start_flood(channel, session, self.prompt.clone()));
+                let prompt = self.prompt(channel);
+                let state = self.channels.entry(channel).or_default();
+                state.flood = Some(start_flood(channel, session, prompt));
                 return Ok(());
             }
             Some("exit") => {
@@ -557,23 +724,120 @@ impl ScriptedShell {
                 });
             }
             Some("drop") => return Err(russh::Error::Disconnect),
-            Some("show") if self.device.is_some() && words.next() == Some("hostname") => {
-                let hostname = self.device.clone().unwrap_or_default();
-                session.data(channel, format!("{hostname}\r\n").into_bytes())?;
+            Some("show") if words.next() == Some("hostname") && device => {
+                if let Some(device) = &self.device {
+                    session.data(channel, format!("{}\r\n", device.hostname).into_bytes())?;
+                }
             }
-            Some("echo") if self.device.is_some() => {
+            Some("echo") if device => {
                 let text = line.trim_start().strip_prefix("echo").unwrap_or("").trim();
                 session.data(channel, format!("{text}\r\n").into_bytes())?;
             }
-            Some(_) if self.device.is_some() => {
-                let text = format!("{UNKNOWN_COMMAND}{}\r\n", line.trim());
-                session.data(channel, text.into_bytes())?;
+            Some("terminal") if device && words.next() == Some("length") => {
+                match words.next().and_then(|n| n.parse().ok()) {
+                    Some(length) => state.page_length = length,
+                    None => session.data(channel, unknown(&line))?,
+                }
             }
+            Some("enable") if device && !state.privileged => {
+                state.waiting = Waiting::Secret {
+                    typed: Vec::new(),
+                    tries: 1,
+                };
+                session.data(channel, ENABLE_QUESTION.as_bytes().to_vec())?;
+                return Ok(());
+            }
+            Some("enable") if device => {}
+            Some("disable") if device => state.privileged = false,
+            Some("hang") if device => {
+                state.waiting = Waiting::Nothing;
+                return Ok(());
+            }
+            Some("pause") if device => {
+                let millis: u64 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                state.waiting = Waiting::Nothing;
+                let prompt = self.prompt(channel);
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(millis)).await;
+                    let _ = handle.data(channel, prompt).await;
+                });
+                return Ok(());
+            }
+            Some(_) if device => session.data(channel, unknown(&line))?,
             _ => {}
         }
-        session.data(channel, self.prompt.to_vec())?;
+        session.data(channel, self.prompt(channel))?;
         Ok(())
     }
+
+    /// Takes a byte typed while a device-mode shell waits for something
+    /// other than a line.
+    fn take_waiting(
+        &mut self,
+        channel: ChannelId,
+        byte: u8,
+        session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        let Some(state) = self.channels.get_mut(&channel) else {
+            return Ok(());
+        };
+        match &mut state.waiting {
+            Waiting::Line | Waiting::Nothing => {}
+            Waiting::Secret { typed, tries } if byte == b'\r' => {
+                session.data(channel, &b"\r\n"[..])?;
+                if typed == ENABLE_SECRET.as_bytes() {
+                    state.privileged = true;
+                } else if typed == DENIED_SECRET.as_bytes() {
+                    session.data(channel, format!("{ACCESS_DENIED}\r\n").into_bytes())?;
+                } else if *tries < 3 {
+                    *tries += 1;
+                    typed.clear();
+                    session.data(channel, ENABLE_QUESTION.as_bytes().to_vec())?;
+                    return Ok(());
+                } else {
+                    session.data(channel, format!("{BAD_SECRETS}\r\n").into_bytes())?;
+                }
+                state.waiting = Waiting::Line;
+                session.data(channel, prompt_for(&self.device, state.privileged))?;
+            }
+            Waiting::Secret { typed, .. } => typed.push(byte),
+            Waiting::More { next, last } => {
+                let (next, last) = (*next, *last);
+                session.data(channel, ERASE_MORE)?;
+                let end = next.saturating_add(state.page_length.max(1) - 1);
+                if byte == b'q' || end >= last {
+                    if byte != b'q' {
+                        session.data(channel, numbered_range(next, last))?;
+                    }
+                    state.waiting = Waiting::Line;
+                    session.data(channel, prompt_for(&self.device, state.privileged))?;
+                } else {
+                    session.data(channel, numbered_range(next, end))?;
+                    session.data(channel, MORE.as_bytes().to_vec())?;
+                    state.waiting = Waiting::More {
+                        next: end + 1,
+                        last,
+                    };
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What the shell prints when it waits for a line: [`PROMPT`], or a
+/// device's (privileged or not).
+fn prompt_for(device: &Option<Device>, privileged: bool) -> Vec<u8> {
+    match device {
+        None => PROMPT.to_vec(),
+        Some(device) => device.prompt(privileged),
+    }
+}
+
+/// What a device-mode shell prints for a line it does not know.
+fn unknown(line: &str) -> Vec<u8> {
+    format!("{UNKNOWN_COMMAND}{}\r\n", line.trim()).into_bytes()
 }
 
 impl Handler for ScriptedShell {
@@ -644,7 +908,18 @@ impl Handler for ScriptedShell {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        self.channels.insert(channel.id(), ShellState::default());
+        let privileged = self.device.as_ref().is_none_or(|d| d.privileged);
+        self.channels.insert(
+            channel.id(),
+            ShellState {
+                privileged,
+                ..ShellState::default()
+            },
+        );
+        if !self.counted {
+            self.counted = true;
+            self.open.opened();
+        }
         reply.accept().await;
         Ok(())
     }
@@ -717,7 +992,7 @@ impl Handler for ScriptedShell {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
-        session.data(channel, self.prompt.to_vec())
+        session.data(channel, self.prompt(channel))
     }
 
     async fn data(
@@ -735,11 +1010,18 @@ impl Handler for ScriptedShell {
             if byte == CTRL_C {
                 let state = self.channels.entry(channel).or_default();
                 state.line.clear();
+                state.waiting = Waiting::Line;
                 match state.flood.take() {
                     // The flood prints the interrupt and prompt as it stops.
                     Some(stop) => stop.store(true, Ordering::Relaxed),
-                    None => session.data(channel, [INTERRUPTED, &self.prompt].concat())?,
+                    None => session.data(channel, [INTERRUPTED, &self.prompt(channel)].concat())?,
                 }
+            } else if self
+                .channels
+                .get(&channel)
+                .is_some_and(|s| s.waiting != Waiting::Line)
+            {
+                self.take_waiting(channel, byte, session)?;
             } else if self
                 .channels
                 .get(&channel)
@@ -762,9 +1044,14 @@ impl Handler for ScriptedShell {
     }
 }
 
-/// What the scripted shell prints for `lines <count>`.
+/// What the scripted shell prints for `lines <count>` (unpaged).
 pub fn numbered_lines(count: u32) -> Vec<u8> {
-    (1..=count)
+    numbered_range(1, count)
+}
+
+/// `line <first>` to `line <last>`, one per row.
+pub fn numbered_range(first: u32, last: u32) -> Vec<u8> {
+    (first..=last)
         .flat_map(|n| format!("line {n}\r\n").into_bytes())
         .collect()
 }

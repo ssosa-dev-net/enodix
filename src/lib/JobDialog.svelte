@@ -2,6 +2,8 @@
   import { untrack } from "svelte";
   import {
     cancelJob,
+    DEFAULT_PARALLEL,
+    MAX_PARALLEL,
     planJob,
     startJob,
     type HostState,
@@ -29,6 +31,14 @@
   let answers = $state<Record<string, string>>({});
   let plan = $state<JobPlan | null>(null);
   let productionConfirmed = $state(false);
+  /** How many hosts run at once. */
+  let parallel = $state<number | null>(DEFAULT_PARALLEL);
+  const parallelValid = $derived(
+    parallel !== null &&
+      Number.isInteger(parallel) &&
+      parallel >= 1 &&
+      parallel <= MAX_PARALLEL,
+  );
   let error = $state<string | null>(null);
   let busy = $state(false);
 
@@ -95,7 +105,7 @@
       states = {};
       outputs = {};
       finished = false;
-      jobId = await startJob(onevent);
+      jobId = await startJob(parallel ?? DEFAULT_PARALLEL, onevent);
       step = "running";
     });
   }
@@ -104,6 +114,7 @@
     plan !== null &&
       plan.hosts.length > 0 &&
       plan.missingVariables.length === 0 &&
+      parallelValid &&
       (plan.production.length === 0 || productionConfirmed),
   );
 
@@ -302,6 +313,19 @@
           </span>
         </label>
       {/if}
+      <label class="parallel" data-job-parallel>
+        <span>Hosts at once</span>
+        <input
+          type="number"
+          name="job-parallel"
+          min="1"
+          max={MAX_PARALLEL}
+          step="1"
+          bind:value={parallel}
+          aria-invalid={!parallelValid}
+        />
+        <span class="hint">1 to {MAX_PARALLEL}</span>
+      </label>
       <div class="actions">
         <button type="button" onclick={() => (step = "snippet")}>Back</button>
         <button
@@ -484,6 +508,22 @@
     font-weight: 600;
   }
 
+  .parallel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .parallel input {
+    width: 5rem;
+  }
+  .parallel input[aria-invalid="true"] {
+    border-color: var(--danger);
+  }
+  .parallel .hint {
+    color: var(--muted, inherit);
+    font-size: 0.9em;
+  }
   .production-confirm {
     display: flex;
     gap: 0.5rem;

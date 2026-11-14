@@ -9,9 +9,15 @@
 //! [`start`] then runs a ready plan: each host gets its own headless
 //! session, opened through the same path as a terminal session to that
 //! host (its profile target with its jump hosts, the manager's known-hosts
-//! store, legacy crypto, agents, connect timeout), and the snippet is sent
-//! line by line, waiting for the prompt after each. Progress arrives as
-//! [`JobEvent`]s on the returned [`Job`].
+//! store, legacy crypto, agents, connect timeout). Once the prompt shows,
+//! the job enters privileged mode if the platform definition has a
+//! privilege command (answering its password question with the profile's
+//! enable secret), turns paging off with the definition's disable-paging
+//! command, and sends the snippet line by line, waiting for the prompt
+//! after each. A host that shows no prompt within the command timeout
+//! fails; at most [`JobOptions::parallel`] hosts run at once. Progress
+//! arrives as [`JobEvent`]s on the returned [`Job`], which can cancel the
+//! run.
 //!
 //! A job never asks anything: an untrusted host key is refused and a login
 //! question is not answered, and either fails that host with a reason that
@@ -113,11 +119,43 @@ pub struct PlannedHost {
 struct HostWork {
     /// The profile target, jump hosts included.
     target: SshTarget,
+    /// The name of the credential profile it logs in with.
+    profile: String,
+    /// The profile's enable secret, if it has one.
+    enable_secret: Option<EnableSecret>,
     /// The definition's prompt pattern.
     prompt: String,
+    /// The definition's privilege command, if it has one.
+    privilege_command: Option<String>,
+    /// The definition's pattern of the privilege password question.
+    privilege_prompt: Option<String>,
+    /// The definition's disable-paging command, if it has one.
+    disable_paging: Option<String>,
     /// The snippet's lines for this host; empty while variables are
     /// missing.
     lines: Vec<String>,
+}
+
+/// An enable secret, kept out of `Debug` and wiped when dropped.
+#[derive(Clone, PartialEq, Eq)]
+struct EnableSecret(String);
+
+impl std::fmt::Debug for EnableSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EnableSecret(<hidden>)")
+    }
+}
+
+impl Drop for EnableSecret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.0.zeroize();
+    }
+}
+
+/// `value`, unless it is missing or blank.
+fn given(value: &Option<String>) -> Option<String> {
+    value.clone().filter(|value| !value.trim().is_empty())
 }
 
 /// A host that will not run.
@@ -305,13 +343,19 @@ fn runnable(
         .ok_or_else(|| SkipReason::NoPlatform {
             platform: host.settings.platform.as_ref().map(|p| p.value.clone()),
         })?;
-    match profiles.login_with(id, Protocol::Ssh).map_err(skip)? {
-        HostLogin::Profile { .. } => {}
+    let profile = match profiles.login_with(id, Protocol::Ssh).map_err(skip)? {
+        HostLogin::Profile { profile, .. } => profile,
         HostLogin::NotSetUp { profile } => return Err(SkipReason::ProfileNotSetUp { profile }),
         HostLogin::Prompt | HostLogin::Telnet | HostLogin::Serial => {
             return Err(SkipReason::NoProfile)
         }
-    }
+    };
+    let enable_secret = profiles
+        .profile(&profile)
+        .map_err(skip)?
+        .and_then(|stored| stored.enable_secret.clone())
+        .filter(|secret| !secret.is_empty())
+        .map(EnableSecret);
     let jump_hosts = profiles.jump_hosts(id).map_err(skip)?;
     if let Some(jump) = jump_hosts.iter().find(|j| j.auth == SshAuth::Prompt) {
         return Err(SkipReason::JumpHostNeedsLogin {
@@ -320,7 +364,12 @@ fn runnable(
     }
     let work = HostWork {
         target: profiles.profile_target(id).map_err(skip)?,
+        profile,
+        enable_secret,
         prompt: definition.prompt.clone(),
+        privilege_command: given(&definition.privilege_command),
+        privilege_prompt: given(&definition.privilege_prompt),
+        disable_paging: given(&definition.disable_paging),
         lines: Vec::new(),
     };
     Ok((work, definition.name.clone()))
