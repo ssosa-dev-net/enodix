@@ -3,6 +3,7 @@
     describeOrigin,
     inventory,
     isOwn,
+    platformDefinition,
     type Item,
   } from "./inventory.svelte";
   import { profileNames } from "./profiles.svelte";
@@ -73,8 +74,14 @@
     },
   ];
 
-  /** Every platform the workspace names, offered for the platform setting. */
+  /**
+   * Offered for the platform setting: the usable definitions, then every
+   * other platform the workspace names that finds none.
+   */
   const platformNames = $derived.by(() => {
+    const defined = (inventory.workspace?.platforms ?? [])
+      .filter((listed) => listed.error === null)
+      .map((listed) => listed.definition.name);
     const names = new Set<string>();
     const walk = (folder: Folder) => {
       if (folder.settings.platform) names.add(folder.settings.platform);
@@ -84,7 +91,22 @@
       folder.folders.forEach(walk);
     };
     if (inventory.workspace) walk(inventory.workspace.tree);
-    return [...names].sort((a, b) => a.localeCompare(b));
+    const others = [...names]
+      .filter((name) => platformDefinition(name) === null)
+      .sort((a, b) => a.localeCompare(b));
+    return [...defined, ...others];
+  });
+
+  /** The definition the platform that applies finds, if one applies. */
+  const platformMatch = $derived.by(() => {
+    const platform = effective?.platform?.value;
+    if (!platform) return null;
+    const found = platformDefinition(platform);
+    return {
+      platform,
+      definition: found?.usable ? found.definition : null,
+      broken: found && !found.usable ? found.definition : null,
+    };
   });
 
   const connection: Row[] = [
@@ -383,6 +405,27 @@
 <section aria-label="Device settings">
   <h3>Device</h3>
   {@render rowsOf(device)}
+  {#if platformMatch}
+    <p
+      class="platform-match"
+      data-platform-match={platformMatch.definition ?? ""}
+      class:missing={platformMatch.definition === null}
+    >
+      {#if platformMatch.definition}
+        Platform definition: {platformMatch.definition}
+      {:else if platformMatch.broken}
+        The platform definition {platformMatch.broken} has a pattern that cannot be
+        used, so it is not used.
+      {:else}
+        No platform definition answers to “{platformMatch.platform}”.
+      {/if}
+      <button
+        class="definitions"
+        data-open-platforms
+        onclick={() => (inventory.platforms = true)}>Definitions…</button
+      >
+    </p>
+  {/if}
   <datalist id="platforms">
     {#each platformNames as name (name)}
       <option value={name}></option>
@@ -542,6 +585,28 @@
     border-left: 2px solid var(--warning);
     font-size: 0.7rem;
     color: var(--text);
+  }
+
+  .platform-match {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.2rem 0.5rem;
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+
+  .platform-match.missing {
+    color: var(--warning);
+  }
+
+  .definitions {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-size: 0.75rem;
   }
 
   .link .name {

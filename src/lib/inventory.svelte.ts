@@ -64,6 +64,8 @@ export const inventory = $state({
   csvImport: null as string | null,
   /** The same for the Nornir import dialog. */
   nornirImport: null as string | null,
+  /** Whether the platform definitions dialog is open. */
+  platforms: false,
 });
 
 /** Opens the CSV import dialog with `folder` as its first target. */
@@ -312,6 +314,31 @@ export async function saveHighlightRule(
 /** Deletes a workspace highlight rule, or resets a built-in one. */
 export async function deleteHighlightRule(name: string) {
   apply(await api.deleteHighlightRule(name));
+}
+
+/** Saves a platform definition (in place of `previous`); rejects with why not. */
+export async function savePlatform(
+  previous: string | null,
+  definition: api.PlatformDefinition,
+) {
+  apply(await api.savePlatform(previous, definition));
+}
+
+/** Deletes a workspace platform definition, or resets a built-in one. */
+export async function deletePlatform(name: string) {
+  apply(await api.deletePlatform(name));
+}
+
+/**
+ * The definition a platform setting of `text` finds (by name or other
+ * name, ignoring case; `usable` false when it has a bad pattern), as the
+ * core listed it in `platform_names`; null if none.
+ */
+export function platformDefinition(
+  text: string,
+): { definition: string; usable: boolean } | null {
+  const names = inventory.workspace?.platform_names ?? {};
+  return names[text.trim().toLowerCase()] ?? null;
 }
 
 /** Saves a snippet (in place of `previous`); rejects with why not. */

@@ -17,6 +17,7 @@
   } from "./lib/PaneView.svelte";
   import PanelResizer from "./lib/PanelResizer.svelte";
   import PreferencesDialog from "./lib/PreferencesDialog.svelte";
+  import PlatformsDialog from "./lib/PlatformsDialog.svelte";
   import ProfilesDialog from "./lib/ProfilesDialog.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
   import SnippetDialog from "./lib/SnippetDialog.svelte";
@@ -1251,6 +1252,15 @@
     }}
     oncancel={() => {
       asking = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if inventory.platforms && inventory.workspace}
+  <PlatformsDialog
+    onclose={() => {
+      inventory.platforms = false;
       focusRequest += 1;
     }}
   />

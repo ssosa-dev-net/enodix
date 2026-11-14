@@ -24,6 +24,7 @@ use netterm_core::logging::{LogFolder, SessionLog};
 use netterm_core::paste::{
     confirm_joining, plan_group_paste, plan_paste, GroupPastePlan, PastePlan, PasteSafety,
 };
+use netterm_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use netterm_core::preferences::{FontZoom, Preferences, Theme};
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
@@ -249,6 +250,11 @@ struct WorkspaceView {
     filters: Vec<SavedFilter>,
     /// The highlight rules, the workspace's own first.
     highlight_rules: Vec<ListedRule>,
+    /// The platform definitions, the built-in ones first.
+    platforms: Vec<ListedPlatform>,
+    /// `Workspace::platform_names`: each usable name and other name (lower
+    /// case) with the definition it finds.
+    platform_names: BTreeMap<String, PlatformName>,
     /// The snippets, in file order.
     snippets: Vec<Snippet>,
     problems: Vec<Problem>,
@@ -265,6 +271,8 @@ impl From<&Workspace> for WorkspaceView {
             host_safety: workspace.host_paste_safety(),
             filters: workspace.filters().to_vec(),
             highlight_rules: workspace.highlight_rules().to_vec(),
+            platforms: workspace.platforms().to_vec(),
+            platform_names: workspace.platform_names(),
             snippets: workspace.snippets().to_vec(),
             problems: workspace.problems().to_vec(),
         }
@@ -850,6 +858,25 @@ fn highlight_rule_save(
 #[tauri::command]
 fn highlight_rule_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, String> {
     edit(&shell, |workspace| workspace.delete_highlight_rule(&name))
+}
+
+/// Saves a platform definition in place of the one called `previous`, or
+/// as a new one.
+#[tauri::command]
+fn platform_save(
+    shell: State<'_, Shell>,
+    previous: Option<String>,
+    definition: PlatformDefinition,
+) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| {
+        workspace.save_platform(previous.as_deref(), &definition)
+    })
+}
+
+/// Deletes a workspace platform definition, or resets a changed built-in.
+#[tauri::command]
+fn platform_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| workspace.delete_platform(&name))
 }
 
 /// The snippets matching `query` (the Ctrl+K palette's snippet search).
@@ -1970,6 +1997,8 @@ pub fn run() {
             highlight_built_in_rules,
             highlight_rule_save,
             highlight_rule_delete,
+            platform_save,
+            platform_delete,
             snippet_find,
             snippet_save,
             snippet_delete,

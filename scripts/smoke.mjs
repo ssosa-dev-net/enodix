@@ -4720,6 +4720,167 @@ async function editInventory({
   await shows("platform", "none");
   step("a setting on a folder was written to its settings file");
 
+  // Platform definitions: the folder's platform finds none yet; one is
+  // created in the dialog, a built-in changed and reset, a bad pattern
+  // refused, and an external edit of the file picked up.
+  const platformsFile = "_platforms.yaml";
+  const platformsDialog = "[data-dialog=platforms]";
+  const platformMatch = () =>
+    evaluate(
+      `document.querySelector(".side [data-platform-match]")?.getAttribute("data-platform-match") ?? null`,
+    );
+  const platformRow = (name) => `${platformsDialog} [data-platform="${name}"]`;
+  const platformSource = (name) =>
+    evaluate(
+      `document.querySelector(${JSON.stringify(platformRow(name))})?.getAttribute("data-platform-source") ?? null`,
+    );
+  const openPlatforms = async () => {
+    await clickOn("aside .toolbar [data-open-platforms]");
+    await until("the platforms dialog", () =>
+      evaluate(`!!document.querySelector("${platformsDialog}")`),
+    );
+  };
+  const closePlatforms = async () => {
+    await evaluate(
+      `[...document.querySelectorAll("${platformsDialog} button")].find((b) => b.textContent.trim() === "Close").click()`,
+    );
+    await until(
+      "the platforms dialog closed",
+      async () =>
+        !(await evaluate(`!!document.querySelector("${platformsDialog}")`)),
+    );
+  };
+  const platformForm = `${platformsDialog} [data-platform-form]`;
+  const formOpen = () =>
+    evaluate(`!!document.querySelector(${JSON.stringify(platformForm)})`);
+
+  await changeField("[name=setting-platform]", "RouterOS");
+  await until(
+    "the folder's platform finds no definition",
+    async () => (await platformMatch()) === "",
+  );
+  await openPlatforms();
+  for (const name of ["srlinux", "eos", "frr", "ios", "nxos", "junos"]) {
+    if ((await platformSource(name)) !== "builtIn") {
+      fail(`the built-in platform ${name} is not listed as built in`);
+    }
+  }
+  await clickOn(`${platformsDialog} [data-platform-action=new]`);
+  await until("the new platform form", formOpen);
+  await fillForm(
+    {
+      "platform-name": "mikrotik",
+      "platform-other-names": "routeros, mikro",
+      "platform-prompt": "\\[\\S+@\\S+\\] >",
+      "platform-show-config": "/export",
+    },
+    platformForm,
+  );
+  await until(
+    "the new definition in the platforms file",
+    () =>
+      contents(platformsFile) ===
+      "mikrotik:\n  other_names:\n  - routeros\n  - mikro\n  prompt: \\[\\S+@\\S+\\] >\n  show_config: /export\n",
+  );
+  await until(
+    "the new definition listed",
+    async () => (await platformSource("mikrotik")) === "workspace",
+  );
+  await screenshot("platforms");
+
+  // A built-in changed: only the difference is written; reset removes it.
+  await clickOn(`${platformRow("eos")} [data-platform-action=edit]`);
+  await until("the eos form", formOpen);
+  await fillForm(
+    { "platform-disable-paging": "terminal pager 0" },
+    platformForm,
+  );
+  await until("the changed built-in in the platforms file", () =>
+    contents(platformsFile)?.endsWith(
+      "eos:\n  disable_paging: terminal pager 0\n",
+    ),
+  );
+  await until(
+    "eos listed as changed",
+    async () => (await platformSource("eos")) === "changed",
+  );
+  await clickOn(`${platformRow("eos")} [data-platform-action=reset]`);
+  await until(
+    "the reset built-in gone from the platforms file",
+    () => !contents(platformsFile)?.includes("eos:"),
+  );
+  await until(
+    "eos listed as built in again",
+    async () => (await platformSource("eos")) === "builtIn",
+  );
+
+  // A pattern that cannot be used is refused, and the file stays.
+  const before = contents(platformsFile);
+  await clickOn(`${platformsDialog} [data-platform-action=new]`);
+  await until("the new platform form", formOpen);
+  await fillForm(
+    { "platform-name": "bad", "platform-prompt": "(" },
+    platformForm,
+  );
+  await until("the refused pattern's message", () =>
+    evaluate(
+      `!!document.querySelector("${platformsDialog} [data-platform-error-message]")`,
+    ),
+  );
+  if (contents(platformsFile) !== before) {
+    fail("a refused definition changed the platforms file");
+  }
+  await clickOn(`${platformsDialog} [data-platform-action=cancel]`);
+  await closePlatforms();
+  step("platform definitions were created, changed, reset and refused");
+
+  // The folder's platform (another name of the new definition) finds it,
+  // and the platform field offers the defined platforms.
+  await until(
+    "the folder's platform finds the new definition",
+    async () => (await platformMatch()) === "mikrotik",
+  );
+  const offered = await evaluate(
+    `[...document.querySelectorAll("#platforms option")].map((o) => o.value)`,
+  );
+  for (const name of ["srlinux", "eos", "junos", "mikrotik"]) {
+    if (!offered.includes(name)) {
+      fail(`the platform field does not offer ${name}: ${offered.join(", ")}`);
+    }
+  }
+
+  // Edited outside the app: a broken prompt is shown and not used.
+  writeFileSync(
+    file(platformsFile),
+    "mikrotik:\n  prompt: '(oops'\n  other_names: routeros\n",
+  );
+  await until(
+    "the external edit picked up",
+    async () => (await platformMatch()) === "",
+  );
+  await openPlatforms();
+  await until("the broken pattern shown with its definition", () =>
+    evaluate(
+      `!!document.querySelector(${JSON.stringify(`${platformRow("mikrotik")} [data-platform-error]`)})`,
+    ),
+  );
+  await clickOn(`${platformRow("mikrotik")} [data-platform-action=delete]`);
+  await until(
+    "the platforms file gone with its last definition",
+    () => contents(platformsFile) === null,
+  );
+  await closePlatforms();
+  await clickOn('.side [aria-label="Clear Platform"]');
+  await until(
+    "the folder's platform cleared again",
+    () =>
+      contents("Edge/_folder.yaml") ===
+      "description: Edge routers\nenvironment: lab\n",
+  );
+  step(
+    "a folder's platform found its definition, and an external edit was picked up",
+  );
+
   // Moving a folder from its context menu.
   const openMenu = async (selector) => {
     const at = await centreOf(selector);
