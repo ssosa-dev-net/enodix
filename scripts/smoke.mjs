@@ -618,6 +618,8 @@ async function main() {
   );
   step("full-screen program output is handled");
 
+  await inputOrigins({ type, evaluate, mouse, centreOf, devtools, step });
+
   // Resizing the window resizes the remote terminal.
   const { windowId, bounds } = await devtools.send(
     "Browser.getWindowForTarget",
@@ -2697,6 +2699,96 @@ function writeClipboard(text) {
     ["-NoProfile", "-Command", "Set-Clipboard -Value $env:SMOKE_CLIPBOARD"],
     { env: { ...process.env, SMOKE_CLIPBOARD: text } },
   );
+}
+
+// Input is told apart by where it came from (#34): typed and pasted text
+// are the user's own; the terminal's answers to a device's queries and
+// mouse reports are not (multi-send must not share them).
+async function inputOrigins({
+  type,
+  evaluate,
+  mouse,
+  centreOf,
+  devtools,
+  step,
+}) {
+  const terminal = `document.querySelector("${SHOWN_SESSION} .terminal")`;
+  const recent = () => evaluate(`${terminal}.input.recent()`);
+  await evaluate(`${terminal}.input.record()`);
+  const ctrlC = async () => {
+    const key = { key: "c", code: "KeyC", windowsVirtualKeyCode: 67 };
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      modifiers: 2,
+      ...key,
+    });
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      modifiers: 2,
+      ...key,
+    });
+  };
+  const found = (origin, pattern) => async () =>
+    (await recent()).some(
+      (input) => input.origin === origin && pattern.test(input.data),
+    );
+
+  // The device asks for the cursor position and the device attributes; the
+  // terminal answers by itself.
+  await type("query\r");
+  await until(
+    "the cursor-position report, as a reply",
+    found("reply", /^\x1b\[\d+;\d+R$/),
+  );
+  await until(
+    "the device-attributes answer, as a reply",
+    found("reply", /^\x1b\[\?[\d;]*c$/),
+  );
+  await until("the typed command, as typed", found("typed", /^q$/));
+  await until("Enter, as typed", found("typed", /^\r$/));
+  // The shell echoed the answers onto its command line: that is what
+  // sharing them would do to other sessions.
+  await ctrlC();
+  await until("Ctrl+C, as typed", found("typed", /^\x03$/));
+  step("the terminal's answers to device queries are told from typed input");
+
+  await evaluate(`(() => {
+    const data = new DataTransfer();
+    data.setData("text/plain", "pasted-34");
+    ${terminal}.querySelector("textarea").dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+    );
+  })()`);
+  await until("the paste, as pasted", found("pasted", /pasted-34/));
+  await ctrlC();
+  step("pasted text counts as the user's input");
+
+  await type("mouse on\r");
+  await until("mouse reporting on", () =>
+    evaluate(`${terminal}.xterm.modes.mouseTrackingMode === "vt200"`),
+  );
+  const middle = await centreOf(`${SHOWN_SESSION} .terminal`);
+  await mouse("mousePressed", middle, { button: "left", clickCount: 1 });
+  await mouse("mouseReleased", middle, { button: "left", clickCount: 1 });
+  await until(
+    "the mouse reports, as mouse",
+    found("mouse", /^\x1b\[<0;\d+;\d+[Mm]$/),
+  );
+  await ctrlC();
+  await type("mouse off\r");
+  await until("mouse reporting off", () =>
+    evaluate(`${terminal}.xterm.modes.mouseTrackingMode === "none"`),
+  );
+  const misplaced = (await recent()).filter(
+    ({ origin, data }) =>
+      (origin === "typed" || origin === "pasted") && data.includes("\x1b"),
+  );
+  if (misplaced.length > 0) {
+    fail(
+      `terminal-generated input counted as the user's: ${JSON.stringify(misplaced)}`,
+    );
+  }
+  step("mouse reports are not counted as the user's input");
 }
 
 /**

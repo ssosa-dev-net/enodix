@@ -4,6 +4,7 @@
   import { Terminal } from "@xterm/xterm";
   import { onMount, tick, untrack } from "svelte";
   import { webglRenderer } from "./renderer";
+  import { terminalInput, type TerminalInput } from "./terminalInput";
   import { highlighting, highlightTerminal } from "./highlight.svelte";
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
@@ -296,6 +297,8 @@
     // renderer draws no text into the page) and the highlighted cells.
     Object.assign(container, { xterm: terminal, highlights });
     const webgl = webglRenderer(terminal);
+    /** Input with its origin; set up below, once the session handlers are. */
+    let input: TerminalInput | null = null;
 
     // Output reaches the terminal only while it is on screen; meanwhile it
     // is held, and written when the terminal is shown again. Held output is
@@ -432,7 +435,7 @@
         if (index > 0 && plan.lineDelayMs > 0) await wait(plan.lineDelayMs);
         // A session that ended (or a terminal gone) takes no more lines.
         if (ended()) return;
-        terminal.paste(line);
+        input?.paste(line);
       }
     };
     let pasting: Promise<void> = Promise.resolve();
@@ -539,18 +542,23 @@
     markReconnect = () =>
       terminal.write("\r\n\x1b[2m--- reconnecting ---\x1b[0m\r\n");
 
-    terminal.onData((text) => {
+    // Every origin goes to this session; only typed and pasted input is
+    // the user's own (what multi-send may share, #34).
+    input = terminalInput(terminal, ({ data, binary }) => {
       // A closed session keeps its scrollback; Enter reconnects it.
       if (status.state === "closed") {
-        if (text === "\r") reconnect();
+        if (data === "\r") reconnect();
         return;
       }
-      session?.write(encoder.encode(text));
+      session?.write(
+        binary
+          ? // One character per byte (some mouse reports).
+            Uint8Array.from(data, (char) => char.charCodeAt(0))
+          : encoder.encode(data),
+      );
     });
-    // Binary input (some mouse reports) arrives as one character per byte.
-    terminal.onBinary((text) =>
-      session?.write(Uint8Array.from(text, (char) => char.charCodeAt(0))),
-    );
+    // For the smoke test, which checks where input came from.
+    Object.assign(container, { input });
     terminal.onResize((newSize) => session?.resize(newSize));
     const resizeObserver = new ResizeObserver(() => {
       if (!catchingUp) fit.fit();
@@ -618,6 +626,7 @@
       // Gone with its terminal: it can no longer be reconnected.
       session?.discard();
       highlights.dispose();
+      input?.dispose();
       webgl.dispose();
       terminal.dispose();
     };
