@@ -68,14 +68,18 @@ export const inventory = $state({
   /** Whether the platform definitions dialog is open. */
   platforms: false,
   /**
-   * While the run-snippet dialog is open: the hosts it runs on, and the
-   * plan it starts from ("Run again"), if any.
+   * While the job dialog is open: the hosts it runs on, the plan it starts
+   * from ("Run again"), if any, and whether it backs up configs (else it
+   * runs a snippet).
    */
   job: null as {
     target: JobTarget;
     label: string;
     planned?: JobPlan | null;
+    backup?: boolean;
   } | null,
+  /** While the config history is open: the host it shows. */
+  configHistory: null as string | null,
 });
 
 /**
@@ -87,7 +91,22 @@ export function openJob(
   label: string,
   planned: JobPlan | null = null,
 ) {
-  inventory.job = { target, label, planned };
+  inventory.job = {
+    target,
+    label,
+    planned,
+    backup: planned?.step.kind === "configBackup",
+  };
+}
+
+/** Opens the job dialog backing up the configs of `target`'s hosts. */
+export function openBackup(target: JobTarget, label: string) {
+  inventory.job = { target, label, planned: null, backup: true };
+}
+
+/** Opens the config history of the host `id`. */
+export function openConfigHistory(id: string) {
+  inventory.configHistory = id;
 }
 
 /** Opens the CSV import dialog with `folder` as its first target. */

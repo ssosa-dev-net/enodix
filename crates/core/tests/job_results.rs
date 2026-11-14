@@ -114,6 +114,7 @@ fn record_finished(recorder: &mut RunRecorder, plan: &JobPlan, outputs: &[&str])
             name: host.name.clone(),
             state: HostState::Done,
             output: text.to_string(),
+            backup: None,
         });
     }
     recorder

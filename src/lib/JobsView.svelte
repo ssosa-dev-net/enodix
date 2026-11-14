@@ -8,7 +8,9 @@
     listRuns,
     planAgain,
     runOutput,
+    outcomeText,
     searchRun,
+    stepTitle,
     type DiffLine,
     type HostState,
     type RunList,
@@ -144,8 +146,9 @@
     return entry.ended ? "ended" : "interrupted";
   }
 
-  function snippetName(entry: StoredRun) {
-    return entry.step.name;
+  /** A run's title: its snippet, or "Config backup". */
+  function runTitle(entry: StoredRun) {
+    return stepTitle(entry.step);
   }
 
   function targetLabel(entry: StoredRun) {
@@ -195,8 +198,8 @@
       }
     }
     for (const entry of list.runs) {
-      // Two runs of the same snippet: what changed on the host.
-      if (entry.id === run.id || snippetName(entry) !== snippetName(run)) {
+      // Two runs of the same step: what changed on the host.
+      if (entry.id === run.id || runTitle(entry) !== runTitle(run)) {
         continue;
       }
       if (entry.hosts.some((h) => h.id === compareOld)) {
@@ -316,7 +319,7 @@
                 data-run-state={runState(entry)}
                 onclick={() => (selected = entry.id)}
               >
-                <span class="title">{snippetName(entry)}</span>
+                <span class="title">{runTitle(entry)}</span>
                 <span class="meta">{targetLabel(entry)}</span>
                 <span class="meta"
                   >{when(entry.started)} · {runState(entry) === "running"
@@ -402,6 +405,13 @@
                   <span>{entry.name}</span>
                   {#if state.kind === "failed"}
                     <span class="reason" data-run-reason>{state.reason}</span>
+                  {/if}
+                  {#if live?.backups[entry.id] ?? entry.backup}
+                    {@const outcome = (live?.backups[entry.id] ??
+                      entry.backup)!}
+                    <span class="backup" data-run-backup={outcome.kind}
+                      >{outcomeText(outcome)}</span
+                    >
                   {/if}
                 </button>
               {/each}
@@ -723,6 +733,10 @@
   .state.failed,
   .reason {
     color: var(--danger);
+  }
+
+  .backup {
+    color: var(--muted);
   }
 
   .skipped .reason {

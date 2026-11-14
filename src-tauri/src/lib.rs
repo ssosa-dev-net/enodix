@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
+use netterm_core::configs::{ConfigStore, ConfigVersion};
 use netterm_core::credentials::{
     prepare_workspace, vault_file, ActiveStore, CredentialStore, HostLogin, KeychainStore,
     MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles, Secrets, VaultError,
@@ -1181,6 +1182,9 @@ struct PlannedJob {
 /// Where job runs are kept: per user, outside every workspace.
 struct Runs(RunStore);
 
+/// Where config backups are kept: per user, outside every workspace.
+struct Configs(ConfigStore);
+
 /// Running jobs, by the id `job_start` gave them, until they finish.
 #[derive(Default)]
 struct RunningJobs {
@@ -1196,10 +1200,10 @@ impl RunningJobs {
     }
 }
 
-/// Why a workspace without an id cannot keep job runs.
+/// Why a workspace without an id cannot keep job runs or config backups.
 fn no_workspace_id() -> String {
     format!(
-        "job results are kept by the workspace's id, and this workspace has none: see {WORKSPACE_FILE}"
+        "job results and config backups are kept by the workspace's id, and this workspace has none: see {WORKSPACE_FILE}"
     )
 }
 
@@ -1302,6 +1306,7 @@ async fn job_start(
     manager: State<'_, SessionManager>,
     plans: State<'_, JobPlans>,
     runs: State<'_, Runs>,
+    configs: State<'_, Configs>,
     jobs: State<'_, Arc<RunningJobs>>,
     parallel: Option<usize>,
     on_event: Channel<JobEvent>,
@@ -1311,6 +1316,7 @@ async fn job_start(
     let workspace = planned.workspace.clone().ok_or_else(no_workspace_id)?;
     let options = JobOptions {
         parallel: parallel.unwrap_or(job::DEFAULT_PARALLEL),
+        configs: Some(configs.0.clone()),
         ..JobOptions::default()
     };
     // A start that would be refused keeps no run.
@@ -1454,6 +1460,71 @@ fn job_run_delete(
 ) -> Result<(), String> {
     runs.0
         .delete(&workspace_id(&shell)?, &run)
+        .map_err(|error| error.to_string())
+}
+
+/// The kept versions of the open workspace's host `host`'s configuration,
+/// newest first (none without a workspace id).
+#[tauri::command]
+fn config_versions(
+    shell: State<'_, Shell>,
+    configs: State<'_, Configs>,
+    host: HostId,
+) -> Result<Vec<ConfigVersion>, String> {
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    let Some(id) = workspace.id() else {
+        return Ok(Vec::new());
+    };
+    configs
+        .0
+        .versions(id, &host)
+        .map_err(|error| error.to_string())
+}
+
+/// The text of one kept version of a host's configuration.
+#[tauri::command]
+fn config_version(
+    shell: State<'_, Shell>,
+    configs: State<'_, Configs>,
+    host: HostId,
+    version: String,
+) -> Result<String, String> {
+    configs
+        .0
+        .read(&workspace_id(&shell)?, &host, &version)
+        .map_err(|error| error.to_string())
+}
+
+/// A line diff of two kept versions of a host's configuration.
+#[tauri::command]
+fn config_diff(
+    shell: State<'_, Shell>,
+    configs: State<'_, Configs>,
+    host: HostId,
+    old: String,
+    new: String,
+) -> Result<Vec<DiffLine>, String> {
+    configs
+        .0
+        .diff(&workspace_id(&shell)?, &host, &old, &new)
+        .map_err(|error| error.to_string())
+}
+
+/// Copies one kept version of a host's configuration into `folder`; the
+/// copy's path.
+#[tauri::command]
+fn config_export(
+    shell: State<'_, Shell>,
+    configs: State<'_, Configs>,
+    host: HostId,
+    version: String,
+    folder: PathBuf,
+) -> Result<String, String> {
+    configs
+        .0
+        .export(&workspace_id(&shell)?, &host, &version, &folder)
+        .map(|copy| copy.display().to_string())
         .map_err(|error| error.to_string())
 }
 
@@ -2230,6 +2301,8 @@ pub fn run() {
             // Job runs are per user, beside the app state, keyed by
             // workspace id.
             app.manage(Runs(RunStore::new(data_folder.join("jobs"))));
+            // Config backups likewise.
+            app.manage(Configs(ConfigStore::new(data_folder.join("configs"))));
             app.manage(Arc::new(RunningJobs::default()));
             let preferences = Preferences::load(&data_folder);
             let theme = window_theme(preferences.theme);
@@ -2346,6 +2419,10 @@ pub fn run() {
             session_duplicate,
             session_discard,
             logs_open_folder,
+            config_versions,
+            config_version,
+            config_diff,
+            config_export,
             host_web_links,
             web_link_open,
             layout_reset,

@@ -10,6 +10,7 @@ import {
   type JobEvent,
   type JobPlan,
   type JobTarget,
+  type SaveOutcome,
 } from "./jobs";
 
 /** A job started from this window, and what it has reported so far. */
@@ -25,6 +26,8 @@ export interface LiveJob {
   plan: JobPlan;
   states: Record<string, HostState>;
   outputs: Record<string, string>;
+  /** What a config backup kept, per host. */
+  backups: Record<string, SaveOutcome>;
   finished: boolean;
 }
 
@@ -71,10 +74,13 @@ function apply(job: LiveJob, event: JobEvent) {
     job.states[event.host] = event.state;
   } else if (event.kind === "output") {
     job.outputs[event.host] = (job.outputs[event.host] ?? "") + event.text;
+  } else if (event.kind === "backup") {
+    job.backups[event.host] = event.outcome;
   } else {
     for (const host of event.hosts) {
       job.states[host.id] = host.state;
       job.outputs[host.id] = host.output;
+      if (host.backup) job.backups[host.id] = host.backup;
     }
     job.finished = true;
     liveJobs.revision += 1;
@@ -107,6 +113,7 @@ export async function launchJob(
     plan,
     states: {},
     outputs: {},
+    backups: {},
     finished: false,
   });
   // The proxied entry, so that changes show.

@@ -9,6 +9,7 @@
     newFilter,
     newFolder,
     newHost,
+    openBackup,
     openCsvImport,
     openJob,
     openNornirImport,
@@ -141,14 +142,25 @@
     return path.split("/").pop() ?? path;
   }
 
-  /** Runs a snippet on the hosts the active filter shows, in tree order. */
-  function runOnFilter(name: string) {
+  /** The hosts the active filter shows, in tree order. */
+  function filterHosts(): string[] | null {
     const shown = inventory.filterView?.hosts;
-    if (!workspace || !shown) return;
-    const ids = allHosts(workspace.tree)
+    if (!workspace || !shown) return null;
+    return allHosts(workspace.tree)
       .map((host) => host.id)
       .filter((id) => shown.has(id));
-    openJob({ kind: "hosts", ids }, `the hosts of ${name}`);
+  }
+
+  /** Runs a snippet on the hosts the active filter shows. */
+  function runOnFilter(name: string) {
+    const ids = filterHosts();
+    if (ids) openJob({ kind: "hosts", ids }, `the hosts of ${name}`);
+  }
+
+  /** Backs up the configs of the hosts the active filter shows. */
+  function backUpFilter(name: string) {
+    const ids = filterHosts();
+    if (ids) openBackup({ kind: "hosts", ids }, `the hosts of ${name}`);
   }
 
   /** The menu's entries for an item. */
@@ -161,6 +173,14 @@
           "Run snippet…",
           () =>
             openJob({ kind: "hosts", ids: [item.id] }, host?.name ?? item.id),
+        ],
+        [
+          "Back up config",
+          () =>
+            openBackup(
+              { kind: "hosts", ids: [item.id] },
+              host?.name ?? item.id,
+            ),
         ],
         ["Rename…", () => rename(item)],
         ["Move to…", () => move(item)],
@@ -176,6 +196,14 @@
         "Run snippet…",
         () =>
           openJob({ kind: "folder", path: item.path }, folderLabel(item.path)),
+      ],
+      [
+        "Back up configs",
+        () =>
+          openBackup(
+            { kind: "folder", path: item.path },
+            folderLabel(item.path),
+          ),
       ],
     ];
     if (item.path === "") return creating;
@@ -310,6 +338,12 @@
           title="Run a saved snippet on the hosts this filter shows, as a job"
           disabled={!inventory.filterView?.hosts.size}
           onclick={() => runOnFilter(name)}>Run snippet…</button
+        >
+        <button
+          data-filter-back-up
+          title="Back up the configuration of the hosts this filter shows"
+          disabled={!inventory.filterView?.hosts.size}
+          onclick={() => backUpFilter(name)}>Back up configs</button
         >
         <button
           title="Delete this saved filter"

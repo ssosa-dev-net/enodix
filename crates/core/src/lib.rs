@@ -6,6 +6,7 @@
 //! Decisions").
 
 pub mod app_state;
+pub mod configs;
 pub mod credentials;
 pub mod diff;
 pub mod highlight;

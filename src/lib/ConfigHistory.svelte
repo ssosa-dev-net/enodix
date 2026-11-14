@@ -1,0 +1,494 @@
+<script lang="ts">
+  import { untrack } from "svelte";
+  import {
+    configVersion,
+    configVersions,
+    diffConfigs,
+    exportConfig,
+    versionTime,
+    type ConfigVersion,
+    type DiffLine,
+  } from "./jobs";
+  import { liveJobs } from "./jobs.svelte";
+  import { inventory, openBackup } from "./inventory.svelte";
+  import { findHost, pickWorkspaceFolder } from "./workspace";
+
+  interface Props {
+    /** The host whose history is shown. */
+    host: string;
+    onclose: () => void;
+  }
+
+  let { host, onclose }: Props = $props();
+
+  const name = $derived(
+    (inventory.workspace && findHost(inventory.workspace.tree, host)?.name) ??
+      host,
+  );
+
+  let versions = $state<ConfigVersion[] | null>(null);
+  /** The version whose text is shown. */
+  let selected = $state<string | null>(null);
+  let text = $state("");
+  /** The version `text` holds ("" while it loads). */
+  let textOf = $state("");
+  /** The two versions to diff: older, then newer. */
+  let older = $state("");
+  let newer = $state("");
+  let diff = $state<DiffLine[] | null>(null);
+  let exportFolder = $state("");
+  let notice = $state<string | null>(null);
+  let error = $state<string | null>(null);
+  let busy = $state(false);
+
+  async function attempt(action: () => Promise<void>) {
+    if (busy) return;
+    busy = true;
+    error = null;
+    notice = null;
+    try {
+      await action();
+    } catch (reason) {
+      error = String(reason);
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Refetched when a job finishes (a backup may have added a version).
+  $effect(() => {
+    void liveJobs.revision;
+    const id = host;
+    configVersions(id).then(
+      (list) => {
+        if (host !== id) return;
+        untrack(() => {
+          const newest = list[0]?.id ?? "";
+          // A new version (or the first list): show it, and compare it
+          // with the one before.
+          if (newest !== (versions?.[0]?.id ?? null)) {
+            selected = newest || null;
+            newer = newest;
+            older = list[1]?.id ?? newest;
+            diff = null;
+          }
+          if (!list.some((v) => v.id === selected)) selected = newest || null;
+          if (!list.some((v) => v.id === newer)) newer = newest;
+          if (!list.some((v) => v.id === older)) older = list[1]?.id ?? newest;
+          versions = list;
+        });
+      },
+      (reason) => (error = String(reason)),
+    );
+  });
+
+  // The selected version's text.
+  $effect(() => {
+    const id = host;
+    const version = selected;
+    text = "";
+    textOf = "";
+    if (!version) return;
+    configVersion(id, version).then(
+      (body) => {
+        if (host === id && selected === version) {
+          text = body;
+          textOf = version;
+        }
+      },
+      (reason) => (error = String(reason)),
+    );
+  });
+
+  // A diff shown belongs to the versions it was made of.
+  $effect(() => {
+    void older;
+    void newer;
+    untrack(() => (diff = null));
+  });
+
+  function compare() {
+    const id = host;
+    if (!older || !newer) return;
+    return attempt(async () => {
+      diff = await diffConfigs(id, older, newer);
+    });
+  }
+
+  function copy() {
+    return attempt(async () => {
+      await navigator.clipboard.writeText(text);
+      notice = `Version ${versionTime(selected ?? "")} copied`;
+    });
+  }
+
+  async function browse() {
+    const folder = await pickWorkspaceFolder(
+      "Save the configuration to a folder",
+    );
+    if (folder) exportFolder = folder;
+  }
+
+  function save() {
+    const id = host;
+    const version = selected;
+    if (!version || !exportFolder.trim()) return;
+    return attempt(async () => {
+      const copy = await exportConfig(id, version, exportFolder.trim());
+      notice = `Saved to ${copy}`;
+    });
+  }
+
+  function backUp() {
+    openBackup({ kind: "hosts", ids: [host] }, name);
+    onclose();
+  }
+
+  function onkeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && !busy) {
+      event.preventDefault();
+      onclose();
+    }
+  }
+
+  let firstButton = $state<HTMLElement>();
+  $effect(() => {
+    firstButton?.focus();
+  });
+</script>
+
+<svelte:window {onkeydown} />
+
+<div class="backdrop">
+  <div
+    class="dialog"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="config-history-title"
+    data-dialog="config-history"
+    data-host={host}
+  >
+    <header>
+      <h2 id="config-history-title">Config history of {name}</h2>
+      <button
+        type="button"
+        data-config-action="close"
+        bind:this={firstButton}
+        onclick={onclose}>Close</button
+      >
+    </header>
+    <p class="note" data-config-sensitive>
+      Backups are kept on this computer, outside the workspace, unencrypted, and
+      never deleted automatically. They are as sensitive as the configurations
+      themselves: passwords and keys in a configuration are in its backups too.
+    </p>
+
+    {#if versions === null}
+      <p class="note">Loading…</p>
+    {:else if versions.length === 0}
+      <p class="note" data-config-empty>
+        No configuration of {name} has been backed up yet.
+      </p>
+      <div class="row">
+        <button type="button" data-config-action="back-up" onclick={backUp}
+          >Back up now…</button
+        >
+      </div>
+    {:else}
+      <div class="columns">
+        <ul class="versions" aria-label="Versions, newest first">
+          {#each versions as version (version.id)}
+            <li>
+              <button
+                type="button"
+                class:selected={version.id === selected}
+                data-config-version={version.id}
+                onclick={() => (selected = version.id)}
+              >
+                <span class="title">{versionTime(version.id)}</span>
+                <span class="meta"
+                  >{version.lines}
+                  {version.lines === 1 ? "line" : "lines"}</span
+                >
+              </button>
+            </li>
+          {/each}
+        </ul>
+
+        <section class="version">
+          <div class="row">
+            <button
+              type="button"
+              data-config-action="copy"
+              disabled={busy || !selected || textOf !== selected}
+              onclick={copy}>Copy text</button
+            >
+            <button type="button" data-config-action="back-up" onclick={backUp}
+              >Back up now…</button
+            >
+          </div>
+          <pre class="text" data-config-text={textOf}>{text}</pre>
+
+          <form
+            class="row"
+            data-config-export
+            onsubmit={(event) => {
+              event.preventDefault();
+              void save();
+            }}
+          >
+            <input
+              name="config-export-folder"
+              placeholder="Save this version to a folder"
+              bind:value={exportFolder}
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button type="button" onclick={browse}>Browse…</button>
+            <button
+              type="submit"
+              data-config-action="save"
+              disabled={busy || !selected || !exportFolder.trim()}
+              >Save to…</button
+            >
+          </form>
+
+          <div class="row">
+            <label>
+              Compare
+              <select name="config-old" bind:value={older}>
+                {#each versions as version (version.id)}
+                  <option value={version.id}>{versionTime(version.id)}</option>
+                {/each}
+              </select>
+            </label>
+            <label>
+              with
+              <select name="config-new" bind:value={newer}>
+                {#each versions as version (version.id)}
+                  <option value={version.id}>{versionTime(version.id)}</option>
+                {/each}
+              </select>
+            </label>
+            <button
+              type="button"
+              data-config-action="diff"
+              disabled={busy || !older || !newer || older === newer}
+              onclick={compare}>Compare</button
+            >
+          </div>
+          {#if diff !== null}
+            <div
+              class="diff"
+              data-diff
+              data-diff-changes={diff.filter((line) => line.kind !== "same")
+                .length}
+            >
+              {#each diff as line, index (index)}
+                <div class="line {line.kind}" data-diff-line={line.kind}>
+                  <span class="number"
+                    >{line.kind === "added" ? "" : line.old}</span
+                  >
+                  <span class="number"
+                    >{line.kind === "removed" ? "" : line.new}</span
+                  >
+                  <span class="sign"
+                    >{line.kind === "added"
+                      ? "+"
+                      : line.kind === "removed"
+                        ? "−"
+                        : " "}</span
+                  >
+                  <span class="text">{line.text}</span>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </section>
+      </div>
+    {/if}
+
+    {#if notice}
+      <p class="note" data-config-notice>{notice}</p>
+    {/if}
+    {#if error}
+      <p class="error" role="alert" data-config-error>{error}</p>
+    {/if}
+  </div>
+</div>
+
+<style>
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 21;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 4vh 1rem 1rem;
+    background: rgb(0 0 0 / 0.35);
+  }
+
+  .dialog {
+    width: min(70rem, 100%);
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.8rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+    overflow: hidden;
+    font-size: 0.85rem;
+  }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  .columns {
+    display: grid;
+    grid-template-columns: minmax(12rem, 16rem) 1fr;
+    gap: 0.6rem;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  @media (max-width: 720px) {
+    .columns {
+      grid-template-columns: 1fr;
+      overflow: auto;
+    }
+  }
+
+  .versions {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+
+  .versions li > button {
+    display: grid;
+    gap: 0.1rem;
+    width: 100%;
+    padding: 0.35rem 0.5rem;
+    text-align: left;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    color: inherit;
+  }
+
+  .versions button.selected {
+    background: var(--surface);
+  }
+
+  .title {
+    font-weight: 600;
+  }
+
+  .meta {
+    color: var(--muted);
+    font-size: 0.9em;
+  }
+
+  .version {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+  }
+
+  .row input {
+    flex: 1;
+    min-width: 10rem;
+    padding: 0.3rem 0.5rem;
+  }
+
+  .row label {
+    display: flex;
+    gap: 0.3rem;
+    align-items: center;
+  }
+
+  pre {
+    margin: 0;
+    padding: 0.4rem 0.5rem;
+    font-family: var(--mono, monospace);
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    background: var(--surface);
+    border-radius: 4px;
+  }
+
+  .text {
+    min-height: 6rem;
+    max-height: 22rem;
+    overflow: auto;
+  }
+
+  .diff {
+    font-family: var(--mono, monospace);
+    font-size: 0.8rem;
+    max-height: 22rem;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+
+  .diff .line {
+    display: grid;
+    grid-template-columns: 3.5em 3.5em 1.2em 1fr;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .diff .number {
+    color: var(--muted);
+    text-align: right;
+    padding-right: 0.4em;
+  }
+
+  .diff .added {
+    background: color-mix(in srgb, var(--success, #2a7) 18%, transparent);
+  }
+
+  .diff .removed {
+    background: color-mix(in srgb, var(--danger, #c33) 18%, transparent);
+  }
+
+  .note {
+    margin: 0;
+    color: var(--muted);
+  }
+
+  .error {
+    margin: 0;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+  }
+</style>

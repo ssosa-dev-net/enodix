@@ -4,10 +4,13 @@
     cancelJob,
     DEFAULT_PARALLEL,
     MAX_PARALLEL,
+    outcomeText,
     planJob,
     type HostState,
     type JobPlan,
+    type JobStep,
     type JobTarget,
+    type SaveOutcome,
   } from "./jobs";
   import {
     forgetFinished,
@@ -27,27 +30,42 @@
      * at its pre-flight (or its missing variables).
      */
     planned?: JobPlan | null;
+    /** Back up configs instead of running a snippet. */
+    backup?: boolean;
     onclose: () => void;
   }
 
-  let { target, label, planned = null, onclose }: Props = $props();
+  let {
+    target,
+    label,
+    planned = null,
+    backup = false,
+    onclose,
+  }: Props = $props();
 
   type Step = "snippet" | "variables" | "preflight" | "running";
 
   const snippets = $derived(inventory.workspace?.snippets ?? []);
   const initial = untrack(() => planned);
+  /** Whether the job backs up configs (fixed for the dialog's life). */
+  const backingUp = untrack(
+    () => backup || initial?.step.kind === "configBackup",
+  );
+  const initialStep = initial?.step.kind === "snippet" ? initial.step : null;
   let step = $state<Step>(
-    initial === null
-      ? "snippet"
-      : initial.missingVariables.length > 0
-        ? "variables"
-        : "preflight",
+    backingUp
+      ? "preflight"
+      : initial === null
+        ? "snippet"
+        : initial.missingVariables.length > 0
+          ? "variables"
+          : "preflight",
   );
   let snippet = $state(
-    untrack(() => initial?.step.name ?? snippets[0]?.name ?? ""),
+    untrack(() => initialStep?.name ?? snippets[0]?.name ?? ""),
   );
   let answers = $state<Record<string, string>>({
-    ...(initial?.step.answers ?? {}),
+    ...(initialStep?.answers ?? {}),
     ...Object.fromEntries(
       (initial?.missingVariables ?? []).map((name) => [name, ""]),
     ),
@@ -70,6 +88,7 @@
   const finished = $derived(live?.finished ?? false);
   const states = $derived<Record<string, HostState>>(live?.states ?? {});
   const outputs = $derived<Record<string, string>>(live?.outputs ?? {});
+  const backups = $derived<Record<string, SaveOutcome>>(live?.backups ?? {});
 
   /** Closes the dialog; a running job goes on (see the jobs view). */
   function close() {
@@ -96,14 +115,20 @@
     }
   }
 
+  /** The step the job runs. */
+  function jobStep(): JobStep {
+    return backingUp
+      ? { kind: "configBackup" }
+      : { kind: "snippet", name: snippet, answers: { ...answers } };
+  }
+
+  // A config backup has nothing to choose first: straight to pre-flight.
+  if (backingUp && initial === null) void preflight();
+
   /** Plans with the answers so far; asks for missing variables first. */
   function preflight() {
     return attempt(async () => {
-      const planned = await planJob(target, {
-        kind: "snippet",
-        name: snippet,
-        answers: { ...answers },
-      });
+      const planned = await planJob(target, jobStep());
       plan = planned;
       productionConfirmed = false;
       if (planned.missingVariables.length > 0) {
@@ -178,7 +203,9 @@
     data-dialog="job"
     data-step={step}
   >
-    <h2 id="job-title">Run a snippet on {label}</h2>
+    <h2 id="job-title">
+      {backingUp ? `Back up configs of ${label}` : `Run a snippet on ${label}`}
+    </h2>
 
     {#if step === "snippet"}
       {#if snippets.length === 0}
@@ -265,7 +292,18 @@
           >
         </div>
       </form>
+    {:else if step === "preflight" && !plan}
+      <p class="note">{busy ? "Working out which hosts can run…" : ""}</p>
     {:else if step === "preflight" && plan}
+      {#if backingUp}
+        <p class="note" data-job-backup-note>
+          Each host logs in with its own credential profile and shows its
+          configuration with its platform's show-config command. A new version
+          is kept in the host's config history only if the configuration
+          changed. Backups are kept outside the workspace, unencrypted: they are
+          as sensitive as the configurations themselves.
+        </p>
+      {/if}
       <p class="note" data-job-summary>
         {plan.hosts.length === 1
           ? "1 host runs"
@@ -340,7 +378,9 @@
         <span class="hint">1 to {MAX_PARALLEL}</span>
       </label>
       <div class="actions">
-        <button type="button" onclick={() => (step = "snippet")}>Back</button>
+        {#if !backingUp}
+          <button type="button" onclick={() => (step = "snippet")}>Back</button>
+        {/if}
         <button
           type="button"
           class="primary"
@@ -374,6 +414,14 @@
               <span>{host.name}</span>
               {#if state.kind === "failed"}
                 <span class="reason" data-job-reason>{state.reason}</span>
+              {/if}
+              {#if backups[host.id]}
+                <span
+                  class="backup"
+                  data-job-backup={backups[host.id].kind}
+                  data-version={backups[host.id].version}
+                  >{outcomeText(backups[host.id])}</span
+                >
               {/if}
             </summary>
             <pre data-job-output={host.id}>{outputs[host.id] ?? ""}</pre>
@@ -585,6 +633,10 @@
   .state.failed,
   .reason {
     color: var(--danger);
+  }
+
+  .backup {
+    color: var(--muted);
   }
 
   .state.cancelled {

@@ -35,6 +35,8 @@
 //! | `disable`             | back to the unprivileged prompt                 |
 //! | `hang`                | never answers (Ctrl+C gives the prompt back)    |
 //! | `pause <ms>`          | prints the prompt after `<ms>` milliseconds     |
+//! | `show running-config` | prints [`device_config`]: two `! ` header lines (the second a [`CONFIG_TIME`] line that changes every time), `hostname <hostname>`, the lines `configure` added, `end` |
+//! | `configure <line>`    | adds `<line>` to the configuration (shared by every connection to the server; also [`TestSshServer::configure`]) |
 //!
 //! [`TestSshServer::start_device`] starts privileged (`<hostname># `);
 //! [`TestSshServer::start_unprivileged_device`] starts at `<hostname>> `
@@ -74,7 +76,7 @@ pub mod telnet;
 pub mod workspaces;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -158,6 +160,24 @@ pub const MORE: &str = " --More-- ";
 /// How a device-mode shell wipes [`MORE`] before the next page.
 const ERASE_MORE: &[u8] = b"\r\x1b[K";
 
+/// The start of the line of `show running-config` output that changes on
+/// every call (EOS's ignored-lines pattern matches it).
+pub const CONFIG_TIME: &str = "! Time: ";
+
+/// What a device-mode shell called `hostname`, with the lines `added`
+/// configured, shows for `show running-config` (LF line breaks; the device
+/// sends CRLF), its `n`th time.
+pub fn device_config(hostname: &str, added: &[String], n: u64) -> String {
+    let mut text =
+        format!("! Command: show running-config\n{CONFIG_TIME}{n}\nhostname {hostname}\n");
+    for line in added {
+        text.push_str(line);
+        text.push('\n');
+    }
+    text.push_str("end\n");
+    text
+}
+
 /// What Ctrl+C prints before the next prompt.
 pub const INTERRUPTED: &[u8] = b"^C\r\n";
 
@@ -214,6 +234,11 @@ struct Device {
     hostname: String,
     /// Whether it starts at the privileged prompt.
     privileged: bool,
+    /// Its configuration: the lines `configure` added, shared by every
+    /// connection (and kept when the host key is replaced).
+    config: Arc<Mutex<Vec<String>>>,
+    /// How many times `show running-config` ran.
+    shown: Arc<AtomicU64>,
 }
 
 /// The connections that opened a session channel, while they last.
@@ -248,10 +273,7 @@ impl TestSshServer {
 
     /// [`Self::start_device`] on the given loopback port.
     pub async fn start_device_on(port: u16, hostname: &str) -> Self {
-        let device = Device {
-            hostname: hostname.into(),
-            privileged: true,
-        };
+        let device = Device::new(hostname, true);
         Self::start_with(port, None, Preferred::default(), Some(device)).await
     }
 
@@ -264,10 +286,7 @@ impl TestSshServer {
 
     /// [`Self::start_unprivileged_device`] on the given loopback port.
     pub async fn start_unprivileged_device_on(port: u16, hostname: &str) -> Self {
-        let device = Device {
-            hostname: hostname.into(),
-            privileged: false,
-        };
+        let device = Device::new(hostname, false);
         Self::start_with(port, None, Preferred::default(), Some(device)).await
     }
 
@@ -439,6 +458,20 @@ impl TestSshServer {
         self.port
     }
 
+    /// Adds `line` to a device-mode server's configuration, as `configure
+    /// <line>` does.
+    pub fn configure(&self, line: &str) {
+        let device = self.device.as_ref().expect("a device-mode server");
+        device.config.lock().unwrap().push(line.to_string());
+    }
+
+    /// What a device-mode server would show for its `n`th `show
+    /// running-config` now, as plain text with LF line breaks.
+    pub fn running_config(&self, n: u64) -> String {
+        let device = self.device.as_ref().expect("a device-mode server");
+        device_config(&device.hostname, &device.config.lock().unwrap(), n)
+    }
+
     /// How many connections clients have made to this server.
     pub fn connections(&self) -> usize {
         self.received.lock().unwrap().len()
@@ -538,6 +571,21 @@ impl Server for ScriptedServer {
 }
 
 impl Device {
+    fn new(hostname: &str, privileged: bool) -> Self {
+        Self {
+            hostname: hostname.into(),
+            privileged,
+            config: Arc::default(),
+            shown: Arc::default(),
+        }
+    }
+
+    /// `show running-config`, counting it.
+    fn running_config(&self) -> String {
+        let n = self.shown.fetch_add(1, Ordering::SeqCst) + 1;
+        device_config(&self.hostname, &self.config.lock().unwrap(), n)
+    }
+
     fn prompt(&self, privileged: bool) -> Vec<u8> {
         if privileged {
             device_prompt(&self.hostname)
@@ -727,6 +775,22 @@ impl ScriptedShell {
             Some("show") if words.next() == Some("hostname") && device => {
                 if let Some(device) = &self.device {
                     session.data(channel, format!("{}\r\n", device.hostname).into_bytes())?;
+                }
+            }
+            Some("show") if device && line.split_whitespace().nth(1) == Some("running-config") => {
+                if let Some(device) = &self.device {
+                    let config = device.running_config().replace('\n', "\r\n");
+                    session.data(channel, config.into_bytes())?;
+                }
+            }
+            Some("configure") if device => {
+                let text = line
+                    .trim_start()
+                    .strip_prefix("configure")
+                    .unwrap_or("")
+                    .trim();
+                if let Some(device) = &self.device {
+                    device.config.lock().unwrap().push(text.to_string());
                 }
             }
             Some("echo") if device => {

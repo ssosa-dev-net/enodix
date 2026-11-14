@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch, Semaphore};
 use tokio::time::Instant;
 
-use super::{JobPlan, PlannedHost};
+use super::{BackupWork, JobPlan, JobStep, PlannedHost};
+use crate::configs::{ConfigStore, SaveOutcome};
 use crate::logging::PlainText;
 use crate::session::{
     CloseReason, HostKeyDecision, HostKeyQuestion, LoginPrompt, SessionEvent, SessionEvents,
@@ -36,7 +37,7 @@ pub const JOB_TERMINAL_SIZE: TerminalSize = TerminalSize {
 };
 
 /// How a job runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct JobOptions {
     /// How many hosts run at once (each with its one connection open), 1
     /// to [`MAX_PARALLEL`]; [`start`] refuses other values.
@@ -44,6 +45,9 @@ pub struct JobOptions {
     /// How long a host may take to show its prompt after each line; a host
     /// that takes longer fails.
     pub command_timeout: Duration,
+    /// Where a config backup keeps the configurations it fetches; a config
+    /// backup cannot start without it.
+    pub configs: Option<ConfigStore>,
 }
 
 impl Default for JobOptions {
@@ -51,6 +55,7 @@ impl Default for JobOptions {
         Self {
             parallel: DEFAULT_PARALLEL,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
+            configs: None,
         }
     }
 }
@@ -89,6 +94,9 @@ pub enum JobEvent {
     /// More of a host's output, as plain text (control sequences dropped;
     /// complete lines, except the last piece of a host's output).
     Output { host: HostId, text: String },
+    /// A config backup kept (or found unchanged) the host's configuration;
+    /// the host's [`HostState::Done`] follows.
+    Backup { host: HostId, outcome: SaveOutcome },
     /// The job has ended: every host's final state and output. The last
     /// event.
     Finished(JobReport),
@@ -110,6 +118,8 @@ pub struct HostResult {
     pub state: HostState,
     /// Everything the host's session showed, as plain text.
     pub output: String,
+    /// For a config backup that got the configuration: what was kept.
+    pub backup: Option<SaveOutcome>,
 }
 
 /// Why a plan cannot start.
@@ -124,6 +134,13 @@ pub enum StartError {
     /// [`JobOptions::parallel`] is not between 1 and [`MAX_PARALLEL`].
     #[error("between 1 and {MAX_PARALLEL} hosts can run at once, not {0}")]
     Parallel(usize),
+    /// A config backup with no [`JobOptions::configs`].
+    #[error("there is nowhere to keep the configurations")]
+    NoConfigStore,
+    /// A config backup planned in a workspace without an id, which keys
+    /// the config history.
+    #[error("the workspace has no id, which config backups are kept by")]
+    NoWorkspaceId,
 }
 
 /// A running job: its events, and a way to cancel it. Dropping it does not
@@ -173,6 +190,14 @@ pub fn check(plan: &JobPlan, options: &JobOptions) -> Result<(), StartError> {
     if plan.hosts.is_empty() {
         return Err(StartError::NothingToRun);
     }
+    if plan.step == JobStep::ConfigBackup {
+        if options.configs.is_none() {
+            return Err(StartError::NoConfigStore);
+        }
+        if plan.workspace.is_none() {
+            return Err(StartError::NoWorkspaceId);
+        }
+    }
     Ok(())
 }
 
@@ -189,6 +214,10 @@ pub fn start(
     let (events_tx, events) = mpsc::unbounded_channel();
     let (cancel_tx, cancel) = watch::channel(false);
     let room = Arc::new(Semaphore::new(options.parallel));
+    let configs = match (&options.configs, &plan.workspace) {
+        (Some(store), Some(workspace)) => Some((store.clone(), workspace.clone())),
+        _ => None,
+    };
 
     for host in &plan.hosts {
         let _ = events_tx.send(JobEvent::State {
@@ -205,9 +234,11 @@ pub fn start(
                 manager: manager.clone(),
                 events: events_tx.clone(),
                 id: host.id.clone(),
-                options,
+                options: options.clone(),
+                configs: configs.clone(),
                 text: PlainText::new(),
                 output: String::new(),
+                backup: None,
             };
             (
                 named,
@@ -230,6 +261,7 @@ pub fn start(
                     name,
                     state,
                     output: String::new(),
+                    backup: None,
                 }
             });
             hosts.push(result);
@@ -248,9 +280,13 @@ struct HostRunner {
     events: mpsc::UnboundedSender<JobEvent>,
     id: HostId,
     options: JobOptions,
+    /// Where a config backup keeps what it fetches, and the workspace id.
+    configs: Option<(ConfigStore, String)>,
     text: PlainText,
     /// The plain text so far.
     output: String,
+    /// What a config backup kept.
+    backup: Option<SaveOutcome>,
 }
 
 /// The host's session, once opened.
@@ -321,6 +357,7 @@ impl HostRunner {
             name: host.name,
             state,
             output: self.output,
+            backup: self.backup,
         }
     }
 
@@ -402,7 +439,55 @@ impl HostRunner {
                 Err(error) => return failed(self.no_prompt_after(&quoted(line), error)),
             }
         }
+        if let Some(backup) = &work.backup {
+            if let Err(reason) = self.back_up(id, events, host, backup, &patterns).await {
+                return failed(reason);
+            }
+        }
         HostState::Done
+    }
+
+    /// Sends the show-config command and keeps what it showed, without
+    /// its echo and the prompt after it, in the config history.
+    async fn back_up(
+        &mut self,
+        id: SessionId,
+        events: &mut SessionEvents,
+        host: &PlannedHost,
+        backup: &BackupWork,
+        patterns: &Patterns,
+    ) -> Result<(), String> {
+        let command = &backup.command;
+        // Output holds complete lines only: the prompt the command is
+        // typed at is not in it yet, and the one after it never is.
+        let start = self.output.len();
+        let prompt = self.text.current_line().trim_end().to_string();
+        match self.send(id, events, command, patterns).await {
+            Ok(Shown::Prompt) => {}
+            Ok(Shown::PrivilegePrompt) => return Err(asked_for_password(command)),
+            Err(error) => return Err(self.no_prompt_after(&quoted(command), error)),
+        }
+        let config = config_shown(&self.output[start..], &prompt, command);
+        if config.is_empty() {
+            return Err(format!("{command:?} showed nothing to back up"));
+        }
+        let Some((store, workspace)) = &self.configs else {
+            unreachable!("a config backup starts only with a store and a workspace id")
+        };
+        let outcome = store
+            .save(
+                workspace,
+                &host.id,
+                &config,
+                backup.ignored_lines.as_deref(),
+            )
+            .map_err(|error| format!("the configuration could not be kept: {error}"))?;
+        let _ = self.events.send(JobEvent::Backup {
+            host: self.id.clone(),
+            outcome: outcome.clone(),
+        });
+        self.backup = Some(outcome);
+        Ok(())
     }
 
     /// The host's patterns, or why one cannot be used.
@@ -612,6 +697,27 @@ impl HostRunner {
             state,
         });
     }
+}
+
+/// The configuration in `shown`, the plain-text output of `command` typed
+/// at `prompt`: without the echo (the first line, if it is the prompt and
+/// the command), and without blank lines at either end; every line ends
+/// with a line break.
+fn config_shown(shown: &str, prompt: &str, command: &str) -> String {
+    let mut lines = crate::diff::lines(shown);
+    if lines.first().is_some_and(|echo| {
+        echo.strip_prefix(prompt)
+            .is_some_and(|typed| typed.trim() == command.trim())
+    }) {
+        lines.remove(0);
+    }
+    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    lines.iter().map(|line| format!("{line}\n")).collect()
 }
 
 fn failed(reason: String) -> HostState {
