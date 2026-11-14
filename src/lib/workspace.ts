@@ -326,18 +326,49 @@ export type FolderDeleted =
   | { kind: "deleted"; workspace: WorkspaceView }
   | { kind: "needsConfirmation"; hosts: number };
 
-/** Asks the user for a workspace folder; null if they cancel. */
-export async function pickWorkspaceFolder(): Promise<string | null> {
-  const folder = await open({
-    directory: true,
-    title: "Open workspace folder",
-  });
+/** Asks the user for a folder (titled `title`); null if they cancel. */
+export async function pickWorkspaceFolder(
+  title = "Open workspace folder",
+): Promise<string | null> {
+  const folder = await open({ directory: true, title });
   return typeof folder === "string" ? folder : null;
 }
 
-/** Opens a workspace folder; it reopens on the next launch. */
+/**
+ * Opens a workspace folder (an existing one is added to the known
+ * workspaces); it reopens on the next launch.
+ */
 export function openWorkspace(path: string): Promise<WorkspaceView> {
   return invoke<WorkspaceView>("workspace_open", { path });
+}
+
+/**
+ * Creates a new, empty workspace in `path` (a missing or empty folder) and
+ * opens it.
+ */
+export function createWorkspace(path: string): Promise<WorkspaceView> {
+  return invoke<WorkspaceView>("workspace_create", { path });
+}
+
+/** A workspace the app knows, as the switcher lists it. */
+export interface KnownWorkspace {
+  path: string;
+  /** Its folder's name. */
+  name: string;
+  /** Whether it is the open workspace. */
+  open: boolean;
+  /** Whether its folder is there. */
+  available: boolean;
+}
+
+/** The known workspaces, most recently opened first. */
+export function listWorkspaces(): Promise<KnownWorkspace[]> {
+  return invoke<KnownWorkspace[]>("workspaces_list");
+}
+
+/** Takes a workspace off the list (its folder is left alone). */
+export function forgetWorkspace(path: string): Promise<KnownWorkspace[]> {
+  return invoke<KnownWorkspace[]>("workspace_forget", { path });
 }
 
 /**

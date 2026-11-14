@@ -22,6 +22,7 @@
   import { findHost, type Host } from "./workspace";
 
   interface Props {
+    /** Opens the workspace switcher. */
     onopen: () => void;
     onconnect: (host: Host) => void;
     /** The session snippets go to, by name; null: none. */
@@ -178,7 +179,11 @@
     >
       {workspace?.tree.name ?? "No workspace"}
     </button>
-    <button onclick={onopen}>Open workspace…</button>
+    <button
+      data-open-workspaces
+      title="Switch, create or add workspaces (Ctrl+Shift+O)"
+      onclick={onopen}>Workspaces…</button
+    >
     <button
       class="preferences"
       data-open-preferences
@@ -298,7 +303,10 @@
     </nav>
     <SnippetsPanel target={snippetTarget} onsend={onsnippet} />
   {:else if !inventory.openError}
-    <p class="hint">Open a workspace folder to see its hosts.</p>
+    <p class="hint">
+      Create a workspace or add a workspace folder (Workspaces…) to see its
+      hosts.
+    </p>
   {/if}
 </aside>
 

@@ -47,6 +47,7 @@ use crate::template::Variables;
 
 mod filters;
 mod highlights;
+mod identity;
 mod jumps;
 mod roles;
 mod search;
@@ -58,6 +59,7 @@ mod web_links;
 use crate::paste::PasteSafety;
 pub use filters::{Condition, SavedFilter, FILTERS_FILE};
 pub use highlights::HIGHLIGHTS_FILE;
+pub use identity::WORKSPACE_FILE;
 pub use jumps::JumpChainError;
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
 use search::SearchIndex;
@@ -154,6 +156,8 @@ const HOST_EXTENSION: &str = "yaml";
 #[derive(Debug, Clone)]
 pub struct Workspace {
     root: PathBuf,
+    /// See [`Workspace::id`].
+    id: Option<String>,
     tree: Folder,
     /// The built-in roles, then the workspace's own.
     roles: Vec<Role>,
@@ -497,6 +501,7 @@ impl Workspace {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| root.display().to_string());
         let mut problems = Vec::new();
+        let id = identity::load_id(&root, &mut problems);
         let tree = load_folder(&root, name, String::new(), &mut problems);
         let roles = load_roles(&root, &mut problems);
         let filters = load_filters(&root, &mut problems);
@@ -507,6 +512,7 @@ impl Workspace {
         problems.sort_by(|a, b| a.file.cmp(&b.file));
         Ok(Self {
             root,
+            id,
             tree,
             roles,
             filters,
@@ -532,19 +538,14 @@ impl Workspace {
         &self.root
     }
 
-    /// What a credential store keeps this workspace's profiles under: the
-    /// folder's full path, the same however it was opened (relative,
-    /// different case on Windows, through a symbolic link).
+    /// What a credential store keeps this workspace's profiles under: its
+    /// identifier ([`Self::id`]), so that they follow the workspace when its
+    /// folder moves; until it has one, the folder's full path
+    /// ([`Self::path_credential_scope`]).
     pub fn credential_scope(&self) -> String {
-        let path = fs::canonicalize(&self.root)
-            .or_else(|_| std::path::absolute(&self.root))
-            .unwrap_or_else(|_| self.root.clone());
-        let path = path.display().to_string();
-        // Windows gives canonical paths as `\\?\C:\...`; the plain form is
-        // the same folder and reads better in the keychain.
-        match path.strip_prefix(r"\\?\") {
-            Some(plain) if plain.as_bytes().get(1) == Some(&b':') => plain.to_owned(),
-            _ => path,
+        match &self.id {
+            Some(id) => id.clone(),
+            None => self.path_credential_scope(),
         }
     }
 
@@ -1160,6 +1161,7 @@ impl Workspace {
     pub fn refresh(&mut self) -> Result<bool, OpenError> {
         let fresh = Self::open(&self.root)?;
         let changed = fresh.tree != self.tree
+            || fresh.id != self.id
             || fresh.roles != self.roles
             || fresh.filters != self.filters
             || fresh.highlights != self.highlights
