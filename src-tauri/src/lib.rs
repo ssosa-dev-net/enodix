@@ -52,6 +52,8 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
+mod python;
+
 /// Overrides the per-user application data folder (the smoke test uses it to
 /// start from a known state).
 const DATA_DIR_VARIABLE: &str = "NETTERM_DATA_DIR";
@@ -2372,6 +2374,11 @@ pub fn run() {
                 &app.package_info().version.to_string(),
                 InstallKind::detect(&program_folder),
             )?;
+            app.manage(python::PythonSetup::new(
+                data_folder.clone(),
+                program_folder.clone(),
+                app.package_info().version.to_string(),
+            ));
             app.manage(Updates {
                 checker,
                 updater_plugin: updater_config.is_some(),
@@ -2489,7 +2496,14 @@ pub fn run() {
             update_check_automatic,
             update_check_now,
             update_install,
-            update_open_page
+            update_open_page,
+            python::python_status,
+            python::python_offer,
+            python::python_plan,
+            python::python_setup,
+            python::python_setup_cancel,
+            python::python_use_interpreter,
+            python::python_turn_off
         ])
         .run(context)
         .expect("failed to start the app");

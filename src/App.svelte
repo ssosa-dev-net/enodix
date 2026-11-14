@@ -17,6 +17,8 @@
   } from "./lib/PaneView.svelte";
   import PanelResizer from "./lib/PanelResizer.svelte";
   import PreferencesDialog from "./lib/PreferencesDialog.svelte";
+  import PythonSetupDialog from "./lib/PythonSetupDialog.svelte";
+  import { python, refreshPython } from "./lib/python.svelte";
   import PlatformsDialog from "./lib/PlatformsDialog.svelte";
   import ProfilesDialog from "./lib/ProfilesDialog.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
@@ -554,6 +556,8 @@
   void loadPreferences();
   trackHighlightRules();
   void startUpdates();
+  // Python features stay off until an interpreter is chosen and works.
+  void refreshPython();
 
   /** Sessions that installing an update would end. */
   const liveSessions = $derived(
@@ -920,6 +924,7 @@
       profiles.dialog ||
       preferences.dialog ||
       highlighting.dialog ||
+      python.dialog ||
       inventory.palette ||
       switcher ||
       switching ||
@@ -1249,6 +1254,15 @@
   <PreferencesDialog
     onclose={() => {
       preferences.dialog = false;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if python.dialog}
+  <PythonSetupDialog
+    onclose={() => {
+      python.dialog = false;
       focusRequest += 1;
     }}
   />
