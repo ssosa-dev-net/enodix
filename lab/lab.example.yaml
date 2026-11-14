@@ -1,0 +1,42 @@
+# The containerlab device suite's lab file (docs/containerlab.md).
+#
+# Copy this file to lab/lab.yaml (ignored by git) or anywhere else and point
+# NETTERM_LAB_CONFIG at it. Do not commit the copy. Prefer `password_env`
+# (the name of an environment variable holding the password) over writing a
+# password here.
+
+# Seconds to wait for each answer from a device (default 30).
+timeout: 30
+
+# The containerlab server, used as an SSH jump host to reach the devices'
+# management addresses. Leave it out if this computer reaches them directly.
+# It logs in with the keys of this computer's SSH agent (the Windows OpenSSH
+# agent or Pageant) unless `key_file` (+ `passphrase_env`) or
+# `password_env` is given.
+jump_host:
+  address: 192.0.2.10 # replace with your containerlab server
+  port: 22
+  username: root # the user you log in to the server as
+
+# The devices of lab/netterm-test.clab.yml (their fixed management addresses).
+# `platform` sets the defaults of each check (srlinux, ceos, frr, other);
+# every one can be overridden here: username, prompt, setup, command,
+# expect, large_command, large_min_bytes, size_command, size_output, exit,
+# telnet (true or a port), login_prompt, password_prompt. A device logs in
+# with `password_env` (default NETTERM_LAB_PASSWORD), or `agent: true`.
+devices:
+  - name: srl1
+    platform: srlinux
+    address: 172.20.30.11
+    password_env: NETTERM_LAB_SRL_PASSWORD
+
+  - name: ceos1
+    platform: ceos
+    address: 172.20.30.12
+    password_env: NETTERM_LAB_CEOS_PASSWORD
+
+  - name: frr1
+    platform: frr
+    address: 172.20.30.13
+    # No password_env: NETTERM_LAB_PASSWORD, which the topology also gives
+    # the container as its root password.
