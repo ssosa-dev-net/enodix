@@ -632,3 +632,138 @@ fn malformed_settings_are_reported_for_that_file() {
     // The host under the bad folder file still loads, without its settings.
     assert_eq!(resolved(&workspace, "Site/r1.yaml").settings.port, None);
 }
+
+// --- Platform (#40) ---
+
+#[test]
+fn the_platform_resolves_to_the_nearest_definition_with_its_origin() {
+    let workspace = inherit();
+
+    // The host's own value wins over its folders'.
+    let core = resolved(&workspace, "Europe/Madrid/core-r1.yaml");
+    assert_eq!(
+        core.settings.platform,
+        Some(from("srlinux".to_string(), Origin::Host))
+    );
+    assert_eq!(core.host.settings.platform.as_deref(), Some("srlinux"));
+    // A host without one gets the nearest folder's.
+    let old = resolved(&workspace, "Europe/Madrid/old-sw1.yaml");
+    assert_eq!(
+        old.settings.platform,
+        Some(from("eos".to_string(), folder("Europe")))
+    );
+    assert_eq!(old.host.settings.platform, None);
+    // Nothing above sets one: none applies.
+    assert_eq!(resolved(&workspace, "lab-r1.yaml").settings.platform, None);
+
+    // Folders resolve it too, and read their own.
+    assert_eq!(
+        workspace.resolve_folder("Europe/Madrid").unwrap().platform,
+        Some(from("eos".to_string(), folder("Europe")))
+    );
+    assert_eq!(
+        workspace
+            .folder("Europe")
+            .unwrap()
+            .settings
+            .platform
+            .as_deref(),
+        Some("eos")
+    );
+}
+
+#[test]
+fn the_platform_is_set_and_cleared_on_a_folder_and_on_a_host() {
+    let (_temp, root) = fixture_copy("edit");
+    let mut workspace = Workspace::open(&root).unwrap();
+
+    let mut settings = workspace.folder("Core").unwrap().settings.clone();
+    settings.platform = Some(" eos ".into());
+    workspace.write_folder_settings("Core", &settings).unwrap();
+    assert_eq!(
+        read(&root, "Core/_folder.yaml"),
+        "description: Core layer\nplatform: eos\n"
+    );
+    let platform =
+        |workspace: &Workspace| resolved(workspace, "Core/core-r1.yaml").settings.platform;
+    assert_eq!(
+        platform(&workspace),
+        Some(from("eos".to_string(), folder("Core")))
+    );
+
+    // The host's own value goes in its file, after the vendor, and wins.
+    let mut core = workspace
+        .host(&HostId::new("Core/core-r1.yaml"))
+        .unwrap()
+        .clone();
+    core.settings.platform = Some("srlinux".into());
+    workspace.write_host(&core).unwrap();
+    assert!(read(&root, "Core/core-r1.yaml")
+        .contains("vendor: Arista\nplatform: srlinux\nrole: core\n"));
+    assert_eq!(
+        platform(&workspace),
+        Some(from("srlinux".to_string(), Origin::Host))
+    );
+
+    // Clearing the host's own brings back the folder's; clearing that, none.
+    core.settings.platform = Some("  ".into());
+    workspace.write_host(&core).unwrap();
+    assert!(!read(&root, "Core/core-r1.yaml").contains("platform"));
+    assert_eq!(
+        platform(&workspace),
+        Some(from("eos".to_string(), folder("Core")))
+    );
+    settings.platform = None;
+    workspace.write_folder_settings("Core", &settings).unwrap();
+    assert_eq!(
+        read(&root, "Core/_folder.yaml"),
+        "description: Core layer\n"
+    );
+    assert_eq!(platform(&workspace), None);
+}
+
+#[test]
+fn platforms_written_as_before_still_load_and_are_not_rewritten() {
+    let temp = TempDir::new().unwrap();
+    let write = |file: &str, text: &str| {
+        let path = temp.path().join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    // A number, a blank value, and one with a comment.
+    write("a.yaml", "address: 10.0.0.1\nplatform: 7\n");
+    write("b.yaml", "address: 10.0.0.2\nplatform: ''\n");
+    write(
+        "c.yaml",
+        "# lab box\naddress: 10.0.0.3\nplatform: ios   # old\n",
+    );
+    write("Site/_folder.yaml", "platform: ''\n");
+    write("Site/r1.yaml", "address: 10.0.0.4\n");
+    let mut workspace = Workspace::open(temp.path()).unwrap();
+    assert!(
+        workspace.problems().is_empty(),
+        "{:?}",
+        workspace.problems()
+    );
+
+    let own = |workspace: &Workspace, id: &str| {
+        workspace
+            .host(&HostId::new(id))
+            .unwrap()
+            .settings
+            .platform
+            .clone()
+    };
+    assert_eq!(own(&workspace, "a.yaml").as_deref(), Some("7"));
+    assert_eq!(own(&workspace, "b.yaml"), None);
+    assert_eq!(own(&workspace, "c.yaml").as_deref(), Some("ios"));
+    assert_eq!(resolved(&workspace, "Site/r1.yaml").settings.platform, None);
+
+    // Saving them unchanged writes nothing.
+    for id in ["a.yaml", "c.yaml"] {
+        let host = workspace.host(&HostId::new(id)).unwrap().clone();
+        let before = read(temp.path(), id);
+        workspace.write_host(&host).unwrap();
+        assert_eq!(read(temp.path(), id), before);
+    }
+}

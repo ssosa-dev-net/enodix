@@ -1,5 +1,6 @@
 port: 2222
 environment: production
+platform: eos
 tags:
 - europe
 web_links:

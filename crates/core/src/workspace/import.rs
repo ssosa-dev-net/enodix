@@ -274,7 +274,6 @@ impl Host {
             name: name.to_string(),
             address: String::new(),
             vendor: None,
-            platform: None,
             model: None,
             serial_number: None,
             site: None,
@@ -295,7 +294,7 @@ impl Host {
         use super::*;
         Some(match key {
             VENDOR => &mut self.vendor,
-            PLATFORM => &mut self.platform,
+            PLATFORM => &mut self.settings.platform,
             MODEL => &mut self.model,
             SERIAL_NUMBER => &mut self.serial_number,
             SITE => &mut self.site,

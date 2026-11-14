@@ -67,8 +67,8 @@ use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
     apply_settings, settings_from_document, Level, CONNECT_TIMEOUT, CREDENTIAL_PROFILE,
-    ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PASTE_LINE_DELAY, PORT, PROTOCOL, SERIAL,
-    WEB_LINKS,
+    ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PASTE_LINE_DELAY, PLATFORM, PORT, PROTOCOL,
+    SERIAL, WEB_LINKS,
 };
 pub use settings::{
     Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, Origin, Parity,
@@ -88,7 +88,6 @@ pub const FOLDER_SETTINGS_FILE: &str = "_folder.yaml";
 const NAME: &str = "name";
 const ADDRESS: &str = "address";
 const VENDOR: &str = "vendor";
-const PLATFORM: &str = "platform";
 const MODEL: &str = "model";
 const SERIAL_NUMBER: &str = "serial_number";
 const SITE: &str = "site";
@@ -134,9 +133,10 @@ pub const HOST_KEY_ORDER: [&str; 26] = [
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 13] = [
+pub const FOLDER_KEY_ORDER: [&str; 14] = [
     DESCRIPTION,
     TAGS,
+    PLATFORM,
     PROTOCOL,
     PORT,
     CREDENTIAL_PROFILE,
@@ -241,7 +241,6 @@ pub struct Host {
     /// The management address (`address` in the file).
     pub address: String,
     pub vendor: Option<String>,
-    pub platform: Option<String>,
     pub model: Option<String>,
     pub serial_number: Option<String>,
     pub site: Option<String>,
@@ -258,7 +257,8 @@ pub struct Host {
     pub tags: Vec<String>,
     /// The user's own fields (`custom` in the file), in file order.
     pub custom: Vec<CustomField>,
-    /// The settings the host sets itself (`port` and the rest); see
+    /// The settings the host sets itself (`port`, `platform` and the
+    /// rest); see
     /// [`Workspace::resolve_host`] for what applies to it.
     #[serde(default)]
     pub settings: Settings,
@@ -286,10 +286,9 @@ impl CustomField {
 
 impl Host {
     /// The optional built-in text fields with their file keys.
-    fn text_fields(&self) -> [(&'static str, &Option<String>); 11] {
+    fn text_fields(&self) -> [(&'static str, &Option<String>); 10] {
         [
             (VENDOR, &self.vendor),
-            (PLATFORM, &self.platform),
             (MODEL, &self.model),
             (SERIAL_NUMBER, &self.serial_number),
             (SITE, &self.site),
@@ -314,7 +313,8 @@ impl ResolvedHost {
     /// The values snippets and web links fill their variables with (see
     /// [`crate::template`]): `name`, `address` and the other built-in fields
     /// by their file keys (`vendor`, `serial_number`, `rack_unit`, `role`
-    /// (its id), ...), `tags` (inherited ones included, comma-separated),
+    /// (its id), ...), `platform` (the one that applies, perhaps a
+    /// folder's), `tags` (inherited ones included, comma-separated),
     /// and each custom field as `custom.<key>` and, unless a built-in field
     /// has that name, `<key>`. Fields without a value (unset or blank) are
     /// left out, so that the user is asked for them.
@@ -331,6 +331,9 @@ impl ResolvedHost {
         for (key, value) in host.text_fields() {
             set(key, value.as_deref().unwrap_or_default());
         }
+        if let Some(platform) = &self.settings.platform {
+            set(PLATFORM, &platform.value);
+        }
         let tags: Vec<&str> = self
             .settings
             .tags
@@ -339,7 +342,7 @@ impl ResolvedHost {
             .collect();
         set(TAGS, &tags.join(", "));
         let built_in = |key: &str| {
-            [NAME, ADDRESS, TAGS]
+            [NAME, ADDRESS, PLATFORM, TAGS]
                 .into_iter()
                 .chain(host.text_fields().map(|(name, _)| name))
                 .any(|name| name.eq_ignore_ascii_case(key))
@@ -1805,7 +1808,6 @@ fn host_from_document(id: HostId, stem: &str, document: Mapping) -> Result<Host,
         name,
         address,
         vendor: field(VENDOR)?,
-        platform: field(PLATFORM)?,
         model: field(MODEL)?,
         serial_number: field(SERIAL_NUMBER)?,
         site: field(SITE)?,

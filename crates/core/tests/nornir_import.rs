@@ -109,12 +109,12 @@ edge-r2:
     let r1 = ws.resolve_host(&id("Empty/edge-r1.yaml")).unwrap();
     assert_eq!(r1.host.name, "edge-r1");
     assert_eq!(r1.host.address, "10.1.0.1");
-    assert_eq!(r1.host.platform.as_deref(), Some("ios"));
+    assert_eq!(r1.host.settings.platform.as_deref(), Some("ios"));
     assert_eq!(r1.settings.port.map(|port| port.value), Some(2222));
     let r2 = ws.host(&id("Empty/edge-r2.yaml")).unwrap();
     assert_eq!(r2.address, "edge-r2.example.net");
     assert_eq!(r2.settings.port, None);
-    assert_eq!(r2.platform, None);
+    assert_eq!(r2.settings.platform, None);
     assert_eq!(
         read(&root, "Empty/edge-r1.yaml"),
         "address: 10.1.0.1\nport: 2222\nplatform: ios\n"
@@ -216,27 +216,27 @@ r4:
     let r1 = ws.host(&id("Empty/r1.yaml")).unwrap();
     assert_eq!(r1.address, "10.1.0.1");
     assert_eq!(r1.settings.port, Some(830));
-    assert_eq!(r1.platform.as_deref(), Some("junos"));
+    assert_eq!(r1.settings.platform.as_deref(), Some("junos"));
     // A parent group (core → dc1) counts as membership too.
     assert_eq!(tags(&ws, "Empty/r1.yaml"), ["core", "dc1", "madrid"]);
 
     // r2: madrid first, so its hostname and platform; core's port.
     let r2 = ws.host(&id("Empty/r2.yaml")).unwrap();
     assert_eq!(r2.address, "madrid-default.example.net");
-    assert_eq!(r2.platform.as_deref(), Some("eos"));
+    assert_eq!(r2.settings.platform.as_deref(), Some("eos"));
     assert_eq!(r2.settings.port, Some(830));
     assert_eq!(tags(&ws, "Empty/r2.yaml"), ["madrid", "core", "dc1"]);
 
     // r3: no groups; its own port, the defaults' platform.
     let r3 = ws.host(&id("Empty/r3.yaml")).unwrap();
     assert_eq!(r3.settings.port, Some(23));
-    assert_eq!(r3.platform.as_deref(), Some("ios"));
+    assert_eq!(r3.settings.platform.as_deref(), Some("ios"));
     assert!(r3.tags.is_empty());
 
     // r4: the group's port over the defaults'.
     let r4 = ws.host(&id("Empty/r4.yaml")).unwrap();
     assert_eq!(r4.settings.port, Some(2200));
-    assert_eq!(r4.platform.as_deref(), Some("ios"));
+    assert_eq!(r4.settings.platform.as_deref(), Some("ios"));
 }
 
 #[test]
@@ -343,7 +343,7 @@ r1:
         .unwrap();
     let r1 = ws.host(&id("Empty/r1.yaml")).unwrap();
     assert_eq!(r1.address, "10.1.0.1");
-    assert_eq!(r1.platform.as_deref(), Some("nxos"));
+    assert_eq!(r1.settings.platform.as_deref(), Some("nxos"));
 }
 
 // --- Data ------------------------------------------------------------------
@@ -765,7 +765,7 @@ core-r3:
     assert_eq!(names(&report.skipped), ["core-r2", "core-r3"]);
     let r1 = ws.host(&id("Core/core-r1.yaml")).unwrap();
     assert_eq!(r1.address, "10.9.0.1");
-    assert_eq!(r1.platform.as_deref(), Some("eos"));
+    assert_eq!(r1.settings.platform.as_deref(), Some("eos"));
     assert_eq!(r1.vendor.as_deref(), Some("Arista"));
     assert_eq!(r1.tags, ["imported"]);
     assert_eq!(

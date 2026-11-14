@@ -332,3 +332,30 @@ fn a_bad_filter_is_refused_and_no_file_changes() {
     assert_eq!(read(&root, FILTERS_FILE), text);
     assert_eq!(workspace.filters().len(), 5);
 }
+
+#[test]
+fn a_platform_condition_matches_the_platform_that_applies() {
+    let (_temp, root) = fixture_copy("search");
+    fs::write(
+        root.join("Madrid/_folder.yaml"),
+        "tags: [spain]\nplatform: nxos\n",
+    )
+    .unwrap();
+    fs::write(root.join("Lisbon/_folder.yaml"), "platform: ios\n").unwrap();
+    let workspace = Workspace::open(&root).unwrap();
+    let matching = |value: &str| {
+        let view = workspace.apply_filter(&filter("Test", &[("platform", value)]));
+        view.hosts
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        matching("NXOS"),
+        ["Madrid/mad-fw1.yaml", "Madrid/mad-sw1.yaml"]
+    );
+    // A host's own platform replaces its folder's.
+    assert_eq!(matching("eos"), ["Lisbon/lis-sw1.yaml"]);
+    assert!(matching("ios").is_empty());
+}

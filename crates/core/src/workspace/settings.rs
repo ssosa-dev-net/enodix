@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 use serde_norway::{Mapping, Value};
 
-use super::{normalize, optional_text, EditError};
+use super::{detail_text, normalize, optional_text, EditError};
 use crate::paste::MAX_PASTE_LINE_DELAY_MS;
 
 /// File keys of the settings.
@@ -30,6 +30,7 @@ pub(super) const CONNECT_TIMEOUT: &str = "connect_timeout";
 pub(super) const LOGGING: &str = "logging";
 pub(super) const ENVIRONMENT: &str = "environment";
 pub(super) const PASTE_LINE_DELAY: &str = "paste_line_delay";
+pub(super) const PLATFORM: &str = "platform";
 pub(super) const SERIAL: &str = "serial";
 pub(super) const WEB_LINKS: &str = "web_links";
 
@@ -74,6 +75,8 @@ pub struct Settings {
     /// Milliseconds to wait between pasted lines (0 to
     /// [`MAX_PASTE_LINE_DELAY_MS`]), for slow devices.
     pub paste_line_delay: Option<u32>,
+    /// The kind of device (`eos`, `srlinux`, ...), as written; any text.
+    pub platform: Option<String>,
     /// Links set here, in file order; names are unique.
     pub web_links: Vec<WebLink>,
     pub serial: SerialSettings,
@@ -225,6 +228,7 @@ pub struct EffectiveSettings {
     pub environment: Option<Effective<Environment>>,
     /// In milliseconds; 0 (no delay) by default.
     pub paste_line_delay: Effective<u32>,
+    pub platform: Option<Effective<String>>,
     /// Merged by name: the order a name first appears, from the root down.
     pub web_links: Vec<Effective<WebLink>>,
     pub serial: EffectiveSerial,
@@ -309,6 +313,7 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
         logging: or_default(nearest(levels, |s| s.logging), true),
         environment: nearest(levels, |s| s.environment),
         paste_line_delay: or_default(nearest(levels, |s| s.paste_line_delay), 0),
+        platform: nearest(levels, |s| s.platform.clone()),
         web_links,
         serial: EffectiveSerial {
             port: nearest(levels, |s| s.serial.port.clone()),
@@ -349,6 +354,8 @@ pub(super) fn settings_from_document(document: &Mapping) -> Result<Settings, Str
             Environment::expected,
         )?,
         paste_line_delay: read_paste_line_delay(document)?,
+        // Read as host files always did: a number is its text, blank unset.
+        platform: detail_text(document, PLATFORM)?,
         web_links: read_web_links(document)?,
         serial,
     })
@@ -560,6 +567,7 @@ fn checked(edit: &Settings) -> Result<Settings, EditError> {
     Ok(Settings {
         credential_profile: normalize(edit.credential_profile.as_deref()),
         jump_host: normalize(edit.jump_host.as_deref()),
+        platform: normalize(edit.platform.as_deref()),
         web_links,
         serial: SerialSettings {
             port: normalize(edit.serial.port.as_deref()),
@@ -612,6 +620,7 @@ pub(super) fn apply_settings(
             &edit.credential_profile,
         ),
         (JUMP_HOST, &current.jump_host, &edit.jump_host),
+        (PLATFORM, &current.platform, &edit.platform),
     ] {
         update(
             key,

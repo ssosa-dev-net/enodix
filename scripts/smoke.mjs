@@ -4660,6 +4660,22 @@ async function editInventory({
     () => contents("Lab/edge-r2.yaml") === hostFile,
   );
   await shows("legacy_crypto", "off · default");
+  // The platform is a setting too: its own value goes after the vendor.
+  await shows("platform", "none");
+  await changeField("[name=setting-platform]", "srlinux");
+  await until(
+    "the host's platform in its file",
+    () =>
+      contents("Lab/edge-r2.yaml") ===
+      "address: 10.9.0.1\nvendor: Arista\nplatform: srlinux\nrack_unit: 12\nrole: firewall\n",
+  );
+  await shows("platform", "srlinux · set on this host");
+  await clickOn('.side [aria-label="Clear Platform"]');
+  await until(
+    "the host's platform cleared from its file",
+    () => contents("Lab/edge-r2.yaml") === hostFile,
+  );
+  await shows("platform", "none");
   step(
     "the side panel showed effective settings and origins, set and cleared one",
   );
@@ -4686,6 +4702,22 @@ async function editInventory({
       "description: Edge routers\nenvironment: lab\n",
   );
   await shows("environment", "lab · set on this folder");
+  await changeField("[name=setting-platform]", "eos");
+  await until(
+    "the folder's platform in its file",
+    () =>
+      contents("Edge/_folder.yaml") ===
+      "description: Edge routers\nplatform: eos\nenvironment: lab\n",
+  );
+  await shows("platform", "eos · set on this folder");
+  await clickOn('.side [aria-label="Clear Platform"]');
+  await until(
+    "the folder's platform cleared from its file",
+    () =>
+      contents("Edge/_folder.yaml") ===
+      "description: Edge routers\nenvironment: lab\n",
+  );
+  await shows("platform", "none");
   step("a setting on a folder was written to its settings file");
 
   // Moving a folder from its context menu.

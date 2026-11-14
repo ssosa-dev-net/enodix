@@ -62,6 +62,8 @@ export interface Settings {
   environment: Environment | null;
   /** Milliseconds between pasted lines (0 to `MAX_PASTE_LINE_DELAY_MS`). */
   paste_line_delay: number | null;
+  /** The kind of device (`eos`, `srlinux`, ...); any text. */
+  platform: string | null;
   web_links: WebLink[];
   serial: SerialSettings;
 }
@@ -89,6 +91,7 @@ export interface EffectiveSettings {
   environment: Effective<Environment> | null;
   /** In milliseconds; 0 by default. */
   paste_line_delay: Effective<number>;
+  platform: Effective<string> | null;
   web_links: Effective<WebLink>[];
   serial: {
     /** Null when nothing sets a port. */
@@ -110,7 +113,6 @@ export interface Host {
   /** The management address. */
   address: string;
   vendor: string | null;
-  platform: string | null;
   model: string | null;
   serial_number: string | null;
   site: string | null;
@@ -123,14 +125,13 @@ export interface Host {
   description: string | null;
   tags: string[];
   custom: CustomField[];
-  /** The settings the host sets itself. */
+  /** The settings the host sets itself (its own platform among them). */
   settings: Settings;
 }
 
 /** The optional built-in text fields of a host, in display order. */
 export const HOST_TEXT_FIELDS = [
   ["vendor", "Vendor"],
-  ["platform", "Platform"],
   ["model", "Model"],
   ["serial_number", "Serial number"],
   ["site", "Site"],
