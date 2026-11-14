@@ -26,8 +26,8 @@ use netterm_core::session::{
 use netterm_core::template::Variables;
 use netterm_core::workspace::{
     EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion, Host, HostId,
-    Problem, Protocol, Role, SavedFilter, SearchResults, Settings, Snippet, WatchOptions,
-    Workspace, WorkspaceWatcher,
+    HostWebLink, Problem, Protocol, ResolvedHost, Role, SavedFilter, SearchResults, Settings,
+    Snippet, WatchOptions, Workspace, WorkspaceWatcher,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -41,6 +41,11 @@ const DATA_DIR_VARIABLE: &str = "NETTERM_DATA_DIR";
 /// Set to `memory` to keep credential profiles in memory instead of the OS
 /// keychain (the smoke test uses it, so that it never touches the keychain).
 const CREDENTIAL_STORE_VARIABLE: &str = "NETTERM_CREDENTIAL_STORE";
+
+/// Set to a file path to have web links written there, one URL per line,
+/// instead of opened in the browser (the smoke test uses it, so that it
+/// never starts a browser).
+const WEB_LINKS_TO_VARIABLE: &str = "NETTERM_WEB_LINKS_TO";
 
 /// The event that brings the interface the workspace after changes made
 /// outside the app.
@@ -851,6 +856,49 @@ fn logs_open_folder(app: AppHandle, shell: State<'_, Shell>, id: HostId) -> Resu
         .map_err(|error| format!("cannot open the log folder {}: {error}", folder.display()))
 }
 
+/// The web links of the host `id`, each with the URL it opens or why it
+/// is refused.
+#[tauri::command]
+fn host_web_links(shell: State<'_, Shell>, id: HostId) -> Result<Vec<HostWebLink>, String> {
+    Ok(resolved_host(&shell, &id)?.web_links())
+}
+
+/// The open workspace's host `id`, with its inherited settings.
+fn resolved_host(shell: &Shell, id: &HostId) -> Result<ResolvedHost, String> {
+    read(shell, |workspace| workspace.resolve_host(id))?
+        .ok_or_else(|| format!("{id} is not in the open workspace"))
+}
+
+/// Opens the host `id`'s web link `name` in the default browser, if the
+/// core lets it (http and https only); returns the URL opened.
+#[tauri::command]
+fn web_link_open(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    id: HostId,
+    name: String,
+) -> Result<String, String> {
+    let url = resolved_host(&shell, &id)?
+        .web_link_url(&name)
+        .map_err(|error| format!("{name} was not opened: {error}"))?;
+    match std::env::var_os(WEB_LINKS_TO_VARIABLE) {
+        Some(file) => {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file)
+                .and_then(|mut file| writeln!(file, "{url}"))
+                .map_err(|error| format!("cannot record {url}: {error}"))?;
+        }
+        None => app
+            .opener()
+            .open_url(&url, None::<&str>)
+            .map_err(|error| format!("cannot open {url} in the browser: {error}"))?,
+    }
+    Ok(url)
+}
+
 /// A session just opened, as the interface receives it.
 #[derive(Serialize)]
 struct Opened {
@@ -1317,6 +1365,8 @@ pub fn run() {
             session_duplicate,
             session_discard,
             logs_open_folder,
+            host_web_links,
+            web_link_open,
             layout_reset,
             layout_edit,
             preferences_get,

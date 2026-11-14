@@ -15,9 +15,12 @@
   import {
     allHosts,
     HOST_TEXT_FIELDS,
+    hostWebLinks,
     openLogFolder,
+    openWebLink,
     type CustomField,
     type Host,
+    type HostWebLink,
     type Protocol,
   } from "./workspace";
 
@@ -75,6 +78,50 @@
     noSerialPort && effective.current?.protocol.value === "serial",
   );
 
+  /** The host's web links, filled from its fields by the core. */
+  let webLinks = $state<HostWebLink[]>([]);
+  /** Why the last web link clicked was not opened. */
+  let webLinkError = $state<string | null>(null);
+  /** Why the host's links could not be read, if they could not. */
+  let webLinksUnavailable = $state<string | null>(null);
+
+  $effect(() => {
+    const id = host.id;
+    // Any edit can change the links or the fields they are filled from.
+    void inventory.workspace;
+    let stale = false;
+    hostWebLinks(id)
+      .then((links) => {
+        if (!stale) {
+          webLinks = links;
+          webLinksUnavailable = null;
+        }
+      })
+      .catch((error) => {
+        if (!stale) {
+          // Never leave another host's links on screen.
+          webLinks = [];
+          webLinksUnavailable = `Cannot read the web links: ${error}`;
+        }
+      });
+    return () => {
+      stale = true;
+    };
+  });
+
+  $effect(() => {
+    void host.id;
+    webLinkError = null;
+  });
+
+  /** Opens `link` in the browser; the core refuses what is not http(s). */
+  function open(link: HostWebLink) {
+    webLinkError = null;
+    openWebLink(host.id, link.name).catch(
+      (error) => (webLinkError = String(error)),
+    );
+  }
+
   let newKey = $state("");
   let newValue = $state("");
 
@@ -126,7 +173,7 @@
   <header>
     <h2>{host.name}</h2>
     <span class="file" title="The host's file in the workspace">{host.id}</span>
-    <div class="actions">
+    <div class="actions" data-ways-in aria-label="Ways in">
       <button
         data-connect="default"
         disabled={serialWithoutPort}
@@ -153,6 +200,25 @@
           >{protocolNames[protocol]}</button
         >
       {/each}
+      {#each webLinks as link (link.name)}
+        <button
+          class="web-link"
+          class:refused={link.url === null}
+          data-web-link={link.name}
+          data-refused={link.url === null ? "" : undefined}
+          title={link.url
+            ? `Open ${link.url} in the browser`
+            : `Not opened: ${link.refused}`}
+          onclick={() => open(link)}>{link.name} ↗</button
+        >
+      {/each}
+    </div>
+    {#if webLinkError ?? webLinksUnavailable}
+      <p class="error" role="alert" data-web-link-error>
+        {webLinkError ?? webLinksUnavailable}
+      </p>
+    {/if}
+    <div class="actions">
       <button
         data-open-logs
         title="Show this host's session logs in the file manager"
@@ -389,6 +455,18 @@
   .small {
     padding: 0.2rem 0.6rem;
     font-size: 0.8rem;
+  }
+
+  .web-link.refused {
+    color: var(--muted);
+    text-decoration: line-through;
+  }
+
+  .error {
+    margin: 0;
+    color: var(--danger);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
   }
 
   section {
