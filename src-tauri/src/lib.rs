@@ -13,6 +13,7 @@ use netterm_core::credentials::{
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
+use netterm_core::preferences::{FontZoom, Preferences, Theme};
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
     NegotiatedAlgorithms, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent,
@@ -980,6 +981,76 @@ async fn serial_ports(manager: State<'_, SessionManager>) -> Result<Vec<SerialPo
     manager.serial_ports().map_err(|error| error.to_string())
 }
 
+/// The user's preferences, as loaded at launch or last saved.
+struct UserPreferences(Mutex<Preferences>);
+
+impl UserPreferences {
+    fn lock(&self) -> MutexGuard<'_, Preferences> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The window frame's theme for a preference (`None`: the system's).
+fn window_theme(theme: Theme) -> Option<tauri::Theme> {
+    match theme {
+        Theme::System => None,
+        Theme::Light => Some(tauri::Theme::Light),
+        Theme::Dark => Some(tauri::Theme::Dark),
+    }
+}
+
+/// Makes `next` the preferences: saved (normalised) to the data folder, and
+/// the window frame given its theme. Returns what was saved.
+fn adopt_preferences(
+    app: &AppHandle,
+    shell: &Shell,
+    current: &mut Preferences,
+    next: Preferences,
+) -> Result<Preferences, String> {
+    let next = next.normalized();
+    next.save(&shell.data_folder)
+        .map_err(|error| format!("the preferences could not be saved: {error}"))?;
+    let theme_changed = next.theme != current.theme;
+    // Saved: from here on these are the preferences, whatever the frame does.
+    *current = next.clone();
+    if theme_changed {
+        if let Some(window) = app.get_webview_window("main") {
+            // Only the frame's colours; the page already follows the theme.
+            let _ = window.set_theme(window_theme(next.theme));
+        }
+    }
+    Ok(next)
+}
+
+#[tauri::command]
+fn preferences_get(preferred: State<'_, UserPreferences>) -> Preferences {
+    preferred.lock().clone()
+}
+
+#[tauri::command]
+fn preferences_save(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    preferred: State<'_, UserPreferences>,
+    preferences: Preferences,
+) -> Result<Preferences, String> {
+    adopt_preferences(&app, &shell, &mut preferred.lock(), preferences)
+}
+
+/// Steps the terminal font size (all terminals share it).
+#[tauri::command]
+fn preferences_zoom(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    preferred: State<'_, UserPreferences>,
+    zoom: FontZoom,
+) -> Result<Preferences, String> {
+    let mut current = preferred.lock();
+    let mut next = current.clone();
+    next.zoom(zoom);
+    adopt_preferences(&app, &shell, &mut current, next)
+}
+
 #[tauri::command]
 fn session_close(manager: State<'_, SessionManager>, id: u64) -> Result<(), String> {
     manager
@@ -1007,6 +1078,9 @@ pub fn run() {
                 &data_folder,
             )));
             app.manage(Tabs(Mutex::new(Layout::new())));
+            let preferences = Preferences::load(&data_folder);
+            let theme = window_theme(preferences.theme);
+            app.manage(UserPreferences(Mutex::new(preferences)));
             app.manage(Shell {
                 data_folder,
                 credentials,
@@ -1018,6 +1092,7 @@ pub fn run() {
                 .title(title)
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(480.0, 320.0)
+                .theme(theme)
                 .build()?;
             Ok(())
         })
@@ -1059,7 +1134,10 @@ pub fn run() {
             session_duplicate,
             session_discard,
             layout_reset,
-            layout_edit
+            layout_edit,
+            preferences_get,
+            preferences_save,
+            preferences_zoom
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the app");

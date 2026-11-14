@@ -17,6 +17,23 @@
   background: var(--bg);
 }
 
+/* The light theme (App.svelte sets `data-theme` from the preferences,
+   following the system by default); dark is the base above. */
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --surface: #e9ecf0;
+  --terminal: #fbfbfc;
+  --border: #c9cfd6;
+  --text: #1f2328;
+  --muted: #5d6672;
+  --accent: #0b5cd6;
+  --ok: #1a7f37;
+  --danger: #c4161c;
+  --warning: #8a6100;
+
+  color-scheme: light;
+}
+
 * {
   box-sizing: border-box;
 }

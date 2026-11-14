@@ -1,0 +1,231 @@
+<script lang="ts">
+  import {
+    changePreferences,
+    FONT_SIZES,
+    MAX_SCROLLBACK,
+    preferences,
+    SUGGESTED_FONTS,
+    type Theme,
+  } from "./preferences.svelte";
+
+  interface Props {
+    onclose: () => void;
+  }
+
+  let { onclose }: Props = $props();
+
+  const current = $derived(preferences.current);
+
+  /** A whole number from a number field, or null when it holds none. */
+  function wholeNumber(input: HTMLInputElement): number | null {
+    const value = Math.round(input.valueAsNumber);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function onkeydown(event: KeyboardEvent) {
+    if (event.key !== "Escape") return;
+    // A field being typed in is saved (its change event), not dropped.
+    if (document.activeElement instanceof HTMLElement)
+      document.activeElement.blur();
+    onclose();
+  }
+
+  const SHORTCUTS: [string, string][] = [
+    ["Copy", "Ctrl+Shift+C, Ctrl+Insert, or Ctrl+C with text selected"],
+    ["Paste", "Ctrl+Shift+V, Ctrl+V or Shift+Insert"],
+    ["Search the scrollback", "Ctrl+Shift+F; then Enter / Shift+Enter"],
+    ["Font size", "Ctrl+scroll, Ctrl+= / Ctrl+- (Ctrl+0 resets)"],
+  ];
+</script>
+
+<svelte:window {onkeydown} />
+
+<div
+  class="backdrop"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="preferences-title"
+  data-dialog="preferences"
+>
+  <section>
+    <h2 id="preferences-title">Preferences</h2>
+    <div class="fields">
+      <label for="preference-theme">Theme</label>
+      <select
+        id="preference-theme"
+        name="preference-theme"
+        value={current.theme}
+        onchange={(event) =>
+          changePreferences({ theme: event.currentTarget.value as Theme })}
+      >
+        <option value="system">Same as the system</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+
+      <label for="preference-font-family">Terminal font</label>
+      <input
+        id="preference-font-family"
+        name="preference-font-family"
+        list="preference-fonts"
+        value={current.fontFamily}
+        onchange={(event) =>
+          changePreferences({ fontFamily: event.currentTarget.value })}
+      />
+      <datalist id="preference-fonts">
+        {#each SUGGESTED_FONTS as font (font)}
+          <option value={font}></option>
+        {/each}
+      </datalist>
+
+      <label for="preference-font-size">Font size</label>
+      <input
+        id="preference-font-size"
+        name="preference-font-size"
+        type="number"
+        min={FONT_SIZES.min}
+        max={FONT_SIZES.max}
+        value={current.fontSize}
+        onchange={(event) => {
+          const size = wholeNumber(event.currentTarget);
+          if (size !== null) void changePreferences({ fontSize: size });
+          else event.currentTarget.value = String(current.fontSize);
+        }}
+      />
+
+      <label for="preference-scrollback">Scrollback lines</label>
+      <input
+        id="preference-scrollback"
+        name="preference-scrollback"
+        type="number"
+        min="0"
+        max={MAX_SCROLLBACK}
+        step="1000"
+        value={current.scrollback}
+        onchange={(event) => {
+          const lines = wholeNumber(event.currentTarget);
+          if (lines !== null)
+            void changePreferences({ scrollback: Math.max(0, lines) });
+          else event.currentTarget.value = String(current.scrollback);
+        }}
+      />
+
+      <span></span>
+      <label class="check">
+        <input
+          type="checkbox"
+          name="preference-copy-on-select"
+          checked={current.copyOnSelect}
+          onchange={(event) =>
+            changePreferences({ copyOnSelect: event.currentTarget.checked })}
+        />
+        Copy text when it is selected
+      </label>
+
+      <span></span>
+      <label class="check">
+        <input
+          type="checkbox"
+          name="preference-right-click-paste"
+          checked={current.rightClickPaste}
+          onchange={(event) =>
+            changePreferences({
+              rightClickPaste: event.currentTarget.checked,
+            })}
+        />
+        Paste with a right click in the terminal
+      </label>
+    </div>
+
+    {#if preferences.error}
+      <p class="error" role="alert">{preferences.error}</p>
+    {/if}
+
+    <dl>
+      {#each SHORTCUTS as [what, keys] (what)}
+        <dt>{what}</dt>
+        <dd>{keys}</dd>
+      {/each}
+    </dl>
+
+    <div class="actions">
+      <!-- svelte-ignore a11y_autofocus -->
+      <button autofocus onclick={onclose}>Close</button>
+    </div>
+  </section>
+</div>
+
+<style>
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 15;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    background: rgb(0 0 0 / 0.45);
+  }
+
+  section {
+    width: min(30rem, 100%);
+    max-height: 100%;
+    overflow: auto;
+    display: grid;
+    gap: 0.9rem;
+    padding: 1.2rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+  }
+
+  h2 {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+  }
+
+  .fields {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5rem 0.8rem;
+    font-size: 0.85rem;
+  }
+
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .error {
+    margin: 0;
+    color: var(--danger);
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+  }
+
+  dl {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.25rem 0.8rem;
+    margin: 0;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+  }
+
+  dt {
+    color: var(--muted);
+  }
+
+  dd {
+    margin: 0;
+  }
+
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+</style>
