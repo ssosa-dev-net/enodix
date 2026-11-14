@@ -8,6 +8,7 @@
     hostRole,
     inventory,
     move,
+    openJob,
     remove,
     renameTo,
     saveHost,
@@ -226,6 +227,12 @@
           openLogFolder(host.id).catch(
             (error) => (inventory.editError = String(error)),
           )}>Open log folder</button
+      >
+      <button
+        data-host-run-snippet
+        title="Run a saved snippet on this host as a job, without a terminal"
+        onclick={() => openJob({ kind: "hosts", ids: [host.id] }, host.name)}
+        >Run snippet…</button
       >
       <button onclick={() => move(item)}>Move…</button>
       <button class="danger" onclick={() => remove(item)}>Delete…</button>

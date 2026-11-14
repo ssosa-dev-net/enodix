@@ -9,6 +9,7 @@
     newFolder,
     newHost,
     openCsvImport,
+    openJob,
     openNornirImport,
     remove,
     renameTo,
@@ -58,6 +59,13 @@
       <button
         data-folder-nornir-import
         onclick={() => openNornirImport(folder.path)}>Import Nornir…</button
+      >
+      <button
+        data-folder-run-snippet
+        title="Run a saved snippet on every host in this folder, as a job"
+        onclick={() =>
+          openJob({ kind: "folder", path: folder.path }, folder.name)}
+        >Run snippet…</button
       >
       {#if !isRoot}
         <button onclick={() => move(item)}>Move…</button>

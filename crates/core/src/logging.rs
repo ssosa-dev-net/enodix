@@ -276,6 +276,13 @@ impl PlainText {
         out
     }
 
+    /// The unfinished last line as it shows now, without trailing blanks
+    /// (such as a prompt waiting for input). It stays unfinished.
+    pub fn current_line(&self) -> String {
+        let line: String = self.line.iter().collect();
+        line.trim_end().to_string()
+    }
+
     fn text(&mut self, text: &str, out: &mut String) {
         for c in text.chars() {
             self.char(c, out);
