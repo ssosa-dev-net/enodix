@@ -145,16 +145,19 @@ impl BuiltInPlatform {
 /// A Cisco-style privilege password question.
 const PASSWORD_PROMPT: &str = r"(?i)password:\s*$";
 
-/// The definitions the app ships. The prompts of SR Linux and EOS are the
-/// ones the containerlab suite uses; every value is still to be verified
-/// on real devices by the suite's per-platform checks.
+/// The definitions the app ships. Every value but NX-OS's passes the
+/// containerlab suite's platform checks (paging off, privileged mode, the
+/// whole configuration, unchanged on a second backup, backup on login) on
+/// SR Linux 24.10.1, cEOS 4.36.0.1F, FRR 10.2.1 (vtysh as the login
+/// shell), IOS-XE 17.03.08 (CSR 1000v) and cJunos Evolved 25.4R1
+/// (`docs/containerlab.md`). NX-OS has not been checked on a device.
 pub const BUILT_IN_PLATFORMS: [BuiltInPlatform; 6] = [
     BuiltInPlatform {
         name: "srlinux",
         other_names: &["nokia_srl", "nokia_srlinux", "srl"],
         // `A:srl1# ` (the line before it is `--{ running }--[  ]--`).
         prompt: r"[A-Z]:\S+#",
-        // SR Linux does not page its CLI output.
+        // SR Linux does not page its CLI output (checked).
         disable_paging: None,
         privilege_command: None,
         privilege_prompt: None,

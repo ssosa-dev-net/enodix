@@ -47,6 +47,23 @@ topology:
         # of `containerlab deploy`, never written here.
         NETTERM_LAB_PASSWORD: ${NETTERM_LAB_PASSWORD}
 
+    # Cisco IOS-XE (the `ios` platform), a vrnetlab VM image built from the
+    # CSR 1000v qcow2 (Cisco's download needs an account). Its default
+    # login (admin / admin, privilege 15) is unchanged.
+    csr1:
+      kind: cisco_csr1000v
+      image: vrnetlab/cisco_csr1000v:17.03.08
+      mgmt-ipv4: 172.20.30.14
+
+    # Juniper cJunos Evolved (the `junos` platform), imported from
+    # Juniper's free download. Its default login is unchanged.
+    cjunos1:
+      kind: juniper_cjunosevolved
+      image: cjunosevolved:25.4R1.13-EVO
+      mgmt-ipv4: 172.20.30.15
+      env:
+        CPTX_COSIM: "BX"
+
   links:
     - endpoints: ["srl1:e1-1", "ceos1:eth1"]
     - endpoints: ["ceos1:eth2", "frr1:eth1"]

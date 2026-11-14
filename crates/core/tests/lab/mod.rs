@@ -22,17 +22,24 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
+use netterm_core::configs::{ConfigStore, SaveOutcome};
 use netterm_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
+};
+use netterm_core::diff::DiffLine;
+use netterm_core::job::{
+    self, HostResult, HostState, JobEvent, JobOptions, JobStep, JobTarget, LoginBackup,
+    LoginBackupOutcome, SessionLogin, JOB_TERMINAL_SIZE,
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::logging::{LogFolder, SessionLog};
 use netterm_core::session::{
-    CloseReason, HostKeyDecision, NegotiatedAlgorithms, OpenError, OutputOptions, SessionEvent,
-    SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth, SshTarget,
-    TelnetTarget, TerminalSize, DEFAULT_TELNET_PORT,
+    CloseReason, HostKeyDecision, NegotiatedAlgorithms, OpenError, OpenOptions, OutputOptions,
+    SessionEvent, SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth,
+    SshTarget, TelnetTarget, TerminalSize, DEFAULT_TELNET_PORT,
 };
 use netterm_core::workspace::{HostId, Workspace};
 use regex::Regex;
@@ -109,8 +116,18 @@ pub enum Platform {
     Srlinux,
     /// Arista cEOS.
     Ceos,
-    /// FRR in a Linux container with an SSH server (`lab/frr/Dockerfile`).
+    /// FRR in a Linux container with an SSH server (`lab/frr/Dockerfile`),
+    /// logged in to as root (a shell).
     Frr,
+    /// The same FRR container logged in to as its `vtysh` user, whose
+    /// login shell is vtysh: FRR as a router's CLI.
+    Vtysh,
+    /// Cisco IOS or IOS-XE (the topology's CSR 1000v).
+    Ios,
+    /// Cisco NX-OS.
+    Nxos,
+    /// Juniper Junos (the topology's cJunos Evolved).
+    Junos,
     /// Anything else: every check setting must be given.
     Other,
 }
@@ -129,10 +146,38 @@ struct Defaults {
     size_command: Option<&'static str>,
     size_output: Option<&'static str>,
     exit: Option<&'static str>,
+    /// The built-in platform definition the device is driven by in jobs.
+    definition: Option<&'static str>,
+    /// A command that shows the privilege level, and what its output must
+    /// match once the job has entered privileged mode.
+    privilege_check: Option<(&'static str, &'static str)>,
+    /// What the last line of the fetched configuration must match.
+    config_end: Option<&'static str>,
+    /// A command printing more lines than a job's terminal has rows, which
+    /// a device that pages would stop in the middle of.
+    paging_command: Option<&'static str>,
 }
 
 impl Platform {
     fn defaults(self) -> Defaults {
+        /// Cisco-style: `name>`, `name#`, `name(config)#`.
+        const CISCO_PROMPT: &str = r"[\w.\-]+(\(\S+\))?[>#]";
+        const NONE: Defaults = Defaults {
+            username: None,
+            prompt: None,
+            setup: &[],
+            command: None,
+            expect: None,
+            large_command: None,
+            large_min_bytes: 0,
+            size_command: None,
+            size_output: None,
+            exit: None,
+            definition: None,
+            privilege_check: None,
+            config_end: None,
+            paging_command: None,
+        };
         match self {
             Self::Srlinux => Defaults {
                 username: Some("admin"),
@@ -148,11 +193,15 @@ impl Platform {
                 size_command: Some("bash stty size"),
                 size_output: Some("{rows} {cols}"),
                 exit: Some("quit"),
+                definition: Some("srlinux"),
+                privilege_check: None,
+                config_end: Some(r"^set / "),
+                paging_command: Some("info flat"),
             },
             Self::Ceos => Defaults {
                 username: Some("admin"),
                 // `ceos1>` or `ceos1#`.
-                prompt: Some(r"[\w.\-]+(\(\S+\))?[>#]"),
+                prompt: Some(CISCO_PROMPT),
                 setup: &["terminal length 0"],
                 command: Some("show version"),
                 expect: Some(r"(?i)arista"),
@@ -163,6 +212,10 @@ impl Platform {
                 size_command: Some("bash stty size"),
                 size_output: Some("{rows} {cols}"),
                 exit: Some("exit"),
+                definition: Some("eos"),
+                privilege_check: Some(("show privilege", r"(?i)privilege level is 15")),
+                config_end: Some(r"^end$"),
+                paging_command: Some("show running-config all"),
             },
             Self::Frr => Defaults {
                 username: Some("root"),
@@ -175,19 +228,64 @@ impl Platform {
                 size_command: Some("stty size"),
                 size_output: Some("{rows} {cols}"),
                 exit: Some("exit"),
+                // Root gets a shell, not vtysh: see `Vtysh`.
+                ..NONE
             },
-            Self::Other => Defaults {
-                username: None,
-                prompt: None,
-                setup: &[],
-                command: None,
-                expect: None,
-                large_command: None,
-                large_min_bytes: 0,
-                size_command: None,
-                size_output: None,
-                exit: None,
+            Self::Vtysh => Defaults {
+                username: Some("vtysh"),
+                // `frr1#` (vtysh has no unprivileged mode).
+                prompt: Some(r"[\w.\-]+(\(\S+\))?#"),
+                setup: &["terminal length 0"],
+                command: Some("show version"),
+                expect: Some(r"FRRouting"),
+                exit: Some("exit"),
+                definition: Some("frr"),
+                config_end: Some(r"^end$"),
+                paging_command: Some("show memory"),
+                ..NONE
             },
+            Self::Ios => Defaults {
+                username: Some("admin"),
+                prompt: Some(CISCO_PROMPT),
+                setup: &["terminal length 0"],
+                command: Some("show version"),
+                expect: Some(r"(?i)cisco ios"),
+                large_command: Some("show running-config all"),
+                large_min_bytes: 32 * 1024,
+                exit: Some("exit"),
+                definition: Some("ios"),
+                privilege_check: Some(("show privilege", r"(?i)privilege level is 15")),
+                config_end: Some(r"^end$"),
+                paging_command: Some("show running-config all"),
+                ..NONE
+            },
+            Self::Nxos => Defaults {
+                username: Some("admin"),
+                prompt: Some(r"[\w.\-]+(\(\S+\))?#"),
+                setup: &["terminal length 0"],
+                command: Some("show version"),
+                expect: Some(r"(?i)nx-os"),
+                large_command: Some("show running-config all"),
+                large_min_bytes: 32 * 1024,
+                exit: Some("exit"),
+                definition: Some("nxos"),
+                paging_command: Some("show running-config all"),
+                ..NONE
+            },
+            Self::Junos => Defaults {
+                username: Some("admin"),
+                // `admin@cjunos1>`.
+                prompt: Some(r"[\w.\-]+@[\w.\-]+[>#]"),
+                setup: &["set cli screen-length 0"],
+                command: Some("show version"),
+                expect: Some(r"(?i)junos"),
+                exit: Some("exit"),
+                definition: Some("junos"),
+                config_end: Some(r"^set "),
+                paging_command: Some("show system processes extensive"),
+                ..NONE
+            },
+            Self::Other => NONE,
         }
     }
 }
@@ -241,6 +339,17 @@ struct DeviceFile {
     exit: Option<String>,
     login_prompt: Option<String>,
     password_prompt: Option<String>,
+    /// The built-in platform definition jobs drive the device with (`""`:
+    /// none, so the platform checks are not made).
+    definition: Option<String>,
+    /// The profile's enable secret, for a device whose privilege command
+    /// asks for one.
+    enable_secret: Option<String>,
+    enable_secret_env: Option<String>,
+    privilege_check: Option<String>,
+    privilege_expect: Option<String>,
+    config_end: Option<String>,
+    paging_command: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -306,6 +415,18 @@ pub struct Device {
     /// Telnet: the device asking for the username, then the password.
     pub login_prompt: Regex,
     pub password_prompt: Regex,
+    /// The platform definition jobs drive it with (the host file's
+    /// `platform`); `None`: the platform checks are not made.
+    pub definition: Option<String>,
+    /// The enable secret of its profile.
+    pub enable_secret: Option<String>,
+    /// A command showing the privilege level, and what its output must
+    /// match after the job's privilege command.
+    pub privilege_check: Option<(String, Regex)>,
+    /// What the last line of the fetched configuration must match.
+    pub config_end: Option<Regex>,
+    /// A command printing more lines than a job's terminal has rows.
+    pub paging_command: Option<String>,
 }
 
 impl std::fmt::Debug for Device {
@@ -482,7 +603,58 @@ impl Lab {
                     .unwrap_or(r"(?i)password:"),
             )
             .map_err(|error| format!("device {name}: {error}"))?;
+            let definition = device
+                .definition
+                .or_else(|| defaults.definition.map(str::to_owned))
+                .filter(|definition| !definition.trim().is_empty());
+            let enable_secret = match (device.enable_secret, device.enable_secret_env) {
+                (None, None) => None,
+                (value, named) => Some(secret(
+                    value,
+                    named,
+                    "",
+                    &format!("device {name} has no enable secret"),
+                )?),
+            };
+            let privilege_check = match (
+                device
+                    .privilege_check
+                    .or_else(|| defaults.privilege_check.map(|(c, _)| c.to_owned())),
+                device
+                    .privilege_expect
+                    .or_else(|| defaults.privilege_check.map(|(_, e)| e.to_owned())),
+            ) {
+                (Some(command), Some(expect)) => Some((
+                    command,
+                    Regex::new(&expect).map_err(|error| {
+                        format!("device {name}: bad `privilege_expect` pattern: {error}")
+                    })?,
+                )),
+                (None, None) => None,
+                _ => {
+                    return Err(format!(
+                        "device {name}: set both privilege_check and privilege_expect, or neither"
+                    ))
+                }
+            };
+            let config_end = device
+                .config_end
+                .or_else(|| defaults.config_end.map(str::to_owned))
+                .map(|pattern| {
+                    Regex::new(&pattern).map_err(|error| {
+                        format!("device {name}: bad `config_end` pattern: {error}")
+                    })
+                })
+                .transpose()?;
+            let paging_command = device
+                .paging_command
+                .or_else(|| defaults.paging_command.map(str::to_owned));
             devices.push(Device {
+                paging_command,
+                definition,
+                enable_secret,
+                privilege_check,
+                config_end,
                 platform: device.platform,
                 address: device.address,
                 port: device.port.unwrap_or(22),
@@ -546,18 +718,45 @@ impl LabRun {
                 ),
             )?;
         }
+        let mut snippets = String::new();
         for device in &lab.devices {
-            write(
-                &format!("{}.yaml", device.name),
-                format!(
-                    "address: {}\nport: {}\ncredential_profile: {}\n",
-                    yaml_text(&device.address),
-                    device.port,
-                    device.name
-                ),
-            )?;
+            let mut host = format!(
+                "address: {}\nport: {}\ncredential_profile: {}\n",
+                yaml_text(&device.address),
+                device.port,
+                device.name
+            );
+            if let Some(definition) = &device.definition {
+                // Only sessions opened with a login backup back up.
+                host.push_str(&format!(
+                    "platform: {}\nbackup_on_login: true\n",
+                    yaml_text(definition)
+                ));
+            }
+            write(&format!("{}.yaml", device.name), host)?;
+            if let Some((command, _)) = &device.privilege_check {
+                snippets.push_str(&format!(
+                    "{}: {}\n",
+                    privilege_snippet(device),
+                    yaml_text(command)
+                ));
+            }
+            if let Some(command) = &device.paging_command {
+                snippets.push_str(&format!(
+                    "{}: {}\n",
+                    paging_snippet(device),
+                    yaml_text(command)
+                ));
+            }
         }
-        let workspace = Workspace::open(&root).map_err(|error| error.to_string())?;
+        if !snippets.is_empty() {
+            write("_snippets.yaml", snippets)?;
+        }
+        let mut workspace = Workspace::open(&root).map_err(|error| error.to_string())?;
+        // Config backups keep what they fetch under the workspace id.
+        workspace
+            .ensure_id()
+            .map_err(|error| format!("the suite's workspace id: {error}"))?;
         if !workspace.problems().is_empty() {
             return Err(format!(
                 "the suite's workspace has problems: {:?}",
@@ -585,7 +784,7 @@ impl LabRun {
                     },
                     None => ProfileAuth::Agent,
                 },
-                enable_secret: None,
+                enable_secret: device.enable_secret.clone(),
             };
             store.put(&scope, &profile).map_err(|error| error.0)?;
         }
@@ -609,6 +808,94 @@ impl LabRun {
         SessionManager::new(KnownHosts::in_memory())
     }
 
+    fn profiles(&self) -> Profiles<'_> {
+        Profiles::new(&self.store, &self.workspace)
+    }
+
+    fn workspace_id(&self) -> &str {
+        self.workspace
+            .id()
+            .expect("the suite's workspace has an id")
+    }
+
+    /// An empty config history of its own for `device` and `what`.
+    fn config_store(&self, device: &Device, what: &str) -> Result<ConfigStore, String> {
+        let root = self
+            .temp
+            .path()
+            .join("configs")
+            .join(what)
+            .join(&device.name);
+        if root.exists() {
+            fs::remove_dir_all(&root).map_err(|error| error.to_string())?;
+        }
+        Ok(ConfigStore::new(root))
+    }
+
+    /// A manager that already trusts the device's host keys (and the jump
+    /// host's), as jobs refuse unknown ones: one session was opened first.
+    async fn trusting_manager(&self, device: &Device) -> Result<SessionManager, String> {
+        let manager = self.manager();
+        let mut session =
+            Conversation::open_ssh(&manager, self.ssh_target(device)?, None, self.timeout())
+                .await?;
+        session.close().await?;
+        Ok(manager)
+    }
+
+    /// Runs a job of `step` on `device` alone; its result.
+    async fn run_job(
+        &self,
+        manager: &SessionManager,
+        device: &Device,
+        step: JobStep,
+        configs: Option<ConfigStore>,
+    ) -> Result<HostResult, String> {
+        let plan = job::plan(
+            &self.workspace,
+            &self.profiles(),
+            &JobTarget::Hosts {
+                ids: vec![device.host_id()],
+            },
+            &step,
+        )
+        .map_err(|error| format!("the job could not be planned: {error}"))?;
+        if let Some(skipped) = plan.skipped.first() {
+            return Err(format!("the job skipped the device: {skipped:?}"));
+        }
+        let options = JobOptions {
+            parallel: 1,
+            command_timeout: self.timeout(),
+            configs,
+        };
+        let mut job = job::start(manager, plan, options)
+            .map_err(|error| format!("the job did not start: {error}"))?;
+        // Connecting, privilege, paging and the step: a few answers each.
+        let report = tokio::time::timeout(self.timeout() * 6, async {
+            loop {
+                match job.next().await {
+                    Some(JobEvent::Finished(report)) => return Ok(report),
+                    Some(_) => {}
+                    None => return Err("the job ended without a report".to_owned()),
+                }
+            }
+        })
+        .await
+        .map_err(|_| "the job did not finish".to_owned())??;
+        let result = report
+            .hosts
+            .into_iter()
+            .next()
+            .ok_or_else(|| "the job ran no host".to_owned())?;
+        match &result.state {
+            HostState::Done => Ok(result),
+            other => Err(format!(
+                "the job ended {other:?}; its output ended: {:?}",
+                tail(&result.output, 600)
+            )),
+        }
+    }
+
     fn timeout(&self) -> Duration {
         self.lab.timeout
     }
@@ -618,6 +905,16 @@ impl LabRun {
             .host_log(&self.workspace, &device.host_id())
             .ok_or_else(|| "logging is off for the device".to_owned())
     }
+}
+
+/// The name of the snippet that runs `device`'s paging command.
+fn paging_snippet(device: &Device) -> String {
+    format!("lab-paging-{}", device.name)
+}
+
+/// The name of the snippet that shows `device`'s privilege level.
+fn privilege_snippet(device: &Device) -> String {
+    format!("lab-privilege-{}", device.name)
 }
 
 /// `text` as a YAML double-quoted scalar; [`Lab::parse`] refuses addresses
@@ -717,6 +1014,19 @@ pub enum Check {
     SessionLog,
     /// Telnet login (typed in the terminal) and the command.
     Telnet,
+    /// A job with the device's built-in platform definition turns paging
+    /// off: a command printing more lines than the job's terminal has rows
+    /// shows no pager and ends at the prompt.
+    Paging,
+    /// A config backup job fetches the whole configuration (and only it);
+    /// a second backup of the unchanged device keeps nothing new (its
+    /// ignored lines cover what changes by itself).
+    ConfigBackup,
+    /// A job with the definition's privilege command is in privileged mode.
+    Privilege,
+    /// Whether the device accepts a second shell channel on the session's
+    /// connection, and the backup on login works either way.
+    SecondChannel,
 }
 
 pub const ALL_CHECKS: &[Check] = &[
@@ -727,6 +1037,10 @@ pub const ALL_CHECKS: &[Check] = &[
     Check::LargeOutput,
     Check::SessionLog,
     Check::Telnet,
+    Check::Paging,
+    Check::ConfigBackup,
+    Check::Privilege,
+    Check::SecondChannel,
 ];
 
 impl Check {
@@ -739,6 +1053,10 @@ impl Check {
             Check::LargeOutput => "large output with flow control",
             Check::SessionLog => "session log",
             Check::Telnet => "telnet",
+            Check::Paging => "paging off",
+            Check::ConfigBackup => "config backup",
+            Check::Privilege => "privileged mode",
+            Check::SecondChannel => "second channel and backup on login",
         }
     }
 
@@ -770,8 +1088,249 @@ impl Check {
                     Some(password) => telnet(run, device, port, password).await.into(),
                 },
             },
+            Check::Paging | Check::ConfigBackup | Check::Privilege | Check::SecondChannel => {
+                let Some(definition) = &device.definition else {
+                    return Outcome::NotApplicable(
+                        "no built-in platform definition for this device".into(),
+                    );
+                };
+                let Some(found) = run.workspace.host_platform(&device.host_id()) else {
+                    return Outcome::Failed(format!(
+                        "the platform {definition:?} names no usable definition"
+                    ));
+                };
+                match self {
+                    Check::Paging => match &device.paging_command {
+                        None => Outcome::NotApplicable("no paging_command for this device".into()),
+                        Some(_) => paging(run, device).await.into(),
+                    },
+                    Check::ConfigBackup => config_backup(run, device).await.into(),
+                    Check::Privilege => match (&found.privilege_command, &device.privilege_check) {
+                        (None, _) => Outcome::NotApplicable(format!(
+                            "the {} definition has no privilege command",
+                            found.name
+                        )),
+                        (Some(_), None) => {
+                            Outcome::NotApplicable("no privilege_check for this device".into())
+                        }
+                        (Some(_), Some((_, expect))) => privilege(run, device, expect).await.into(),
+                    },
+                    _ => second_channel(run, device).await.into(),
+                }
+            }
         }
     }
+}
+
+/// What a pager shows (IOS/NX-OS/EOS `--More--`, Junos `---(more)---`,
+/// `less`'s `(END)` and `lines 1-40`).
+const PAGER: &str = r"(?im)--\s*more\s*--|---\(more|\(END\)|^lines \d+-\d+";
+
+async fn paging(run: &LabRun, device: &Device) -> Result<String, String> {
+    let manager = run.trusting_manager(device).await?;
+    let result = run
+        .run_job(
+            &manager,
+            device,
+            JobStep::Snippet {
+                name: paging_snippet(device),
+                answers: Default::default(),
+            },
+            None,
+        )
+        .await?;
+    let pager = Regex::new(PAGER).expect("the pager pattern");
+    if let Some(found) = pager.find(&result.output) {
+        return Err(format!(
+            "the output shows a pager ({:?}): paging is not off",
+            found.as_str()
+        ));
+    }
+    let lines = result.output.lines().count();
+    let rows = JOB_TERMINAL_SIZE.rows as usize;
+    if lines <= rows {
+        return Err(format!(
+            "the paging command printed {lines} lines, no more than the job's {rows} rows: \
+             set a paging_command with more output"
+        ));
+    }
+    Ok(format!("{lines} lines"))
+}
+
+async fn config_backup(run: &LabRun, device: &Device) -> Result<String, String> {
+    let manager = run.trusting_manager(device).await?;
+    let configs = run.config_store(device, "job")?;
+    let id = device.host_id();
+    let first = run
+        .run_job(
+            &manager,
+            device,
+            JobStep::ConfigBackup,
+            Some(configs.clone()),
+        )
+        .await?;
+    let version = match &first.backup {
+        Some(SaveOutcome::Saved { version }) => version.clone(),
+        other => return Err(format!("the first backup did not save: {other:?}")),
+    };
+    let kept = configs
+        .read(run.workspace_id(), &id, &version)
+        .map_err(|error| format!("the kept configuration: {error}"))?;
+    let lines = kept.lines().count();
+    let last = kept
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    if let Some(end) = &device.config_end {
+        if !end.is_match(last) {
+            return Err(format!(
+                "the configuration ({lines} lines) does not end as expected ({:?}); it ends: {:?}",
+                end.as_str(),
+                tail(&kept, 400)
+            ));
+        }
+    }
+
+    let second = run
+        .run_job(
+            &manager,
+            device,
+            JobStep::ConfigBackup,
+            Some(configs.clone()),
+        )
+        .await?;
+    match &second.backup {
+        Some(SaveOutcome::Unchanged { version: same }) if *same == version => {}
+        Some(SaveOutcome::Saved { version: new }) => {
+            let changed: Vec<String> = configs
+                .diff(run.workspace_id(), &id, &version, new)
+                .map_err(|error| format!("diff: {error}"))?
+                .into_iter()
+                .filter_map(|line| match line {
+                    DiffLine::Same { .. } => None,
+                    DiffLine::Removed { text, .. } => Some(format!("-{text}")),
+                    DiffLine::Added { text, .. } => Some(format!("+{text}")),
+                })
+                .collect();
+            return Err(format!(
+                "a second backup of the unchanged device saved a new version (ignored_lines \
+                 should cover these lines): {changed:?}"
+            ));
+        }
+        other => return Err(format!("the second backup: {other:?}")),
+    }
+    Ok(format!(
+        "{lines} lines, last {last:?}; unchanged on the second backup"
+    ))
+}
+
+async fn privilege(run: &LabRun, device: &Device, expect: &Regex) -> Result<String, String> {
+    let manager = run.trusting_manager(device).await?;
+    let result = run
+        .run_job(
+            &manager,
+            device,
+            JobStep::Snippet {
+                name: privilege_snippet(device),
+                answers: Default::default(),
+            },
+            None,
+        )
+        .await?;
+    match expect.find(&result.output) {
+        Some(found) => Ok(found.as_str().to_owned()),
+        None => Err(format!(
+            "the job's output does not match {:?}: {:?}",
+            expect.as_str(),
+            tail(&result.output, 600)
+        )),
+    }
+}
+
+async fn second_channel(run: &LabRun, device: &Device) -> Result<String, String> {
+    let manager = run.manager();
+    let profiles = run.profiles();
+    let id = device.host_id();
+    let configs = run.config_store(device, "login")?;
+    let backup = LoginBackup::plan(
+        &run.workspace,
+        &profiles,
+        &id,
+        SessionLogin::Profile,
+        configs,
+    )
+    .ok_or("no backup on login applies to the device")?
+    .with_command_timeout(run.timeout());
+    let options = OpenOptions {
+        log: None,
+        when_connected: Some(Arc::new(backup)),
+    };
+    let target = run.ssh_target(device)?;
+    let password = match &target.auth {
+        SshAuth::Password(password) => password.clone(),
+        _ => String::new(),
+    };
+    let mut session = Conversation::connect_with(
+        &manager,
+        SessionTarget::Ssh(target),
+        options,
+        run.timeout(),
+        &password,
+    )
+    .await
+    .map_err(|failure| format!("did not connect: {failure}"))?;
+    session.ready(device).await?;
+    // The backup runs beside the terminal, over a second channel, or a
+    // second connection where the device refuses one.
+    let saved = match session.backup(run.timeout() * 6).await? {
+        LoginBackupOutcome::Saved { .. } => "saved",
+        LoginBackupOutcome::Unchanged { .. } => "unchanged",
+        LoginBackupOutcome::Failed { reason } => {
+            return Err(format!("the backup on login failed: {reason}"))
+        }
+    };
+
+    // Then a channel of our own on the same connection.
+    let channel = match manager.open_channel(session.id, SIZE) {
+        Err(error) => return Err(format!("open_channel: {error:?}")),
+        Ok((channel, events)) => {
+            Conversation::attach(&manager, channel, events, run.timeout())
+                .connected(&password)
+                .await
+        }
+    };
+    let accepted = match channel {
+        Ok(mut channel) => {
+            channel.ready(device).await?;
+            let output = channel.run(&device.command, &device.prompt).await?;
+            if !device.expect.is_match(&output) {
+                return Err(format!(
+                    "on the second channel, the output of {:?} does not match {:?}: {output:?}",
+                    device.command,
+                    device.expect.as_str()
+                ));
+            }
+            channel.close().await?;
+            "accepted".to_owned()
+        }
+        Err(Failure::Closed(CloseReason::Failed(OpenError::ChannelRefused { reason }))) => {
+            format!("REFUSED ({reason}), so the backup used a second connection")
+        }
+        Err(other) => return Err(format!("the second channel: {other}")),
+    };
+    // The terminal's own channel is untouched.
+    let output = session.run(&device.command, &device.prompt).await?;
+    if !device.expect.is_match(&output) {
+        return Err(format!(
+            "after the second channel, the session's output of {:?} does not match: {output:?}",
+            device.command
+        ));
+    }
+    session.close().await?;
+    Ok(format!(
+        "second channel {accepted}; backup on login {saved}"
+    ))
 }
 
 async fn login_and_command(run: &LabRun, device: &Device) -> Result<String, String> {
@@ -1047,6 +1606,8 @@ pub struct Conversation<'a> {
     /// answered with "trust and remember".
     pub asked: Vec<(String, u16)>,
     pub algorithms: Vec<NegotiatedAlgorithms>,
+    /// Backups on login reported and not yet taken by [`Self::backup`].
+    backups: Vec<LoginBackupOutcome>,
 }
 
 impl<'a> Conversation<'a> {
@@ -1077,8 +1638,35 @@ impl<'a> Conversation<'a> {
         timeout: Duration,
         password: &str,
     ) -> Result<Conversation<'a>, Failure> {
-        let (id, events) = manager.open_logged(target, SIZE, log);
-        let mut session = Conversation {
+        let options = OpenOptions {
+            log,
+            when_connected: None,
+        };
+        Self::connect_with(manager, target, options, timeout, password).await
+    }
+
+    /// [`Self::connect`], opening the session with `options`.
+    pub async fn connect_with(
+        manager: &'a SessionManager,
+        target: SessionTarget,
+        options: OpenOptions,
+        timeout: Duration,
+        password: &str,
+    ) -> Result<Conversation<'a>, Failure> {
+        let (id, events) = manager.open_with(target, SIZE, options);
+        Self::attach(manager, id, events, timeout)
+            .connected(password)
+            .await
+    }
+
+    /// A conversation with the session `id` (not yet connected).
+    pub fn attach(
+        manager: &'a SessionManager,
+        id: SessionId,
+        events: SessionEvents,
+        timeout: Duration,
+    ) -> Conversation<'a> {
+        Conversation {
             manager,
             id,
             events,
@@ -1086,12 +1674,20 @@ impl<'a> Conversation<'a> {
             received: Vec::new(),
             asked: Vec::new(),
             algorithms: Vec::new(),
-        };
+            backups: Vec::new(),
+        }
+    }
+
+    /// Waits until the session is connected (see [`Self::connect`]).
+    pub async fn connected(mut self, password: &str) -> Result<Conversation<'a>, Failure> {
+        let manager = self.manager;
+        let id = self.id;
+        let session = &mut self;
         let mut rounds = 0;
         loop {
             match session.next_event().await.map_err(Failure::Other)? {
                 SessionEvent::State(SessionState::Connecting) => {}
-                SessionEvent::State(SessionState::Connected) => return Ok(session),
+                SessionEvent::State(SessionState::Connected) => break,
                 SessionEvent::State(SessionState::Closed(reason)) => {
                     return Err(Failure::Closed(reason))
                 }
@@ -1125,10 +1721,42 @@ impl<'a> Conversation<'a> {
                         .map_err(|error| Failure::Other(format!("{error:?}")))?;
                 }
                 SessionEvent::Algorithms(algorithms) => session.algorithms = algorithms,
-                SessionEvent::Backup(_) => {}
+                SessionEvent::Backup(_) => unreachable!("next_event keeps backups"),
                 SessionEvent::Output(bytes) => session.received.extend_from_slice(&bytes),
                 SessionEvent::LogFailed(failure) => {
                     return Err(Failure::Other(format!("log failed: {failure}")))
+                }
+            }
+        }
+        Ok(self)
+    }
+
+    /// The next backup on login the session reports, waiting at most
+    /// `wait` for it (output meanwhile is kept for the next wait).
+    pub async fn backup(&mut self, wait: Duration) -> Result<LoginBackupOutcome, String> {
+        if !self.backups.is_empty() {
+            return Ok(self.backups.remove(0));
+        }
+        let until = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(until, self.events.next()).await {
+                Err(_) => {
+                    return Err(format!(
+                        "no backup on login reported within {} s",
+                        wait.as_secs()
+                    ))
+                }
+                Ok(None) => return Err("the session's events ended".into()),
+                Ok(Some(SessionEvent::Backup(outcome))) => return Ok(outcome),
+                Ok(Some(SessionEvent::Output(bytes))) => {
+                    self.events.acknowledge(bytes.len());
+                    self.received.extend_from_slice(&bytes);
+                }
+                Ok(Some(SessionEvent::State(SessionState::Closed(reason)))) => {
+                    return Err(format!("the session closed ({reason}) before its backup"))
+                }
+                Ok(Some(other)) => {
+                    return Err(format!("waiting for the backup: unexpected {other:?}"))
                 }
             }
         }
@@ -1137,14 +1765,18 @@ impl<'a> Conversation<'a> {
     /// The next event within `wait` (output is acknowledged at once), or
     /// `None` if there is none by then.
     async fn event_within(&mut self, wait: Duration) -> Result<Option<SessionEvent>, String> {
-        match tokio::time::timeout(wait, self.events.next()).await {
-            Err(_) => Ok(None),
-            Ok(None) => Err("the session's events ended".into()),
-            Ok(Some(event)) => {
-                if let SessionEvent::Output(bytes) = &event {
-                    self.events.acknowledge(bytes.len());
+        let until = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(until, self.events.next()).await {
+                Err(_) => return Ok(None),
+                Ok(None) => return Err("the session's events ended".into()),
+                Ok(Some(SessionEvent::Backup(outcome))) => self.backups.push(outcome),
+                Ok(Some(event)) => {
+                    if let SessionEvent::Output(bytes) = &event {
+                        self.events.acknowledge(bytes.len());
+                    }
+                    return Ok(Some(event));
                 }
-                Ok(Some(event))
             }
         }
     }
@@ -1152,19 +1784,13 @@ impl<'a> Conversation<'a> {
     /// The next event (output is acknowledged at once), or an error after
     /// the timeout.
     async fn next_event(&mut self) -> Result<SessionEvent, String> {
-        match tokio::time::timeout(self.timeout, self.events.next()).await {
-            Err(_) => Err(format!(
+        match self.event_within(self.timeout).await? {
+            None => Err(format!(
                 "nothing happened for {} s; last output: {:?}",
                 self.timeout.as_secs(),
                 tail(&plain(&self.received), 400)
             )),
-            Ok(None) => Err("the session's events ended".into()),
-            Ok(Some(event)) => {
-                if let SessionEvent::Output(bytes) = &event {
-                    self.events.acknowledge(bytes.len());
-                }
-                Ok(event)
-            }
+            Some(event) => Ok(event),
         }
     }
 

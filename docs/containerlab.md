@@ -3,14 +3,17 @@
 A slower, opt-in test suite that opens real sessions to network operating
 systems on a containerlab server, through the core's public
 API, the same way the app does (a workspace host, a credential profile,
-`Profiles::profile_target`, host-key checks, session logs). The spec names
-Nokia SR Linux, Arista cEOS and FRR; any other device can be added to the
-lab file.
+`Profiles::profile_target`, host-key checks, session logs, jobs and config
+backups with the built-in platform definitions). The topology has Nokia SR
+Linux, Arista cEOS, FRR, Cisco IOS-XE (CSR 1000v) and Juniper cJunos
+Evolved; any other device can be added to the lab file.
 
 Every check passes against the topology's Nokia SR Linux 24.10.1, Arista
-cEOS 4.36.0.1F and FRR 10.2.1 (containerlab 0.83.0, through the
-containerlab server as the jump host), first run 2026-11-14. The README's
-tested-platforms list comes from these runs.
+cEOS 4.36.0.1F, FRR 10.2.1, Cisco CSR 1000v (IOS-XE 17.03.08) and Juniper
+cJunos Evolved 25.4R1.13-EVO (containerlab 0.83.0, through the containerlab
+server as the jump host), first run 2026-11-14 (the platform checks and the
+Cisco and Juniper nodes since #47). The README's tested-platforms list comes
+from these runs.
 
 ## What it checks, per device
 
@@ -23,6 +26,10 @@ tested-platforms list comes from these runs.
 | large output with flow control | `large_command` prints at least `large_min_bytes`; while the reader stalls for 3 s, no more than the flow-control window (256 KiB + a batch) arrives |
 | session log                    | The session's log file holds the command output as plain text (no control sequences)                                                             |
 | telnet                         | Log in by telnet (answers typed into the terminal), run `command`; only where `telnet` is set, and behind a jump host only with `telnet_address` (telnet is not tunnelled) |
+| paging off                     | A job driven by the device's built-in platform definition runs `paging_command` (more lines than a job's 100-row terminal): no pager (`--More--`, `---(more)---`, ...) shows and the job ends at the prompt |
+| config backup                  | A config backup job keeps the configuration without the prompt (its last line matches `config_end`); a second backup of the unchanged device keeps nothing new, so the definition's ignored lines cover what changes by itself |
+| privileged mode                | Only where the definition has a privilege command: a job's `privilege_check` command shows `privilege_expect` (level 15) |
+| second channel and backup on login | A session opened with the host's backup on login reports it saved; then a second shell channel on that session's connection is opened: accepted (the command runs there, the terminal is untouched) or refused (then the backup used a second connection) |
 
 The output of every check (pass, fail or not checked, with the negotiated
 algorithms) is printed, so run it with `--nocapture` (the npm script does).
@@ -54,8 +61,13 @@ files).
 
    cEOS (`ceos:4.36.0.1F` in the topology) must be imported into Docker
    first (`docker import`), as Arista distributes it only to registered
-   users. Remove a node from the topology (and the lab file) if its image
-   is not available.
+   users. The CSR 1000v image (`vrnetlab/cisco_csr1000v:17.03.08`) is
+   built with [vrnetlab](https://github.com/srl-labs/vrnetlab) from Cisco's
+   qcow2, and cJunos Evolved (`cjunosevolved:25.4R1.13-EVO`) is loaded from
+   Juniper's download; both are VMs (KVM, about 4 and 8 GB of memory) and
+   take several minutes to boot after the deploy. Remove a node from the
+   topology (and the lab file) if its image is not available. The FRR image
+   must be rebuilt after `lab/frr/` changes (#47 added the `vtysh` user).
 
    Docker inside a Proxmox LXC container needs two entries in the
    container's `/etc/pve/lxc/<id>.conf` on the Proxmox host (besides
@@ -91,8 +103,9 @@ files).
    `cargo test -p netterm-core --test containerlab -- --ignored --nocapture --test-threads=1`.
    Add a test name (`lab_ssh_login_and_command`, `lab_host_keys`,
    `lab_wrong_password`, `lab_terminal_size`,
-   `lab_large_output_with_flow_control`, `lab_session_log`, `lab_telnet`)
-   after `--test containerlab` to run one check.
+   `lab_large_output_with_flow_control`, `lab_session_log`, `lab_telnet`,
+   `lab_paging`, `lab_config_backup`, `lab_privilege`,
+   `lab_second_channel`) after `--test containerlab` to run one check.
 
 Without a lab file the suite prints `containerlab suite SKIPPED: no lab
 configured ...` and passes. A lab file that exists but cannot be used (a
@@ -114,7 +127,7 @@ jump_host: # optional: the containerlab server, to reach the devices through
   # unless key_file (+ passphrase_env) or password_env is given
 devices:
   - name: srl1 # letters, digits, - and _
-    platform: srlinux # srlinux | ceos | frr | other
+    platform: srlinux # srlinux | ceos | frr | vtysh | ios | nxos | junos | other
     address: 172.20.30.11
     port: 22
     password_env: NETTERM_LAB_SRL_PASSWORD # or agent: true
@@ -129,7 +142,12 @@ control sequences removed), `setup` (lines sent after login), `command`,
 `telnet` (`true` or a port), `telnet_address` (where telnet is reached
 directly, not through the jump host: for the topology's cEOS, the
 containerlab server's address with `telnet: 2323`), `login_prompt`,
-`password_prompt`.
+`password_prompt`. For the platform checks: `definition` (the built-in
+platform definition jobs drive the device with, written as the host's
+`platform`; `""` for none, which skips those checks), `paging_command`,
+`privilege_check` with `privilege_expect`, `config_end` (a regular
+expression for the configuration's last line) and `enable_secret_env`
+(the profile's enable secret, for a privilege command that asks for one).
 
 ## Platform defaults (verified on the versions above)
 
@@ -138,12 +156,50 @@ containerlab server's address with `telnet: 2323`), `login_prompt`,
 | `srlinux` | admin    | `A:srl1#`          |                     | `show version`             | `software version` | `info detail from state /`        | `bash stty size` | `quit` |
 | `ceos`    | admin    | `ceos1>`/`ceos1#`  | `terminal length 0` | `show version`             | `arista`           | `show running-config all`         | `bash stty size` | `exit` |
 | `frr`     | root     | ends in `$` or `#` |                     | `vtysh -c 'show version'`  | `FRRouting`        | `seq 1 100000`                    | `stty size`  | `exit` |
+| `vtysh`   | vtysh    | `frr1#`            | `terminal length 0` | `show version`             | `FRRouting`        |                                   |              | `exit` |
+| `ios`     | admin    | `csr1#`            | `terminal length 0` | `show version`             | `cisco ios`        | `show running-config all`         |              | `exit` |
+| `nxos`    | admin    | `nxos1#`           | `terminal length 0` | `show version`             | `nx-os`            | `show running-config all`         |              | `exit` |
+| `junos`   | admin    | `admin@cjunos1>`   | `set cli screen-length 0` | `show version`       | `junos`            |                                   |              | `exit` |
 | `other`   | required | required           |                     | required                   | required           |                                   |              | required |
 
-The device passwords are the images' own defaults for SR Linux and cEOS
-(the topology does not change them; see the containerlab documentation of
-each kind) and, for FRR, whatever `NETTERM_LAB_PASSWORD` was when the lab was
-deployed. None is written in the repository.
+And for the platform checks (`nxos` not verified: no image yet):
 
-Not covered yet: Cisco and Juniper images (licences), legacy-crypto devices,
+| Platform  | Definition | Paging command                    | Privilege check                      | Config ends   |
+| --------- | ---------- | --------------------------------- | ------------------------------------ | ------------- |
+| `srlinux` | `srlinux`  | `info flat`                       |                                      | `set / ...`   |
+| `ceos`    | `eos`      | `show running-config all`         | `show privilege`: level 15           | `end`         |
+| `frr`     | none (root gets a shell) |                     |                                      |               |
+| `vtysh`   | `frr`      | `show memory`                     |                                      | `end`         |
+| `ios`     | `ios`      | `show running-config all`         | `show privilege`: level 15           | `end`         |
+| `nxos`    | `nxos`     | `show running-config all`         |                                      |               |
+| `junos`   | `junos`    | `show system processes extensive` |                                      | `set ...`     |
+
+The device passwords are the images' own defaults for SR Linux, cEOS, the
+CSR 1000v and cJunos Evolved (the topology does not change them; see the
+containerlab documentation of each kind) and, for FRR (root and vtysh),
+whatever `NETTERM_LAB_PASSWORD` was when the lab was deployed. None is
+written in the repository.
+
+## Built-in platforms on real devices
+
+What the platform checks found (2026-11-14), per built-in definition:
+
+| Definition | Device                         | Paging off | Privileged mode            | Whole configuration      | Second channel on one connection |
+| ---------- | ------------------------------ | ---------- | -------------------------- | ------------------------ | -------------------------------- |
+| `srlinux`  | SR Linux 24.10.1               | yes (never pages) | not applicable      | yes (640 lines)          | accepted                         |
+| `eos`      | cEOS 4.36.0.1F                 | yes        | yes (level 15)             | yes, ends `end`          | accepted                         |
+| `frr`      | FRR 10.2.1, vtysh login shell  | yes        | not applicable             | yes, ends `end`          | accepted                         |
+| `ios`      | CSR 1000v, IOS-XE 17.03.08     | yes        | yes (level 15)             | yes, ends `end`          | **refused** (`ResourceShortage`): backup on login uses a second connection (profile logins only) |
+| `junos`    | cJunos Evolved 25.4R1.13-EVO   | yes        | not applicable             | yes (as `show configuration \| display set \| count`) | accepted |
+| `nxos`     | not checked (no NX-OS image on the lab server) | | | | unknown |
+
+No built-in value had to change. One job fix came out of it: SR Linux's
+prompt is two lines (`--{ running }--[  ]--`, then `A:srl1#`), and the
+first one ended up at the end of every kept configuration; a config
+backup now drops trailing lines that match the definition's ignored lines.
+Privileged mode was reached with `enable` on accounts that are already
+privilege 15; an enable password question on a real device is not
+exercised (the in-process device-mode server covers it).
+
+Not covered yet: NX-OS (needs an n9kv image), legacy-crypto devices,
 public-key logins to the devices themselves other than through the agent.

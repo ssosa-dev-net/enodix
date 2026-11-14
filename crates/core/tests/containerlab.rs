@@ -101,6 +101,30 @@ async fn lab_telnet() {
     lab_check(Check::Telnet).await;
 }
 
+#[tokio::test]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+async fn lab_paging() {
+    lab_check(Check::Paging).await;
+}
+
+#[tokio::test]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+async fn lab_config_backup() {
+    lab_check(Check::ConfigBackup).await;
+}
+
+#[tokio::test]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+async fn lab_privilege() {
+    lab_check(Check::Privilege).await;
+}
+
+#[tokio::test]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+async fn lab_second_channel() {
+    lab_check(Check::SecondChannel).await;
+}
+
 // The suite's own tests (no lab needed).
 
 fn env_with(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
@@ -144,6 +168,8 @@ fn the_example_lab_file_parses_with_the_passwords_in_the_environment() {
             ("NETTERM_LAB_SRL_PASSWORD", "srl secret"),
             ("NETTERM_LAB_CEOS_PASSWORD", "ceos secret"),
             ("NETTERM_LAB_PASSWORD", "frr secret"),
+            ("NETTERM_LAB_CSR_PASSWORD", "csr secret"),
+            ("NETTERM_LAB_JUNOS_PASSWORD", "junos secret"),
         ]),
     )
     .unwrap();
@@ -157,9 +183,30 @@ fn the_example_lab_file_parses_with_the_passwords_in_the_environment() {
         [
             ("srl1", "srl secret"),
             ("ceos1", "ceos secret"),
-            ("frr1", "frr secret")
+            ("frr1", "frr secret"),
+            ("frr1-vtysh", "frr secret"),
+            ("csr1", "csr secret"),
+            ("cjunos1", "junos secret"),
         ]
         .map(|(name, password)| (name, Some(password)))
+    );
+    // Each device is checked against its built-in platform definition,
+    // except FRR's root (a shell).
+    let definitions: Vec<Option<&str>> = lab
+        .devices
+        .iter()
+        .map(|d| d.definition.as_deref())
+        .collect();
+    assert_eq!(
+        definitions,
+        [
+            Some("srlinux"),
+            Some("eos"),
+            None,
+            Some("frr"),
+            Some("ios"),
+            Some("junos")
+        ]
     );
     // The server logs in with this computer's SSH agent.
     let jump = lab.jump_host.unwrap();
@@ -229,7 +276,7 @@ fn mistakes_in_a_lab_file_are_refused() {
     let device = "devices:\n  - name: r1\n    address: 192.0.2.1\n";
     for (text, says) in [
         (format!("{device}    platform: frr\n    pasword: x\n"), "pasword"),
-        (format!("{device}    platform: junos\n"), "junos"),
+        (format!("{device}    platform: vyos\n"), "vyos"),
         (format!("{device}    platform: other\n"), "set `username`"),
         (
             format!("{device}    platform: other\n    username: u\n"),
@@ -386,4 +433,77 @@ async fn an_unreachable_lab_device_fails_rather_than_passing() {
         .await
         .failures;
     assert_eq!(failures.len(), 2, "{failures:#?}");
+}
+
+/// A lab of one device-mode server (`r1`, unprivileged until `enable`),
+/// checked against the built-in EOS definition.
+fn device_lab(port: u16) -> Lab {
+    let text = format!(
+        "timeout: 10
+devices:
+  - name: r1
+    platform: other
+    definition: eos
+    address: 127.0.0.1
+    port: {port}
+    username: {user}
+    password_env: LAB_DEVICE
+    enable_secret_env: LAB_ENABLE
+    prompt: 'r1[>#]'
+    command: show hostname
+    expect: r1
+    exit: exit
+    paging_command: lines 300
+    privilege_check: show hostname
+    privilege_expect: '(?m)^r1# show hostname'
+    config_end: '^end$'
+",
+        user = support::USERNAME
+    );
+    Lab::parse(
+        &text,
+        &env_with(&[
+            ("LAB_DEVICE", support::PASSWORD),
+            ("LAB_ENABLE", support::ENABLE_SECRET),
+        ]),
+    )
+    .unwrap()
+}
+
+const PLATFORM_CHECKS: &[Check] = &[
+    Check::Paging,
+    Check::ConfigBackup,
+    Check::Privilege,
+    Check::SecondChannel,
+];
+
+#[tokio::test]
+async fn the_platform_checks_pass_against_a_device_mode_server() {
+    let device = TestSshServer::start_unprivileged_device("r1").await;
+    let run = LabRun::new(device_lab(device.port())).unwrap();
+    let device_entry = &run.lab.devices[0];
+    for check in PLATFORM_CHECKS {
+        let outcome = check.run(&run, device_entry).await;
+        assert!(
+            matches!(outcome, Outcome::Passed(_)),
+            "{check:?}: {outcome:?}"
+        );
+    }
+    let outcome = Check::SecondChannel.run(&run, device_entry).await;
+    assert!(
+        matches!(&outcome, Outcome::Passed(note) if note.contains("second channel accepted")),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_device_refusing_a_second_channel_is_reported_and_still_backed_up() {
+    let device = TestSshServer::start_unprivileged_device("r1").await;
+    device.refuse_second_channel();
+    let run = LabRun::new(device_lab(device.port())).unwrap();
+    let outcome = Check::SecondChannel.run(&run, &run.lab.devices[0]).await;
+    assert!(
+        matches!(&outcome, Outcome::Passed(note) if note.contains("REFUSED")),
+        "{outcome:?}"
+    );
 }

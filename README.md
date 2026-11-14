@@ -80,16 +80,19 @@ netterm claims support only for the device platforms below, each verified by the
 containerlab device suite ([docs/containerlab.md](docs/containerlab.md))
 at the version shown. Other platforms may work but have not been tested.
 
-| Platform       | Version   | SSH | Telnet     | Verified   |
-| -------------- | --------- | --- | ---------- | ---------- |
-| Nokia SR Linux | 24.10.1   | yes | not tested | 2026-11-14 |
-| Arista cEOS    | 4.36.0.1F | yes | yes        | 2026-11-14 |
-| FRRouting      | 10.2.1    | yes | not tested | 2026-11-14 |
+| Platform                 | Version       | SSH | Telnet     | Verified   |
+| ------------------------ | ------------- | --- | ---------- | ---------- |
+| Nokia SR Linux           | 24.10.1       | yes | not tested | 2026-11-14 |
+| Arista cEOS              | 4.36.0.1F     | yes | yes        | 2026-11-14 |
+| FRRouting                | 10.2.1        | yes | not tested | 2026-11-14 |
+| Cisco IOS-XE (CSR 1000v) | 17.03.08      | yes | not tested | 2026-11-14 |
+| Juniper cJunos Evolved   | 25.4R1.13-EVO | yes | not tested | 2026-11-14 |
 
 SSH covers login with a password, a command and its output, host-key
 checking, a refused password, resizing, large output with flow control and
-session logs, each through an SSH jump host. Cisco and Juniper devices have
-not been tested.
+session logs, each through an SSH jump host, and jobs and config backups
+with the built-in platform definition (paging off, privileged mode, the
+whole configuration, backup on login). Cisco NX-OS has not been tested.
 
 ## Building from source
 

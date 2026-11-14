@@ -529,7 +529,12 @@ impl HostRunner {
             Ok(Shown::PrivilegePrompt) => return Err(asked_for_password(command)),
             Err(error) => return Err(self.no_prompt_after(&quoted(command), error)),
         }
-        let config = config_shown(&self.output[start..], &prompt, command);
+        // A bad pattern is refused when the configuration is kept.
+        let ignored = backup
+            .ignored_lines
+            .as_deref()
+            .and_then(|pattern| Regex::new(pattern).ok());
+        let config = config_shown(&self.output[start..], &prompt, command, ignored.as_ref());
         if config.is_empty() {
             return Err(format!("{command:?} showed nothing to back up"));
         }
@@ -832,9 +837,11 @@ impl HostRunner {
 
 /// The configuration in `shown`, the plain-text output of `command` typed
 /// at `prompt`: without the echo (the first line, if it is the prompt and
-/// the command), and without blank lines at either end; every line ends
-/// with a line break.
-fn config_shown(shown: &str, prompt: &str, command: &str) -> String {
+/// the command), without blank lines at either end, and without the lines
+/// at its end that match the `ignored` lines pattern (the first lines of a
+/// prompt of several, such as SR Linux's `--{ running }--[  ]--`); every
+/// line ends with a line break.
+fn config_shown(shown: &str, prompt: &str, command: &str, ignored: Option<&Regex>) -> String {
     let mut lines = crate::diff::lines(shown);
     if lines.first().is_some_and(|echo| {
         echo.strip_prefix(prompt)
@@ -845,7 +852,9 @@ fn config_shown(shown: &str, prompt: &str, command: &str) -> String {
     while lines.first().is_some_and(|line| line.trim().is_empty()) {
         lines.remove(0);
     }
-    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+    while lines.last().is_some_and(|line| {
+        line.trim().is_empty() || ignored.is_some_and(|ignored| ignored.is_match(line))
+    }) {
         lines.pop();
     }
     lines.iter().map(|line| format!("{line}\n")).collect()
