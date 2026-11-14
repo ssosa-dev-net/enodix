@@ -2,7 +2,12 @@
   import { describeOrigin, isOwn, type Item } from "./inventory.svelte";
   import { profileNames } from "./profiles.svelte";
   import { serialPorts, type SerialPortInfo } from "./session";
-  import type { Effective, EffectiveSettings, Settings } from "./workspace";
+  import {
+    MAX_PASTE_LINE_DELAY_MS,
+    type Effective,
+    type EffectiveSettings,
+    type Settings,
+  } from "./workspace";
 
   interface Props {
     item: Item;
@@ -139,6 +144,18 @@
       }),
       effective: (e) => e.environment,
       unset: "none",
+      note:
+        "Production sessions get a red tab and border, and a paste of more " +
+        "than one line always asks first.",
+    },
+    {
+      key: "paste_line_delay",
+      label: "Paste line delay (ms)",
+      input: { kind: "number", min: 0, max: MAX_PASTE_LINE_DELAY_MS },
+      own: (s) => s.paste_line_delay?.toString() ?? "",
+      set: (s, v) => ({ ...s, paste_line_delay: toNumber(v) }),
+      effective: (e) => e.paste_line_delay,
+      note: "A wait between pasted lines, for devices that drop fast input.",
     },
   ];
 

@@ -138,6 +138,23 @@
       </label>
 
       <span></span>
+      <label
+        class="check"
+        title="Production hosts always ask, whatever this is set to"
+      >
+        <input
+          type="checkbox"
+          name="preference-confirm-multi-line-paste"
+          checked={current.confirmMultiLinePaste}
+          onchange={(event) =>
+            changePreferences({
+              confirmMultiLinePaste: event.currentTarget.checked,
+            })}
+        />
+        Ask before pasting more than one line (production hosts always ask)
+      </label>
+
+      <span></span>
       <span class="check">
         <label class="check">
           <input

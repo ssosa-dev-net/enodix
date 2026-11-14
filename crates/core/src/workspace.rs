@@ -54,6 +54,7 @@ mod settings;
 mod snippets;
 mod watch;
 
+use crate::paste::PasteSafety;
 pub use filters::{Condition, SavedFilter, FILTERS_FILE};
 pub use highlights::HIGHLIGHTS_FILE;
 pub use jumps::JumpChainError;
@@ -62,7 +63,8 @@ use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
     apply_settings, settings_from_document, Level, CONNECT_TIMEOUT, CREDENTIAL_PROFILE,
-    ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PORT, PROTOCOL, SERIAL, WEB_LINKS,
+    ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PASTE_LINE_DELAY, PORT, PROTOCOL, SERIAL,
+    WEB_LINKS,
 };
 pub use settings::{
     Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, Origin, Parity,
@@ -97,7 +99,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 25] = [
+pub const HOST_KEY_ORDER: [&str; 26] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -108,6 +110,7 @@ pub const HOST_KEY_ORDER: [&str; 25] = [
     CONNECT_TIMEOUT,
     LOGGING,
     ENVIRONMENT,
+    PASTE_LINE_DELAY,
     SERIAL,
     VENDOR,
     PLATFORM,
@@ -126,7 +129,7 @@ pub const HOST_KEY_ORDER: [&str; 25] = [
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 12] = [
+pub const FOLDER_KEY_ORDER: [&str; 13] = [
     DESCRIPTION,
     TAGS,
     PROTOCOL,
@@ -137,6 +140,7 @@ pub const FOLDER_KEY_ORDER: [&str; 12] = [
     CONNECT_TIMEOUT,
     LOGGING,
     ENVIRONMENT,
+    PASTE_LINE_DELAY,
     SERIAL,
     WEB_LINKS,
 ];
@@ -403,6 +407,12 @@ impl ResolvedHost {
     fn connect_timeout(&self) -> Duration {
         Duration::from_secs(self.settings.connect_timeout.value.into())
     }
+
+    /// What applies to pastes into this host's sessions, and the
+    /// environment they are marked with.
+    pub fn paste_safety(&self) -> PasteSafety {
+        PasteSafety::of(&self.settings)
+    }
 }
 
 /// A file that could not be loaded, and why.
@@ -574,6 +584,34 @@ impl Workspace {
         let mut roles = BTreeMap::new();
         walk(self, &self.tree, &mut roles);
         roles
+    }
+
+    /// [`ResolvedHost::paste_safety`] for every host, by host id: its
+    /// environment (for its sessions' colours) and paste line delay.
+    pub fn host_paste_safety(&self) -> BTreeMap<HostId, PasteSafety> {
+        fn walk<'a>(
+            folder: &'a Folder,
+            levels: &mut Vec<Level<'a>>,
+            found: &mut BTreeMap<HostId, PasteSafety>,
+        ) {
+            levels.push(Level::of(folder));
+            for host in &folder.hosts {
+                levels.push(Level {
+                    origin: Origin::Host,
+                    settings: &host.settings,
+                    tags: &host.tags,
+                });
+                found.insert(host.id.clone(), PasteSafety::of(&settings::resolve(levels)));
+                levels.pop();
+            }
+            for child in &folder.folders {
+                walk(child, levels, found);
+            }
+            levels.pop();
+        }
+        let mut found = BTreeMap::new();
+        walk(&self.tree, &mut Vec::new(), &mut found);
+        found
     }
 
     fn role_shown(&self, host: &Host) -> Option<Role> {

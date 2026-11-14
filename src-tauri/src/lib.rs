@@ -15,6 +15,7 @@ use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
 use netterm_core::logging::{LogFolder, SessionLog};
+use netterm_core::paste::{plan_paste, PastePlan, PasteSafety};
 use netterm_core::preferences::{FontZoom, Preferences, Theme};
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
@@ -162,6 +163,8 @@ struct WorkspaceView {
     roles: Vec<Role>,
     /// The role each host that has one shows, by host id.
     host_roles: BTreeMap<HostId, Role>,
+    /// Every host's environment and paste line delay, by host id.
+    host_safety: BTreeMap<HostId, PasteSafety>,
     /// The saved filters, in file order.
     filters: Vec<SavedFilter>,
     /// The highlight rules, the workspace's own first.
@@ -179,6 +182,7 @@ impl From<&Workspace> for WorkspaceView {
             tree: workspace.tree().clone(),
             roles: workspace.roles().to_vec(),
             host_roles: workspace.host_roles(),
+            host_safety: workspace.host_paste_safety(),
             filters: workspace.filters().to_vec(),
             highlight_rules: workspace.highlight_rules().to_vec(),
             snippets: workspace.snippets().to_vec(),
@@ -1203,6 +1207,18 @@ fn preferences_zoom(
     adopt_preferences(&app, &shell, &mut current, next)
 }
 
+/// How `text` is pasted into a session with `safety` (its host's, from
+/// the workspace view): its lines, and whether the user confirms it first.
+#[tauri::command]
+fn paste_plan(
+    preferred: State<'_, UserPreferences>,
+    text: String,
+    safety: PasteSafety,
+) -> PastePlan {
+    let confirm = preferred.lock().confirm_multi_line_paste;
+    plan_paste(&text, &safety, confirm)
+}
+
 #[tauri::command]
 fn session_close(manager: State<'_, SessionManager>, id: u64) -> Result<(), String> {
     manager
@@ -1305,7 +1321,8 @@ pub fn run() {
             layout_edit,
             preferences_get,
             preferences_save,
-            preferences_zoom
+            preferences_zoom,
+            paste_plan
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the app");

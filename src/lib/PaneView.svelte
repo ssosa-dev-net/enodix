@@ -1,7 +1,7 @@
 <script lang="ts" module>
   import type { Attachment } from "svelte/attachments";
   import type { LayoutNode, PaneId, SplitDirection, TabId } from "./layout";
-  import type { Role } from "./workspace";
+  import type { Environment, Role } from "./workspace";
 
   /** What a tab shows about its session. */
   export interface TabInfo {
@@ -10,6 +10,8 @@
     /** More detail, for the tooltip (`user@host:port`). */
     title: string;
     role: Role | null;
+    /** The host's environment, which colours the tab; null: none. */
+    environment: Environment | null;
     state: "connecting" | "connected" | "disconnected";
   }
 
@@ -32,6 +34,7 @@
   import PaneView from "./PaneView.svelte";
   import { panesOf } from "./layout";
   import RoleIcon from "./RoleIcon.svelte";
+  import { ENVIRONMENT_NAMES } from "./paste";
 
   interface Props {
     node: LayoutNode;
@@ -130,7 +133,8 @@
               aria-selected={pane.active === tab}
               data-tab={tab}
               data-tab-state={info.state}
-              title={`${info.title} (${STATE_TEXT[info.state]})`}
+              data-environment={info.environment}
+              title={`${info.title} (${STATE_TEXT[info.state]}${info.environment ? `, ${ENVIRONMENT_NAMES[info.environment]}` : ""})`}
               style:--role-color={info.role?.color}
               {@attach (element) => {
                 // The shown tab stays in sight when the tabs overflow.
@@ -163,6 +167,14 @@
                 <span class="role"><RoleIcon role={info.role} /></span>
               {/if}
               <span class="name" data-tab-name>{info.name}</span>
+              {#if info.environment === "production"}
+                <span class="production" data-tab-production>PROD</span>
+              {/if}
+              {#if info.environment}
+                <span class="visually-hidden"
+                  >{ENVIRONMENT_NAMES[info.environment]}</span
+                >
+              {/if}
               <span class="visually-hidden">{STATE_TEXT[info.state]}</span>
               <button
                 class="close"
@@ -299,7 +311,9 @@
     color: var(--muted);
     background: var(--bg);
     border-right: 1px solid var(--border);
-    box-shadow: inset 0 2px var(--role-color, transparent);
+    box-shadow:
+      inset 0 2px var(--role-color, transparent),
+      inset 0 -3px var(--env-color, transparent);
     cursor: pointer;
     user-select: none;
     touch-action: none;
@@ -308,6 +322,37 @@
   .tab[aria-selected="true"] {
     color: var(--text);
     background: var(--surface);
+  }
+
+  .tab[data-environment="lab"] {
+    --env-color: var(--env-lab);
+  }
+
+  .tab[data-environment="staging"] {
+    --env-color: var(--env-staging);
+  }
+
+  /* Production cannot be mistaken for anything else: a red tab. */
+  .tab[data-environment="production"] {
+    --env-color: var(--env-production);
+    color: var(--text);
+    background: var(--env-production-bg);
+  }
+
+  .tab[data-environment="production"][aria-selected="true"] {
+    outline: 1px solid var(--env-production);
+    outline-offset: -1px;
+  }
+
+  .production {
+    flex: 0 0 auto;
+    padding: 0 0.3rem;
+    border-radius: 3px;
+    color: #fff;
+    background: var(--env-production);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
   }
 
   .tab.dragging {

@@ -11,6 +11,7 @@ import type {
   Folder,
   Host,
   Origin,
+  PasteSafety,
   Role,
   Settings,
   WorkspaceView,
@@ -104,6 +105,12 @@ export function selectedFolder(): Folder | null {
 /** The role the host `id` shows, if it has one. */
 export function hostRole(id: string): Role | null {
   return inventory.workspace?.host_roles[id] ?? null;
+}
+
+/** The environment and paste line delay of the host `id`; null if the
+ * open workspace has no such host. */
+export function hostSafety(id: string): PasteSafety | null {
+  return inventory.workspace?.host_safety[id] ?? null;
 }
 
 /** The folder new items go into: the selected folder, or the selected host's. */

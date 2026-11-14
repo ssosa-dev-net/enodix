@@ -18,6 +18,8 @@ export interface Preferences {
   rightClickPaste: boolean;
   /** Keyword highlighting in every terminal. */
   highlighting: boolean;
+  /** A multi-line paste asks first (production hosts always ask). */
+  confirmMultiLinePaste: boolean;
 }
 
 /** The core's limits (`netterm_core::preferences`), for the form. */
@@ -49,6 +51,7 @@ export const preferences = $state({
     copyOnSelect: false,
     rightClickPaste: false,
     highlighting: true,
+    confirmMultiLinePaste: true,
   } as Preferences,
   /** Whether the operating system is set to dark. */
   systemDark: systemDark.matches,

@@ -876,6 +876,18 @@ async function main() {
     step,
   });
 
+  await pasteSafety({
+    evaluate,
+    fillForm,
+    doubleClick,
+    text,
+    status,
+    screen,
+    devtools,
+    screenshot,
+    step,
+  });
+
   devtools.close();
 
   // Preferences survive a restart: the app comes back light, with the
@@ -915,6 +927,7 @@ async function main() {
         scrollback: field("preference-scrollback").value,
         copyOnSelect: field("preference-copy-on-select").checked,
         rightClickPaste: field("preference-right-click-paste").checked,
+        confirmMultiLinePaste: field("preference-confirm-multi-line-paste").checked,
       };
     })()`),
   );
@@ -925,6 +938,7 @@ async function main() {
     scrollback: "2000",
     copyOnSelect: true,
     rightClickPaste: true,
+    confirmMultiLinePaste: false,
   };
   if (JSON.stringify(kept) !== JSON.stringify(expected)) {
     fail(`preferences after a restart: ${JSON.stringify(kept)}`);
@@ -1235,8 +1249,31 @@ async function snippets({
       "[data-dialog=snippet-variables] form",
     );
   };
+  // Two lines: the paste confirmation shows them first (on by default).
+  const confirmLines = async (vlan) => {
+    const shown = await until("the paste confirmation", () =>
+      evaluate(`(() => {
+        const card = document.querySelector("${SHOWN_SESSION} [data-paste-confirm]");
+        return card && {
+          environment: card.dataset.pasteConfirm,
+          lines: card.querySelector("[data-paste-lines]").dataset.pasteLines,
+          text: card.querySelector("[data-paste-text]").textContent,
+        };
+      })()`),
+    );
+    const expected = {
+      environment: "none",
+      lines: "2",
+      text: `snipA 127.0.0.1 snip-r1 SMK1\nsnipB ${vlan}\n`,
+    };
+    if (json(shown) !== json(expected)) {
+      fail(`the paste confirmation shows ${json(shown)}`);
+    }
+    await clickOn(`${SHOWN_SESSION} [data-paste=send]`);
+  };
   await clickOn('[data-snippet="Smoke check"]');
   await answer("42");
+  await confirmLines("42");
   await until("the snippet's lines in the session", () => sent("42"));
   await screenshot("snippet-sent");
   step(
@@ -1260,6 +1297,7 @@ async function snippets({
     `document.querySelector("input[name=palette-query]").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))`,
   );
   await answer("43");
+  await confirmLines("43");
   await until("the snippet's lines sent from the palette", () => sent("43"));
   step("a snippet sent from the command palette");
 
@@ -1298,6 +1336,246 @@ async function snippets({
   );
   step("a snippet written on disk showed in the panel");
   rmSync(hostFile);
+}
+
+/**
+ * Environment marking and paste safety: a production host's session has a
+ * red tab and border; with the multi-line confirmation turned off, a
+ * multi-line paste or snippet into it still asks (showing the text and line
+ * count; Cancel sends nothing), and its lines go out the folder's paste
+ * line delay apart; a lab host's session is marked lab and, with the
+ * confirmation off, takes a multi-line paste at once.
+ */
+async function pasteSafety({
+  evaluate,
+  fillForm,
+  doubleClick,
+  text,
+  status,
+  screen,
+  devtools,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const CTRL = 2;
+  const SHIFT = 8;
+  const pasteKeys = async () => {
+    const event = {
+      key: "V",
+      code: "KeyV",
+      windowsVirtualKeyCode: 86,
+      modifiers: CTRL | SHIFT,
+    };
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...event,
+    });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+  };
+  const preferencesFile = join(appData, "preferences.yaml");
+  // `later 0 <text>` prints the text, before or after the next prompt.
+  const ran = async (marker) =>
+    new RegExp(`(^|\\n|\\$ )${marker}\\s*(\\n|$)`).test(await screen());
+  const confirmation = () =>
+    evaluate(`(() => {
+      const card = document.querySelector("${SHOWN_SESSION} [data-paste-confirm]");
+      return card && {
+        environment: card.dataset.pasteConfirm,
+        lines: card.querySelector("[data-paste-lines]").dataset.pasteLines,
+        text: card.querySelector("[data-paste-text]").textContent.replace(/\\r\\n/g, "\\n"),
+      };
+    })()`);
+  const connectTo = async (id, name) => {
+    const folder = id.includes("/") ? id.slice(0, id.lastIndexOf("/")) : "";
+    if (folder) {
+      const row = `nav button[data-item=folder][data-path="${folder}"]`;
+      await until(`the ${folder} folder in the tree`, () => exists(row));
+      await evaluate(`(() => {
+        const row = document.querySelector(${json(row)});
+        if (row.getAttribute("aria-expanded") !== "true") row.click();
+      })()`);
+    }
+    const button = `[data-host="${id}"]`;
+    await until(`${name} in the tree`, () => exists(button));
+    await doubleClick(button);
+    await until("the credentials prompt", async () =>
+      (await text("main h2")).includes(name),
+    );
+    await fillForm({ username: USERNAME, password: PASSWORD });
+    await until(
+      "the Connected status",
+      async () => (await status()) === "Connected",
+    );
+    await until("the shell prompt", async () =>
+      (await screen()).includes("test-ssh$"),
+    );
+  };
+
+  mkdirSync(join(workspace, "Prod"), { recursive: true });
+  writeFileSync(
+    join(workspace, "Prod", "_folder.yaml"),
+    "environment: production\npaste_line_delay: 400\n",
+  );
+  writeFileSync(
+    join(workspace, "Prod", "prod-r1.yaml"),
+    `address: 127.0.0.1\nport: ${SSH_PORT}\n`,
+  );
+  writeFileSync(
+    join(workspace, "lab-r9.yaml"),
+    `address: 127.0.0.1\nport: ${SSH_PORT}\nenvironment: lab\n`,
+  );
+  const savedClipboard = readClipboard();
+  try {
+    // Turned off: from now on only production hosts ask.
+    await evaluate(`document.querySelector("[data-open-preferences]").click()`);
+    await until("the preferences dialog", () =>
+      exists("[data-dialog=preferences]"),
+    );
+    await evaluate(`(() => {
+      const field = document.querySelector("[data-dialog=preferences] [name=preference-confirm-multi-line-paste]");
+      field.checked = false;
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await until("the confirmation switch saved", () =>
+      /confirm_multi_line_paste: false/.test(
+        readFileSync(preferencesFile, "utf8"),
+      ),
+    );
+    await evaluate(
+      `[...document.querySelectorAll("[data-dialog=preferences] button")].find((b) => b.textContent.trim() === "Close").click()`,
+    );
+    step("the multi-line paste confirmation was turned off in the preferences");
+
+    // A production session: a red tab with its PROD label, a red frame.
+    await connectTo("Prod/prod-r1.yaml", "prod-r1");
+    const tab = await evaluate(
+      `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
+    );
+    const marks = await evaluate(`(() => {
+      const tab = document.querySelector('[data-tab-bar] [data-tab="${tab}"]');
+      const session = document.querySelector("${SHOWN_SESSION} .session");
+      const style = getComputedStyle(session);
+      return {
+        tab: tab.dataset.environment,
+        label: !!tab.querySelector("[data-tab-production]"),
+        tabBackground: getComputedStyle(tab).backgroundColor,
+        badge: session.querySelector("[data-environment-badge]")?.dataset.environmentBadge,
+        border: style.borderTopWidth,
+        borderColor: style.borderTopColor,
+      };
+    })()`);
+    if (
+      marks.tab !== "production" ||
+      !marks.label ||
+      marks.badge !== "production" ||
+      marks.border !== "3px" ||
+      !/^rgb\((255, 77, 77|196, 22, 28)\)$/.test(marks.borderColor) ||
+      marks.tabBackground === "rgba(0, 0, 0, 0)"
+    ) {
+      fail(`the production session is not marked: ${json(marks)}`);
+    }
+    await screenshot("production-session");
+    step("a production session has a red tab (PROD) and a red border");
+
+    // A multi-line paste still asks on production; Cancel sends nothing.
+    writeClipboard("later 0 prod-one\nlater 0 prod-two\n");
+    await pasteKeys();
+    const asked = await until(
+      "the production paste confirmation",
+      confirmation,
+    );
+    const expected = {
+      environment: "production",
+      lines: "2",
+      text: "later 0 prod-one\nlater 0 prod-two\n",
+    };
+    if (json(asked) !== json(expected)) {
+      fail(`the production paste confirmation shows ${json(asked)}`);
+    }
+    await screenshot("production-paste");
+    await clickOn(`${SHOWN_SESSION} [data-paste=cancel]`);
+    await until("the confirmation gone", async () => !(await confirmation()));
+    await sleep(800);
+    if ((await ran("prod-one")) || (await ran("prod-two"))) {
+      fail("a cancelled paste reached the device");
+    }
+    step(
+      "a multi-line paste into production asked even with it turned off; Cancel sent nothing",
+    );
+
+    // Confirmed: the lines go out one by one, the folder's 400 ms apart.
+    await pasteKeys();
+    await until("the production paste confirmation", confirmation);
+    const started = Date.now();
+    await clickOn(`${SHOWN_SESSION} [data-paste=send]`);
+    await until("the first pasted line run", () => ran("prod-one"));
+    await until("the second pasted line run", () => ran("prod-two"));
+    const took = Date.now() - started;
+    if (took < 400) fail(`two lines 400 ms apart arrived in ${took} ms`);
+    step(
+      `the confirmed paste went out line by line, ${took} ms for two lines (delay 400 ms)`,
+    );
+
+    // A multi-line snippet into production goes through the same question.
+    const snippetsFile = join(workspace, "_snippets.yaml");
+    writeFileSync(
+      snippetsFile,
+      'Prod lines: "later 0 snip-prod-1\\nlater 0 snip-prod-2\\n"\n',
+    );
+    await until("the snippet in the panel", () =>
+      exists('[data-snippet="Prod lines"]'),
+    );
+    await clickOn('[data-snippet="Prod lines"]');
+    const snippetAsked = await until(
+      "the snippet's paste confirmation",
+      confirmation,
+    );
+    if (
+      snippetAsked.environment !== "production" ||
+      snippetAsked.lines !== "2" ||
+      snippetAsked.text !== "later 0 snip-prod-1\nlater 0 snip-prod-2\n"
+    ) {
+      fail(`the snippet's confirmation shows ${json(snippetAsked)}`);
+    }
+    await clickOn(`${SHOWN_SESSION} [data-paste=send]`);
+    await until(
+      "the snippet's lines run",
+      async () => (await ran("snip-prod-1")) && (await ran("snip-prod-2")),
+    );
+    rmSync(snippetsFile);
+    step("a multi-line snippet sent to production asked first");
+
+    // A lab session: marked lab, and the paste goes out at once.
+    await connectTo("lab-r9.yaml", "lab-r9");
+    const labMarks = await evaluate(`(() => {
+      const tab = document.querySelector('[data-tab-bar] [data-tab="' + document.querySelector("${SHOWN_SESSION}").dataset.tab + '"]');
+      const session = document.querySelector("${SHOWN_SESSION} .session");
+      return {
+        tab: tab.dataset.environment,
+        label: !!tab.querySelector("[data-tab-production]"),
+        border: getComputedStyle(session).borderTopWidth,
+      };
+    })()`);
+    if (json(labMarks) !== json({ tab: "lab", label: false, border: "1px" })) {
+      fail(`the lab session is marked ${json(labMarks)}`);
+    }
+    writeClipboard("later 0 lab-one\nlater 0 lab-two\n");
+    await pasteKeys();
+    await until(
+      "the lab paste run",
+      async () => (await ran("lab-one")) && (await ran("lab-two")),
+    );
+    if (await confirmation()) fail("the lab paste asked though turned off");
+    await screenshot("lab-session");
+    step("a lab session is marked lab and took a multi-line paste at once");
+  } finally {
+    writeClipboard(savedClipboard);
+  }
 }
 
 /** Reads the system clipboard's text (independently of the app). */

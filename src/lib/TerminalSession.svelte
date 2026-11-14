@@ -9,6 +9,8 @@
   import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
   import NegotiationFailure from "./NegotiationFailure.svelte";
+  import PasteConfirm from "./PasteConfirm.svelte";
+  import { ENVIRONMENT_NAMES, planPaste } from "./paste";
   import {
     fontStack,
     isDark,
@@ -27,7 +29,7 @@
     type SessionSource,
     type SessionState,
   } from "./session";
-  import type { Role } from "./workspace";
+  import type { Environment, PasteSafety, Role } from "./workspace";
 
   interface Props {
     source: SessionSource;
@@ -35,6 +37,10 @@
     title: string;
     /** The role of the session's host, if it has one. */
     role: Role | null;
+    /** Its host's environment (the border colour) and paste line delay. */
+    safety: PasteSafety;
+    /** The session's name, as its tab shows it (for the paste question). */
+    name: string;
     /** Whether this session is on screen (the tab its pane shows). */
     shown: boolean;
     /** Whether the keyboard goes to it (the session of the active pane). */
@@ -58,6 +64,8 @@
     source,
     title,
     role,
+    safety,
+    name,
     shown,
     focused,
     focusRequest = 0,
@@ -84,6 +92,21 @@
   let algorithms = $state<NegotiatedAlgorithms[]>([]);
   /** Why the session's log could not be written; null: logging works. */
   let logFailure = $state<string | null>(null);
+  /** A paste waiting for the user to confirm it; see `pasteText`. */
+  let pasteQuestion = $state<{
+    text: string;
+    lineCount: number;
+    environment: Environment | null;
+    lineDelayMs: number;
+    answer: (send: boolean) => void;
+  } | null>(null);
+
+  function answerPaste(send: boolean) {
+    pasteQuestion?.answer(send);
+    pasteQuestion = null;
+    xterm?.focus();
+  }
+
   /** The connections that use outdated algorithms (legacy crypto). */
   const legacy = $derived(algorithms.filter((a) => a.legacy.length > 0));
   const legacyTitle = $derived(
@@ -212,7 +235,14 @@
   // over it takes them.
   $effect(() => {
     void focusRequest;
-    if (focused && !prompt && !hostKey && !closedCard && !searching)
+    if (
+      focused &&
+      !prompt &&
+      !hostKey &&
+      !closedCard &&
+      !searching &&
+      !pasteQuestion
+    )
       xterm?.focus();
   });
 
@@ -360,16 +390,55 @@
 
     // Copy and paste. Every paste (shortcut, right click, the browser's own
     // paste) and every snippet goes through `pasteText`, then the
-    // terminal's own (bracketed paste, line endings), so later checks have
-    // one way in. Text is sent line by line, each line (with its line
-    // break) as a write of its own.
+    // terminal's own (bracketed paste, line endings), so paste safety has
+    // one way in. The core plans each paste (`planPaste`): a multi-line
+    // one is confirmed first (always on production hosts), showing the
+    // whole text, before any line is sent; then the lines go one by one,
+    // each (with its line break) as a write of its own, the host's paste
+    // line delay apart. Pastes go in order, one at a time.
     const copySelection = () => {
       const text = terminal.getSelection();
       if (text) void navigator.clipboard.writeText(text).catch(() => {});
     };
+    const wait = (ms: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const ask = (text: string, lineCount: number, rules: PasteSafety) =>
+      new Promise<boolean>((answer) => {
+        pasteQuestion = {
+          text,
+          lineCount,
+          environment: rules.environment,
+          lineDelayMs: rules.lineDelayMs,
+          answer,
+        };
+      });
+    // Read afresh after each wait (the session may end meanwhile).
+    const ended = () => disposed || status.state === "closed";
+    const sendPaste = async (text: string) => {
+      // A session that ended takes nothing (and asks nothing).
+      if (ended()) return;
+      const rules = untrack(() => safety);
+      // A paste the core cannot plan is not sent (it may need asking).
+      const plan = await planPaste(text, rules);
+      if (ended()) return;
+      if (plan.confirm) {
+        const send = await ask(text, plan.lines.length, {
+          ...rules,
+          lineDelayMs: plan.lineDelayMs,
+        });
+        if (!send || ended()) return;
+      }
+      for (const [index, line] of plan.lines.entries()) {
+        if (index > 0 && plan.lineDelayMs > 0) await wait(plan.lineDelayMs);
+        // A session that ended (or a terminal gone) takes no more lines.
+        if (ended()) return;
+        terminal.paste(line);
+      }
+    };
+    let pasting: Promise<void> = Promise.resolve();
     pasteText = (text: string) => {
-      const lines = text.match(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g) ?? [];
-      for (const line of lines) terminal.paste(line);
+      if (text === "") return;
+      pasting = pasting.then(() => sendPaste(text)).catch(() => {});
     };
     const paste = async () => {
       try {
@@ -499,6 +568,11 @@
           prompt = null;
           hostKey = null;
         }
+        // Nothing is pasted into a session that ended.
+        if (state.state === "closed" && pasteQuestion) {
+          pasteQuestion.answer(false);
+          pasteQuestion = null;
+        }
       },
       onPrompt: (asked) => (prompt = { prompt: asked, key: ++prompts }),
       onHostKey: (question) => (hostKey = { question, key: ++prompts }),
@@ -532,6 +606,7 @@
 
     return () => {
       disposed = true;
+      pasteQuestion?.answer(false);
       container.removeEventListener("paste", onpaste, { capture: true });
       container.removeEventListener("mousedown", onmousedown, {
         capture: true,
@@ -571,7 +646,11 @@
   });
 </script>
 
-<div class="session">
+<div
+  class="session"
+  data-environment={safety.environment}
+  data-session-environment={safety.environment ?? "none"}
+>
   <header class:has-role={role} style:--role-color={role?.color}>
     {#if role}
       <span class="role" data-session-role={role.id}>
@@ -580,6 +659,17 @@
       </span>
     {/if}
     <span class="title">{title}</span>
+    {#if safety.environment}
+      <span
+        class="environment"
+        data-environment-badge={safety.environment}
+        title={safety.environment === "production"
+          ? "A production device: a paste of more than one line always asks first"
+          : `Marked as ${ENVIRONMENT_NAMES[safety.environment].toLowerCase()}`}
+      >
+        {ENVIRONMENT_NAMES[safety.environment]}
+      </span>
+    {/if}
     {#if session && !session.encrypted}
       <span
         class="unencrypted"
@@ -729,6 +819,17 @@
         />
       {/key}
     {/if}
+    {#if pasteQuestion}
+      <PasteConfirm
+        text={pasteQuestion.text}
+        lineCount={pasteQuestion.lineCount}
+        target={name}
+        environment={pasteQuestion.environment}
+        lineDelayMs={pasteQuestion.lineDelayMs}
+        onsend={() => answerPaste(true)}
+        oncancel={() => answerPaste(false)}
+      />
+    {/if}
     {#if status.state === "closed" && status.negotiation}
       <NegotiationFailure failure={status.negotiation} {ondismiss} />
     {/if}
@@ -762,6 +863,43 @@
     display: grid;
     grid-template-rows: auto 1fr;
     grid-template-columns: minmax(0, 1fr);
+    border: 0 solid var(--env-color, transparent);
+  }
+
+  /* The environment's colour frames the session; production the most. */
+  .session[data-environment="lab"] {
+    --env-color: var(--env-lab);
+    border-width: 1px;
+  }
+
+  .session[data-environment="staging"] {
+    --env-color: var(--env-staging);
+    border-width: 1px;
+  }
+
+  .session[data-environment="production"] {
+    --env-color: var(--env-production);
+    border-width: 3px;
+  }
+
+  .session[data-environment="production"] header {
+    background: var(--env-production-bg);
+  }
+
+  .environment {
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--env-color);
+    border-radius: 999px;
+    color: var(--env-color);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    cursor: help;
+  }
+
+  .session[data-environment="production"] .environment {
+    color: #fff;
+    background: var(--env-production);
+    font-weight: 700;
   }
 
   .overlay {

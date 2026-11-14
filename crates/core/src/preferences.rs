@@ -1,6 +1,6 @@
 //! The user's preferences: the app's theme, the terminal's font and
-//! scrollback, how copy and paste behave, and whether keywords are
-//! highlighted. They live per user in the
+//! scrollback, how copy and paste behave (multi-line paste confirmation
+//! included), and whether keywords are highlighted. They live per user in the
 //! application data folder (`preferences.yaml`), never in a workspace; the
 //! caller chooses that folder.
 //!
@@ -67,6 +67,9 @@ pub struct Preferences {
     /// Keyword highlighting in terminals, all rules at once (each rule can
     /// also be turned off on its own, in the workspace).
     pub highlighting: bool,
+    /// A paste of more than one line asks first. Turning it off only
+    /// applies to non-production hosts: see [`crate::paste`].
+    pub confirm_multi_line_paste: bool,
 }
 
 impl Default for Preferences {
@@ -79,6 +82,7 @@ impl Default for Preferences {
             copy_on_select: false,
             right_click_paste: false,
             highlighting: true,
+            confirm_multi_line_paste: true,
         }
     }
 }
@@ -102,6 +106,8 @@ impl Preferences {
             right_click_paste: read(&mapping, "right_click_paste")
                 .unwrap_or(defaults.right_click_paste),
             highlighting: read(&mapping, "highlighting").unwrap_or(defaults.highlighting),
+            confirm_multi_line_paste: read(&mapping, "confirm_multi_line_paste")
+                .unwrap_or(defaults.confirm_multi_line_paste),
         }
         .normalized()
     }
@@ -124,6 +130,10 @@ impl Preferences {
         put("copy_on_select", preferences.copy_on_select.into());
         put("right_click_paste", preferences.right_click_paste.into());
         put("highlighting", preferences.highlighting.into());
+        put(
+            "confirm_multi_line_paste",
+            preferences.confirm_multi_line_paste.into(),
+        );
         let text = serde_norway::to_string(&mapping).map_err(io::Error::other)?;
         fs::create_dir_all(data_folder)?;
         let temporary = data_folder.join(format!("{FILE_NAME}.tmp"));
