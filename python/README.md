@@ -146,10 +146,17 @@ tunnelled host with the keys the app trusts for the device (as
 `127.0.0.1 <key>` and `[127.0.0.1]:<port> <key>`) and turns checking on in
 the connection options: Netmiko (`ssh_strict`, `alt_key_file`), scrapli
 (`auth_strict_key`, `ssh_known_hosts_file`; its paramiko transport ignores
-the port, hence a file per host) and NAPALM (`optional_args`, which its
-Netmiko-based drivers `ios` and `nxos_ssh` pass on). A device whose key
-changed is refused. NAPALM's other drivers (`eos`, `junos`, ...) do not
-check the key through the tunnel. While a script runs, any local program
+the port, hence a file per host) and NAPALM (`optional_args`, which the
+drivers that log in through Netmiko pass on: `ios`, `nxos_ssh`, and `eos`
+when its `transport` is `ssh`). A device whose key changed is refused.
+NAPALM's other drivers (`junos`, `iosxr`, ...) do not check the key
+through the tunnel.
+
+A tunnel reaches the host's SSH port and nothing else. A library that
+talks to another port is pointed at the SSH port all the same and fails:
+NAPALM's `eos` driver uses eAPI over HTTPS unless given
+`optional_args: {transport: ssh}`, and NETCONF must run on the SSH port
+(not 830), as Junos allows. While a script runs, any local program
 can reach the devices' SSH ports through the tunnels (as with `ssh -L`); it
 still needs their logins.
 

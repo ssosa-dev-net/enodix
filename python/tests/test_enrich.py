@@ -217,6 +217,23 @@ class FillIn(BridgeTest):
         ios = enrich.driver_arguments(host, agent, "ios")
         self.assertEqual(ios["optional_args"]["port"], 22)
 
+    def test_through_a_tunnel_the_drivers_that_use_netmiko_check_the_device_key(self) -> None:
+        host = {"address": "10.0.0.1", "settings": {"port": 22, "connect_timeout": 15}}
+        login = {"username": "u", "auth": {"kind": "password", "password": "p"}, "enable_secret": None}
+        tunnel = {"address": "127.0.0.1", "port": 50022, "host_keys": [], "known_hosts": "keys"}
+        for driver in ("ios", "nxos_ssh", "eos"):
+            with self.subTest(driver=driver):
+                arguments = enrich.driver_arguments(host, login, driver, tunnel)
+                self.assertEqual(arguments["hostname"], "127.0.0.1")
+                optional = arguments["optional_args"]
+                self.assertEqual(optional["port"], 50022)
+                self.assertTrue(optional["ssh_strict"])
+                self.assertEqual(optional["alt_key_file"], "keys")
+        # Junos logs in without Netmiko, which is what takes the file.
+        junos = enrich.driver_arguments(host, login, "junos", tunnel)["optional_args"]
+        self.assertNotIn("ssh_strict", junos)
+        self.assertEqual(junos["port"], 50022)
+
     def test_run_by_hand_it_says_what_runs_it(self) -> None:
         environment = {k: v for k, v in os.environ.items() if k not in ("NETTERM_JOB_TARGETS", "NETTERM_FACTS_FILE")}
         done = subprocess.run(

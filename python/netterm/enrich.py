@@ -15,9 +15,9 @@ to, rewritten after every host::
 
 Each host logs in with its own credential profile, handed over by the
 app. Hosts behind jump hosts are reached through the binary's loopback
-tunnels (:func:`netterm.tunnels`); NAPALM's Netmiko-based drivers (``ios``,
-``nxos_ssh``) then check the device's host key against the keys the app
-trusts. Nothing is written to the workspace here: the app shows what the
+tunnels (:func:`netterm.tunnels`); NAPALM's drivers that log in through
+Netmiko (``ios``, ``nxos_ssh``, and ``eos`` as run here, over SSH) then
+check the device's host key against the keys the app trusts. Nothing is written to the workspace here: the app shows what the
 devices report and fills in what the user applies. NAPALM is the user's
 to install (the app's Python setup offers it); without it every host
 fails, saying so.
@@ -51,8 +51,9 @@ DriverFinder = Callable[[str], Any]
 
 
 #: The NAPALM drivers that log in through Netmiko, which takes a known-hosts
-#: file: a tunnelled host's key is checked with these only.
-NETMIKO_DRIVERS = ("ios", "nxos_ssh")
+#: file: a tunnelled host's key is checked with these only. ``eos`` is one
+#: of them because it is given the SSH transport here (not eAPI).
+NETMIKO_DRIVERS = ("ios", "nxos_ssh", "eos")
 
 
 def driver_arguments(
