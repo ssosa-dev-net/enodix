@@ -288,6 +288,36 @@ async fn a_changed_configuration_is_a_new_version_and_the_history_diffs_any_two(
 }
 
 #[tokio::test]
+async fn the_first_lines_of_a_two_line_prompt_are_not_kept() {
+    // As SR Linux: a blank line and `--{ running }--[  ]--` above every
+    // prompt, which the definition's ignored lines match.
+    let server = TestSshServer::start_device("r1").await;
+    server.set_prompt_banner("--{ running }--[  ]--");
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(
+        &temp,
+        &[
+            (
+                "_platforms.yaml",
+                "banner:\n  prompt: '[\\w.-]+#'\n  show_config: show running-config\n  ignored_lines: '^(--\\{.*\\}--|! Time:)'\n"
+                    .into(),
+            ),
+            ("Site/_folder.yaml", "credential_profile: lab\n".into()),
+            ("Site/r1.yaml", host(&server, "banner")),
+        ],
+    );
+    let store = store(&workspace);
+    let configs = ConfigStore::new(temp.path().join("configs"));
+
+    let report = back_up(plan(&workspace, &store, &site()), &configs).await;
+    let saved = outcome(&report, "Site/r1.yaml");
+    let kept = configs
+        .read(id(&workspace), &r1(), saved.version())
+        .unwrap();
+    assert_eq!(kept, server.running_config(1));
+}
+
+#[tokio::test]
 async fn hosts_whose_definition_has_no_show_config_command_are_skipped() {
     let temp = TempDir::new().unwrap();
     let workspace = workspace(

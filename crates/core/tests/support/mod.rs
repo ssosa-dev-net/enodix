@@ -245,6 +245,9 @@ struct Device {
     config: Arc<Mutex<Vec<String>>>,
     /// How many times `show running-config` ran.
     shown: Arc<AtomicU64>,
+    /// A line shown above every prompt, as SR Linux's
+    /// `--{ running }--[  ]--`.
+    banner: Arc<Mutex<Option<String>>>,
 }
 
 /// The connections that opened a session channel, while they last.
@@ -482,6 +485,13 @@ impl TestSshServer {
         self.port
     }
 
+    /// From now on, a device-mode server shows a blank line and `banner`
+    /// above every prompt (a two-line prompt, as SR Linux's).
+    pub fn set_prompt_banner(&self, banner: &str) {
+        let device = self.device.as_ref().expect("a device-mode server");
+        *device.banner.lock().unwrap() = Some(banner.to_string());
+    }
+
     /// Adds `line` to a device-mode server's configuration, as `configure
     /// <line>` does.
     pub fn configure(&self, line: &str) {
@@ -606,6 +616,7 @@ impl Device {
             privileged,
             config: Arc::default(),
             shown: Arc::default(),
+            banner: Arc::default(),
         }
     }
 
@@ -616,10 +627,14 @@ impl Device {
     }
 
     fn prompt(&self, privileged: bool) -> Vec<u8> {
-        if privileged {
+        let prompt = if privileged {
             device_prompt(&self.hostname)
         } else {
             unprivileged_prompt(&self.hostname)
+        };
+        match self.banner.lock().unwrap().as_deref() {
+            None => prompt,
+            Some(banner) => [format!("\r\n{banner}\r\n").into_bytes(), prompt].concat(),
         }
     }
 }
