@@ -86,7 +86,8 @@
         Starting over deletes the vault. All stored credential profiles and
         secrets, of every workspace, will be gone for good; nobody can recover
         them. The workspaces themselves are not touched, and {name} goes on with the
-        system's keychain.
+        system's keychain (where there is none, with no stored credentials until the
+        vault is turned on again).
       </p>
       <div class="actions">
         <button

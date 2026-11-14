@@ -21,11 +21,22 @@ pip install "$env:LOCALAPPDATA\netterm\python\netterm-<version>-py3-none-any.whl
 pip install nornir nornir-netmiko   # or nornir-scrapli, nornir-napalm
 ```
 
+On Linux the .deb and .rpm packages put the wheel in
+`/usr/lib/netterm/python/` and `netterm-cli` in `/usr/bin`:
+
+```sh
+pip install /usr/lib/netterm/python/netterm-<version>-py3-none-any.whl
+```
+
 The package finds `netterm-cli` through the `NETTERM_CLI` variable if set
-(the app sets it for scripts it starts), else at the installer's location
-(`%LOCALAPPDATA%\netterm\netterm-cli.exe`), else on `PATH`. If it is in none
-of them, it says where it looked: set `NETTERM_CLI` to the binary's path (for
-example inside the portable folder).
+(the app sets it for scripts it starts), else at the Windows installer's
+location (`%LOCALAPPDATA%\netterm\netterm-cli.exe`), else on `PATH` (where
+the Linux packages put it). If it is in none of them, it says where it
+looked: set `NETTERM_CLI` to the binary's path (for example inside the
+portable folder). The AppImage keeps both inside the image: for scripts run
+outside the app, install a package instead, or unpack the image
+(`--appimage-extract`) and use `squashfs-root/usr/bin/netterm-cli` and the
+wheel in `squashfs-root/usr/lib/netterm/python/`.
 
 ## The Nornir inventory
 

@@ -158,11 +158,21 @@ async fn being_up_to_date_withdraws_an_earlier_offer_and_a_failure_keeps_it() {
 // --- Installed or portable --------------------------------------------------
 
 #[test]
+#[cfg(windows)]
 fn a_copy_beside_the_installers_uninstaller_is_installed() {
     let folder = TempDir::new().unwrap();
     fs::write(folder.path().join(INSTALLED_MARKER), "").unwrap();
 
     assert_eq!(InstallKind::detect(folder.path()), InstallKind::Installed);
+}
+
+#[test]
+#[cfg(not(windows))]
+fn off_windows_every_copy_only_notifies_even_beside_an_uninstaller() {
+    let folder = TempDir::new().unwrap();
+    fs::write(folder.path().join(INSTALLED_MARKER), "").unwrap();
+
+    assert_eq!(InstallKind::detect(folder.path()), InstallKind::Portable);
 }
 
 #[test]

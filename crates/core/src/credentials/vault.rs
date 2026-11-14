@@ -96,6 +96,9 @@ pub enum VaultError {
     Io(String),
     #[error("{0}")]
     Store(#[from] StoreError),
+    /// Turning off on a system without a keychain the app can use.
+    #[error("this system has no keychain the app can use, so there is no other store to move the profiles and secrets to: the vault stays on")]
+    NoKeychain,
 }
 
 /// The file as written.
@@ -664,11 +667,66 @@ enum State {
     Unlocked(Vault),
 }
 
+/// What a system without a keychain the app can use has instead: nothing
+/// stored, and storing refused until the vault is turned on.
+struct NoKeychain;
+
+/// Why [`NoKeychain`] stores nothing.
+const NEEDS_VAULT: &str =
+    "this system has no keychain the app can use: turn on the vault to store profiles and secrets";
+
+impl CredentialStore for NoKeychain {
+    fn list(&self, _scope: &str) -> Result<Vec<CredentialProfile>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    fn get(&self, _scope: &str, _name: &str) -> Result<Option<CredentialProfile>, StoreError> {
+        Ok(None)
+    }
+
+    fn put(&self, _scope: &str, _profile: &CredentialProfile) -> Result<(), StoreError> {
+        Err(StoreError(NEEDS_VAULT.into()))
+    }
+
+    fn delete(&self, _scope: &str, _name: &str) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn secret_names(&self, _scope: &str) -> Result<Vec<String>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    fn get_secret(&self, _scope: &str, _name: &str) -> Result<Option<SecretValue>, StoreError> {
+        Ok(None)
+    }
+
+    fn put_secret(
+        &self,
+        _scope: &str,
+        _name: &str,
+        _value: &SecretValue,
+    ) -> Result<(), StoreError> {
+        Err(StoreError(NEEDS_VAULT.into()))
+    }
+
+    fn delete_secret(&self, _scope: &str, _name: &str) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+
+    fn contents(&self) -> Result<StoreContents, StoreError> {
+        Ok(StoreContents::default())
+    }
+}
+
 /// The credential store the app uses: the keychain it is given while there
 /// is no vault file, the vault once one exists. Owns the unlocked vault, so
-/// everything that serves credentials goes through it.
+/// everything that serves credentials goes through it. On a system without
+/// a keychain ([`ActiveStore::without_keychain`]) the vault is the only
+/// store: nothing is kept until it is turned on, and it cannot be turned
+/// off.
 pub struct ActiveStore {
     keychain: Box<dyn CredentialStore>,
+    has_keychain: bool,
     vault_file: PathBuf,
     state: RwLock<State>,
 }
@@ -694,9 +752,32 @@ impl ActiveStore {
         };
         Self {
             keychain,
+            has_keychain: true,
             vault_file,
             state: RwLock::new(state),
         }
+    }
+
+    /// The store of a system with no keychain the app can use (see
+    /// [`KeychainStore::is_supported`](super::KeychainStore::is_supported)):
+    /// the vault at `vault_file` only.
+    pub fn without_keychain(vault_file: impl Into<PathBuf>) -> Self {
+        Self {
+            has_keychain: false,
+            ..Self::new(Box::new(NoKeychain), vault_file)
+        }
+    }
+
+    /// Whether there is a keychain to keep credentials while the vault is
+    /// off (and to move them back to when it is turned off).
+    pub fn has_keychain(&self) -> bool {
+        self.has_keychain
+    }
+
+    /// Whether nothing can be stored until the vault is turned on: no
+    /// keychain and no vault.
+    pub fn needs_vault(&self) -> bool {
+        !self.has_keychain && self.status() == VaultStatus::Off
     }
 
     pub fn status(&self) -> VaultStatus {
@@ -829,8 +910,9 @@ impl ActiveStore {
         Ok(())
     }
 
-    /// Turns the vault off: `password` (the master password, asked again)
-    /// must open it; every profile and secret of every scope is copied to
+    /// Turns the vault off: refused with [`VaultError::NoKeychain`] without
+    /// a keychain; `password` (the master password, asked again) must open
+    /// it; every profile and secret of every scope is copied to
     /// the keychain, read back, and only then is the vault file removed.
     /// On a failure the vault stays, unlocked and in use, and the keychain
     /// is put back as it was (what it had of its own under the same names
@@ -838,6 +920,9 @@ impl ActiveStore {
     pub fn turn_off(&self, password: &str) -> Result<(), VaultError> {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         unlocked_vault(&state)?;
+        if !self.has_keychain {
+            return Err(VaultError::NoKeychain);
+        }
         let contents = Wiping(Vault::unlock(&self.vault_file, password)?.body().contents());
         let before = Wiping(self.keychain.contents()?);
         let mut undo = Wiping::default();

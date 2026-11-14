@@ -1,13 +1,16 @@
 <script lang="ts">
   // The Preferences dialog's Security section: whether credentials are in
   // the keychain or the vault; turning the vault on, changing its master
-  // password and turning it off.
+  // password and turning it off. Without a keychain (Linux) the vault is
+  // the only store: it has to be on to keep anything, and cannot be turned
+  // off.
   import { refreshProfiles } from "./profiles.svelte";
+  import TurnOnVaultForm from "./TurnOnVaultForm.svelte";
   import {
     changeVaultPassword,
     turnOffVault,
-    turnOnVault,
     vaultFailure,
+    vaultKeychain,
     vaultStatus,
     type VaultStatus,
   } from "./vault";
@@ -16,6 +19,8 @@
   type Mode = "on" | "change" | "off";
 
   let status = $state<VaultStatus | null>(null);
+  /** Whether the system has a keychain (assumed until known). */
+  let keychain = $state(true);
   let mode = $state<Mode | null>(null);
   let current = $state("");
   let password = $state("");
@@ -30,6 +35,16 @@
     (value) => (status = value),
     (failure) => (error = String(failure)),
   );
+  vaultKeychain().then(
+    (value) => (keychain = value),
+    (failure) => (error = String(failure)),
+  );
+
+  function turnedOn(next: VaultStatus) {
+    status = next;
+    cancel();
+    void refreshProfiles();
+  }
 
   $effect(() => {
     if (mode) first?.focus();
@@ -89,14 +104,26 @@
   }
 </script>
 
-<section class="security" data-vault-status={status}>
+<section
+  class="security"
+  data-vault-status={status}
+  data-vault-keychain={keychain}
+>
   <h3>Security</h3>
-  {#if status === "off"}
+  {#if status === "off" && !keychain}
+    <p data-vault-no-keychain>
+      This system has no keychain the app can use, so credential profiles and
+      secrets can only be kept in the vault: an encrypted file behind a master
+      password asked for once at every start. Turn it on to store any.
+    </p>
+  {:else if status === "off"}
     <p>
       Credential profiles and secrets are kept in the system's keychain. A vault
       keeps them in an encrypted file instead, behind a master password asked
       for once at every start.
     </p>
+  {/if}
+  {#if status === "off"}
     {#if !mode}
       <div>
         <button type="button" data-vault="turn-on" onclick={() => open("on")}
@@ -126,62 +153,7 @@
   {/if}
 
   {#if mode === "on"}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <form
-      onsubmit={(event) =>
-        run(
-          event,
-          newPasswordReady,
-          () => turnOnVault(password, repeated),
-          null,
-        )}
-      {onkeydown}
-      data-vault-form
-    >
-      <label>
-        Master password
-        <input
-          bind:this={first}
-          bind:value={password}
-          type="password"
-          name="vault-password"
-          autocomplete="new-password"
-          disabled={busy}
-        />
-      </label>
-      <label>
-        The same password again
-        <input
-          bind:value={repeated}
-          type="password"
-          name="vault-repeat"
-          autocomplete="new-password"
-          disabled={busy}
-        />
-      </label>
-      {#if differ}
-        <p class="note" data-vault-differ>
-          The two passwords are not the same.
-        </p>
-      {/if}
-      <p class="warning" data-vault-warning>
-        If you forget the master password, nobody can recover it: the profiles
-        and secrets in the vault are lost. Every workspace's profiles and
-        secrets move out of the keychain into the vault.
-      </p>
-      <div class="actions">
-        <button type="button" data-vault="cancel" onclick={cancel}
-          >Cancel</button
-        >
-        <button
-          type="submit"
-          class="primary"
-          data-vault="confirm"
-          disabled={busy || !newPasswordReady}
-          >{busy ? "Moving…" : "Turn on"}</button
-        >
-      </div>
-    </form>
+    <TurnOnVaultForm {keychain} onturnedon={turnedOn} oncancel={cancel} />
   {:else if mode === "change"}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <form
@@ -247,6 +219,18 @@
         >
       </div>
     </form>
+  {:else if mode === "off" && !keychain}
+    <div class="explained" data-vault-off-no-keychain>
+      <p>
+        The vault cannot be turned off here: this system has no keychain the app
+        can use, so there is no other store to move the profiles and secrets to.
+        They stay in the vault.
+      </p>
+      <div class="actions">
+        <button type="button" data-vault="cancel" onclick={cancel}>Close</button
+        >
+      </div>
+    </div>
   {:else if mode === "off"}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <form
@@ -328,6 +312,11 @@
   .buttons {
     display: flex;
     flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .explained {
+    display: grid;
     gap: 0.5rem;
   }
 

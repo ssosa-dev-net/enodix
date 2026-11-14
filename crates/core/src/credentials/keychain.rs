@@ -31,6 +31,14 @@ impl KeychainStore {
         }
     }
 
+    /// Whether this system has a keychain this store can use (Windows'
+    /// Credential Manager); elsewhere every call fails, and the app keeps
+    /// credentials only in the vault
+    /// ([`ActiveStore::without_keychain`](super::ActiveStore::without_keychain)).
+    pub fn is_supported() -> bool {
+        cfg!(windows)
+    }
+
     fn target(&self, scope: &str, name: &str) -> String {
         format!("{}:{scope}:{}", self.prefix, name.to_lowercase())
     }

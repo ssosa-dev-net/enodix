@@ -24,6 +24,8 @@ export interface ProfilesView {
   missing: string[];
   /** The names of the workspace's named secrets; values never come back. */
   secrets: string[];
+  /** Nothing can be stored until the vault is turned on (no keychain). */
+  needs_vault: boolean;
 }
 
 /**

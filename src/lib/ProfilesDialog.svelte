@@ -120,8 +120,14 @@
       <h2 id="profiles-title">Credential profiles</h2>
       <p>
         Logins hosts use through their credential profile setting, kept for this
-        workspace in this computer's keychain.
+        workspace on this computer (in its keychain, or in the vault).
       </p>
+      {#if profiles.view.needs_vault}
+        <p class="note" data-profiles-needs-vault>
+          This system has no keychain the app can use: profiles and secrets are
+          kept only in the vault, which saving one offers to turn on.
+        </p>
+      {/if}
       {#if profiles.error}
         <p class="error" role="alert">{profiles.error}</p>
       {/if}
@@ -249,6 +255,12 @@
   .error {
     color: var(--danger);
     overflow-wrap: anywhere;
+  }
+
+  .note {
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
   }
 
   ul {

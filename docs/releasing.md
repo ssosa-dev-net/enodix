@@ -1,8 +1,11 @@
 # Making a release
 
-A release is built on Windows with one command, `npm run release`
-(`scripts/release.mjs`). It builds and checks the files; it never uploads,
-tags or publishes anything. You publish by hand, as described below.
+A release is built with `npm run release` (`scripts/release.mjs`): on
+Windows the Windows files, on Linux the Linux packages. From Windows,
+`npm run release:linux` (`scripts/release-linux.mjs`) builds the Linux
+packages in WSL and puts them beside the Windows files. The scripts build
+and check the files; they never upload, tag or publish anything. You
+publish by hand, as described below.
 
 ## What a release contains
 
@@ -14,7 +17,17 @@ tags or publishes anything. You publish by hand, as described below.
 | `netterm_<version>_x64-setup.exe.sig`| The updater signature of the installer (made with the release key).              |
 | `netterm_<version>_x64-portable.zip` | `netterm.exe`, `netterm-cli.exe`, `python\netterm-<version>-py3-none-any.whl` (the Python bridge), `portable.txt` (makes the copy portable: it only notifies), README.|
 | `latest.json`                        | The update manifest the app checks (Tauri updater format, plus `page`).          |
+| `netterm_<version>_amd64.deb`        | Debian/Ubuntu package: `/usr/bin/netterm`, `/usr/bin/netterm-cli`, the wheel in `/usr/lib/netterm/python/`. |
+| `netterm-<version>-1.x86_64.rpm`     | Fedora/RHEL/openSUSE package, the same files.                                    |
+| `netterm_<version>_amd64.AppImage`   | One file that runs without installing; `netterm-cli` and the wheel are inside it. |
 | `SHA256SUMS.txt`                     | SHA-256 of every other file, in `sha256sum` format.                              |
+
+Each platform's build replaces only its own files in the folder, and
+`SHA256SUMS.txt` is rewritten to list everything there, so the order of the
+two builds does not matter. The Linux packages are neither signed for the
+updater nor listed in `latest.json`: on Linux the app only announces a new
+version (see below), and people update with their package manager or a new
+AppImage.
 
 The script also checks the installer's signature against the public key
 the app is built with, the same way the updater will, and stops if they do
@@ -83,7 +96,7 @@ equivalent, or publish the file at a fixed address yourself.
 2. `npm run check`, `npm run test:python` (the Python bridge: needs Python
    3.10+ and, the first time, the network for Nornir), and
    `npm run app:build && npm run smoke`.
-3. Build, in a shell where the key is set (PowerShell shown):
+3. Build the Windows files, in a shell where the key is set (PowerShell shown):
 
    ```powershell
    $env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.netterm-release\netterm-updater.key"
@@ -100,13 +113,30 @@ equivalent, or publish the file at a fixed address yourself.
    be downloadable; `latest.json` points the updater at the installer there.
    The first build downloads NSIS into Tauri's cache.
 
+   Then the Linux packages, in the same shell (only
+   `NETTERM_UPDATE_ENDPOINT` is used; no key). Build both from the same
+   commit: the folder keeps the other platform's files, and a failed build
+   leaves the other platform's files there.
+
+   ```powershell
+   npm run release:linux
+   ```
+
+   It copies the working tree into WSL (`~/netterm-linux-check`, see
+   `docs/linux.md` for the packages the distribution needs), runs
+   `npm ci` and `npm run release` there and copies the .deb, .rpm and
+   .AppImage into `target/dist/<version>/`. On a Linux machine, run
+   `npm run release` there instead. The first build downloads the AppImage
+   tools into Tauri's cache.
+
 4. Publish by hand: create the release (tag `v<version>`), upload every file
    from `target/dist/<version>/`, and paste `SHA256SUMS.txt` into the release
    notes. Make `latest.json` reachable at `NETTERM_UPDATE_ENDPOINT` **last**,
    once the installer can be downloaded.
 
 5. Check: an installed copy of the previous version shows the notice
-   (**Check now** in Preferences), and installing works.
+   (**Check now** in Preferences), and installing works. On Linux, check the
+   packages on a real desktop with the list in `docs/linux.md`.
 
 The release build replaces `target/release/netterm.exe` with one that
 has the updater; run `npm run app:build` again before the smoke test.
@@ -129,6 +159,9 @@ has the updater; run `npm run app:build` again before the smoke test.
   portable zip, a program copied out of an installation, a development
   build) only announces the version and links to `page`; it never installs,
   so an update never adds a second installation.
+- On Linux every copy (package or AppImage) only announces: only Windows
+  has an installer the app updates itself with, so there the updater
+  plugin is not even loaded.
 - `NETTERM_UPDATE_ENDPOINT` set when the app runs overrides the release
   server (the smoke test points it at a local server). Plain http is
   accepted only for this computer, and a release build's updater refuses

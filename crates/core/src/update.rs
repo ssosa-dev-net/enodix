@@ -62,10 +62,13 @@ pub enum InstallKind {
 impl InstallKind {
     /// Installed when the installer's uninstaller ([`INSTALLED_MARKER`]) is a
     /// file in `program_folder` (the folder holding the running program) and
-    /// [`PORTABLE_MARKER`] is not; portable otherwise.
+    /// [`PORTABLE_MARKER`] is not; portable otherwise. Only Windows has an
+    /// installer the app updates itself with: on other systems every copy
+    /// is portable (Linux packages are updated with the system's own
+    /// tools), so the update check only notifies there.
     pub fn detect(program_folder: &Path) -> Self {
         let has = |name: &str| program_folder.join(name).is_file();
-        if has(INSTALLED_MARKER) && !has(PORTABLE_MARKER) {
+        if cfg!(windows) && has(INSTALLED_MARKER) && !has(PORTABLE_MARKER) {
             Self::Installed
         } else {
             Self::Portable

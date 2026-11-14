@@ -391,7 +391,8 @@ function startServer() {
   });
 }
 
-function startApp() {
+/** Starts the app; `env` adds to (or overrides) its usual environment. */
+function startApp(env = {}) {
   const app = spawn("target/release/netterm.exe", [], {
     stdio: "inherit",
     env: {
@@ -408,6 +409,7 @@ function startApp() {
       SSH_AUTH_SOCK: AGENT_PIPE,
       // The update check asks the smoke's own release server.
       NETTERM_UPDATE_ENDPOINT: releaseServer.url,
+      ...env,
     },
   });
   children.push(app);
@@ -1338,15 +1340,16 @@ function evaluateIn(devtools) {
   };
 }
 
-/** Ends `app` and starts it again; resolves to the new one and its page. */
-async function restartApp(app, devtools) {
+/** Ends `app` and starts it again (with `env` added to its environment);
+ * resolves to the new one and its page. */
+async function restartApp(app, devtools, env = {}) {
   devtools.close();
   app.kill();
   await new Promise((resolve) =>
     app.exitCode === null ? app.once("exit", resolve) : resolve(),
   );
   await sleep(1500);
-  const next = startApp();
+  const next = startApp(env);
   const page = await connectDevTools();
   return { app: next, devtools: page, evaluate: evaluateIn(page) };
 }
@@ -1726,6 +1729,127 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
   step(
     "started over from the unlock screen: warned, vault deleted, no profiles left",
   );
+  return noKeychain({ current: page, vaultFile, step });
+}
+
+/**
+ * A system without a keychain (#57, Linux), played on Windows by starting
+ * the app with `NETTERM_CREDENTIAL_STORE=none`: Preferences say the vault
+ * is the only store; saving a profile explains it and offers the vault,
+ * turned on from there, after which the profile typed is saved into it;
+ * turning the vault off explains there is no other store and leaves it.
+ * Resolves to the last page.
+ */
+async function noKeychain({ current, vaultFile, step }) {
+  const page = await restartApp(current.app, current.devtools, {
+    NETTERM_CREDENTIAL_STORE: "none",
+  });
+  const ev = page.evaluate;
+  const shown = (selector) =>
+    ev(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const clickOn = (selector) =>
+    ev(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const textOf = (selector) =>
+    ev(
+      `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ""`,
+    );
+  const fillForm = (fields, form) =>
+    ev(`(() => {
+      const fields = ${JSON.stringify(fields)};
+      const form = document.querySelector(${JSON.stringify(form)});
+      for (const [name, value] of Object.entries(fields)) {
+        const input = form.querySelector("[name=" + name + "]");
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      form.requestSubmit();
+    })()`);
+  const closeDialog = () =>
+    ev(
+      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Close" && b.checkVisibility()).click()`,
+    );
+  const profilesDialog = "[data-dialog=profiles]";
+
+  await until("the workspace without a keychain", () =>
+    shown('nav [data-host="vault-r1.yaml"]'),
+  );
+  if (existsSync(vaultFile)) fail("a vault file before turning it on");
+  await clickOn("[data-open-preferences]");
+  await until("Preferences without a keychain", () =>
+    shown("[data-vault-status=off][data-vault-keychain=false]"),
+  );
+  if (
+    !/only be kept in the vault/.test(await textOf("[data-vault-no-keychain]"))
+  )
+    fail("Preferences do not say the vault is the only store");
+  await closeDialog();
+
+  await clickOn('button[title="Credential profiles"]');
+  await until("the profiles dialog's vault note", () =>
+    shown(`${profilesDialog} [data-profiles-needs-vault]`),
+  );
+  await ev(
+    `[...document.querySelectorAll("${profilesDialog} button")].find((b) => b.textContent.trim() === "New profile…").click()`,
+  );
+  await until("the profile form", () =>
+    shown(`${profilesDialog} [name=profile-name]`),
+  );
+  await fillForm(
+    {
+      "profile-name": "vault-login",
+      "profile-username": USERNAME,
+      "profile-password": PASSWORD,
+    },
+    `${profilesDialog} form`,
+  );
+  const why = await until("saving explains the vault", () =>
+    textOf(`${profilesDialog} [data-needs-vault=explain]`),
+  );
+  if (!/no keychain/.test(why) || !/Turn the vault on/.test(why))
+    fail(`the explanation on saving: ${why}`);
+  await clickOn(`${profilesDialog} [data-needs-vault-action=turn-on]`);
+  await until("the vault form inside the profile dialog", () =>
+    shown(`${profilesDialog} [data-needs-vault=turn-on] [data-vault-form]`),
+  );
+  if (/keychain/.test(await textOf(`${profilesDialog} [data-vault-warning]`)))
+    fail("the vault warning speaks of a keychain where there is none");
+  await fillForm(
+    { "vault-password": MASTER_PASSWORD, "vault-repeat": MASTER_PASSWORD },
+    `${profilesDialog} [data-vault-form]`,
+  );
+  await until("the profile saved into the vault", () =>
+    shown(`${profilesDialog} [data-profile="vault-login"]:not(.missing)`),
+  );
+  if (!existsSync(vaultFile)) fail("no vault file after turning it on");
+  if (await shown(`${profilesDialog} [data-profiles-needs-vault]`))
+    fail("the vault note stayed after turning the vault on");
+  await closeDialog();
+  step(
+    "without a keychain, saving a profile offered the vault, and the profile went into it",
+  );
+
+  await clickOn("[data-open-preferences]");
+  await until("the vault on without a keychain", () =>
+    shown("[data-vault-status=unlocked][data-vault-keychain=false]"),
+  );
+  await clickOn("[data-vault=turn-off]");
+  const off = await until("turning off explained", () =>
+    textOf("[data-vault-off-no-keychain]"),
+  );
+  if (!/no other store/.test(off))
+    fail(`turning off without a keychain: ${off}`);
+  if (await shown("[data-vault-off-form]"))
+    fail("a turn-off form where there is no keychain");
+  await clickOn("[data-vault-off-no-keychain] [data-vault=cancel]");
+  await until(
+    "the explanation closed",
+    async () => !(await shown("[data-vault-off-no-keychain]")),
+  );
+  if (!existsSync(vaultFile)) fail("the vault file went");
+  await closeDialog();
+  step(
+    "without a keychain, turning the vault off said there is no other store",
+  );
   return page.devtools;
 }
 
@@ -1867,7 +1991,8 @@ async function scriptJobWithoutPython({ evaluate, screenshot, step }) {
       const d = document.querySelector(${json(dialog)});
       const scripts = [...d.querySelectorAll("[name=job-script] option")].map((o) => o.value);
       const off = d.querySelector("[data-job-python-off]");
-      return scripts.length > 0 && off && {
+      // Not while the interpreter is still being checked.
+      return scripts.length > 0 && off && !/Checking/.test(off.textContent) && {
         scripts,
         off: off.textContent,
         preferences: !!d.querySelector("[data-job-python-preferences]"),

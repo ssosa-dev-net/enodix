@@ -16,6 +16,7 @@
     "test:python": "node scripts/test-python.mjs",
     "test:linux": "node scripts/test-linux.mjs",
     "release": "node scripts/release.mjs",
+    "release:linux": "node scripts/release-linux.mjs",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings && npm run typecheck",
     "format": "cargo fmt --all && prettier --write .",

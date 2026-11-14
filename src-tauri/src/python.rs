@@ -19,8 +19,10 @@ use tauri::State;
 /// and the setup under way.
 pub struct PythonSetup {
     data_folder: PathBuf,
-    /// `python` beside the program: the installer and the portable zip put
-    /// the wheel there, and `app:build` leaves it in `target/release/python`.
+    /// `python` in the resource folder: beside the program on Windows (the
+    /// installer and the portable zip put the wheel there, and `app:build`
+    /// leaves it in `target/release/python`), `/usr/lib/<product>/python`
+    /// in a Linux package.
     wheel_folder: PathBuf,
     /// Where the program is: the headless binary is beside it.
     program_folder: PathBuf,
@@ -39,10 +41,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl PythonSetup {
-    pub fn new(data_folder: PathBuf, program_folder: PathBuf, app_version: String) -> Arc<Self> {
+    pub fn new(
+        data_folder: PathBuf,
+        program_folder: PathBuf,
+        resource_folder: PathBuf,
+        app_version: String,
+    ) -> Arc<Self> {
         Arc::new(Self {
             data_folder,
-            wheel_folder: program_folder.join("python"),
+            wheel_folder: resource_folder.join("python"),
             program_folder,
             app_version,
             offer: Mutex::new(None),

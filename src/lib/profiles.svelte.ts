@@ -7,7 +7,12 @@ import * as api from "./credentials";
 import type { ProfileDraft, ProfilesView } from "./credentials";
 
 export const profiles = $state({
-  view: { profiles: [], missing: [], secrets: [] } as ProfilesView,
+  view: {
+    profiles: [],
+    missing: [],
+    secrets: [],
+    needs_vault: false,
+  } as ProfilesView,
   /** Why the profiles could not be read, if they could not. */
   error: null as string | null,
   /** Whether the profiles dialog is open. */
