@@ -1,5 +1,6 @@
-//! Credential profiles: named logins (a username, a password or a private
-//! key file with an optional passphrase, and an optional enable secret)
+//! Credential profiles: named logins (a username; a password, a private
+//! key file with an optional passphrase, or the SSH agent; and an optional
+//! enable secret)
 //! that hosts use through the inherited `credential_profile` setting.
 //!
 //! Profiles live in a [`CredentialStore`], never in the workspace: the
@@ -23,7 +24,7 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::{SshAuth, SshTarget};
+use crate::session::{SshAgent, SshAuth, SshTarget};
 use crate::workspace::{Folder, HostId, Workspace};
 
 mod keychain;
@@ -56,6 +57,9 @@ pub enum ProfileAuth {
         key_file: PathBuf,
         passphrase: Option<String>,
     },
+    /// The keys of the SSH agent this computer runs
+    /// ([`SshAgent::System`]); no secret is stored.
+    Agent,
 }
 
 impl ProfileAuth {
@@ -69,6 +73,7 @@ impl ProfileAuth {
                 key_file: key_file.clone(),
                 passphrase: passphrase.clone(),
             },
+            Self::Agent => SshAuth::Agent(SshAgent::System),
         }
     }
 }
@@ -101,6 +106,7 @@ impl fmt::Debug for ProfileAuth {
                 .field("key_file", key_file)
                 .field("passphrase", &passphrase.as_ref().map(|_| HIDDEN))
                 .finish(),
+            Self::Agent => f.write_str("Agent"),
         }
     }
 }
@@ -186,13 +192,16 @@ pub struct ProfileDraft {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuthDraft {
     /// `None` keeps the stored password (only a password profile has one).
-    Password { password: Option<String> },
+    Password {
+        password: Option<String>,
+    },
     /// `passphrase`: `None` keeps it (from a key profile), `Some("")`
     /// means the key has none.
     PrivateKey {
         key_file: PathBuf,
         passphrase: Option<String>,
     },
+    Agent,
 }
 
 impl fmt::Debug for ProfileDraft {
@@ -221,6 +230,7 @@ pub enum AuthSummary {
         key_file: PathBuf,
         has_passphrase: bool,
     },
+    Agent,
 }
 
 impl From<&CredentialProfile> for ProfileSummary {
@@ -237,6 +247,7 @@ impl From<&CredentialProfile> for ProfileSummary {
                     key_file: key_file.clone(),
                     has_passphrase: passphrase.is_some(),
                 },
+                ProfileAuth::Agent => AuthSummary::Agent,
             },
             has_enable_secret: profile.enable_secret.is_some(),
         }
@@ -462,6 +473,7 @@ fn auth(draft: &AuthDraft, current: Option<&ProfileAuth>) -> Result<ProfileAuth,
                 passphrase,
             })
         }
+        AuthDraft::Agent => Ok(ProfileAuth::Agent),
     }
 }
 

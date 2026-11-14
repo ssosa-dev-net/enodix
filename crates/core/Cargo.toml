@@ -26,5 +26,12 @@ tokio = { workspace = true }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
 
 [dev-dependencies]
+# Streams of connections for the in-process SSH agent (tests/support).
+futures = "0.3"
 rand = { version = "0.10", features = ["thread_rng"] }
 tempfile = "3"
+
+# The in-process stand-in for Pageant needs Pageant's pipe name.
+[target.'cfg(windows)'.dev-dependencies]
+sha2 = "0.11"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Authentication_Identity", "Win32_Security_Cryptography", "Win32_System_WindowsProgramming"] }

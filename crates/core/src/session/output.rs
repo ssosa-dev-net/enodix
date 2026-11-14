@@ -22,7 +22,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, Notify};
 use tokio::time::Instant;
 
-use super::{SessionEvent, SessionState};
+use super::SessionEvent;
 
 /// How a session's output is batched and how far its consumer may fall behind.
 ///
@@ -64,8 +64,9 @@ pub struct SessionEvents {
     options: OutputOptions,
     /// Output gathered but not yet delivered.
     batch: Vec<u8>,
-    /// A state change that arrived behind `batch`, delivered after it.
-    held: Option<SessionState>,
+    /// A state change or prompt that arrived behind `batch`, delivered
+    /// after it.
+    held: Option<SessionEvent>,
     last_delivery: Option<Instant>,
 }
 
@@ -90,15 +91,15 @@ impl SessionEvents {
     /// Cancel-safe: output gathered by a call that is dropped is kept for the
     /// next one.
     pub async fn next(&mut self) -> Option<SessionEvent> {
-        if let Some(state) = self.held.take() {
-            return Some(SessionEvent::State(state));
+        if let Some(event) = self.held.take() {
+            return Some(event);
         }
         loop {
             // Take whatever is already waiting, up to a full batch.
             while self.batch.len() < self.options.batch_size {
                 match self.events.try_recv() {
                     Ok(SessionEvent::Output(bytes)) => self.gather(bytes),
-                    Ok(SessionEvent::State(state)) => return Some(self.deliver_before(state)),
+                    Ok(event) => return Some(self.deliver_before(event)),
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => return self.deliver(),
                 }
@@ -122,7 +123,7 @@ impl SessionEvents {
             tokio::select! {
                 event = self.events.recv() => match event {
                     Some(SessionEvent::Output(bytes)) => self.gather(bytes),
-                    Some(SessionEvent::State(state)) => return Some(self.deliver_before(state)),
+                    Some(event) => return Some(self.deliver_before(event)),
                     None => return self.deliver(),
                 },
                 () = tokio::time::sleep_until(due) => return self.deliver(),
@@ -152,15 +153,15 @@ impl SessionEvents {
         Some(SessionEvent::Output(std::mem::take(&mut self.batch)))
     }
 
-    /// The gathered output, keeping `state` for the next call; or `state`
-    /// itself if nothing was gathered.
-    fn deliver_before(&mut self, state: SessionState) -> SessionEvent {
+    /// The gathered output, keeping `event` (not output) for the next call;
+    /// or `event` itself if nothing was gathered.
+    fn deliver_before(&mut self, event: SessionEvent) -> SessionEvent {
         match self.deliver() {
             Some(output) => {
-                self.held = Some(state);
+                self.held = Some(event);
                 output
             }
-            None => SessionEvent::State(state),
+            None => event,
         }
     }
 }

@@ -6,12 +6,17 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use russh::client::{self, Handle};
-use russh::keys::{load_secret_key, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
-use russh::{Channel, ChannelMsg, ChannelWriteHalf, Disconnect};
+use russh::client::{self, AuthResult, Handle, KeyboardInteractiveAuthResponse};
+use russh::keys::{
+    load_secret_key, Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate,
+};
+use russh::{
+    AgentAuthError, Channel, ChannelMsg, ChannelWriteHalf, Disconnect, MethodKind, MethodSet,
+};
 
 use super::{
-    CloseReason, Command, Link, OpenError, SessionState, SshAuth, SshTarget, TerminalSize,
+    agent, AgentError, CloseReason, Command, Link, LoginPrompt, LoginQuestion, OpenError, Prompter,
+    SessionState, SshAuth, SshTarget, TerminalSize,
 };
 
 /// Terminal type requested for the remote pty; xterm.js emulates xterm.
@@ -46,9 +51,10 @@ struct Shell {
 /// Runs one SSH session over `link` until it ends.
 pub(super) async fn run(target: SshTarget, link: &mut Link) -> CloseReason {
     let requested_size = link.size;
+    let (mut prompter, answers) = link.prompter();
     let opened = tokio::select! {
-        opened = open_shell(&target, requested_size) => opened,
-        () = link.close_requested() => return CloseReason::ClosedLocally,
+        opened = open_shell(&target, requested_size, &mut prompter) => opened,
+        () = link.close_requested(&answers) => return CloseReason::ClosedLocally,
     };
     let Shell {
         connection,
@@ -96,6 +102,8 @@ pub(super) async fn run(target: SshTarget, link: &mut Link) -> CloseReason {
                         return CloseReason::ConnectionLost;
                     }
                 }
+                // Logged in already: nothing asked for these.
+                Command::Answer(_) => {}
                 Command::Close => return close(&connection).await,
             },
             // Output is read only while the consumer is less than a window
@@ -144,13 +152,17 @@ async fn finish(sending: &mut Option<Sending<'_>>) -> Result<(), russh::Error> {
 enum Login<'a> {
     Password(&'a str),
     Key(Arc<PrivateKey>),
+    Agent(Vec<agent::Agent>),
 }
 
-/// Reads the private key, if the target logs in with one, before anything
-/// goes over the network.
-fn login(auth: &SshAuth) -> Result<Login<'_>, OpenError> {
+/// Reads the private key, or reaches the agent, if the target logs in with
+/// one, before anything goes over the network.
+async fn login(auth: &SshAuth) -> Result<Login<'_>, OpenError> {
     match auth {
         SshAuth::Password(password) => Ok(Login::Password(password)),
+        SshAuth::Agent(which) => Ok(Login::Agent(
+            agent::open(which).await.map_err(OpenError::Agent)?,
+        )),
         SshAuth::PrivateKey {
             key_file,
             passphrase,
@@ -175,35 +187,229 @@ fn login(auth: &SshAuth) -> Result<Login<'_>, OpenError> {
     }
 }
 
+/// Logs in with `login`, then with keyboard-interactive if the server offers
+/// it and asks for more (a one-time code after the password), takes no
+/// password method (devices that ask for the password that way), or
+/// refused the private key (as OpenSSH's client does). A refused password
+/// or agent is reported as such instead: the user retries knowing why.
+/// Keyboard-interactive questions go to the user through `prompter`,
+/// except a lone password question when the password method was not
+/// offered: that one gets the target's password.
 async fn authenticate(
     connection: &mut Handle<Client>,
     username: &str,
     login: Login<'_>,
-) -> Result<bool, OpenError> {
+    prompter: &mut Prompter,
+) -> Result<(), OpenError> {
+    // Learn which methods the server takes (some let anyone in).
+    let offered = match connection
+        .authenticate_none(username)
+        .await
+        .map_err(protocol)?
+    {
+        AuthResult::Success => return Ok(()),
+        AuthResult::Failure {
+            remaining_methods, ..
+        } => remaining_methods,
+    };
+
+    let mut password_for_prompt = None;
+    let mut agent_error = None;
+    // Whether a refusal leads on to keyboard-interactive.
+    let mut ask_after_refusal = false;
     let result = match login {
-        Login::Password(password) => connection.authenticate_password(username, password).await,
+        Login::Password(password) if offered.contains(&MethodKind::Password) => connection
+            .authenticate_password(username, password)
+            .await
+            .map_err(protocol)?,
+        Login::Password(password) => {
+            password_for_prompt = Some(password);
+            ask_after_refusal = true;
+            AuthResult::Failure {
+                remaining_methods: offered,
+                partial_success: false,
+            }
+        }
         Login::Key(key) => {
-            // RSA keys sign with the best SHA-2 hash the server accepts, else
-            // SHA-1 (`ssh-rsa`); other key types have one algorithm.
-            let hash = if key.algorithm().is_rsa() {
-                connection
-                    .best_supported_rsa_hash()
-                    .await
-                    .map_err(protocol)?
-                    .flatten()
-            } else {
-                None
-            };
+            ask_after_refusal = true;
+            let hash = rsa_hash(connection, key.algorithm()).await?;
             connection
                 .authenticate_publickey(username, PrivateKeyWithHashAlg::new(key, hash))
                 .await
+                .map_err(protocol)?
+        }
+        Login::Agent(agents) => {
+            let (result, error) = with_agents(connection, username, agents).await?;
+            agent_error = error;
+            result
         }
     };
-    Ok(result.map_err(protocol)?.success())
+    let (remaining, partial_success) = match result {
+        AuthResult::Success => return Ok(()),
+        AuthResult::Failure {
+            remaining_methods,
+            partial_success,
+        } => (remaining_methods, partial_success),
+    };
+
+    if (partial_success || ask_after_refusal)
+        && remaining.contains(&MethodKind::KeyboardInteractive)
+    {
+        match keyboard_interactive(connection, username, password_for_prompt, prompter).await? {
+            Interactive::LoggedIn => return Ok(()),
+            Interactive::Refused { asked_user: true } => {
+                return Err(OpenError::AuthenticationFailed)
+            }
+            // Refused without a question: the first refusal is the news.
+            Interactive::Refused { asked_user: false } => {}
+        }
+    }
+    Err(agent_error.map_or(OpenError::AuthenticationFailed, OpenError::Agent))
 }
 
-async fn open_shell(target: &SshTarget, size: TerminalSize) -> Result<Shell, OpenError> {
-    let login = login(&target.auth)?;
+/// The hash an RSA key signs with: the best SHA-2 one the server accepts,
+/// else SHA-1 (`ssh-rsa`). Other key types have one algorithm.
+async fn rsa_hash(
+    connection: &Handle<Client>,
+    algorithm: Algorithm,
+) -> Result<Option<HashAlg>, OpenError> {
+    if !algorithm.is_rsa() {
+        return Ok(None);
+    }
+    Ok(connection
+        .best_supported_rsa_hash()
+        .await
+        .map_err(protocol)?
+        .flatten())
+}
+
+/// Tries each key of each agent in turn. Unless a key is accepted, also
+/// gives the reason to report if nothing else works.
+async fn with_agents(
+    connection: &mut Handle<Client>,
+    username: &str,
+    agents: Vec<agent::Agent>,
+) -> Result<(AuthResult, Option<AgentError>), OpenError> {
+    let mut last = AuthResult::Failure {
+        remaining_methods: MethodSet::empty(),
+        partial_success: false,
+    };
+    let mut signing_failed = None;
+    // The server is asked once, for the first RSA key.
+    let mut rsa = None;
+    for mut agent in agents {
+        for key in agent.keys {
+            let hash = match rsa {
+                Some(hash) if key.algorithm().is_rsa() => hash,
+                _ => {
+                    let hash = rsa_hash(connection, key.algorithm()).await?;
+                    if key.algorithm().is_rsa() {
+                        rsa = Some(hash);
+                    }
+                    hash
+                }
+            };
+            match connection
+                .authenticate_publickey_with(username, key, hash, &mut agent.client)
+                .await
+            {
+                Ok(AuthResult::Success) => return Ok((AuthResult::Success, None)),
+                // Accepted, but the server wants more (a code, say).
+                Ok(
+                    partial @ AuthResult::Failure {
+                        partial_success: true,
+                        ..
+                    },
+                ) => return Ok((partial, None)),
+                Ok(failure) => last = failure,
+                Err(AgentAuthError::Send(_)) => {
+                    return Err(OpenError::Protocol("the connection was lost".into()))
+                }
+                Err(AgentAuthError::Key(error)) => signing_failed = Some(error.to_string()),
+            }
+        }
+    }
+    let error = signing_failed.map_or(AgentError::KeysRefused, AgentError::Failed);
+    Ok((last, Some(error)))
+}
+
+/// How keyboard-interactive authentication ended.
+enum Interactive {
+    LoggedIn,
+    /// Refused, after asking the user something or not.
+    Refused {
+        asked_user: bool,
+    },
+}
+
+async fn keyboard_interactive(
+    connection: &mut Handle<Client>,
+    username: &str,
+    mut password: Option<&str>,
+    prompter: &mut Prompter,
+) -> Result<Interactive, OpenError> {
+    let mut asked_user = false;
+    let mut reply = connection
+        .authenticate_keyboard_interactive_start(username, None)
+        .await
+        .map_err(protocol)?;
+    loop {
+        let answers = match reply {
+            KeyboardInteractiveAuthResponse::Success => return Ok(Interactive::LoggedIn),
+            KeyboardInteractiveAuthResponse::Failure { .. } => {
+                return Ok(Interactive::Refused { asked_user })
+            }
+            // Servers may send a round without questions; it needs no one.
+            KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } if prompts.is_empty() => {
+                Vec::new()
+            }
+            KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. }
+                if password.is_some() && asks_only_for_password(&prompts) =>
+            {
+                vec![password.take().unwrap_or_default().to_owned()]
+            }
+            KeyboardInteractiveAuthResponse::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                asked_user = true;
+                let prompt = LoginPrompt {
+                    name,
+                    instructions,
+                    questions: prompts
+                        .into_iter()
+                        .map(|prompt| LoginQuestion {
+                            text: prompt.prompt,
+                            echo: prompt.echo,
+                        })
+                        .collect(),
+                };
+                prompter
+                    .ask(prompt)
+                    .await
+                    .ok_or(OpenError::AuthenticationFailed)?
+            }
+        };
+        reply = connection
+            .authenticate_keyboard_interactive_respond(answers)
+            .await
+            .map_err(protocol)?;
+    }
+}
+
+/// Whether a keyboard-interactive round is one hidden question about a
+/// password, as servers that only offer keyboard-interactive ask it.
+fn asks_only_for_password(prompts: &[russh::client::Prompt]) -> bool {
+    matches!(prompts, [prompt] if !prompt.echo && prompt.prompt.to_lowercase().contains("password"))
+}
+
+async fn open_shell(
+    target: &SshTarget,
+    size: TerminalSize,
+    prompter: &mut Prompter,
+) -> Result<Shell, OpenError> {
+    let login = login(&target.auth).await?;
     let config = Arc::new(client::Config::default());
     let address = (target.host.as_str(), target.port);
     let mut connection =
@@ -215,9 +421,7 @@ async fn open_shell(target: &SshTarget, size: TerminalSize) -> Result<Shell, Ope
             Err(_) => return Err(OpenError::Connect("timed out".into())),
         };
 
-    if !authenticate(&mut connection, &target.username, login).await? {
-        return Err(OpenError::AuthenticationFailed);
-    }
+    authenticate(&mut connection, &target.username, login, prompter).await?;
 
     let mut channel = connection.channel_open_session().await.map_err(protocol)?;
     channel

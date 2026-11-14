@@ -24,7 +24,7 @@
   const initial = untrack(() => profile);
   let name = $state(untrack(() => fixedName) ?? initial?.name ?? "");
   let username = $state(initial?.username ?? "");
-  let kind = $state<"password" | "private_key">(
+  let kind = $state<"password" | "private_key" | "agent">(
     initial?.auth.kind ?? "password",
   );
   let password = $state("");
@@ -44,25 +44,33 @@
     initial?.auth.kind === "private_key" && initial.auth.has_passphrase;
   const hasEnableSecret = initial?.has_enable_secret ?? false;
 
+  function auth(): ProfileDraft["auth"] {
+    switch (kind) {
+      case "password":
+        return {
+          kind,
+          password: password === "" && hasPassword ? null : password,
+        };
+      case "private_key":
+        return {
+          kind,
+          key_file: keyFile.trim(),
+          passphrase: removePassphrase
+            ? ""
+            : passphrase === ""
+              ? null
+              : passphrase,
+        };
+      case "agent":
+        return { kind };
+    }
+  }
+
   function draft(): ProfileDraft {
     return {
       name,
       username,
-      auth:
-        kind === "password"
-          ? {
-              kind,
-              password: password === "" && hasPassword ? null : password,
-            }
-          : {
-              kind,
-              key_file: keyFile.trim(),
-              passphrase: removePassphrase
-                ? ""
-                : passphrase === ""
-                  ? null
-                  : passphrase,
-            },
+      auth: auth(),
       enable_secret: removeEnableSecret
         ? ""
         : enableSecret === ""
@@ -119,6 +127,7 @@
     <select name="profile-auth" bind:value={kind}>
       <option value="password">Password</option>
       <option value="private_key">Private key</option>
+      <option value="agent">SSH agent</option>
     </select>
   </label>
   {#if kind === "password"}
@@ -133,6 +142,11 @@
         autocomplete="off"
       />
     </label>
+  {:else if kind === "agent"}
+    <p class="note" data-agent-note>
+      Uses the keys of the SSH agent running on this computer: the Windows
+      OpenSSH agent or Pageant. The private keys never leave it.
+    </p>
   {:else}
     <label>
       Private key file

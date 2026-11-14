@@ -2,31 +2,60 @@
 //! tried by hand without a real device:
 //!
 //! ```text
-//! cargo run -p netterm-core --example test_ssh_server -- 2222
+//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>]
 //! ```
 //!
-//! Then quick-connect to 127.0.0.1 on that port with the printed login. The
-//! shell behind it is scripted; see `tests/support/mod.rs` for its commands.
+//! Then quick-connect to 127.0.0.1 on that port with the printed login.
+//! The user `engineer-otp` logs in with the same password, then a one-time
+//! code (keyboard-interactive). With `--agent`, an SSH agent holding a key
+//! the server accepts also listens at the given named pipe (Windows) or
+//! Unix socket: point `SSH_AUTH_SOCK` at it to log in with an agent
+//! profile. The shell behind it is scripted; see `tests/support/mod.rs`
+//! for its commands.
 
 #[path = "../tests/support/mod.rs"]
 mod support;
 
+fn usage() -> ! {
+    eprintln!("usage: test_ssh_server [port] [--agent <pipe or socket>]");
+    std::process::exit(2);
+}
+
 #[tokio::main]
 async fn main() {
-    let port = match std::env::args().nth(1).map(|arg| arg.parse()) {
-        None => 2222,
-        Some(Ok(port)) => port,
-        Some(Err(_)) => {
-            eprintln!("usage: test_ssh_server [port]");
-            std::process::exit(2);
+    let mut port = 2222;
+    let mut agent_path = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--agent" {
+            agent_path = Some(args.next().unwrap_or_else(|| usage()));
+        } else {
+            port = arg.parse().unwrap_or_else(|_| usage());
         }
-    };
+    }
     let server = support::TestSshServer::start_on(port).await;
+    let _agent = match agent_path {
+        Some(path) => {
+            let agent = support::agent::TestAgent::start_at(
+                path.clone().into(),
+                &[server.client_key().clone()],
+            )
+            .await;
+            if agent.is_none() {
+                eprintln!("something already listens at {path}");
+                std::process::exit(1);
+            }
+            agent
+        }
+        None => None,
+    };
     println!(
-        "test SSH server listening on 127.0.0.1:{} (username {:?}, password {:?})",
+        "test SSH server listening on 127.0.0.1:{} (username {:?} or {:?}, password {:?}, code {:?})",
         server.port(),
         support::USERNAME,
-        support::PASSWORD
+        support::OTP_USERNAME,
+        support::PASSWORD,
+        support::ONE_TIME_CODE,
     );
     std::future::pending::<()>().await;
 }

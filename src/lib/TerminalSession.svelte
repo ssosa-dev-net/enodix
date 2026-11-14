@@ -2,10 +2,12 @@
   import { FitAddon } from "@xterm/addon-fit";
   import { Terminal } from "@xterm/xterm";
   import { onMount } from "svelte";
+  import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
   import {
     openSession,
     type ConnectTarget,
+    type LoginPrompt,
     type Session,
     type SessionState,
   } from "./session";
@@ -19,13 +21,34 @@
     role: Role | null;
     /** Called when the user leaves this session's view. */
     ondismiss: () => void;
+    /**
+     * Called when the user asks to log in with a password after the SSH
+     * agent did not work; without it, that is not offered.
+     */
+    onpasswordlogin?: (reason: string) => void;
   }
 
-  let { target, title, role, ondismiss }: Props = $props();
+  let { target, title, role, ondismiss, onpasswordlogin }: Props = $props();
 
   let container: HTMLDivElement;
+  /** For focusing the terminal again after a login prompt. */
+  let xterm: Terminal | null = null;
   let session = $state<Session | null>(null);
   let status = $state<SessionState>({ state: "connecting" });
+  /** The server's login questions waiting for answers, with a new key each. */
+  let prompt = $state<{ prompt: LoginPrompt; key: number } | null>(null);
+  let prompts = 0;
+
+  function answer(answers: string[]) {
+    session?.answer(answers);
+    prompt = null;
+    xterm?.focus();
+  }
+
+  function cancelLogin() {
+    prompt = null;
+    session?.close();
+  }
 
   const statusText = $derived(
     status.state === "connecting"
@@ -43,6 +66,7 @@
       scrollback: 10000,
       theme: { background: "#0e1116", foreground: "#d7dce2" },
     });
+    xterm = terminal;
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(container);
@@ -68,7 +92,11 @@
       // Acknowledged once xterm.js has parsed it, so a flood of output
       // never queues up faster than the terminal can show it.
       (bytes, consumed) => terminal.write(bytes, consumed),
-      (state) => (status = state),
+      (state) => {
+        status = state;
+        if (state.state !== "connecting") prompt = null;
+      },
+      (asked) => (prompt = { prompt: asked, key: ++prompts }),
     ).then(
       (opened) => {
         if (disposed) {
@@ -86,7 +114,12 @@
         }
         terminal.focus();
       },
-      (error) => (status = { state: "closed", reason: String(error) }),
+      (error) =>
+        (status = {
+          state: "closed",
+          reason: String(error),
+          offersPasswordLogin: false,
+        }),
     );
 
     return () => {
@@ -116,7 +149,40 @@
       </button>
     {/if}
   </header>
-  <div class="terminal" bind:this={container}></div>
+  <div class="body">
+    <div class="terminal" bind:this={container}></div>
+    {#if prompt}
+      {#key prompt.key}
+        <LoginQuestions
+          prompt={prompt.prompt}
+          ready={session !== null}
+          onanswer={answer}
+          oncancel={cancelLogin}
+        />
+      {/key}
+    {/if}
+    {#if status.state === "closed" && status.offersPasswordLogin && onpasswordlogin}
+      {@const reason = status.reason}
+      <div class="overlay">
+        <form
+          class="card"
+          role="alert"
+          data-password-fallback
+          onsubmit={(event) => {
+            event.preventDefault();
+            onpasswordlogin?.(reason);
+          }}
+        >
+          <h2>Could not log in with the SSH agent</h2>
+          <p>{reason}.</p>
+          <div class="actions">
+            <button type="button" onclick={ondismiss}>Cancel</button>
+            <button type="submit">Log in with a password</button>
+          </div>
+        </form>
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -124,6 +190,50 @@
     height: 100%;
     display: grid;
     grid-template-rows: auto 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 1.5rem;
+    background: rgb(0 0 0 / 0.45);
+    overflow: auto;
+  }
+
+  .card {
+    width: min(22rem, 100%);
+    display: grid;
+    gap: 0.8rem;
+    padding: 1.2rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  .card h2 {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  .card p {
+    margin: 0;
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+  }
+
+  .card p::first-letter {
+    text-transform: uppercase;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.6rem;
   }
 
   header {
@@ -178,6 +288,12 @@
 
   .status.closed::before {
     background: var(--danger);
+  }
+
+  .body {
+    position: relative;
+    min-height: 0;
+    display: grid;
   }
 
   .terminal {
