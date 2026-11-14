@@ -181,6 +181,20 @@
         "configurations a device prints. Turn logging off for sensitive devices.",
     },
     {
+      key: "backup_on_login",
+      label: "Back up on login",
+      input: { kind: "choice", options: ON_OFF },
+      own: (s) => flag(s.backup_on_login),
+      set: (s, v) => ({ ...s, backup_on_login: toFlag(v) }),
+      effective: (e) => e.backup_on_login,
+      note:
+        "Each SSH session saves the configuration in the host's config history once " +
+        "connected, over a second channel on the same connection: nothing shows in " +
+        "the terminal and nothing asks to log in again. It does not apply to telnet " +
+        "or serial hosts, or hosts without a usable platform definition with a " +
+        "show-config command. Backups are as sensitive as the configurations themselves.",
+    },
+    {
       key: "environment",
       label: "Environment",
       input: {

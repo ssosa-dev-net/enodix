@@ -1125,6 +1125,7 @@ impl<'a> Conversation<'a> {
                         .map_err(|error| Failure::Other(format!("{error:?}")))?;
                 }
                 SessionEvent::Algorithms(algorithms) => session.algorithms = algorithms,
+                SessionEvent::Backup(_) => {}
                 SessionEvent::Output(bytes) => session.received.extend_from_slice(&bytes),
                 SessionEvent::LogFailed(failure) => {
                     return Err(Failure::Other(format!("log failed: {failure}")))

@@ -33,6 +33,7 @@
 //! listed newest first, searched, compared line by line, exported, deleted,
 //! and planned again on the same target with [`plan_again`].
 
+mod login;
 pub mod results;
 mod run;
 
@@ -47,6 +48,7 @@ use crate::workspace::{
     Environment, ExpandError, Folder, HostId, Protocol, ResolvedHost, Workspace,
 };
 
+pub use login::{LoginBackup, LoginBackupOutcome, SessionLogin};
 pub use run::{
     check, start, HostResult, HostState, Job, JobCanceller, JobEvent, JobOptions, JobReport,
     StartError, DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL, JOB_TERMINAL_SIZE, MAX_PARALLEL,
@@ -136,10 +138,13 @@ pub struct PlannedHost {
 /// How a planned host is reached and driven.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HostWork {
-    /// The profile target, jump hosts included.
-    target: SshTarget,
-    /// The name of the credential profile it logs in with.
-    profile: String,
+    /// The profile target, jump hosts included; for a backup on login,
+    /// the second connection a device that refuses a second channel gets
+    /// (`None`: it gets none).
+    target: Option<SshTarget>,
+    /// The name of the credential profile it logs in with (`None`: none
+    /// applies, for a backup on login with a typed login).
+    profile: Option<String>,
     /// The profile's enable secret, if it has one.
     enable_secret: Option<EnableSecret>,
     /// The definition's prompt pattern.
@@ -424,8 +429,8 @@ fn runnable(
         });
     }
     let work = HostWork {
-        target: profiles.profile_target(id).map_err(skip)?,
-        profile,
+        target: Some(profiles.profile_target(id).map_err(skip)?),
+        profile: Some(profile),
         enable_secret,
         prompt: definition.prompt.clone(),
         privilege_command: given(&definition.privilege_command),

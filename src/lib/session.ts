@@ -207,7 +207,19 @@ export interface SessionHandlers {
    * session goes on without it.
    */
   onLogFailure: (reason: string) => void;
+  /**
+   * How the host's backup on login ended (each connection, when the
+   * host's `backup_on_login` setting is on); the terminal never waits
+   * for it.
+   */
+  onBackup: (outcome: LoginBackupOutcome) => void;
 }
+
+/** How a backup on login ended. */
+export type LoginBackupOutcome =
+  | { kind: "saved"; version: string }
+  | { kind: "unchanged"; version: string }
+  | { kind: "failed"; reason: string };
 
 /** Where a new session comes from. */
 export type SessionSource =
@@ -243,6 +255,7 @@ function channels(handlers: SessionHandlers) {
     onHostKey: new Channel<HostKeyQuestion>(handlers.onHostKey),
     onAlgorithms: new Channel<NegotiatedAlgorithms[]>(handlers.onAlgorithms),
     onLogFailure: new Channel<string>(handlers.onLogFailure),
+    onBackup: new Channel<LoginBackupOutcome>(handlers.onBackup),
     ready(known: number) {
       id = known;
       if (consumedEarly > 0) acknowledge(consumedEarly);

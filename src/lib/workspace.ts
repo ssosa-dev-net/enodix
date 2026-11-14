@@ -59,6 +59,8 @@ export interface Settings {
   /** Seconds opening a session may wait on the device. */
   connect_timeout: number | null;
   logging: boolean | null;
+  /** Whether SSH sessions save the configuration once connected. */
+  backup_on_login: boolean | null;
   environment: Environment | null;
   /** Milliseconds between pasted lines (0 to `MAX_PASTE_LINE_DELAY_MS`). */
   paste_line_delay: number | null;
@@ -88,6 +90,8 @@ export interface EffectiveSettings {
   /** In seconds. */
   connect_timeout: Effective<number>;
   logging: Effective<boolean>;
+  /** Off by default. */
+  backup_on_login: Effective<boolean>;
   environment: Effective<Environment> | null;
   /** In milliseconds; 0 by default. */
   paste_line_delay: Effective<number>;

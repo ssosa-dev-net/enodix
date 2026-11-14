@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 use russh::client::{self, AuthResult, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::{
@@ -161,15 +161,124 @@ pub(super) async fn run(
         Err(error) => return CloseReason::Failed(error),
     };
 
-    let (mut incoming, outgoing) = channel.split();
-
     link.algorithms(algorithms);
+    let opened = OpenedChannel {
+        channel,
+        early_output,
+    };
+    match pump(link, opened, requested_size, Some(&connection)).await {
+        Ended::Here => close(&connection, &jumps).await,
+        Ended::Exited(exit_status) => {
+            close(&connection, &jumps).await;
+            CloseReason::RemoteExited { exit_status }
+        }
+        Ended::There(reason) => reason,
+    }
+}
+
+/// Runs a second channel over `link`: asks the session it is on (through
+/// `parent`, its commands) for another shell, then carries it until it
+/// ends. Closing it closes only the channel.
+pub(super) async fn run_channel(
+    parent: Option<mpsc::UnboundedSender<Command>>,
+    link: &mut Link,
+) -> CloseReason {
+    let not_open = || {
+        CloseReason::Failed(OpenError::Protocol(
+            "the session it was to open on is not connected".into(),
+        ))
+    };
+    let requested_size = link.size;
+    let (reply, opened) = oneshot::channel();
+    let asked = parent.is_some_and(|parent| {
+        parent
+            .send(Command::OpenChannel {
+                size: requested_size,
+                reply,
+            })
+            .is_ok()
+    });
+    if !asked {
+        return not_open();
+    }
+    let opened = tokio::select! {
+        opened = opened => opened,
+        () = async {
+            loop {
+                match link.command().await {
+                    Command::Close => return,
+                    Command::Resize(size) => link.size = size,
+                    _ => {}
+                }
+            }
+        } => return CloseReason::ClosedLocally,
+    };
+    let opened = match opened {
+        Ok(Ok(opened)) => opened,
+        Ok(Err(error)) => return CloseReason::Failed(error),
+        // The session ended before opening it.
+        Err(_) => {
+            return CloseReason::Failed(OpenError::Protocol(
+                "the session it was to open on ended first".into(),
+            ))
+        }
+    };
+    match pump(link, opened, requested_size, None).await {
+        Ended::Here => CloseReason::ClosedLocally,
+        Ended::Exited(exit_status) => CloseReason::RemoteExited { exit_status },
+        Ended::There(reason) => reason,
+    }
+}
+
+/// A shell channel just started, and what it printed meanwhile.
+pub(super) struct OpenedChannel {
+    channel: Channel<client::Msg>,
+    early_output: Vec<u8>,
+}
+
+/// How [`pump`] ended.
+enum Ended {
+    /// From this side: the owner closed the session, or went away. A
+    /// second channel has been closed.
+    Here,
+    /// The device closed the channel, with this exit status if it gave one.
+    Exited(Option<u32>),
+    /// For this reason (the connection was lost, or the shell exited and
+    /// the connection ended).
+    There(CloseReason),
+}
+
+/// [`Ended::Here`], once a second channel (`second`) is closed.
+async fn ended_here(outgoing: &ChannelWriteHalf<client::Msg>, second: bool) -> Ended {
+    if second {
+        let _ = outgoing.close().await;
+    }
+    Ended::Here
+}
+
+/// Carries the shell channel `opened` over `link` (connected from now on)
+/// until it ends. `connection`, for the session's own channel, is what
+/// second channels are opened on; without it, the channel is a second
+/// channel, closed when this side ends it.
+async fn pump(
+    link: &mut Link,
+    opened: OpenedChannel,
+    requested_size: TerminalSize,
+    connection: Option<&Handle<Client>>,
+) -> Ended {
+    let OpenedChannel {
+        channel,
+        early_output,
+    } = opened;
+    let (mut incoming, outgoing) = channel.split();
+    let second = connection.is_none();
+
     link.state(SessionState::Connected);
     if link.size != requested_size && resize(&outgoing, link.size).await.is_err() {
-        return CloseReason::ConnectionLost;
+        return Ended::There(CloseReason::ConnectionLost);
     }
     if !early_output.is_empty() && !link.output(early_output) {
-        return close(&connection, &jumps).await;
+        return ended_here(&outgoing, second).await;
     }
 
     // Input is sent one piece at a time while output keeps being read. A
@@ -178,6 +287,10 @@ pub(super) async fn run(
     // of that input) has been read.
     let mut unsent: VecDeque<Vec<u8>> = VecDeque::new();
     let mut sending: Option<Sending<'_>> = None;
+    // Second channels asked for, opened one at a time, each answering its
+    // asker when done.
+    let mut asked: VecDeque<(TerminalSize, ChannelReply)> = VecDeque::new();
+    let mut opening: Option<Opening<'_>> = None;
     let mut exit_status = None;
     let flow = link.flow();
     loop {
@@ -186,23 +299,38 @@ pub(super) async fn run(
                 sending = Some(Box::pin(outgoing.data_bytes(bytes)));
             }
         }
+        if opening.is_none() {
+            if let (Some(connection), Some((size, reply))) = (connection, asked.pop_front()) {
+                opening = Some(Box::pin(async move {
+                    let _ = reply.send(start_second_shell(connection, size).await);
+                }));
+            }
+        }
         tokio::select! {
             sent = finish(&mut sending) => {
                 if sent.is_err() {
-                    return CloseReason::ConnectionLost;
+                    return Ended::There(CloseReason::ConnectionLost);
                 }
             }
+            () = finish(&mut opening) => {}
             command = link.command() => match command {
                 Command::Write(bytes) => unsent.push_back(bytes),
                 Command::Resize(size) => {
                     if resize(&outgoing, size).await.is_err() {
-                        return CloseReason::ConnectionLost;
+                        return Ended::There(CloseReason::ConnectionLost);
+                    }
+                }
+                // A second channel carries no others (dropping the reply
+                // says so).
+                Command::OpenChannel { size, reply } => {
+                    if connection.is_some() {
+                        asked.push_back((size, reply));
                     }
                 }
                 // Logged in already: nothing asked for these.
                 // The manager sends breaks to serial sessions only.
                 Command::Answer(_) | Command::HostKey(_) | Command::Break => {}
-                Command::Close => return close(&connection, &jumps).await,
+                Command::Close => return ended_here(&outgoing, second).await,
             },
             // Output is read only while the consumer is less than a window
             // behind (flow control); commands are taken regardless.
@@ -212,19 +340,18 @@ pub(super) async fn run(
             } => match message {
                 Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
                     if !link.output(data.to_vec()) {
-                        return close(&connection, &jumps).await;
+                        return ended_here(&outgoing, second).await;
                     }
                 }
                 Some(ChannelMsg::ExitStatus { exit_status: status }) => exit_status = Some(status),
-                Some(ChannelMsg::Close) => {
-                    close(&connection, &jumps).await;
-                    return CloseReason::RemoteExited { exit_status };
-                }
+                Some(ChannelMsg::Close) => return Ended::Exited(exit_status),
                 Some(_) => {}
                 // The channel ended without the remote closing it: the
                 // connection is gone, unless the shell had already exited.
-                None if exit_status.is_some() => return CloseReason::RemoteExited { exit_status },
-                None => return CloseReason::ConnectionLost,
+                None if exit_status.is_some() => {
+                    return Ended::There(CloseReason::RemoteExited { exit_status })
+                }
+                None => return Ended::There(CloseReason::ConnectionLost),
             },
         }
     }
@@ -233,9 +360,15 @@ pub(super) async fn run(
 /// A piece of input on its way to the device.
 type Sending<'a> = Pin<Box<dyn Future<Output = Result<(), russh::Error>> + Send + 'a>>;
 
-/// Resolves when the piece being sent, if any, has been sent; never if there
-/// is none. Dropping this future does not abandon the piece.
-async fn finish(sending: &mut Option<Sending<'_>>) -> Result<(), russh::Error> {
+/// A second channel being opened; answers its asker when done.
+type Opening<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// Where a second channel, once open, goes.
+type ChannelReply = oneshot::Sender<Result<OpenedChannel, OpenError>>;
+
+/// Resolves when the piece being sent (or the work being done), if any, is
+/// done; never if there is none. Dropping this future does not abandon it.
+async fn finish<T>(sending: &mut Option<Pin<Box<dyn Future<Output = T> + Send + '_>>>) -> T {
     match sending {
         Some(in_flight) => {
             let sent = in_flight.await;
@@ -602,12 +735,60 @@ async fn start_shell(
     connection: &Handle<Client>,
     size: TerminalSize,
 ) -> Result<(Channel<client::Msg>, Vec<u8>), OpenError> {
-    let mut channel = connection.channel_open_session().await.map_err(protocol)?;
+    let channel = connection.channel_open_session().await.map_err(protocol)?;
+    shell_on(channel, size)
+        .await
+        .map_err(|refusal| match refusal {
+            ShellRefusal::Refused(reason) => OpenError::Protocol(reason),
+            ShellRefusal::Failed(error) => error,
+        })
+}
+
+/// [`start_shell`] for a second channel on `connection`: a device that
+/// will not open one, or will not start a shell on it, refused it
+/// ([`OpenError::ChannelRefused`]).
+async fn start_second_shell(
+    connection: &Handle<Client>,
+    size: TerminalSize,
+) -> Result<OpenedChannel, OpenError> {
+    let channel = match connection.channel_open_session().await {
+        Ok(channel) => channel,
+        Err(russh::Error::ChannelOpenFailure(reason)) => {
+            return Err(OpenError::ChannelRefused {
+                reason: format!("it answered {reason:?}"),
+            })
+        }
+        Err(error) => return Err(protocol(error)),
+    };
+    match shell_on(channel, size).await {
+        Ok((channel, early_output)) => Ok(OpenedChannel {
+            channel,
+            early_output,
+        }),
+        Err(ShellRefusal::Refused(reason)) => Err(OpenError::ChannelRefused { reason }),
+        Err(ShellRefusal::Failed(error)) => Err(error),
+    }
+}
+
+/// Why a shell did not start on a channel.
+enum ShellRefusal {
+    /// The server said no, or closed the channel instead.
+    Refused(String),
+    Failed(OpenError),
+}
+
+/// Asks for a pty and a shell on `channel` and waits for the server to
+/// confirm the shell, keeping anything it prints in the meantime.
+async fn shell_on(
+    mut channel: Channel<client::Msg>,
+    size: TerminalSize,
+) -> Result<(Channel<client::Msg>, Vec<u8>), ShellRefusal> {
+    let failed = |error| ShellRefusal::Failed(protocol(error));
     channel
         .request_pty(false, TERM, size.cols, size.rows, 0, 0, &[])
         .await
-        .map_err(protocol)?;
-    channel.request_shell(true).await.map_err(protocol)?;
+        .map_err(failed)?;
+    channel.request_shell(true).await.map_err(failed)?;
 
     let mut early_output = Vec::new();
     loop {
@@ -617,15 +798,20 @@ async fn start_shell(
                 early_output.extend_from_slice(&data);
             }
             Some(ChannelMsg::Failure) => {
-                return Err(OpenError::Protocol(
+                return Err(ShellRefusal::Refused(
                     "the server refused to start a shell".into(),
+                ));
+            }
+            Some(ChannelMsg::Close) => {
+                return Err(ShellRefusal::Refused(
+                    "the server closed the channel instead of starting a shell".into(),
                 ));
             }
             Some(_) => {}
             None => {
-                return Err(OpenError::Protocol(
+                return Err(ShellRefusal::Failed(OpenError::Protocol(
                     "the server closed the connection before starting a shell".into(),
-                ));
+                )));
             }
         }
     }

@@ -28,6 +28,7 @@ pub(super) const JUMP_HOST: &str = "jump_host";
 pub(super) const LEGACY_CRYPTO: &str = "legacy_crypto";
 pub(super) const CONNECT_TIMEOUT: &str = "connect_timeout";
 pub(super) const LOGGING: &str = "logging";
+pub(super) const BACKUP_ON_LOGIN: &str = "backup_on_login";
 pub(super) const ENVIRONMENT: &str = "environment";
 pub(super) const PASTE_LINE_DELAY: &str = "paste_line_delay";
 pub(super) const PLATFORM: &str = "platform";
@@ -71,6 +72,9 @@ pub struct Settings {
     /// to [`MAX_CONNECT_TIMEOUT_SECONDS`]).
     pub connect_timeout: Option<u32>,
     pub logging: Option<bool>,
+    /// Whether every SSH session to the host saves its configuration in
+    /// the config history once connected (see [`crate::job::LoginBackup`]).
+    pub backup_on_login: Option<bool>,
     pub environment: Option<Environment>,
     /// Milliseconds to wait between pasted lines (0 to
     /// [`MAX_PASTE_LINE_DELAY_MS`]), for slow devices.
@@ -225,6 +229,8 @@ pub struct EffectiveSettings {
     /// In seconds.
     pub connect_timeout: Effective<u32>,
     pub logging: Effective<bool>,
+    /// Off by default.
+    pub backup_on_login: Effective<bool>,
     pub environment: Option<Effective<Environment>>,
     /// In milliseconds; 0 (no delay) by default.
     pub paste_line_delay: Effective<u32>,
@@ -311,6 +317,7 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
             DEFAULT_CONNECT_TIMEOUT_SECONDS,
         ),
         logging: or_default(nearest(levels, |s| s.logging), true),
+        backup_on_login: or_default(nearest(levels, |s| s.backup_on_login), false),
         environment: nearest(levels, |s| s.environment),
         paste_line_delay: or_default(nearest(levels, |s| s.paste_line_delay), 0),
         platform: nearest(levels, |s| s.platform.clone()),
@@ -347,6 +354,7 @@ pub(super) fn settings_from_document(document: &Mapping) -> Result<Settings, Str
         legacy_crypto: read_flag(document, LEGACY_CRYPTO)?,
         connect_timeout: read_connect_timeout(document)?,
         logging: read_flag(document, LOGGING)?,
+        backup_on_login: read_flag(document, BACKUP_ON_LOGIN)?,
         environment: read_choice(
             document,
             ENVIRONMENT,
@@ -631,6 +639,11 @@ pub(super) fn apply_settings(
     for (key, old, new) in [
         (LEGACY_CRYPTO, current.legacy_crypto, edit.legacy_crypto),
         (LOGGING, current.logging, edit.logging),
+        (
+            BACKUP_ON_LOGIN,
+            current.backup_on_login,
+            edit.backup_on_login,
+        ),
     ] {
         update(key, old.map(Value::from), new.map(Value::from));
     }

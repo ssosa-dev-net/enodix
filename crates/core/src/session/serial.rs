@@ -420,7 +420,10 @@ pub(super) async fn run(
                     let _ = jobs.send(Job::Break);
                 }
                 // A serial line has no window size, and asks nothing.
-                Command::Resize(_) | Command::Answer(_) | Command::HostKey(_) => {}
+                Command::Resize(_)
+                | Command::Answer(_)
+                | Command::HostKey(_)
+                | Command::OpenChannel { .. } => {}
                 Command::Close => break CloseReason::ClosedLocally,
             },
             read = output.recv() => match read {
