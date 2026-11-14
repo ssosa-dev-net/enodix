@@ -15,6 +15,7 @@
   import {
     allHosts,
     HOST_TEXT_FIELDS,
+    openLogFolder,
     type CustomField,
     type Host,
     type Protocol,
@@ -152,6 +153,14 @@
           >{protocolNames[protocol]}</button
         >
       {/each}
+      <button
+        data-open-logs
+        title="Show this host's session logs in the file manager"
+        onclick={() =>
+          openLogFolder(host.id).catch(
+            (error) => (inventory.editError = String(error)),
+          )}>Open log folder</button
+      >
       <button onclick={() => move(item)}>Move…</button>
       <button class="danger" onclick={() => remove(item)}>Delete…</button>
     </div>

@@ -679,6 +679,47 @@ async function main() {
   await screenshot("host-session");
   step("double-clicking a host opened a session to it on its folder's port");
 
+  // Sessions are logged as plain text under the data folder's logs (the
+  // app's per-user log folder when NETTERM_DATA_DIR is not set): by
+  // workspace, tree path and host, and quick connections by address.
+  await type("colors\r");
+  await until("coloured output in the host session", async () =>
+    (await screen()).includes("down up"),
+  );
+  const logFolder = join(appData, "logs");
+  const hostLogs = join(
+    logFolder,
+    "workspaces",
+    "smoke-workspace",
+    "Lab",
+    "smoke-r1",
+  );
+  const hostLog = await until("the host session's log file", () => {
+    if (!existsSync(hostLogs)) return null;
+    const files = readdirSync(hostLogs);
+    return files.length === 1 &&
+      /^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.log$/.test(files[0])
+      ? join(hostLogs, files[0])
+      : null;
+  });
+  await until("the command and its output in the log", () =>
+    readFileSync(hostLog, "utf8").includes("test-ssh$ colors\ndown up\n"),
+  );
+  if (readFileSync(hostLog, "utf8").includes("\x1b")) {
+    fail("the session log holds terminal control sequences");
+  }
+  const quickLogs = readdirSync(join(logFolder, "quick connect", "127.0.0.1"));
+  if (quickLogs.length < 3) {
+    fail(`expected a log per quick connection, found ${quickLogs.join(", ")}`);
+  }
+  if (!(await text("[data-setting-note=logging]")).includes("secrets")) {
+    fail("the logging setting does not warn that logs can contain secrets");
+  }
+  if (!(await evaluate(`!!document.querySelector("[data-open-logs]")`))) {
+    fail("the side panel has no action to open the host's log folder");
+  }
+  step("sessions were logged as plain text by workspace, path, host and time");
+
   // Each host shows its role's icon and colour in the tree, and so does its
   // session's header; a role the workspace does not define shows neutrally.
   const roleIcon = (selector) =>

@@ -81,6 +81,8 @@
   let hostKey = $state<{ question: HostKeyQuestion; key: number } | null>(null);
   /** What each connection agreed on, jump hosts first. */
   let algorithms = $state<NegotiatedAlgorithms[]>([]);
+  /** Why the session's log could not be written; null: logging works. */
+  let logFailure = $state<string | null>(null);
   /** The connections that use outdated algorithms (legacy crypto). */
   const legacy = $derived(algorithms.filter((a) => a.legacy.length > 0));
   const legacyTitle = $derived(
@@ -140,6 +142,7 @@
     prompt = null;
     hostKey = null;
     algorithms = [];
+    logFailure = null;
     markReconnect();
     reconnecting.reconnect(currentSize()).catch(
       (error) =>
@@ -477,6 +480,7 @@
       onPrompt: (asked) => (prompt = { prompt: asked, key: ++prompts }),
       onHostKey: (question) => (hostKey = { question, key: ++prompts }),
       onAlgorithms: (agreed) => (algorithms = agreed),
+      onLogFailure: (reason) => (logFailure = reason),
     }).then(
       (opened) => {
         if (disposed) {
@@ -656,6 +660,20 @@
           onclick={closeSearch}>&times;</button
         >
       </form>
+    {/if}
+    {#if logFailure}
+      <div class="log-failed" role="alert" data-log-failed>
+        <span class="reason">{logFailure}.</span>
+        <button
+          data-log-failed-dismiss
+          onclick={() => {
+            logFailure = null;
+            xterm?.focus();
+          }}
+        >
+          Dismiss
+        </button>
+      </div>
     {/if}
     {#if status.state === "closed" && session}
       <div class="ended" role="alert" data-session-ended>
@@ -853,6 +871,24 @@
     font-size: 0.85rem;
   }
 
+  .log-failed {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.2rem 0.6rem;
+    padding: 0.35rem 0.6rem;
+    background: var(--surface);
+    border-top: 1px solid var(--warning);
+    color: var(--warning);
+    font-size: 0.85rem;
+  }
+
+  .log-failed .reason {
+    flex: 1 1 14rem;
+    overflow-wrap: anywhere;
+  }
+
+  .log-failed .reason::first-letter,
   .ended .reason::first-letter {
     text-transform: uppercase;
   }

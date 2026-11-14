@@ -998,13 +998,27 @@ fn split_path(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
 }
 
-/// A folder or host name, trimmed, if it is a file name that works on every
-/// system and that the workspace format does not reserve.
-fn check_name(name: &str) -> Result<&str, EditError> {
+/// Whether a file name cannot hold `c` on some system.
+pub(crate) fn forbidden_in_file_names(c: char) -> bool {
+    c.is_control() || "/\\:*?\"<>|".contains(c)
+}
+
+/// Whether Windows takes the file name `name` (with any extension) for a
+/// device.
+pub(crate) fn is_device_name(name: &str) -> bool {
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    RESERVED
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+}
+
+/// A folder or host name, trimmed, if it is a file name that works on every
+/// system and that the workspace format does not reserve.
+fn check_name(name: &str) -> Result<&str, EditError> {
     let name = name.trim();
     let reason = if name.is_empty() {
         Some("it is empty")
@@ -1012,19 +1026,11 @@ fn check_name(name: &str) -> Result<&str, EditError> {
         Some("names starting with `.` are hidden")
     } else if name.starts_with('_') {
         Some("names starting with `_` are reserved for workspace settings")
-    } else if name
-        .chars()
-        .any(|c| c.is_control() || "/\\:*?\"<>|".contains(c))
-    {
+    } else if name.chars().any(forbidden_in_file_names) {
         Some("file names cannot contain / \\ : * ? \" < > |")
     } else if name.ends_with('.') {
         Some("file names cannot end with a dot")
-    } else if RESERVED.iter().any(|reserved| {
-        name.split('.')
-            .next()
-            .unwrap_or(name)
-            .eq_ignore_ascii_case(reserved)
-    }) {
+    } else if is_device_name(name) {
         Some("it is a reserved device name on Windows")
     } else {
         None

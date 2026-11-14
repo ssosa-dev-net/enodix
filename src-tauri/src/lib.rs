@@ -13,6 +13,7 @@ use netterm_core::credentials::{
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
+use netterm_core::logging::{LogFolder, SessionLog};
 use netterm_core::preferences::{FontZoom, Preferences, Theme};
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
@@ -28,6 +29,7 @@ use netterm_core::workspace::{
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_opener::OpenerExt;
 
 /// Overrides the per-user application data folder (the smoke test uses it to
 /// start from a known state).
@@ -45,6 +47,8 @@ const WORKSPACE_CHANGED_EVENT: &str = "workspace-changed";
 /// profiles are kept.
 struct Shell {
     data_folder: PathBuf,
+    /// Where session logs go: per user, outside every workspace.
+    logs: LogFolder,
     credentials: Box<dyn CredentialStore>,
     workspace: Mutex<Option<Workspace>>,
     /// Reports changes to the open workspace's files; replaced with it.
@@ -622,8 +626,9 @@ fn host_save(shell: State<'_, Shell>, host: Host) -> Result<Edited<()>, String> 
 /// asks while logging in on `on_prompt` (answered with `session_answer`),
 /// host keys to decide on on `on_host_key` (decided with
 /// `session_decide_host_key`), and the algorithms each connection agreed on
-/// (just before `connected`) on `on_algorithms`; terminal data never goes
-/// through the event system.
+/// (just before `connected`) on `on_algorithms`, and why its log could not
+/// be written (the session goes on) on `on_log_failure`; terminal data
+/// never goes through the event system.
 /// The interface acknowledges output with `session_acknowledge`.
 /// Returns the session's id and whether it is encrypted (telnet is not).
 // One argument per channel is how Tauri commands receive them.
@@ -639,7 +644,9 @@ async fn session_open(
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
+    on_log_failure: Channel<String>,
 ) -> Result<Opened, String> {
+    let log = session_log(&shell, &target)?;
     let target = match target {
         ConnectTarget::Serial { id } => {
             SessionTarget::Serial(with_open_profiles(&shell, |profiles| {
@@ -684,7 +691,7 @@ async fn session_open(
     };
     let encrypted = target.encrypted();
     let transport = target.transport();
-    let (id, events) = manager.open(target, size.into());
+    let (id, events) = manager.open_logged(target, size.into(), log);
     forward(
         events,
         Channels {
@@ -693,6 +700,7 @@ async fn session_open(
             prompt: on_prompt,
             host_key: on_host_key,
             algorithms: on_algorithms,
+            log_failure: on_log_failure,
         },
     );
     Ok(Opened {
@@ -700,6 +708,33 @@ async fn session_open(
         encrypted,
         transport,
     })
+}
+
+/// Where a session to `target` is logged: a workspace host as its
+/// `logging` setting says, a quick connection always.
+fn session_log(shell: &Shell, target: &ConnectTarget) -> Result<Option<SessionLog>, String> {
+    Ok(match target {
+        ConnectTarget::Host { id, .. }
+        | ConnectTarget::Telnet { id }
+        | ConnectTarget::Serial { id } => {
+            read(shell, |workspace| shell.logs.host_log(workspace, id))?
+        }
+        ConnectTarget::Quick { host, .. } => Some(shell.logs.quick_log(host)),
+        ConnectTarget::QuickSerial { port, .. } => Some(shell.logs.quick_log(port)),
+    })
+}
+
+/// Shows the folder of the host `id`'s session logs in the system's file
+/// manager, creating it if no session has been logged yet.
+#[tauri::command]
+fn logs_open_folder(app: AppHandle, shell: State<'_, Shell>, id: HostId) -> Result<(), String> {
+    let folder = read(&shell, |workspace| {
+        shell.logs.create_host_folder(workspace, &id)
+    })?
+    .map_err(|error| format!("cannot create the log folder: {error}"))?;
+    app.opener()
+        .open_path(folder.display().to_string(), None::<&str>)
+        .map_err(|error| format!("cannot open the log folder {}: {error}", folder.display()))
 }
 
 /// A session just opened, as the interface receives it.
@@ -719,6 +754,8 @@ struct Channels {
     prompt: Channel<LoginPrompt>,
     host_key: Channel<HostKeyQuestion>,
     algorithms: Channel<Vec<NegotiatedAlgorithms>>,
+    /// Why the session's log could not be written.
+    log_failure: Channel<String>,
 }
 
 /// Passes the session's events on to the interface until they end.
@@ -731,6 +768,7 @@ fn forward(mut events: SessionEvents, channels: Channels) {
                 SessionEvent::Prompt(prompt) => channels.prompt.send(prompt),
                 SessionEvent::HostKey(question) => channels.host_key.send(question),
                 SessionEvent::Algorithms(algorithms) => channels.algorithms.send(algorithms),
+                SessionEvent::LogFailed(failure) => channels.log_failure.send(failure.to_string()),
             };
             // The webview is gone; dropping the events closes the session.
             if delivered.is_err() {
@@ -754,6 +792,7 @@ async fn session_reconnect(
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
+    on_log_failure: Channel<String>,
 ) -> Result<(), String> {
     let events = manager
         .reconnect(SessionId(id), size.into())
@@ -766,6 +805,7 @@ async fn session_reconnect(
             prompt: on_prompt,
             host_key: on_host_key,
             algorithms: on_algorithms,
+            log_failure: on_log_failure,
         },
     );
     Ok(())
@@ -785,6 +825,7 @@ async fn session_duplicate(
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
+    on_log_failure: Channel<String>,
 ) -> Result<Opened, String> {
     let (copy, events) = manager
         .duplicate(SessionId(id), size.into())
@@ -797,6 +838,7 @@ async fn session_duplicate(
             prompt: on_prompt,
             host_key: on_host_key,
             algorithms: on_algorithms,
+            log_failure: on_log_failure,
         },
     );
     let encrypted = manager.encrypted(copy).map_err(|error| error.to_string())?;
@@ -1061,10 +1103,16 @@ fn session_close(manager: State<'_, SessionManager>, id: u64) -> Result<(), Stri
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let data_folder = match std::env::var_os(DATA_DIR_VARIABLE) {
-                Some(folder) => PathBuf::from(folder),
-                None => app.path().app_data_dir()?,
+            let (data_folder, log_folder) = match std::env::var_os(DATA_DIR_VARIABLE) {
+                Some(folder) => {
+                    let folder = PathBuf::from(folder);
+                    let logs = folder.join("logs");
+                    (folder, logs)
+                }
+                // Logs stay on this computer (local, not roaming, app data).
+                None => (app.path().app_data_dir()?, app.path().app_log_dir()?),
             };
             let credentials: Box<dyn CredentialStore> =
                 match std::env::var(CREDENTIAL_STORE_VARIABLE).as_deref() {
@@ -1083,6 +1131,7 @@ pub fn run() {
             app.manage(UserPreferences(Mutex::new(preferences)));
             app.manage(Shell {
                 data_folder,
+                logs: LogFolder::new(log_folder),
                 credentials,
                 workspace: Mutex::new(None),
                 watcher: Mutex::new(None),
@@ -1133,6 +1182,7 @@ pub fn run() {
             session_reconnect,
             session_duplicate,
             session_discard,
+            logs_open_folder,
             layout_reset,
             layout_edit,
             preferences_get,

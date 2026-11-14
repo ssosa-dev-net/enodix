@@ -7,6 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# Local time, for naming session logs after when they started.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # File system notifications, for reloading on external changes (git pull).
 notify = "8"
 # Pinned exactly: the russh API changes roughly monthly (see docs/spec-v1.md).

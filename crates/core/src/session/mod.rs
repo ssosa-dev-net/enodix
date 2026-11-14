@@ -26,6 +26,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 use crate::known_hosts::{HostKey, KnownHosts};
+use crate::logging::{LogFailure, Logger, SessionLog};
 pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
@@ -225,6 +226,9 @@ pub enum SessionEvent {
     /// [`SessionState::Connected`]; a session using any of the outdated
     /// [`LEGACY_ALGORITHMS`] says so in [`NegotiatedAlgorithms::legacy`].
     Algorithms(Vec<NegotiatedAlgorithms>),
+    /// The session's log could not be written (a full disk, a folder that
+    /// cannot be created, ...). The session goes on, no longer logged.
+    LogFailed(LogFailure),
 }
 
 /// Whether to trust a host key the server presented.
@@ -460,6 +464,8 @@ struct Inner {
 /// reconnected or duplicated, and how to reach it while it is open.
 struct Entry {
     target: SessionTarget,
+    /// Where each connection is logged; `None`: not logged.
+    log: Option<SessionLog>,
     /// `None` once the session has closed.
     open: Option<SessionHandle>,
 }
@@ -527,9 +533,28 @@ impl SessionManager {
     ///
     /// Must be called from within a Tokio runtime.
     pub fn open(&self, target: SessionTarget, size: TerminalSize) -> (SessionId, SessionEvents) {
+        self.open_logged(target, size, None)
+    }
+
+    /// Like [`Self::open`], and logs the session to `log` (if given): each
+    /// connection, reconnections and duplicates included, writes its own
+    /// file there once connected. A log that cannot be written is reported
+    /// with [`SessionEvent::LogFailed`] and the session goes on.
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn open_logged(
+        &self,
+        target: SessionTarget,
+        size: TerminalSize,
+        log: Option<SessionLog>,
+    ) -> (SessionId, SessionEvents) {
         let id = SessionId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let mut sessions = self.inner.sessions();
-        let entry = sessions.entry(id).or_insert(Entry { target, open: None });
+        let entry = sessions.entry(id).or_insert(Entry {
+            target,
+            log,
+            open: None,
+        });
         let events = self.start(id, entry, size);
         (id, events)
     }
@@ -555,7 +580,8 @@ impl SessionManager {
     }
 
     /// Opens a new session to the same target as the session `id` (open
-    /// or closed), with the same settings and login.
+    /// or closed), with the same settings and login, logged in the same
+    /// place.
     ///
     /// Must be called from within a Tokio runtime.
     pub fn duplicate(
@@ -563,14 +589,12 @@ impl SessionManager {
         id: SessionId,
         size: TerminalSize,
     ) -> Result<(SessionId, SessionEvents), SessionError> {
-        let target = self
-            .inner
-            .sessions()
-            .get(&id)
-            .ok_or(SessionError::NotFound)?
-            .target
-            .clone();
-        Ok(self.open(target, size))
+        let (target, log) = {
+            let sessions = self.inner.sessions();
+            let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
+            (entry.target.clone(), entry.log.clone())
+        };
+        Ok(self.open_logged(target, size, log))
     }
 
     /// Forgets the session, closing it first if it is open: it can no
@@ -602,12 +626,15 @@ impl SessionManager {
         let known_hosts = self.inner.known_hosts.clone();
         let serial_ports = self.inner.serial_ports.clone();
         let target = entry.target.clone();
+        let log = entry.log.clone();
         tokio::spawn(async move {
             let mut link = Link {
                 commands: command_rx,
                 events: event_tx,
                 flow: link_flow,
                 size,
+                log,
+                logger: None,
             };
             link.state(SessionState::Connecting);
             let reason = match target {
@@ -751,6 +778,10 @@ struct Link {
     flow: Arc<Flow>,
     /// The size the terminal should have, kept current while connecting.
     size: TerminalSize,
+    /// Where to log the connection, until its log file is created (on
+    /// connecting, or the first output).
+    log: Option<SessionLog>,
+    logger: Option<Logger>,
 }
 
 impl Link {
@@ -812,14 +843,36 @@ impl Link {
     /// listening any more.
     fn output(&mut self, bytes: Vec<u8>) -> bool {
         self.flow.read(bytes.len());
-        self.events.send(SessionEvent::Output(bytes)).is_ok()
+        self.forward_counted(bytes)
     }
 
     /// Passes on output that another thread read from the device and
     /// already counted in [`Link::flow`]. Returns `false` if nobody is
     /// listening any more.
     fn forward_counted(&mut self, bytes: Vec<u8>) -> bool {
+        self.start_log();
+        if let Some(logger) = &mut self.logger {
+            if let Err(failure) = logger.write(&bytes) {
+                self.logger = None;
+                self.log_failed(failure);
+            }
+        }
         self.events.send(SessionEvent::Output(bytes)).is_ok()
+    }
+
+    /// Creates the connection's log file, if it is logged and has none yet:
+    /// once connected, or on output that comes earlier.
+    fn start_log(&mut self) {
+        if let Some(log) = self.log.take() {
+            match Logger::start(&log) {
+                Ok(logger) => self.logger = Some(logger),
+                Err(failure) => self.log_failed(failure),
+            }
+        }
+    }
+
+    fn log_failed(&mut self, failure: LogFailure) {
+        let _ = self.events.send(SessionEvent::LogFailed(failure));
     }
 
     fn algorithms(&mut self, algorithms: Vec<NegotiatedAlgorithms>) {
@@ -827,7 +880,18 @@ impl Link {
     }
 
     fn state(&mut self, state: SessionState) {
+        if let SessionState::Closed(_) = state {
+            // The log is complete before anybody learns the session closed.
+            self.log = None;
+            if let Some(Err(failure)) = self.logger.take().map(Logger::finish) {
+                self.log_failed(failure);
+            }
+        }
+        let connected = state == SessionState::Connected;
         let _ = self.events.send(SessionEvent::State(state));
+        if connected {
+            self.start_log();
+        }
     }
 }
 

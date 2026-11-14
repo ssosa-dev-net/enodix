@@ -194,6 +194,11 @@ export interface SessionHandlers {
    * session is connected.
    */
   onAlgorithms: (algorithms: NegotiatedAlgorithms[]) => void;
+  /**
+   * The session's log could not be written (why, as a sentence); the
+   * session goes on without it.
+   */
+  onLogFailure: (reason: string) => void;
 }
 
 /** Where a new session comes from. */
@@ -229,6 +234,7 @@ function channels(handlers: SessionHandlers) {
     onPrompt: new Channel<LoginPrompt>(handlers.onPrompt),
     onHostKey: new Channel<HostKeyQuestion>(handlers.onHostKey),
     onAlgorithms: new Channel<NegotiatedAlgorithms[]>(handlers.onAlgorithms),
+    onLogFailure: new Channel<string>(handlers.onLogFailure),
     ready(known: number) {
       id = known;
       if (consumedEarly > 0) acknowledge(consumedEarly);
