@@ -9,6 +9,7 @@
     inventory,
     move,
     openBackup,
+    openEnrich,
     openConfigHistory,
     openJob,
     openScript,
@@ -241,6 +242,12 @@
         title="Fetch this host's configuration and keep it in its config history if it changed"
         onclick={() => openBackup({ kind: "hosts", ids: [host.id] }, host.name)}
         >Back up config</button
+      >
+      <button
+        data-host-enrich
+        title="Ask the device for its vendor, model, serial number and OS version (NAPALM), then review what to fill in"
+        onclick={() => openEnrich({ kind: "hosts", ids: [host.id] }, host.name)}
+        >Fill in from device…</button
       >
       <button
         data-host-run-snippet

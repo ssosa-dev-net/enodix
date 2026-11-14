@@ -9,6 +9,7 @@
     newFolder,
     newHost,
     openBackup,
+    openEnrich,
     openCsvImport,
     openJob,
     openScript,
@@ -82,6 +83,13 @@
         onclick={() =>
           openBackup({ kind: "folder", path: folder.path }, folder.name)}
         >Back up configs</button
+      >
+      <button
+        data-folder-enrich
+        title="Ask every host in this folder for its vendor, model, serial number and OS version (NAPALM), then review what to fill in"
+        onclick={() =>
+          openEnrich({ kind: "folder", path: folder.path }, folder.name)}
+        >Fill in from devices…</button
       >
       {#if !isRoot}
         <button onclick={() => move(item)}>Move…</button>

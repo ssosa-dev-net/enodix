@@ -15,6 +15,7 @@
 //! ends the process (and on Windows the processes it started), keeping the
 //! output so far. The targets file is removed when the script has ended.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
@@ -28,7 +29,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 
 use super::run::{HostResult, HostState, JobEvent, JobReport};
-use super::{JobPlan, JobStep, PlannedScript};
+use super::{JobPlan, JobStep, PlannedScript, ScriptRun};
+use crate::enrich::{CollectedFacts, ENRICH_TITLE, FACTS_VARIABLE};
 use crate::logging::PlainText;
 use crate::python::{quiet_command, stop};
 use crate::workspace::HostId;
@@ -68,6 +70,9 @@ pub struct ScriptTargets {
     pub workspace: PathBuf,
     /// The job's hosts, in plan order.
     pub hosts: Vec<HostId>,
+    /// For filling in from devices: the NAPALM driver of each host.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub napalm_drivers: BTreeMap<HostId, String>,
 }
 
 /// Why the targets file cannot be used.
@@ -134,12 +139,17 @@ pub(super) fn spawn(
     events: mpsc::UnboundedSender<JobEvent>,
     cancel: watch::Receiver<bool>,
 ) {
-    let JobStep::Script { path } = &plan.step else {
-        unreachable!("a script is planned only for a script step")
+    let name = match &plan.step {
+        JobStep::Script { path } => path.clone(),
+        JobStep::Enrich => ENRICH_TITLE.to_string(),
+        _ => unreachable!("a script is planned only for a script step"),
     };
     let runner = Runner {
         id: HostId::new(SCRIPT_OUTPUT),
-        name: path.clone(),
+        name,
+        facts: (plan.step == JobStep::Enrich).then(|| {
+            std::env::temp_dir().join(format!("netterm-facts-{}.json", uuid::Uuid::new_v4()))
+        }),
         events,
         texts: [PlainText::new(), PlainText::new()],
         output: String::new(),
@@ -148,6 +158,14 @@ pub(super) fn spawn(
         format: TARGETS_FORMAT,
         workspace: script.root.clone(),
         hosts: plan.hosts.iter().map(|host| host.id.clone()).collect(),
+        napalm_drivers: plan
+            .hosts
+            .iter()
+            .filter_map(|host| {
+                let driver = host.work.napalm_driver?;
+                Some((host.id.clone(), driver.to_string()))
+            })
+            .collect(),
     };
     let script = script.clone();
     let options = options.clone();
@@ -165,6 +183,9 @@ struct Runner {
     id: HostId,
     /// The script's path, as the step names it.
     name: String,
+    /// For filling in from devices: the file the script writes the facts
+    /// to.
+    facts: Option<PathBuf>,
     events: mpsc::UnboundedSender<JobEvent>,
     /// stdout's and stderr's text, apart, so that their lines do not mix.
     texts: [PlainText; 2],
@@ -190,6 +211,15 @@ impl Runner {
             let rest = self.texts[pipe].finish();
             self.add_output(rest);
         }
+        let facts = self.facts.take().map(|path| {
+            let missing = match &state {
+                HostState::Cancelled => "the job was cancelled before the script reported it",
+                _ => "the script reported nothing for it (see its output)",
+            };
+            let facts = CollectedFacts::read(&path, &targets.hosts, missing);
+            let _ = fs::remove_file(&path);
+            facts
+        });
         self.state(state.clone());
         let report = JobReport {
             hosts: vec![HostResult {
@@ -199,6 +229,7 @@ impl Runner {
                 output: std::mem::take(&mut self.output),
                 backup: None,
                 exit_status,
+                facts,
             }],
         };
         let _ = self.events.send(JobEvent::Finished(report));
@@ -225,9 +256,15 @@ impl Runner {
             return Ok(Ended::Cancelled);
         }
         let mut command = quiet_command(options.interpreter.as_os_str());
+        command.arg("-u");
+        match &script.run {
+            ScriptRun::File(file) => command.arg(file),
+            ScriptRun::Module(module) => command.arg("-m").arg(module),
+        };
+        if let Some(facts) = &self.facts {
+            command.env(FACTS_VARIABLE, facts);
+        }
         command
-            .arg("-u")
-            .arg(&script.file)
             .current_dir(&script.root)
             .stdin(Stdio::null())
             .env("PYTHONUNBUFFERED", "1")

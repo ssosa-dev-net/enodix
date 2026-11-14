@@ -125,6 +125,31 @@ async fn lab_second_channel() {
     lab_check(Check::SecondChannel).await;
 }
 
+/// Host enrichment: the shipped script fetches the facts of the devices
+/// NAPALM has a driver for, and applying the preview fills them in.
+#[tokio::test]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+async fn lab_enrichment() {
+    let Ok(Some(lab)) = lab::from_environment().map_err(|error| panic!("{error}")) else {
+        eprintln!("{}", lab::SKIP_MESSAGE);
+        return;
+    };
+    match lab::enrichment::check(&lab).await {
+        Err(reason) => eprintln!("[lab] enrichment: NOT CHECKED: {reason}"),
+        Ok(checked) => {
+            for note in &checked.notes {
+                eprintln!("[lab] enrichment: {note}");
+            }
+            assert!(
+                checked.failures.is_empty(),
+                "enrichment failed:\n{}",
+                checked.failures.join("\n")
+            );
+            eprintln!("[lab] enrichment: {} device(s) filled in", checked.filled);
+        }
+    }
+}
+
 // The suite's own tests (no lab needed).
 
 fn env_with(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {

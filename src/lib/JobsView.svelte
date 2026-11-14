@@ -358,6 +358,18 @@
                   onclick={cancel}>Cancel job</button
                 >
               {/if}
+              {#if run.step.kind === "enrich" && run.ended}
+                {@const id = run.id}
+                <button
+                  type="button"
+                  data-run-action="review"
+                  title="What the devices reported, to fill in"
+                  onclick={() => {
+                    onclose();
+                    inventory.enrichReview = id;
+                  }}>Review…</button
+                >
+              {/if}
               <button
                 type="button"
                 data-run-action="again"

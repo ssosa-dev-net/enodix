@@ -20,6 +20,8 @@
 
 #![allow(dead_code)]
 
+pub mod enrichment;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

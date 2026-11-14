@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use super::script::{self, ScriptOptions};
 use super::{BackupWork, JobPlan, JobStep, PlannedHost};
 use crate::configs::{ConfigStore, SaveOutcome};
+use crate::enrich::CollectedFacts;
 use crate::logging::PlainText;
 use crate::session::{
     CloseReason, HostKeyDecision, HostKeyQuestion, LoginPrompt, OpenError, SessionEvent,
@@ -128,6 +129,9 @@ pub struct HostResult {
     /// For a script step: the script's exit status, if it exited with one
     /// (not when it could not start, or was ended by a signal).
     pub exit_status: Option<i32>,
+    /// For filling in from devices: what the script reported for each of
+    /// the job's hosts.
+    pub facts: Option<CollectedFacts>,
 }
 
 /// Why a plan cannot start.
@@ -209,7 +213,7 @@ pub fn check(plan: &JobPlan, options: &JobOptions) -> Result<(), StartError> {
             return Err(StartError::NoWorkspaceId);
         }
     }
-    if matches!(plan.step, JobStep::Script { .. }) && options.script.is_none() {
+    if plan.step.runs_script() && options.script.is_none() {
         return Err(StartError::NoPython);
     }
     Ok(())
@@ -227,7 +231,7 @@ pub fn start(
     check(&plan, &options)?;
     let (events_tx, events) = mpsc::unbounded_channel();
     let (cancel_tx, cancel) = watch::channel(false);
-    if let (JobStep::Script { .. }, Some(script)) = (&plan.step, &options.script) {
+    if let Some(script) = options.script.as_ref().filter(|_| plan.step.runs_script()) {
         let planned = plan
             .script
             .as_ref()
@@ -285,6 +289,7 @@ pub fn start(
                     output: String::new(),
                     backup: None,
                     exit_status: None,
+                    facts: None,
                 }
             });
             hosts.push(result);
@@ -448,6 +453,7 @@ impl HostRunner {
             output: self.output,
             backup: self.backup,
             exit_status: None,
+            facts: None,
         }
     }
 

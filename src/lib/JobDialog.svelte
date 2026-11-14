@@ -40,6 +40,8 @@
     backup?: boolean;
     /** Run a Python script of the workspace instead of a snippet. */
     script?: boolean;
+    /** Fill in vendor, model, serial number and OS version from devices. */
+    enrich?: boolean;
     onclose: () => void;
   }
 
@@ -49,6 +51,7 @@
     planned = null,
     backup = false,
     script = false,
+    enrich = false,
     onclose,
   }: Props = $props();
 
@@ -62,9 +65,13 @@
   );
   /** Whether the job runs a script (fixed for the dialog's life). */
   const scripting = untrack(() => script || initial?.step.kind === "script");
+  /** Whether the job fills in hosts from devices (fixed too). */
+  const enriching = untrack(() => enrich || initial?.step.kind === "enrich");
+  /** Whether a Python process runs (a script, or filling in). */
+  const usesPython = scripting || enriching;
   const initialStep = initial?.step.kind === "snippet" ? initial.step : null;
   let step = $state<Step>(
-    backingUp
+    backingUp || enriching
       ? "preflight"
       : initial === null
         ? scripting
@@ -83,10 +90,10 @@
     untrack(() => (initial?.step.kind === "script" ? initial.step.path : "")),
   );
   /** Why a script cannot run now (no usable Python), with how to fix it. */
-  const scriptOff = $derived(scripting ? pythonOff() : null);
+  const scriptOff = $derived(usesPython ? pythonOff() : null);
+  // The interpreter may have changed since the app started.
+  if (usesPython) void refreshPython();
   if (scripting) {
-    // The interpreter may have changed since the app started.
-    void refreshPython();
     listScripts()
       .then((found) => {
         scripts = found;
@@ -160,12 +167,13 @@
   /** The step the job runs. */
   function jobStep(): JobStep {
     if (backingUp) return { kind: "configBackup" };
+    if (enriching) return { kind: "enrich" };
     if (scripting) return { kind: "script", path: scriptPath };
     return { kind: "snippet", name: snippet, answers: { ...answers } };
   }
 
   // A config backup has nothing to choose first: straight to pre-flight.
-  if (backingUp && initial === null) void preflight();
+  if ((backingUp || enriching) && initial === null) void preflight();
 
   /** Plans with the answers so far; asks for missing variables first. */
   function preflight() {
@@ -249,9 +257,11 @@
     <h2 id="job-title">
       {backingUp
         ? `Back up configs of ${label}`
-        : scripting
-          ? `Run a script for ${label}`
-          : `Run a snippet on ${label}`}
+        : enriching
+          ? `Fill in ${label} from devices`
+          : scripting
+            ? `Run a script for ${label}`
+            : `Run a snippet on ${label}`}
     </h2>
 
     {#if scriptOff !== null && step !== "running"}
@@ -406,8 +416,21 @@
           as sensitive as the configurations themselves.
         </p>
       {/if}
+      {#if enriching}
+        <p class="note" data-job-enrich-note>
+          Each host is asked for its vendor, model, serial number and OS version
+          with NAPALM (in the Python chosen in Preferences), logging in with its
+          own credential profile. Nothing is written yet: you see what the
+          devices report and choose what to fill in afterwards.
+        </p>
+      {/if}
       <p class="note" data-job-summary>
-        {#if scripting}
+        {#if enriching}
+          {plan.hosts.length === 1
+            ? "1 host is asked"
+            : `${plan.hosts.length} hosts are asked`},
+          {plan.skipped.length} skipped.
+        {:else if scripting}
           {plan.step.kind === "script" ? plan.step.path : ""} runs for
           {plan.hosts.length === 1 ? "1 host" : `${plan.hosts.length} hosts`},
           {plan.skipped.length} skipped.
@@ -429,7 +452,13 @@
                 data-job-host={host.id}
                 class:production={host.environment === "production"}
               >
-                <td class="outcome">{scripting ? "In inventory" : "Runs"}</td>
+                <td class="outcome"
+                  >{enriching
+                    ? "Asked"
+                    : scripting
+                      ? "In inventory"
+                      : "Runs"}</td
+                >
                 <td>{host.name}</td>
                 <td>{host.address}</td>
                 <td class="details">
@@ -466,7 +495,7 @@
             bind:checked={productionConfirmed}
           />
           <span>
-            {scripting ? "Run the script for" : "Run on"}
+            {enriching ? "Ask" : scripting ? "Run the script for" : "Run on"}
             {plan.production.length === 1
               ? "the production host"
               : `${plan.production.length} production hosts`}:
@@ -476,7 +505,7 @@
           </span>
         </label>
       {/if}
-      {#if !scripting}
+      {#if !usesPython}
         <label class="parallel" data-job-parallel>
           <span>Hosts at once</span>
           <input
@@ -491,7 +520,7 @@
           <span class="hint">1 to {MAX_PARALLEL}</span>
         </label>
       {/if}
-      {#if !backingUp}
+      {#if !backingUp && !enriching}
         <div class="save-row">
           <SaveJobForm
             step={plan.step}
@@ -501,7 +530,7 @@
         </div>
       {/if}
       <div class="actions">
-        {#if !backingUp}
+        {#if !backingUp && !enriching}
           <button type="button" onclick={() => (step = firstStep)}>Back</button>
         {/if}
         <button
@@ -510,12 +539,12 @@
           data-job="start"
           disabled={busy || !ready}
           onclick={start}
-          >{scripting ? "Run the script for" : "Run on"}
+          >{enriching ? "Ask" : scripting ? "Run the script for" : "Run on"}
           {plan.hosts.length}
           {plan.hosts.length === 1 ? "host" : "hosts"}</button
         >
       </div>
-    {:else if step === "running" && plan && scripting}
+    {:else if step === "running" && plan && usesPython}
       {@const state = states[SCRIPT_OUTPUT] ?? { kind: "waiting" }}
       {@const exit = live?.exits[SCRIPT_OUTPUT]}
       <p
@@ -530,6 +559,9 @@
               ? "Finished: cancelled"
               : "Finished: the script failed"
           : "Running"}{exit !== undefined ? ` (exit status ${exit})` : ""}.
+        {#if enriching && finished}
+          Review what the devices reported before anything is written.
+        {/if}
       </p>
       <div class="scroll results">
         <details
@@ -540,7 +572,11 @@
         >
           <summary>
             <span class="state {state.kind}">{STATE_LABELS[state.kind]}</span>
-            <span>{plan.step.kind === "script" ? plan.step.path : ""}</span>
+            <span
+              >{plan.step.kind === "script"
+                ? plan.step.path
+                : stepTitle(plan.step)}</span
+            >
             {#if state.kind === "failed"}
               <span class="reason" data-job-reason>{state.reason}</span>
             {/if}
@@ -557,6 +593,18 @@
             data-job="cancel"
             onclick={() => cancelJob(id).catch((e) => (error = String(e)))}
             >Cancel job</button
+          >
+        {/if}
+        {#if live !== null && enriching && finished}
+          {@const run = live.run}
+          <button
+            type="button"
+            class="primary"
+            data-job="review"
+            onclick={() => {
+              close();
+              inventory.enrichReview = run;
+            }}>Review what the devices reported</button
           >
         {/if}
         {#if live !== null}

@@ -11,6 +11,7 @@
     newFolder,
     newHost,
     openBackup,
+    openEnrich,
     openCsvImport,
     openJob,
     openScript,
@@ -186,6 +187,14 @@
               host?.name ?? item.id,
             ),
         ],
+        [
+          "Fill in from device…",
+          () =>
+            openEnrich(
+              { kind: "hosts", ids: [item.id] },
+              host?.name ?? item.id,
+            ),
+        ],
         ["Rename…", () => rename(item)],
         ["Move to…", () => move(item)],
         ["Delete…", () => remove(item)],
@@ -213,6 +222,14 @@
         "Back up configs",
         () =>
           openBackup(
+            { kind: "folder", path: item.path },
+            folderLabel(item.path),
+          ),
+      ],
+      [
+        "Fill in from devices…",
+        () =>
+          openEnrich(
             { kind: "folder", path: item.path },
             folderLabel(item.path),
           ),

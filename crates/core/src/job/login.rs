@@ -124,6 +124,7 @@ impl LoginBackup {
                 command,
                 ignored_lines: given(&definition.ignored_lines),
             }),
+            napalm_driver: None,
         };
         Some(Self {
             host: PlannedHost {

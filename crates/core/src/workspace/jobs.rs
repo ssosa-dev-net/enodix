@@ -191,6 +191,9 @@ pub(super) fn clean(job: &SavedJob) -> Result<SavedJob, String> {
         JobStep::ConfigBackup => {
             return Err("a config backup cannot be saved as a job".into());
         }
+        JobStep::Enrich => {
+            return Err("filling in from devices cannot be saved as a job".into());
+        }
     };
     let target =
         match &job.target {
@@ -242,7 +245,7 @@ fn to_value(job: &SavedJob) -> Value {
             definition.insert(SCRIPT.into(), path.as_str().into());
         }
         // Refused by `clean`.
-        JobStep::ConfigBackup => {}
+        JobStep::ConfigBackup | JobStep::Enrich => {}
     }
     match &job.target {
         JobTarget::Folder { path } => definition.insert(FOLDER.into(), path.as_str().into()),

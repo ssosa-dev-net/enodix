@@ -9,6 +9,7 @@ pub mod app_state;
 pub mod configs;
 pub mod credentials;
 pub mod diff;
+pub mod enrich;
 pub mod highlight;
 pub mod import;
 pub mod inventory;
