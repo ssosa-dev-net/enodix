@@ -1,6 +1,7 @@
 //! A credential store that stands in for a keychain that fails: an
 //! in-memory store whose listing, or whose deletes after a number of them,
-//! fail as a real keychain can.
+//! fail as a real keychain can, or whose puts fail after a number of them
+//! (or just one of them).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -19,6 +20,8 @@ pub struct Failures {
     pub deletes_after: Option<usize>,
     /// Puts succeed this many times, then every one fails.
     pub puts_after: Option<usize>,
+    /// Only this put (counting from 0, profiles and secrets alike) fails.
+    pub failing_put: Option<usize>,
 }
 
 /// Clones share one store, so a test keeps a handle to look inside after
@@ -47,20 +50,25 @@ impl FailingStore {
     }
 
     fn deleting(&self) -> Result<(), StoreError> {
-        counted(&self.deletes, self.failures.deletes_after)
+        counted(&self.deletes, self.failures.deletes_after).map(drop)
     }
 
     fn putting(&self) -> Result<(), StoreError> {
-        counted(&self.puts, self.failures.puts_after)
+        let done = counted(&self.puts, self.failures.puts_after)?;
+        if self.failures.failing_put == Some(done) {
+            return Err(StoreError("the keychain refused this one".into()));
+        }
+        Ok(())
     }
 }
 
-/// Counts one more call; fails once `limit` calls were made.
-fn counted(calls: &AtomicUsize, limit: Option<usize>) -> Result<(), StoreError> {
+/// Counts one more call (resolving to how many were made before it); fails
+/// once `limit` calls were made.
+fn counted(calls: &AtomicUsize, limit: Option<usize>) -> Result<usize, StoreError> {
     let done = calls.fetch_add(1, Ordering::SeqCst);
     match limit {
         Some(limit) if done >= limit => Err(StoreError("the keychain refused".into())),
-        _ => Ok(()),
+        _ => Ok(done),
     }
 }
 

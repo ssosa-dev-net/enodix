@@ -249,14 +249,28 @@ impl Vault {
         kdf: KdfParams,
         contents: StoreContents,
     ) -> Result<Self, VaultError> {
-        if password.is_empty() {
-            return Err(VaultError::Invalid(
-                "the master password cannot be empty".into(),
-            ));
-        }
+        usable_password(password)?;
         if Self::exists(path) {
             return Err(VaultError::AlreadyExists);
         }
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent).map_err(|error| VaultError::Io(error.to_string()))?;
+        }
+        Self::seal_new(path, password, kdf, contents)
+    }
+
+    /// Writes `contents` to `path` under `password` with a new salt,
+    /// replacing whatever file is there (atomically: on a failure the old
+    /// file stays as it was).
+    fn seal_new(
+        path: &Path,
+        password: &str,
+        kdf: KdfParams,
+        contents: StoreContents,
+    ) -> Result<Self, VaultError> {
+        // Held as a body first, so its secrets are wiped on any failure.
+        let body = Body::from_contents(contents);
+        usable_password(password)?;
         let salt = Key::generate().to_vec();
         let key = derive_key(password, &kdf, &salt)?;
         let vault = Self {
@@ -264,11 +278,8 @@ impl Vault {
             key,
             kdf,
             salt,
-            body: Mutex::new(Body::from_contents(contents)),
+            body: Mutex::new(body),
         };
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(parent).map_err(|error| VaultError::Io(error.to_string()))?;
-        }
         vault.write(&vault.body())?;
         Ok(vault)
     }
@@ -368,6 +379,50 @@ impl Vault {
             .map_err(|error| VaultError::Io(format!("cannot encode the file: {error}")))?;
         write_atomically(&self.path, &file).map_err(|error| VaultError::Io(error.to_string()))
     }
+}
+
+/// A copy of store contents taken while moving them: its secrets are wiped
+/// when it is dropped, whichever way the move ends.
+#[derive(Default)]
+struct Wiping(StoreContents);
+
+impl Drop for Wiping {
+    fn drop(&mut self) {
+        for entry in &mut self.0.profiles {
+            entry.profile.wipe();
+        }
+        for entry in &mut self.0.secrets {
+            entry.value.wipe();
+        }
+    }
+}
+
+/// The vault in `state`, if it is unlocked.
+fn unlocked_vault(state: &State) -> Result<&Vault, VaultError> {
+    match state {
+        State::Off => Err(VaultError::NoVault),
+        State::Locked => Err(VaultError::Locked),
+        State::Unlocked(vault) => Ok(vault),
+    }
+}
+
+fn usable_password(password: &str) -> Result<(), VaultError> {
+    if password.is_empty() {
+        return Err(VaultError::Invalid(
+            "the master password cannot be empty".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A new master password, typed twice.
+fn check_new_password(password: &str, repeated: &str) -> Result<(), VaultError> {
+    if password != repeated {
+        return Err(VaultError::Invalid(
+            "the two master passwords are not the same".into(),
+        ));
+    }
+    usable_password(password)
 }
 
 fn cipher(key: &[u8; 32]) -> XChaCha20Poly1305 {
@@ -675,11 +730,7 @@ impl ActiveStore {
     /// used), as the one place that has them all. The vault is unlocked
     /// afterwards.
     pub fn turn_on(&self, password: &str, repeated: &str) -> Result<(), VaultError> {
-        if password != repeated {
-            return Err(VaultError::Invalid(
-                "the two master passwords are not the same".into(),
-            ));
-        }
+        check_new_password(password, repeated)?;
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         if !matches!(*state, State::Off) {
             return Err(VaultError::AlreadyExists);
@@ -752,6 +803,156 @@ impl ActiveStore {
         } else {
             Emptied::NotRestored(error)
         }
+    }
+
+    /// Changes the master password of the unlocked vault: `current` must
+    /// open it, and the new one is typed twice (`password`, `repeated`).
+    /// The file is sealed again with a new salt and key (the same
+    /// key-derivation cost) and replaced atomically, so on a failure the
+    /// old password still opens it. Afterwards only the new one does.
+    pub fn change_password(
+        &self,
+        current: &str,
+        password: &str,
+        repeated: &str,
+    ) -> Result<(), VaultError> {
+        check_new_password(password, repeated)?;
+        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let kdf = unlocked_vault(&state)?.kdf();
+        let contents = Vault::unlock(&self.vault_file, current)?.body().contents();
+        let renewed = Vault::seal_new(&self.vault_file, password, kdf, contents)?;
+        *state = State::Unlocked(renewed);
+        Ok(())
+    }
+
+    /// Turns the vault off: `password` (the master password, asked again)
+    /// must open it; every profile and secret of every scope is copied to
+    /// the keychain, read back, and only then is the vault file removed.
+    /// On a failure the vault stays, unlocked and in use, and the keychain
+    /// is put back as it was (what it had of its own under the same names
+    /// included); the error says if that could not be done in full.
+    pub fn turn_off(&self, password: &str) -> Result<(), VaultError> {
+        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        unlocked_vault(&state)?;
+        let contents = Wiping(Vault::unlock(&self.vault_file, password)?.body().contents());
+        let before = Wiping(self.keychain.contents()?);
+        let mut undo = Wiping::default();
+        let mut added = Wiping::default();
+        let moved = self.fill_keychain(&contents.0, &before.0, &mut undo.0, &mut added.0);
+        let result = match moved {
+            Ok(()) => match fs::remove_file(&self.vault_file) {
+                Ok(()) => Ok(()),
+                Err(error) => Err(format!("cannot remove the vault file: {error}")),
+            },
+            Err(error) => Err(format!(
+                "cannot move the profiles and secrets back to the keychain: {error}"
+            )),
+        };
+        let result = match result {
+            Ok(()) => {
+                *state = State::Off;
+                Ok(())
+            }
+            Err(error) if self.restore_keychain(&undo.0, &added.0) => Err(VaultError::Store(
+                StoreError(format!("{error}; the vault stays on and the keychain is as it was")),
+            )),
+            Err(error) => Err(VaultError::Store(StoreError(format!(
+                "{error}; the vault stays on, holding them all, but the keychain could not be put back as it was"
+            )))),
+        };
+        result
+    }
+
+    /// Puts `contents` into the keychain and reads them back. Notes, for
+    /// each entry before putting it, the keychain's own of that name
+    /// (from `before`) in `undo`, or the entry in `added` if it had none.
+    fn fill_keychain(
+        &self,
+        contents: &StoreContents,
+        before: &StoreContents,
+        undo: &mut StoreContents,
+        added: &mut StoreContents,
+    ) -> Result<(), StoreError> {
+        let keychain = self.keychain.as_ref();
+        let same_profile = |a: &ScopedProfile, b: &ScopedProfile| {
+            key(&a.scope, &a.profile.name) == key(&b.scope, &b.profile.name)
+        };
+        let same_secret =
+            |a: &ScopedSecret, b: &ScopedSecret| key(&a.scope, &a.name) == key(&b.scope, &b.name);
+        for entry in &contents.profiles {
+            match before.profiles.iter().find(|old| same_profile(old, entry)) {
+                Some(old) => undo.profiles.push(old.clone()),
+                None => added.profiles.push(entry.clone()),
+            }
+            keychain.put(&entry.scope, &entry.profile)?;
+        }
+        for entry in &contents.secrets {
+            match before.secrets.iter().find(|old| same_secret(old, entry)) {
+                Some(old) => undo.secrets.push(old.clone()),
+                None => added.secrets.push(entry.clone()),
+            }
+            keychain.put_secret(&entry.scope, &entry.name, &entry.value)?;
+        }
+        let now = keychain.contents()?;
+        let all_there = contents
+            .profiles
+            .iter()
+            .all(|entry| now.profiles.contains(entry))
+            && contents
+                .secrets
+                .iter()
+                .all(|entry| now.secrets.contains(entry));
+        if !all_there {
+            return Err(StoreError(
+                "what was read back from the keychain differs from what was written".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Takes `added` out of the keychain and puts `undo` back; whether
+    /// all of it worked.
+    fn restore_keychain(&self, undo: &StoreContents, added: &StoreContents) -> bool {
+        let keychain = self.keychain.as_ref();
+        let mut restored = true;
+        for entry in &added.profiles {
+            restored &= keychain.delete(&entry.scope, &entry.profile.name).is_ok();
+        }
+        for entry in &added.secrets {
+            restored &= keychain.delete_secret(&entry.scope, &entry.name).is_ok();
+        }
+        for entry in &undo.profiles {
+            restored &= keychain.put(&entry.scope, &entry.profile).is_ok();
+        }
+        for entry in &undo.secrets {
+            restored &= keychain
+                .put_secret(&entry.scope, &entry.name, &entry.value)
+                .is_ok();
+        }
+        restored
+    }
+
+    /// Starts over after a forgotten master password: deletes the locked
+    /// vault, with every profile and secret in it, and goes back to the
+    /// keychain. Refused while the vault is unlocked (turning it off keeps
+    /// what it holds).
+    pub fn start_over(&self) -> Result<(), VaultError> {
+        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        match &*state {
+            State::Off => return Err(VaultError::NoVault),
+            State::Unlocked(_) => return Err(VaultError::Invalid(
+                "the vault is unlocked: turn it off instead, which keeps its profiles and secrets"
+                    .into(),
+            )),
+            State::Locked => {}
+        }
+        match fs::remove_file(&self.vault_file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(VaultError::Io(error.to_string())),
+        }
+        *state = State::Off;
+        Ok(())
     }
 
     fn with<T>(

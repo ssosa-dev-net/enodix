@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 /** No vault file (the keychain is used), or one that is locked or open. */
 export type VaultStatus = "off" | "locked" | "unlocked";
 
-/** Why unlocking or turning on did not work. */
+/** Why a vault action did not work. */
 export interface VaultFailure {
   kind: "wrongPassword" | "damaged" | "invalid" | "failed";
   message: string;
@@ -24,6 +24,29 @@ export function unlockVault(password: string) {
 /** Moves every workspace's profiles and secrets into a new vault. */
 export function turnOnVault(password: string, repeated: string) {
   return invoke<VaultStatus>("vault_turn_on", { password, repeated });
+}
+
+/** Changes the master password; `current` must open the vault. */
+export function changeVaultPassword(
+  current: string,
+  password: string,
+  repeated: string,
+) {
+  return invoke<void>("vault_change_password", {
+    current,
+    password,
+    repeated,
+  });
+}
+
+/** Moves everything back to the keychain and removes the vault file. */
+export function turnOffVault(password: string) {
+  return invoke<VaultStatus>("vault_turn_off", { password });
+}
+
+/** Deletes the locked vault and everything in it (forgotten password). */
+export function startVaultOver() {
+  return invoke<VaultStatus>("vault_start_over");
 }
 
 export function quitApp() {

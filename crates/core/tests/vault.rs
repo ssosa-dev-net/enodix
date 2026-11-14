@@ -736,3 +736,300 @@ fn profiles_under_the_folder_path_move_to_the_workspace_id_inside_a_vault() {
     assert!(reopened.list(&by_path).unwrap().is_empty());
     assert!(reopened.secret_names(&by_path).unwrap().is_empty());
 }
+
+const NEW_MASTER: &str = "a whole new master passw0rd";
+
+/// A store with the vault on, holding what `filled_keychain` puts (five
+/// puts), over a keychain the test keeps a handle to.
+fn vault_on(data: &DataFolder, failures: Failures) -> (ActiveStore, FailingStore, StoreContents) {
+    let keychain = FailingStore::new(failures);
+    let everything = filled_keychain(&keychain);
+    let store = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+    store.turn_on(MASTER, MASTER).unwrap();
+    assert!(keychain.held().is_empty());
+    (store, keychain, everything)
+}
+
+#[test]
+fn changing_the_password_needs_the_current_one_and_then_only_the_new_one_unlocks() {
+    let data = DataFolder::new();
+    let (store, _keychain, everything) = vault_on(&data, Failures::default());
+
+    assert_eq!(
+        store
+            .change_password("not the master", NEW_MASTER, NEW_MASTER)
+            .unwrap_err(),
+        VaultError::WrongPassword
+    );
+    assert!(matches!(
+        store
+            .change_password(MASTER, NEW_MASTER, "a whole new master passw0rD")
+            .unwrap_err(),
+        VaultError::Invalid(_)
+    ));
+    assert!(matches!(
+        store.change_password(MASTER, "", "").unwrap_err(),
+        VaultError::Invalid(_)
+    ));
+    // Nothing changed so far.
+    assert!(Vault::unlock(&data.vault(), MASTER).is_ok());
+
+    store
+        .change_password(MASTER, NEW_MASTER, NEW_MASTER)
+        .unwrap();
+
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert_eq!(store.contents().unwrap().sorted(), everything);
+    // The store goes on working, and writes under the new password.
+    store.put_secret(SCOPE_A, "after", &secret("v")).unwrap();
+    assert_eq!(
+        Vault::unlock(&data.vault(), MASTER).unwrap_err(),
+        VaultError::WrongPassword
+    );
+    let reopened = Vault::unlock(&data.vault(), NEW_MASTER).unwrap();
+    assert_eq!(value(&reopened, SCOPE_A, "after").as_deref(), Some("v"));
+    assert_eq!(
+        data.files(),
+        ["credentials.vault"],
+        "no temporary file left"
+    );
+    drop(store);
+
+    let next_launch = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert_eq!(
+        next_launch.unlock(MASTER).unwrap_err(),
+        VaultError::WrongPassword
+    );
+    next_launch.unlock(NEW_MASTER).unwrap();
+    assert_eq!(
+        next_launch.get(SCOPE_A, "core").unwrap(),
+        Some(password_profile("core", "pw-a"))
+    );
+}
+
+#[test]
+fn changing_the_password_keeps_the_key_derivation_cost() {
+    let data = DataFolder::new();
+    let cheap = KdfParams {
+        memory_kib: 8 * 1024,
+        iterations: 1,
+        parallelism: 1,
+    };
+    drop(Vault::create_with(&data.vault(), MASTER, cheap, StoreContents::default()).unwrap());
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    store.unlock(MASTER).unwrap();
+    store
+        .change_password(MASTER, NEW_MASTER, NEW_MASTER)
+        .unwrap();
+    assert_eq!(unlocked_with(&data.vault(), NEW_MASTER).kdf(), cheap);
+}
+
+fn unlocked_with(path: &Path, password: &str) -> Vault {
+    Vault::unlock(path, password).unwrap()
+}
+
+#[test]
+fn the_password_of_a_locked_or_missing_vault_cannot_be_changed() {
+    let data = DataFolder::new();
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert_eq!(
+        store
+            .change_password(MASTER, NEW_MASTER, NEW_MASTER)
+            .unwrap_err(),
+        VaultError::NoVault
+    );
+    drop(Vault::create(&data.vault(), MASTER).unwrap());
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert_eq!(
+        store
+            .change_password(MASTER, NEW_MASTER, NEW_MASTER)
+            .unwrap_err(),
+        VaultError::Locked
+    );
+    assert!(Vault::unlock(&data.vault(), MASTER).is_ok());
+}
+
+#[test]
+fn turning_the_vault_off_moves_everything_back_and_removes_the_file() {
+    let data = DataFolder::new();
+    let (store, keychain, _) = vault_on(&data, Failures::default());
+    // Kept while the vault was on: moves back too.
+    store.put(SCOPE_B, &key_profile("Later")).unwrap();
+    store
+        .put_secret(SCOPE_A, "later-token", &secret("l4ter"))
+        .unwrap();
+    let everything = store.contents().unwrap().sorted();
+    assert_eq!(everything.profiles.len(), 4);
+    assert_eq!(everything.secrets.len(), 3);
+
+    assert_eq!(
+        store.turn_off("not the master").unwrap_err(),
+        VaultError::WrongPassword
+    );
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert!(keychain.held().is_empty());
+
+    store.turn_off(MASTER).unwrap();
+
+    assert_eq!(store.status(), VaultStatus::Off);
+    assert!(data.files().is_empty(), "{:?}", data.files());
+    assert_eq!(keychain.held(), everything);
+    assert_eq!(store.contents().unwrap().sorted(), everything);
+    // Changes now go to the keychain.
+    store.put_secret(SCOPE_B, "new", &secret("n")).unwrap();
+    assert_eq!(value(&keychain, SCOPE_B, "new").as_deref(), Some("n"));
+    // At the next launch there is no vault to unlock.
+    let next_launch = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+    assert_eq!(next_launch.status(), VaultStatus::Off);
+}
+
+#[test]
+fn a_keychain_failing_while_turning_off_keeps_the_vault_and_the_keychain_as_they_were() {
+    // Puts 0-4 fill the keychain and 5 adds the keychain's own profile;
+    // the move back starts at 6 (three profiles, then two secrets).
+    for failing in [6, 7, 8, 10] {
+        let data = DataFolder::new();
+        let (store, keychain, everything) = vault_on(
+            &data,
+            Failures {
+                failing_put: Some(failing),
+                ..Failures::default()
+            },
+        );
+        // A profile the keychain has of its own, under a name the vault
+        // also has: it is put back as it was.
+        keychain
+            .put(SCOPE_A, &password_profile("Core", "the keychain's own"))
+            .unwrap();
+        let before = keychain.held();
+
+        let error = store.turn_off(MASTER).unwrap_err();
+        assert!(error.to_string().contains("keychain"), "{error}");
+
+        assert_eq!(store.status(), VaultStatus::Unlocked, "put {failing}");
+        assert_eq!(store.contents().unwrap().sorted(), everything);
+        assert_eq!(
+            unlocked(&data.vault()).contents().unwrap().sorted(),
+            everything
+        );
+        assert_eq!(keychain.held(), before, "put {failing}");
+    }
+}
+
+#[test]
+fn a_keychain_that_cannot_take_back_its_own_entries_still_keeps_the_vault() {
+    let data = DataFolder::new();
+    // Every put after the sixth fails: the move back stops at its second,
+    // and the keychain's own profile cannot be put back.
+    let (store, keychain, everything) = vault_on(
+        &data,
+        Failures {
+            puts_after: Some(7),
+            ..Failures::default()
+        },
+    );
+    keychain.put(SCOPE_A, &key_profile("automation")).unwrap();
+
+    let error = store.turn_off(MASTER).unwrap_err();
+    assert!(
+        error.to_string().contains("could not be put back"),
+        "{error}"
+    );
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert_eq!(
+        unlocked(&data.vault()).contents().unwrap().sorted(),
+        everything
+    );
+}
+
+/// Windows refuses to delete a file another handle holds without sharing
+/// deletion: the vault file then cannot be removed.
+#[cfg(windows)]
+#[test]
+fn a_vault_file_that_cannot_be_removed_keeps_the_vault_and_empties_the_keychain_again() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let data = DataFolder::new();
+    let (store, keychain, everything) = vault_on(&data, Failures::default());
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // FILE_SHARE_READ only
+        .open(data.vault())
+        .unwrap();
+
+    let error = store.turn_off(MASTER).unwrap_err();
+    assert!(error.to_string().contains("vault file"), "{error}");
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert!(keychain.held().is_empty(), "{:?}", keychain.held());
+    drop(held);
+    assert_eq!(
+        unlocked(&data.vault()).contents().unwrap().sorted(),
+        everything
+    );
+    // Once the file can go, turning off works.
+    store.turn_off(MASTER).unwrap();
+    assert_eq!(keychain.held(), everything);
+}
+
+#[test]
+fn a_locked_or_missing_vault_cannot_be_turned_off() {
+    let data = DataFolder::new();
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert_eq!(store.turn_off(MASTER).unwrap_err(), VaultError::NoVault);
+    drop(Vault::create(&data.vault(), MASTER).unwrap());
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert_eq!(store.turn_off(MASTER).unwrap_err(), VaultError::Locked);
+    assert_eq!(data.files(), ["credentials.vault"]);
+}
+
+#[test]
+fn starting_over_deletes_a_locked_vault_and_returns_to_an_empty_keychain() {
+    let data = DataFolder::new();
+    let (store, _keychain, _) = vault_on(&data, Failures::default());
+    drop(store);
+
+    // The next launch, with the password forgotten.
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert_eq!(store.status(), VaultStatus::Locked);
+    store.start_over().unwrap();
+
+    assert_eq!(store.status(), VaultStatus::Off);
+    assert!(data.files().is_empty(), "{:?}", data.files());
+    assert!(store.contents().unwrap().is_empty());
+    store.put(SCOPE_A, &password_profile("fresh", "f")).unwrap();
+    assert!(store.get(SCOPE_A, "fresh").unwrap().is_some());
+    let next_launch = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert_eq!(next_launch.status(), VaultStatus::Off);
+}
+
+#[test]
+fn a_damaged_vault_can_be_started_over() {
+    let data = DataFolder::new();
+    fs::write(data.vault(), "cut sho").unwrap();
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert!(matches!(
+        store.unlock(MASTER).unwrap_err(),
+        VaultError::Damaged(_)
+    ));
+    store.start_over().unwrap();
+    assert_eq!(store.status(), VaultStatus::Off);
+    assert!(data.files().is_empty());
+}
+
+#[test]
+fn starting_over_needs_a_locked_vault() {
+    let data = DataFolder::new();
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert_eq!(store.start_over().unwrap_err(), VaultError::NoVault);
+
+    let (store, _keychain, everything) = vault_on(&data, Failures::default());
+    assert!(matches!(
+        store.start_over().unwrap_err(),
+        VaultError::Invalid(_)
+    ));
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert_eq!(
+        unlocked(&data.vault()).contents().unwrap().sorted(),
+        everything
+    );
+}

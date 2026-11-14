@@ -641,6 +641,35 @@ fn vault_turn_on(
     Ok(shell.credentials.status())
 }
 
+/// Changes the master password; `current` must open the vault.
+#[tauri::command]
+fn vault_change_password(
+    shell: State<'_, Shell>,
+    current: String,
+    password: String,
+    repeated: String,
+) -> Result<(), VaultFailure> {
+    Ok(shell
+        .credentials
+        .change_password(&current, &password, &repeated)?)
+}
+
+/// Turns the vault off (the master password asked again), moving
+/// everything back to the keychain.
+#[tauri::command]
+fn vault_turn_off(shell: State<'_, Shell>, password: String) -> Result<VaultStatus, VaultFailure> {
+    shell.credentials.turn_off(&password)?;
+    Ok(shell.credentials.status())
+}
+
+/// Deletes the locked vault and everything in it (the unlock screen's
+/// "Start over", after its confirmation).
+#[tauri::command]
+fn vault_start_over(shell: State<'_, Shell>) -> Result<VaultStatus, VaultFailure> {
+    shell.credentials.start_over()?;
+    Ok(shell.credentials.status())
+}
+
 /// Quits the app (the unlock screen's Quit).
 #[tauri::command]
 fn app_quit(app: AppHandle) {
@@ -1917,6 +1946,9 @@ pub fn run() {
             vault_status,
             vault_unlock,
             vault_turn_on,
+            vault_change_password,
+            vault_turn_off,
+            vault_start_over,
             workspace_open,
             workspace_create,
             workspaces_list,
