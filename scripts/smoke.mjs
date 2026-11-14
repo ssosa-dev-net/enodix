@@ -7,6 +7,7 @@
 // Windows only for now: it relies on WebView2's remote-debugging switch.
 
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -31,6 +32,9 @@ const ONE_TIME_CODE = "424242";
 // the user's own agent is never used.
 const AGENT_PIPE = String.raw`\\.\pipe\netterm-smoke-agent-${process.pid}`;
 const TIMEOUT_MS = 15000;
+// A public key the test server does not have: stored as the server's key,
+// it makes the server's real key look changed.
+const OTHER_KEY_FILE = "crates/core/tests/fixtures/keys/rsa_client.pub";
 
 const children = [];
 const userData = mkdtempSync(join(tmpdir(), "netterm-smoke-"));
@@ -66,6 +70,13 @@ function createWorkspace() {
     join(appData, "state.yaml"),
     JSON.stringify({ last_workspace: workspace }),
   );
+}
+
+/** OpenSSH's SHA-256 fingerprint of a public key line. */
+function fingerprint(keyLine) {
+  const blob = Buffer.from(keyLine.split(/\s+/)[1], "base64");
+  const digest = createHash("sha256").update(blob).digest("base64");
+  return `SHA256:${digest.replace(/=+$/, "")}`;
 }
 
 function fail(message) {
@@ -245,6 +256,23 @@ async function main() {
       }
     }
   };
+  // Waits for the host-key question of the given kind ("first-use" or
+  // "changed") and returns its text and fingerprints.
+  const hostKeyCheck = (kind) =>
+    until(`the ${kind} host-key question`, () =>
+      evaluate(`(() => {
+        const card = document.querySelector("[data-host-key=${kind}]");
+        const shown = (which) =>
+          card.querySelector("[data-fingerprint=" + which + "]")?.textContent;
+        return card && !card.querySelector("button:disabled") && {
+          text: card.textContent,
+          presented: shown("presented"),
+          stored: shown("stored"),
+        };
+      })()`),
+    );
+  const decideHostKey = (decision) =>
+    evaluate(`document.querySelector("[data-decision=${decision}]").click()`);
   const step = (message) => console.log(`ok - ${message}`);
   // Set SMOKE_SCREENSHOTS to a folder to keep pictures of the window.
   const screenshot = async (name) => {
@@ -275,8 +303,18 @@ async function main() {
   );
   step("the last workspace reopened, with the malformed file reported");
 
-  // Quick-connect opens an interactive shell.
+  // The first connection asks about the host key, showing its type and
+  // fingerprint; trusting it once connects.
   await quickConnect(PASSWORD);
+  const firstUse = await hostKeyCheck("first-use");
+  if (!/ssh-ed25519/.test(firstUse.text) || !firstUse.presented) {
+    fail(
+      `the host-key question lacks the type or fingerprint: ${firstUse.text}`,
+    );
+  }
+  await screenshot("host-key-first-use");
+  await decideHostKey("trustOnce");
+  // Quick-connect opens an interactive shell.
   await until(
     "the Connected status",
     async () => (await status()) === "Connected",
@@ -368,9 +406,25 @@ async function main() {
   );
   step(`remote exit is shown: "${await status()}"`);
 
-  // Closing the session from the interface is reflected too.
+  // Closing the session from the interface is reflected too. A key trusted
+  // once is asked about again; this time it is remembered, in the app's
+  // data folder.
   await click("New connection");
   await quickConnect(PASSWORD);
+  const again = await hostKeyCheck("first-use");
+  if (again.presented !== firstUse.presented) {
+    fail(
+      `the fingerprint changed: ${again.presented} vs ${firstUse.presented}`,
+    );
+  }
+  await decideHostKey("trustAndRemember");
+  const knownHosts = join(appData, "known_hosts");
+  await until("the remembered host key", () =>
+    readFileSync(knownHosts, "utf8").startsWith(
+      `[127.0.0.1]:${SSH_PORT} ssh-ed25519 `,
+    ),
+  );
+  step("the first connection asked about the host key; it was remembered");
   await until(
     "the Connected status",
     async () => (await status()) === "Connected",
@@ -389,7 +443,46 @@ async function main() {
     "the authentication failure",
     async () => (await status()) === "Closed: authentication failed",
   );
-  step("a wrong password is reported");
+  step("a wrong password is reported (the remembered key was not asked about)");
+
+  // A changed key blocks the connection, shows both fingerprints, and goes
+  // on only when the user replaces the stored key.
+  const realKeyLine = readFileSync(knownHosts, "utf8");
+  const otherKey = readFileSync(OTHER_KEY_FILE, "utf8").trim();
+  writeFileSync(knownHosts, `[127.0.0.1]:${SSH_PORT} ${otherKey}\n`);
+  await click("New connection");
+  await quickConnect(PASSWORD);
+  const changed = await hostKeyCheck("changed");
+  if (
+    changed.stored !== fingerprint(otherKey) ||
+    changed.presented !== firstUse.presented
+  ) {
+    fail(`the changed-key warning shows ${JSON.stringify(changed)}`);
+  }
+  await screenshot("host-key-changed");
+  await decideHostKey("cancel");
+  await until("the refused connection", async () =>
+    (await status()).includes("host key has changed"),
+  );
+  if (!readFileSync(knownHosts, "utf8").includes(otherKey.split(" ")[1])) {
+    fail("cancelling changed the stored key");
+  }
+  await click("New connection");
+  await quickConnect(PASSWORD);
+  await hostKeyCheck("changed");
+  await decideHostKey("trustAndRemember");
+  await until(
+    "the Connected status",
+    async () => (await status()) === "Connected",
+  );
+  if (readFileSync(knownHosts, "utf8") !== realKeyLine) {
+    fail("replacing the key did not store the server's key alone");
+  }
+  await click("Disconnect");
+  await until("the closed status", async () =>
+    (await status()).startsWith("Closed"),
+  );
+  step("a changed host key was blocked, then replaced on request");
 
   // Double-clicking a host in the tree prompts for credentials and opens an
   // SSH session to its management address, on the port its folder sets.

@@ -42,7 +42,7 @@ fn transcript(typed: &str, output: &[u8]) -> Vec<u8> {
 async fn a_keystroke_after_a_quiet_spell_is_echoed_without_waiting_for_the_batch_timer() {
     let server = TestSshServer::start().await;
     // A batch timer far longer than any echo takes on loopback.
-    let manager = SessionManager::with_output_options(OutputOptions {
+    let manager = support::manager_with_output_options(OutputOptions {
         batch_interval: Duration::from_secs(1),
         ..OutputOptions::default()
     });
@@ -65,7 +65,7 @@ async fn a_keystroke_after_a_quiet_spell_is_echoed_without_waiting_for_the_batch
 async fn output_under_load_arrives_in_full_batches_complete_and_in_order() {
     let server = TestSshServer::start().await;
     let batch_size = 32 * 1024;
-    let manager = SessionManager::with_output_options(OutputOptions {
+    let manager = support::manager_with_output_options(OutputOptions {
         batch_size,
         batch_interval: Duration::from_secs(1),
         ..OutputOptions::default()
@@ -94,7 +94,7 @@ async fn output_under_load_arrives_in_full_batches_complete_and_in_order() {
 async fn unacknowledged_output_pauses_reading_and_acknowledging_resumes_it() {
     let server = TestSshServer::start().await;
     let window = 64 * 1024;
-    let manager = SessionManager::with_output_options(OutputOptions {
+    let manager = support::manager_with_output_options(OutputOptions {
         window,
         ..OutputOptions::default()
     });
@@ -123,7 +123,7 @@ async fn unacknowledged_output_pauses_reading_and_acknowledging_resumes_it() {
 async fn acknowledging_through_the_manager_resumes_reading() {
     let server = TestSshServer::start().await;
     let window = 64 * 1024;
-    let manager = SessionManager::with_output_options(OutputOptions {
+    let manager = support::manager_with_output_options(OutputOptions {
         window,
         ..OutputOptions::default()
     });
@@ -152,7 +152,7 @@ async fn acknowledging_through_the_manager_resumes_reading() {
 async fn a_device_flooding_a_paused_session_cannot_make_it_buffer_without_bound() {
     let server = TestSshServer::start().await;
     let window = 64 * 1024;
-    let manager = SessionManager::with_output_options(OutputOptions {
+    let manager = support::manager_with_output_options(OutputOptions {
         window,
         ..OutputOptions::default()
     });
@@ -173,7 +173,7 @@ async fn a_device_flooding_a_paused_session_cannot_make_it_buffer_without_bound(
 #[tokio::test]
 async fn ctrl_c_stops_a_flood_of_output_and_the_prompt_returns() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     manager.write(id, b"flood\r".to_vec()).unwrap();

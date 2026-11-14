@@ -11,9 +11,10 @@ use netterm_core::credentials::{
     CredentialStore, HostLogin, KeychainStore, MemoryStore, ProfileDraft, ProfileError,
     ProfileSummary, Profiles,
 };
+use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::{
-    LoginPrompt, SessionEvent, SessionId, SessionManager, SessionState, SessionTarget, SshAuth,
-    SshTarget, TerminalSize,
+    HostKeyDecision, HostKeyQuestion, LoginPrompt, SessionEvent, SessionId, SessionManager,
+    SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{
     EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem, Role,
@@ -546,10 +547,14 @@ fn host_save(shell: State<'_, Shell>, host: Host) -> Result<Edited<()>, String> 
 }
 
 /// Opens a session. Output arrives on `on_output` as raw bytes, already
-/// batched by the core, state changes on `on_state`, and questions the
-/// server asks while logging in on `on_prompt` (answered with
-/// `session_answer`); terminal data never goes through the event system.
+/// batched by the core, state changes on `on_state`, questions the server
+/// asks while logging in on `on_prompt` (answered with `session_answer`),
+/// and host keys to decide on on `on_host_key` (decided with
+/// `session_decide_host_key`); terminal data never goes through the event
+/// system.
 /// The interface acknowledges output with `session_acknowledge`.
+// One argument per channel is how Tauri commands receive them.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn session_open(
     manager: State<'_, SessionManager>,
@@ -559,6 +564,7 @@ async fn session_open(
     on_output: Channel<InvokeResponseBody>,
     on_state: Channel<StateMessage>,
     on_prompt: Channel<LoginPrompt>,
+    on_host_key: Channel<HostKeyQuestion>,
 ) -> Result<u64, String> {
     let target = SessionTarget::Ssh(match target {
         ConnectTarget::Quick {
@@ -599,6 +605,7 @@ async fn session_open(
                 SessionEvent::Output(bytes) => on_output.send(InvokeResponseBody::Raw(bytes)),
                 SessionEvent::State(state) => on_state.send(state.into()),
                 SessionEvent::Prompt(prompt) => on_prompt.send(prompt),
+                SessionEvent::HostKey(question) => on_host_key.send(question),
             };
             // The webview is gone; dropping the events closes the session.
             if delivered.is_err() {
@@ -618,6 +625,18 @@ fn session_answer(
 ) -> Result<(), String> {
     manager
         .answer(SessionId(id), answers)
+        .map_err(|error| error.to_string())
+}
+
+/// Decides whether to trust the host key the session asked about last.
+#[tauri::command]
+fn session_decide_host_key(
+    manager: State<'_, SessionManager>,
+    id: u64,
+    decision: HostKeyDecision,
+) -> Result<(), String> {
+    manager
+        .decide_host_key(SessionId(id), decision)
         .map_err(|error| error.to_string())
 }
 
@@ -658,7 +677,6 @@ fn session_close(manager: State<'_, SessionManager>, id: u64) -> Result<(), Stri
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(SessionManager::new())
         .setup(|app| {
             let data_folder = match std::env::var_os(DATA_DIR_VARIABLE) {
                 Some(folder) => PathBuf::from(folder),
@@ -671,6 +689,10 @@ pub fn run() {
                     // stays put if the product is renamed.
                     _ => Box::new(KeychainStore::new(app.config().identifier.clone())),
                 };
+            // Trusted host keys are per user, beside the app state.
+            app.manage(SessionManager::new(KnownHosts::in_data_folder(
+                &data_folder,
+            )));
             app.manage(Shell {
                 data_folder,
                 credentials,
@@ -713,6 +735,7 @@ pub fn run() {
             session_open,
             session_write,
             session_answer,
+            session_decide_host_key,
             session_acknowledge,
             session_resize,
             session_close

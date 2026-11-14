@@ -40,7 +40,7 @@ async fn state_after_connecting(
     username: &str,
     auth: SshAuth,
 ) -> SessionState {
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (_id, mut events) = open(&manager, server, username, auth);
     assert_eq!(next_state(&mut events).await, SessionState::Connecting);
     let state = next_state(&mut events).await;
@@ -111,7 +111,7 @@ async fn a_key_held_by_pageant_logs_in() {
 async fn an_agent_that_is_not_running_is_reported_before_connecting() {
     // No server: the agent is asked first, so nothing goes over the network.
     let path = support::agent::unused_path();
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let target = SshTarget {
         host: "127.0.0.1".into(),
         port: 9,
@@ -228,7 +228,7 @@ fn code_prompt() -> LoginPrompt {
 #[tokio::test]
 async fn a_one_time_code_asked_after_the_password_is_shown_and_answered() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open(
         &manager,
         &server,
@@ -247,7 +247,7 @@ async fn a_one_time_code_asked_after_the_password_is_shown_and_answered() {
 #[tokio::test]
 async fn every_round_of_keyboard_interactive_questions_reaches_the_user() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     // A key the server refuses: the server then offers keyboard-interactive,
     // which asks for the password and then for a code.
     let temp = tempfile::TempDir::new().unwrap();
@@ -279,7 +279,7 @@ async fn every_round_of_keyboard_interactive_questions_reaches_the_user() {
 #[tokio::test]
 async fn a_wrong_answer_fails_authentication() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open(
         &manager,
         &server,
@@ -300,7 +300,7 @@ async fn a_wrong_answer_fails_authentication() {
 #[tokio::test]
 async fn closing_while_a_question_waits_ends_the_session() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open(
         &manager,
         &server,
@@ -321,7 +321,7 @@ async fn closing_while_a_question_waits_ends_the_session() {
 #[tokio::test]
 async fn a_server_that_only_offers_keyboard_interactive_gets_the_password_without_asking() {
     let server = TestSshServer::start_offering(&[MethodKind::KeyboardInteractive]).await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open(
         &manager,
         &server,

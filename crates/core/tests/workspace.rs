@@ -6,7 +6,7 @@ mod support;
 use std::fmt::Write as _;
 use std::fs;
 
-use netterm_core::session::{SessionManager, SessionState, SessionTarget, TerminalSize};
+use netterm_core::session::{SessionState, SessionTarget, TerminalSize};
 use netterm_core::workspace::{Folder, HostId, Workspace};
 use support::workspaces::{fixture, fixture_copy};
 use support::{next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT, USERNAME};
@@ -189,7 +189,7 @@ async fn connecting_to_a_host_from_the_tree_opens_an_ssh_session() {
         .resolve_host(&HostId::new("Lab/test-r1.yaml"))
         .unwrap();
 
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let target = SessionTarget::Ssh(host.ssh_target(USERNAME.into(), PASSWORD.into()));
     let (_id, mut events) = manager.open(target, TerminalSize { cols: 80, rows: 24 });
 

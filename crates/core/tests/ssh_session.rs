@@ -34,7 +34,7 @@ fn transcript(typed: &str, output: &[u8]) -> Vec<u8> {
 #[tokio::test]
 async fn password_login_opens_a_shell_and_the_prompt_arrives() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
 
     let (_id, mut events) = manager.open(SessionTarget::Ssh(server.target()), SIZE);
 
@@ -46,7 +46,7 @@ async fn password_login_opens_a_shell_and_the_prompt_arrives() {
 #[tokio::test]
 async fn typed_input_reaches_the_shell_and_its_output_comes_back() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     manager.write(id, b"si".to_vec()).unwrap();
@@ -59,7 +59,7 @@ async fn typed_input_reaches_the_shell_and_its_output_comes_back() {
 #[tokio::test]
 async fn colour_sequences_arrive_unaltered() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     manager.write(id, b"colors\r".to_vec()).unwrap();
@@ -74,7 +74,7 @@ async fn colour_sequences_arrive_unaltered() {
 #[tokio::test]
 async fn full_screen_program_output_arrives_unaltered() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     manager.write(id, b"fullscreen\r".to_vec()).unwrap();
@@ -89,7 +89,7 @@ async fn full_screen_program_output_arrives_unaltered() {
 #[tokio::test]
 async fn output_far_larger_than_one_packet_arrives_complete_and_in_order() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     manager.write(id, b"lines 50000\r".to_vec()).unwrap();
@@ -103,7 +103,7 @@ async fn output_far_larger_than_one_packet_arrives_complete_and_in_order() {
 #[tokio::test]
 async fn input_larger_than_the_remote_window_is_delivered_while_its_echo_flows_back() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     // Several times the server's receive window, echoed back byte by byte.
@@ -118,7 +118,7 @@ async fn input_larger_than_the_remote_window_is_delivered_while_its_echo_flows_b
 #[tokio::test]
 async fn resizing_the_session_resizes_the_remote_terminal() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     let size = TerminalSize {
@@ -135,7 +135,7 @@ async fn resizing_the_session_resizes_the_remote_terminal() {
 #[tokio::test]
 async fn a_resize_made_while_connecting_is_not_lost() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
 
     let (id, mut events) = manager.open(SessionTarget::Ssh(server.target()), SIZE);
     let size = TerminalSize {
@@ -155,7 +155,7 @@ async fn a_resize_made_while_connecting_is_not_lost() {
 #[tokio::test]
 async fn the_remote_shell_exiting_closes_the_session_with_its_exit_status() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     manager.write(id, b"exit 3\r".to_vec()).unwrap();
@@ -174,7 +174,7 @@ async fn the_remote_shell_exiting_closes_the_session_with_its_exit_status() {
 #[tokio::test]
 async fn closing_a_session_ends_it() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     manager.close(id).unwrap();
@@ -190,7 +190,7 @@ async fn closing_a_session_ends_it() {
 #[tokio::test]
 async fn losing_the_connection_closes_the_session() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (id, mut events) = open_shell(&manager, &server).await;
 
     manager.write(id, b"drop\r".to_vec()).unwrap();
@@ -204,7 +204,7 @@ async fn losing_the_connection_closes_the_session() {
 #[tokio::test]
 async fn dropping_the_manager_closes_its_sessions() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (_id, mut events) = open_shell(&manager, &server).await;
 
     drop(manager);
@@ -218,7 +218,7 @@ async fn dropping_the_manager_closes_its_sessions() {
 #[tokio::test]
 async fn a_wrong_password_fails_the_session() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let target = SshTarget {
         auth: SshAuth::Password("wrong".into()),
         ..server.target()
@@ -236,7 +236,7 @@ async fn a_wrong_password_fails_the_session() {
 /// Opens a session with `auth` and returns the state that follows
 /// `Connecting`.
 async fn state_after_connecting(server: &TestSshServer, auth: SshAuth) -> SessionState {
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let target = SshTarget {
         auth,
         ..server.target()
@@ -351,7 +351,7 @@ async fn a_port_nobody_listens_on_fails_the_session() {
             .unwrap();
         listener.local_addr().unwrap().port()
     };
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let target = SshTarget {
         host: "127.0.0.1".into(),
         port: closed_port,
@@ -375,7 +375,7 @@ async fn a_port_nobody_listens_on_fails_the_session() {
 #[tokio::test]
 async fn two_sessions_are_independent() {
     let server = TestSshServer::start().await;
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (first, mut first_events) = open_shell(&manager, &server).await;
     let (second, mut second_events) = open_shell(&manager, &server).await;
 

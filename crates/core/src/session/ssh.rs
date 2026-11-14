@@ -6,6 +6,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::watch;
+
 use russh::client::{self, AuthResult, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::{
     load_secret_key, Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate,
@@ -15,9 +17,11 @@ use russh::{
 };
 
 use super::{
-    agent, AgentError, CloseReason, Command, Link, LoginPrompt, LoginQuestion, OpenError, Prompter,
-    SessionState, SshAuth, SshTarget, TerminalSize,
+    agent, AgentError, CloseReason, Command, HostKeyAsker, HostKeyDecision, HostKeyQuestion, Link,
+    LoginPrompt, LoginQuestion, OpenError, Prompter, SessionState, SshAuth, SshTarget,
+    TerminalSize,
 };
+use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
 
 /// Terminal type requested for the remote pty; xterm.js emulates xterm.
 const TERM: &str = "xterm-256color";
@@ -25,18 +29,82 @@ const TERM: &str = "xterm-256color";
 /// How long to wait for the TCP connection and SSH handshake together.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-struct Client;
+/// The client side of the connection: checks the server's host key.
+struct Client {
+    /// The host and port as the target names them: what keys are known by.
+    host: String,
+    port: u16,
+    known_hosts: KnownHosts,
+    asker: HostKeyAsker,
+    /// True while the user is asked about the key: the handshake then
+    /// waits for them, not for the network, and the timeout is paused.
+    asking: watch::Sender<bool>,
+}
+
+/// Why the connection could not be set up.
+#[derive(Debug)]
+enum ClientError {
+    Ssh(russh::Error),
+    /// The host key was refused, or could not be checked.
+    Refused(OpenError),
+}
+
+impl From<russh::Error> for ClientError {
+    fn from(error: russh::Error) -> Self {
+        Self::Ssh(error)
+    }
+}
 
 impl client::Handler for Client {
-    type Error = russh::Error;
+    type Error = ClientError;
 
-    // Every host key is accepted for now. Trust-on-first-use and the
-    // changed-key warning are a separate piece of work (host-key checking).
+    /// Trusts a known key; asks the user about an unknown or changed one.
+    /// Certificates are never asked for (no certificate algorithm is
+    /// offered), so a server sending one is refused.
     async fn check_server_key(
         &mut self,
-        _key: &PublicKeyOrCertificate,
+        key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        let PublicKeyOrCertificate::PublicKey { key, .. } = key else {
+            return Err(ClientError::Refused(OpenError::Protocol(
+                "the server presented a host certificate, which was not asked for".into(),
+            )));
+        };
+        let unusable =
+            |error: KnownHostsError| ClientError::Refused(OpenError::KnownHosts(error.to_string()));
+        let stored = match self
+            .known_hosts
+            .check(&self.host, self.port, key)
+            .map_err(unusable)?
+        {
+            HostKeyStatus::Trusted => return Ok(true),
+            HostKeyStatus::Unknown => Vec::new(),
+            HostKeyStatus::Changed { stored } => stored,
+        };
+        let question = HostKeyQuestion {
+            host: self.host.clone(),
+            port: self.port,
+            key: HostKey::of(key),
+            stored,
+        };
+        let changed = question.changed();
+        self.asking.send_replace(true);
+        let decision = self.asker.ask(question).await;
+        self.asking.send_replace(false);
+        match decision {
+            Some(HostKeyDecision::TrustAndRemember) => {
+                self.known_hosts
+                    .remember(&self.host, self.port, key)
+                    .map_err(unusable)?;
+                Ok(true)
+            }
+            Some(HostKeyDecision::TrustOnce) => Ok(true),
+            Some(HostKeyDecision::Cancel) | None => Err(ClientError::Refused(if changed {
+                OpenError::HostKeyChanged
+            } else {
+                OpenError::HostKeyNotTrusted
+            })),
+        }
     }
 }
 
@@ -49,12 +117,16 @@ struct Shell {
 }
 
 /// Runs one SSH session over `link` until it ends.
-pub(super) async fn run(target: SshTarget, link: &mut Link) -> CloseReason {
+pub(super) async fn run(
+    target: SshTarget,
+    known_hosts: KnownHosts,
+    link: &mut Link,
+) -> CloseReason {
     let requested_size = link.size;
-    let (mut prompter, answers) = link.prompter();
+    let (mut prompter, asker, replies) = link.askers();
     let opened = tokio::select! {
-        opened = open_shell(&target, requested_size, &mut prompter) => opened,
-        () = link.close_requested(&answers) => return CloseReason::ClosedLocally,
+        opened = open_shell(&target, known_hosts, asker, requested_size, &mut prompter) => opened,
+        () = link.close_requested(&replies) => return CloseReason::ClosedLocally,
     };
     let Shell {
         connection,
@@ -103,7 +175,7 @@ pub(super) async fn run(target: SshTarget, link: &mut Link) -> CloseReason {
                     }
                 }
                 // Logged in already: nothing asked for these.
-                Command::Answer(_) => {}
+                Command::Answer(_) | Command::HostKey(_) => {}
                 Command::Close => return close(&connection).await,
             },
             // Output is read only while the consumer is less than a window
@@ -406,20 +478,33 @@ fn asks_only_for_password(prompts: &[russh::client::Prompt]) -> bool {
 
 async fn open_shell(
     target: &SshTarget,
+    known_hosts: KnownHosts,
+    asker: HostKeyAsker,
     size: TerminalSize,
     prompter: &mut Prompter,
 ) -> Result<Shell, OpenError> {
     let login = login(&target.auth).await?;
     let config = Arc::new(client::Config::default());
     let address = (target.host.as_str(), target.port);
-    let mut connection =
-        match tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, address, Client)).await
-        {
-            Ok(Ok(connection)) => connection,
-            Ok(Err(russh::Error::IO(error))) => return Err(OpenError::Connect(error.to_string())),
-            Ok(Err(error)) => return Err(protocol(error)),
-            Err(_) => return Err(OpenError::Connect("timed out".into())),
-        };
+    let (asking, asking_rx) = watch::channel(false);
+    let client = Client {
+        host: target.host.clone(),
+        port: target.port,
+        known_hosts,
+        asker,
+        asking,
+    };
+    let mut connection = tokio::select! {
+        connected = client::connect(config, address, client) => match connected {
+            Ok(connection) => connection,
+            Err(ClientError::Refused(error)) => return Err(error),
+            Err(ClientError::Ssh(russh::Error::IO(error))) => {
+                return Err(OpenError::Connect(error.to_string()))
+            }
+            Err(ClientError::Ssh(error)) => return Err(protocol(error)),
+        },
+        () = handshake_deadline(asking_rx) => return Err(OpenError::Connect("timed out".into())),
+    };
 
     authenticate(&mut connection, &target.username, login, prompter).await?;
 
@@ -458,6 +543,27 @@ async fn open_shell(
         channel,
         early_output,
     })
+}
+
+/// Resolves when the connection and handshake have taken
+/// [`CONNECT_TIMEOUT`], not counting the time the user takes to decide on a
+/// host key: the clock stops while `asking` is true and starts again from
+/// zero after the decision.
+async fn handshake_deadline(mut asking: watch::Receiver<bool>) {
+    loop {
+        // Gone means the handshake is over: nothing to time out.
+        if asking.wait_for(|asking| !*asking).await.is_err() {
+            return std::future::pending().await;
+        }
+        tokio::select! {
+            () = tokio::time::sleep(CONNECT_TIMEOUT) => return,
+            changed = asking.changed() => {
+                if changed.is_err() {
+                    return std::future::pending().await;
+                }
+            }
+        }
+    }
 }
 
 fn protocol(error: russh::Error) -> OpenError {

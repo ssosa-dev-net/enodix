@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::mpsc;
 
+use crate::known_hosts::{HostKey, KnownHosts};
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
 
@@ -109,6 +110,43 @@ pub enum SessionEvent {
     /// Answer with [`SessionManager::answer`]; a server may ask several
     /// times in a row.
     Prompt(LoginPrompt),
+    /// While connecting, the server presented a host key that is not
+    /// trusted for it: the first connection, or a changed key. Nothing goes
+    /// on until [`SessionManager::decide_host_key`] (or closing) decides.
+    HostKey(HostKeyQuestion),
+}
+
+/// Whether to trust a host key the server presented.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct HostKeyQuestion {
+    /// The host and port connected to, as the target names them.
+    pub host: String,
+    pub port: u16,
+    /// The key the server presented.
+    pub key: HostKey,
+    /// The keys trusted for this host and port until now; empty on the
+    /// first connection. Not empty means the key has changed.
+    pub stored: Vec<HostKey>,
+}
+
+impl HostKeyQuestion {
+    /// Whether the server's key differs from the one trusted until now.
+    pub fn changed(&self) -> bool {
+        !self.stored.is_empty()
+    }
+}
+
+/// The user's answer to a [`HostKeyQuestion`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HostKeyDecision {
+    /// Connect, and trust the key from now on; for a changed key, this
+    /// replaces the stored one.
+    TrustAndRemember,
+    /// Connect this once; the next connection asks again.
+    TrustOnce,
+    /// Do not connect.
+    Cancel,
 }
 
 /// Questions the server asks the user while logging in.
@@ -179,6 +217,17 @@ pub enum OpenError {
     /// in another way, such as with a password.
     #[error("{0}")]
     Agent(AgentError),
+    /// The user did not trust the host key on the first connection.
+    #[error("the device's host key was not trusted")]
+    HostKeyNotTrusted,
+    /// The host key differs from the trusted one, and the user did not
+    /// accept the new one.
+    #[error("the device's host key has changed; the connection was refused")]
+    HostKeyChanged,
+    /// The trusted host keys could not be read, or the key could not be
+    /// saved.
+    #[error("{0}")]
+    KnownHosts(String),
     /// The device was reached but the session could not be set up.
     #[error("could not open the session: {0}")]
     Protocol(String),
@@ -221,15 +270,16 @@ pub enum SessionError {
 ///
 /// Cloning gives another handle to the same set of sessions. Sessions are
 /// closed when the last handle is dropped.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SessionManager {
     inner: Arc<Inner>,
 }
 
-#[derive(Default)]
 struct Inner {
     next_id: AtomicU64,
     output: OutputOptions,
+    /// The host keys SSH sessions trust without asking.
+    known_hosts: KnownHosts,
     sessions: Mutex<HashMap<SessionId, SessionHandle>>,
 }
 
@@ -249,16 +299,20 @@ impl Inner {
 }
 
 impl SessionManager {
-    pub fn new() -> Self {
-        Self::default()
+    /// A manager whose SSH sessions check host keys against `known_hosts`
+    /// (and remember the keys the user trusts there).
+    pub fn new(known_hosts: KnownHosts) -> Self {
+        Self::with_output_options(known_hosts, OutputOptions::default())
     }
 
     /// A manager whose sessions batch and pace their output as `options` say.
-    pub fn with_output_options(options: OutputOptions) -> Self {
+    pub fn with_output_options(known_hosts: KnownHosts, options: OutputOptions) -> Self {
         Self {
             inner: Arc::new(Inner {
+                next_id: AtomicU64::new(0),
                 output: options,
-                ..Inner::default()
+                known_hosts,
+                sessions: Mutex::default(),
             }),
         }
     }
@@ -290,6 +344,7 @@ impl SessionManager {
         // handle drops the command senders, which closes every session.
         let manager = Arc::downgrade(&self.inner);
         let link_flow = flow.clone();
+        let known_hosts = self.inner.known_hosts.clone();
         tokio::spawn(async move {
             let mut link = Link {
                 commands: command_rx,
@@ -299,7 +354,7 @@ impl SessionManager {
             };
             link.state(SessionState::Connecting);
             let reason = match target {
-                SessionTarget::Ssh(target) => ssh::run(target, &mut link).await,
+                SessionTarget::Ssh(target) => ssh::run(target, known_hosts, &mut link).await,
             };
             // Forget the session before announcing the close, so that nobody
             // who has seen `Closed` can still reach it.
@@ -342,6 +397,15 @@ impl SessionManager {
         self.send(id, Command::Answer(answers))
     }
 
+    /// Decides the last [`SessionEvent::HostKey`] question.
+    pub fn decide_host_key(
+        &self,
+        id: SessionId,
+        decision: HostKeyDecision,
+    ) -> Result<(), SessionError> {
+        self.send(id, Command::HostKey(decision))
+    }
+
     /// Closes the session. The `Closed` state follows on its event stream.
     pub fn close(&self, id: SessionId) -> Result<(), SessionError> {
         self.send(id, Command::Close)
@@ -367,6 +431,8 @@ enum Command {
     Resize(TerminalSize),
     /// Answers to a login prompt.
     Answer(Vec<String>),
+    /// The decision on a host key.
+    HostKey(HostKeyDecision),
     Close,
 }
 
@@ -392,30 +458,42 @@ impl Link {
 
     /// Resolves when the session should be abandoned while it is still being
     /// opened. Input typed meanwhile is dropped; resizes are remembered;
-    /// answers to login prompts go to `answers`.
-    async fn close_requested(&mut self, answers: &mpsc::UnboundedSender<Vec<String>>) {
+    /// answers to login prompts and host-key decisions go to `replies`.
+    async fn close_requested(&mut self, replies: &Replies) {
         loop {
             match self.command().await {
                 Command::Close => return,
                 Command::Resize(size) => self.size = size,
                 Command::Answer(given) => {
-                    let _ = answers.send(given);
+                    let _ = replies.answers.send(given);
+                }
+                Command::HostKey(decision) => {
+                    let _ = replies.decisions.send(decision);
                 }
                 Command::Write(_) => {}
             }
         }
     }
 
-    /// Something that asks the user login questions while the session is
-    /// being opened, and the sender [`Link::close_requested`] passes their
-    /// answers to.
-    fn prompter(&self) -> (Prompter, mpsc::UnboundedSender<Vec<String>>) {
+    /// What asks the user login questions and host-key questions while the
+    /// session is being opened, and the senders [`Link::close_requested`]
+    /// passes their replies to.
+    fn askers(&self) -> (Prompter, HostKeyAsker, Replies) {
         let (answers_tx, answers) = mpsc::unbounded_channel();
+        let (decisions_tx, decisions) = mpsc::unbounded_channel();
         let prompter = Prompter {
             events: self.events.clone(),
             answers,
         };
-        (prompter, answers_tx)
+        let asker = HostKeyAsker {
+            events: self.events.clone(),
+            decisions,
+        };
+        let replies = Replies {
+            answers: answers_tx,
+            decisions: decisions_tx,
+        };
+        (prompter, asker, replies)
     }
 
     /// The session's flow control, for waiting until there is room to read.
@@ -452,5 +530,28 @@ impl Prompter {
         let mut answers = self.answers.recv().await?;
         answers.resize(count, String::new());
         Some(answers)
+    }
+}
+
+/// Where the owner's replies go while the session is being opened.
+struct Replies {
+    answers: mpsc::UnboundedSender<Vec<String>>,
+    decisions: mpsc::UnboundedSender<HostKeyDecision>,
+}
+
+/// Asks the session's owner whether to trust a host key and waits for the
+/// decision.
+struct HostKeyAsker {
+    events: mpsc::UnboundedSender<SessionEvent>,
+    decisions: mpsc::UnboundedReceiver<HostKeyDecision>,
+}
+
+impl HostKeyAsker {
+    /// The decision on `question`; `None` if nobody is listening any more.
+    async fn ask(&mut self, question: HostKeyQuestion) -> Option<HostKeyDecision> {
+        // Decisions sent before this question was asked were not about it.
+        while self.decisions.try_recv().is_ok() {}
+        self.events.send(SessionEvent::HostKey(question)).ok()?;
+        self.decisions.recv().await
     }
 }

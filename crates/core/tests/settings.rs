@@ -6,7 +6,7 @@ mod support;
 
 use std::fs;
 
-use netterm_core::session::{SessionManager, SessionState, SessionTarget, TerminalSize};
+use netterm_core::session::{SessionState, SessionTarget, TerminalSize};
 use netterm_core::workspace::{
     EditError, Effective, EffectiveSettings, Environment, FlowControl, HostId, Origin, Parity,
     Protocol, ResolvedHost, Settings, WebLink, Workspace,
@@ -250,7 +250,7 @@ async fn connecting_uses_a_port_set_on_the_folder() {
     let workspace = Workspace::open(temp.path()).unwrap();
     let host = resolved(&workspace, "Lab/test-r1.yaml");
 
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let target = SessionTarget::Ssh(host.ssh_target(USERNAME.into(), PASSWORD.into()));
     let (_id, mut events) = manager.open(target, TerminalSize { cols: 80, rows: 24 });
 
