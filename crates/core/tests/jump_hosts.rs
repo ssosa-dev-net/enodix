@@ -12,8 +12,8 @@ use netterm_core::credentials::{
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::{
-    CloseReason, HostKeyDecision, OpenError, SessionEvents, SessionManager, SessionState,
-    SessionTarget, SshAuth, SshTarget, TerminalSize,
+    CloseReason, HostKeyDecision, LoginQuestion, OpenError, SessionEvents, SessionManager,
+    SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{HostId, JumpChainError, Workspace};
 use support::{
@@ -569,49 +569,91 @@ fn a_jump_host_that_is_not_reached_over_ssh_is_reported() {
     );
 }
 
-/// A jump host logs in with its own profile, which has to be set up: there
-/// is no prompt for it.
-#[test]
-fn a_jump_host_without_a_usable_profile_is_reported() {
+/// A jump host without a usable profile (none named, or one not set up
+/// here) asks for its username and password while connecting, in a
+/// question labelled with its name, as a device without one is prompted.
+#[tokio::test]
+async fn a_jump_host_without_a_usable_profile_asks_for_its_login() {
+    let bastion = TestSshServer::start().await;
+    let router = TestSshServer::start().await;
     let (_temp, workspace) = workspace(&[
-        ("bastion.yaml", host(22, "")),
-        ("keyed.yaml", host(22, "credential_profile: bastion\n")),
+        ("bastion.yaml", host(bastion.port(), "")),
+        (
+            "keyed.yaml",
+            host(
+                bastion.port(),
+                "credential_profile: bastion
+",
+            ),
+        ),
         (
             "r1.yaml",
-            host(22, "jump_host: bastion.yaml\ncredential_profile: lab\n"),
+            host(
+                router.port(),
+                "jump_host: bastion.yaml
+credential_profile: lab
+",
+            ),
         ),
         (
             "r2.yaml",
-            host(22, "jump_host: keyed.yaml\ncredential_profile: lab\n"),
+            host(
+                router.port(),
+                "jump_host: keyed.yaml
+credential_profile: lab
+",
+            ),
         ),
     ]);
     let store = store(&workspace, &[password_profile("lab", PASSWORD)]);
-    let profiles = Profiles::new(&store, &workspace);
+    let manager = support::manager();
 
-    let error = profiles
-        .profile_target(&HostId::new("r1.yaml"))
-        .unwrap_err();
-    assert_eq!(
-        error,
-        ProfileError::JumpHostNoProfile("bastion.yaml".into())
+    for (id, jump_host) in [("r1.yaml", "bastion.yaml"), ("r2.yaml", "keyed.yaml")] {
+        let target = profile_target(&store, &workspace, id);
+        assert_eq!(jump_host_names(&target), [jump_host]);
+        assert_eq!(target.jump_hosts[0].auth, SshAuth::Prompt);
+        assert_eq!(target.jump_hosts[0].username, "");
+
+        let (session, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);
+        assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+        let prompt = next_prompt(&mut events).await;
+        assert_eq!(prompt.name, format!("Jump host {jump_host}"));
+        assert_eq!(
+            prompt.questions,
+            [
+                LoginQuestion {
+                    text: "Username: ".into(),
+                    echo: true
+                },
+                LoginQuestion {
+                    text: "Password: ".into(),
+                    echo: false
+                },
+            ]
+        );
+        manager
+            .answer(session, vec![USERNAME.into(), PASSWORD.into()])
+            .unwrap();
+        connected(&mut events).await;
+    }
+    assert_eq!(bastion.forwarded(), 2);
+
+    // A wrong answer is the jump host refusing the login.
+    let (session, mut events) = manager.open(
+        SessionTarget::Ssh(profile_target(&store, &workspace, "r1.yaml")),
+        SIZE,
     );
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    next_prompt(&mut events).await;
+    manager
+        .answer(session, vec![USERNAME.into(), "wrong".into()])
+        .unwrap();
     assert_eq!(
-        error.to_string(),
-        "the jump host bastion.yaml has no credential profile"
-    );
-    let error = profiles
-        .profile_target(&HostId::new("r2.yaml"))
-        .unwrap_err();
-    assert_eq!(
-        error,
-        ProfileError::JumpHostNotSetUp {
-            jump_host: "keyed.yaml".into(),
-            profile: "bastion".into(),
+        failure(&mut events).await,
+        OpenError::JumpHost {
+            name: "bastion.yaml".into(),
+            error: Box::new(OpenError::AuthenticationFailed),
         }
-    );
-    assert_eq!(
-        error.to_string(),
-        "the credential profile bastion of the jump host keyed.yaml is not set up on this computer"
     );
 }
 
