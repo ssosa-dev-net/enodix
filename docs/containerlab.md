@@ -7,9 +7,9 @@ API, the same way the app does (a workspace host, a credential profile,
 Nokia SR Linux, Arista cEOS and FRR; any other device can be added to the
 lab file.
 
-**Status:** every check passes against the topology's Nokia SR Linux
-24.10.1, Arista cEOS 4.36.0.1F and FRR 10.2.1 (containerlab 0.83.0, through
-the containerlab server as the jump host), first run 2026-11-14. The README's
+Every check passes against the topology's Nokia SR Linux 24.10.1, Arista
+cEOS 4.36.0.1F and FRR 10.2.1 (containerlab 0.83.0, through the
+containerlab server as the jump host), first run 2026-11-14. The README's
 tested-platforms list comes from these runs.
 
 ## What it checks, per device
@@ -28,11 +28,12 @@ The output of every check (pass, fail or not checked, with the negotiated
 algorithms) is printed, so run it with `--nocapture` (the npm script does).
 A check that applies to no device still passes, but prints `NOT CHECKED on
 any device`: with the example lab, the terminal-size check on SR Linux and
-cEOS (no size command). Telnet is checked on cEOS, which the topology
-configures for telnet and publishes on the server's port 2323, because the
-app does not tunnel telnet through a jump host; the lab file's
-`telnet_address` sends the telnet check there directly. The large-output check says when the
-output fitted in the flow-control window, so flow control was not exercised.
+cEOS (no size command). The app does not tunnel telnet through a jump
+host, so telnet is checked on cEOS, which the topology configures for
+telnet and publishes on the server's port 2323; the lab file's
+`telnet_address` sends the telnet check there directly. When the output
+fitted in the flow-control window, the large-output check says so, since
+flow control was then not exercised.
 
 A prompt counts once the output ends with it and nothing more arrives for
 300 ms, so output that briefly ends in `#` or `>` is not taken for one.
@@ -56,7 +57,7 @@ files).
    users. Remove a node from the topology (and the lab file) if its image
    is not available.
 
-   **Docker inside a Proxmox LXC container** needs two entries in the
+   Docker inside a Proxmox LXC container needs two entries in the
    container's `/etc/pve/lxc/<id>.conf` on the Proxmox host (besides
    `features: nesting=1` and `lxc.apparmor.profile: unconfined`), then a
    restart of the container:

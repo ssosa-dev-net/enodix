@@ -2,7 +2,7 @@
 
 A release is built on Windows with one command, `npm run release`
 (`scripts/release.mjs`). It builds and checks the files; it never uploads,
-tags or publishes anything. Publishing is done by hand, as below.
+tags or publishes anything. You publish by hand, as described below.
 
 ## What a release contains
 
@@ -104,9 +104,9 @@ equivalent, or publish the file at a fixed address yourself.
    once the installer can be downloaded.
 
 5. Check: an installed copy of the previous version shows the notice
-   (Preferences → **Check now**), and installing works.
+   (**Check now** in Preferences), and installing works.
 
-Note: the release build replaces `target/release/netterm.exe` with one that
+The release build replaces `target/release/netterm.exe` with one that
 has the updater; run `npm run app:build` again before the smoke test.
 
 ## How the update check behaves

@@ -40,14 +40,14 @@ and for the device.
 
 When a device has no algorithm in common with the session, the session
 closes and shows what the device offered (key exchange, host key, cipher
-and MAC). It says whether turning on Legacy crypto would help, or that it
-would not, because the device offers only algorithms that are not
-supported.
+and MAC). It also says whether turning on Legacy crypto would help. When
+the device offers only unsupported algorithms, it says that the switch
+would not help.
 
 ## Not supported
 
-Support is best effort: it covers what the SSH library (`russh`) provides,
-and the project does not fork or patch it. These outdated algorithms stay
+Support is best effort. It covers what the SSH library (`russh`) provides;
+the project does not fork or patch it. These outdated algorithms stay
 unsupported even with the switch on, so a device that offers nothing else
 of a kind cannot be reached:
 
