@@ -7,7 +7,9 @@
 // .deb, .rpm and .AppImage), and copies those packages into this
 // checkout's `target/dist/<version>/`, beside the Windows release, whose
 // SHA256SUMS.txt then lists both. It reads only NETTERM_UPDATE_ENDPOINT
-// (required: the update check's address, the same as the Windows build's).
+// (required: the update check's address, the same as the Windows build's),
+// unless given `--unsigned` (`npm run release:linux -- --unsigned`): a
+// pre-release with no update check, in `target/dist/<version>-unsigned/`.
 // On Linux itself, run `npm run release`.
 // The distribution needs WebKitGTK and the other Tauri packages: see
 // docs/linux.md.
@@ -25,25 +27,29 @@ function fail(message) {
 
 if (process.platform !== "win32")
   fail("this builds in WSL from Windows; on Linux run `npm run release`");
+const unsigned = process.argv.includes("--unsigned");
 const endpoint = process.env.NETTERM_UPDATE_ENDPOINT?.trim();
-if (!endpoint)
+if (!endpoint && !unsigned)
   fail("NETTERM_UPDATE_ENDPOINT is not set (see docs/releasing.md)");
 const version = readFileSync(join(ROOT, "Cargo.toml"), "utf8").match(
   /\[workspace\.package\][^[]*?\nversion\s*=\s*"([^"]+)"/,
 )?.[1];
 if (!version) fail("no version in Cargo.toml's [workspace.package]");
 
-const dist = join(ROOT, "target", "dist", version);
+const folder = unsigned ? `${version}-unsigned` : version;
+const dist = join(ROOT, "target", "dist", folder);
 mkdirSync(dist, { recursive: true });
 const into = wslPath(dist, fail);
 
 syncIntoWsl((message) => console.log(`release:linux: ${message}`), fail);
 wsl(
   `set -e; cd ${WSL_FOLDER}; npm ci --no-audit --no-fund; ` +
-    `env NETTERM_UPDATE_ENDPOINT=${quoted(endpoint)} node scripts/release.mjs; ` +
+    (unsigned
+      ? "node scripts/release.mjs --unsigned; "
+      : `env NETTERM_UPDATE_ENDPOINT=${quoted(endpoint)} node scripts/release.mjs; `) +
     `rm -f ${quoted(into)}/*.deb ${quoted(into)}/*.rpm ${quoted(into)}/*.AppImage; ` +
-    `cp target/dist/${quoted(version)}/*.deb target/dist/${quoted(version)}/*.rpm ` +
-    `target/dist/${quoted(version)}/*.AppImage ${quoted(into)}/`,
+    `cp target/dist/${quoted(folder)}/*.deb target/dist/${quoted(folder)}/*.rpm ` +
+    `target/dist/${quoted(folder)}/*.AppImage ${quoted(into)}/`,
   fail,
 );
 

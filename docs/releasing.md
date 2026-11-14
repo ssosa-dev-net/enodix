@@ -7,6 +7,27 @@ packages in WSL and puts them beside the Windows files. The scripts build
 and check the files; they never upload, tag or publish anything. You
 publish by hand, as described below.
 
+## Pre-releases (no release key yet)
+
+Until the release key exists (below), releases are unsigned pre-releases:
+
+```
+npm run release -- --unsigned
+npm run release:linux -- --unsigned
+```
+
+These need no key and no environment variables and write to
+`target/dist/<version>-unsigned/`: the installer, the portable zip, the
+Linux packages and `SHA256SUMS.txt`, with no `.sig` and no `latest.json`.
+The app in them has no updater and no release server, so it never checks
+for or installs an update; people install the next version by hand.
+Versions 0.1.0 to 0.2.0 were made this way and published on the tracker's
+release page as pre-releases. The first signed release starts the updater:
+copies of a pre-release cannot update themselves to it.
+
+Steps 1, 2 and 4 of "Each release" below apply as they are; step 3 is the
+two commands above, and there is no `latest.json` to publish.
+
 ## What a release contains
 
 `target/dist/<version>/`:
