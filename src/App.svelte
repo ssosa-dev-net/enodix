@@ -11,6 +11,7 @@
     type PaneHandlers,
     type TabInfo,
   } from "./lib/PaneView.svelte";
+  import PreferencesDialog from "./lib/PreferencesDialog.svelte";
   import ProfilesDialog from "./lib/ProfilesDialog.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
@@ -25,6 +26,12 @@
   } from "./lib/inventory.svelte";
   import { hostLogin } from "./lib/credentials";
   import { profiles, refreshProfiles } from "./lib/profiles.svelte";
+  import {
+    isDark,
+    loadPreferences,
+    preferences,
+    zoomFont,
+  } from "./lib/preferences.svelte";
   import {
     appName,
     type ConnectTarget,
@@ -246,6 +253,23 @@
   const host = $derived(selectedHost());
   const folder = $derived(selectedFolder());
 
+  void loadPreferences();
+
+  // Ctrl+scroll sizes the terminal font (TerminalSession), never the page.
+  // (Svelte's own wheel listeners are passive, so this one is added here.)
+  window.addEventListener(
+    "wheel",
+    (event) => {
+      if (event.ctrlKey) event.preventDefault();
+    },
+    { passive: false },
+  );
+
+  // The whole app follows the theme (app.css), the system's by default.
+  $effect(() => {
+    document.documentElement.dataset.theme = isDark() ? "dark" : "light";
+  });
+
   appName().then((value) => {
     name = value;
     document.title = value;
@@ -412,17 +436,42 @@
     return null;
   }
 
+  /** The terminal font size: Ctrl+= (or Ctrl++), Ctrl+-, Ctrl+0. These work
+   * with dialogs open too (the page itself never zooms). */
+  function zoomShortcut(event: KeyboardEvent): (() => void) | null {
+    if (!event.ctrlKey || event.altKey || event.metaKey) return null;
+    if (
+      event.code === "Equal" ||
+      event.code === "NumpadAdd" ||
+      event.key === "+" ||
+      event.key === "="
+    ) {
+      return () => void zoomFont("in");
+    }
+    if (event.shiftKey) return null;
+    if (
+      event.code === "Minus" ||
+      event.code === "NumpadSubtract" ||
+      event.key === "-"
+    ) {
+      return () => void zoomFont("out");
+    }
+    if (event.code === "Digit0" || event.code === "Numpad0") {
+      return () => void zoomFont("reset");
+    }
+    return null;
+  }
+
   // Shortcuts work from anywhere, the terminal included, so they are caught
   // before the focused element sees them.
   function onkeydowncapture(event: KeyboardEvent) {
-    if (
+    const busy =
       inventory.dialog ||
       profiles.dialog ||
+      preferences.dialog ||
       inventory.palette ||
-      closing !== null
-    )
-      return;
-    const action = shortcut(event);
+      closing !== null;
+    const action = zoomShortcut(event) ?? (busy ? null : shortcut(event));
     if (!action) return;
     event.preventDefault();
     event.stopPropagation();
@@ -553,6 +602,15 @@
     onclose={confirmClose}
     oncancel={() => {
       closing = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if preferences.dialog}
+  <PreferencesDialog
+    onclose={() => {
+      preferences.dialog = false;
       focusRequest += 1;
     }}
   />

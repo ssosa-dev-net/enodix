@@ -1,12 +1,21 @@
 <script lang="ts">
   import { FitAddon } from "@xterm/addon-fit";
+  import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
   import { Terminal } from "@xterm/xterm";
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { webglRenderer } from "./renderer";
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
   import NegotiationFailure from "./NegotiationFailure.svelte";
+  import {
+    fontStack,
+    isDark,
+    preferences,
+    terminalTheme,
+    zoomFont,
+    type Preferences,
+  } from "./preferences.svelte";
   import {
     openSession,
     type HostKeyDecision,
@@ -143,11 +152,64 @@
     );
   }
 
+  /** Whether the scrollback search bar is open. */
+  let searching = $state(false);
+  let query = $state("");
+  let caseSensitive = $state(false);
+  let regex = $state(false);
+  /** The current match (from 0, -1: none) and how many; null: not run. */
+  let results = $state<{ index: number; count: number } | null>(null);
+  let searchInput = $state<HTMLInputElement>();
+  /** Set up on mount: finds `query` forwards or backwards. */
+  let find: (
+    direction: "next" | "previous",
+    incremental?: boolean,
+  ) => void = () => {};
+  let clearSearch: () => void = () => {};
+
+  const resultsText = $derived(
+    results === null || query === ""
+      ? ""
+      : results.count === 0
+        ? "No results"
+        : results.index < 0
+          ? `${results.count} found`
+          : `${results.index + 1} of ${results.count}`,
+  );
+
+  function openSearch() {
+    searching = true;
+    // Once shown (or again, if already open): the input takes the keys.
+    void tick().then(() => {
+      searchInput?.focus();
+      searchInput?.select();
+    });
+  }
+
+  function closeSearch() {
+    searching = false;
+    results = null;
+    clearSearch();
+    xterm?.focus();
+  }
+
+  function onsearchkey(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSearch();
+    } else if (event.key === "Enter" || event.key === "F3") {
+      event.preventDefault();
+      find(event.shiftKey ? "previous" : "next");
+    }
+  }
+
   // The terminal takes the keys when it comes on screen and when the
-  // session closes (Enter reconnects), unless a card over it takes them.
+  // session closes (Enter reconnects), unless a card or the search bar
+  // over it takes them.
   $effect(() => {
     void focusRequest;
-    if (focused && !prompt && !hostKey && !closedCard) xterm?.focus();
+    if (focused && !prompt && !hostKey && !closedCard && !searching)
+      xterm?.focus();
   });
 
   $effect(() => onstate?.(status));
@@ -156,18 +218,25 @@
   let reveal: () => void = () => {};
   /** Keeps the terminal's output aside while it is out of sight. */
   let conceal: () => void = () => {};
+  /** Gives the terminal the font, scrollback and colours chosen. */
+  let applyPreferences: (chosen: Preferences, dark: boolean) => void = () => {};
 
   onMount(() => {
+    const chosen = untrack(() => preferences.current);
     const terminal = new Terminal({
       cursorBlink: true,
-      fontFamily: '"Cascadia Mono", Consolas, "Courier New", monospace',
-      fontSize: 14,
-      scrollback: 10000,
-      theme: { background: "#0e1116", foreground: "#d7dce2" },
+      fontFamily: fontStack(chosen.fontFamily),
+      fontSize: chosen.fontSize,
+      scrollback: chosen.scrollback,
+      theme: terminalTheme(untrack(isDark)),
+      // For the search addon's match highlighting and count (decorations).
+      allowProposedApi: true,
     });
     xterm = terminal;
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    const search = new SearchAddon();
+    terminal.loadAddon(search);
     terminal.open(container);
     fit.fit();
     // For the smoke test, which reads the screen from the buffer: the WebGL
@@ -216,6 +285,157 @@
       webgl.hide();
     };
     if (untrack(() => shown)) reveal();
+
+    applyPreferences = (chosen, dark) => {
+      const options = terminal.options;
+      const fontFamily = fontStack(chosen.fontFamily);
+      const resized =
+        options.fontFamily !== fontFamily ||
+        options.fontSize !== chosen.fontSize;
+      if (options.fontFamily !== fontFamily) options.fontFamily = fontFamily;
+      if (options.fontSize !== chosen.fontSize)
+        options.fontSize = chosen.fontSize;
+      if (options.scrollback !== chosen.scrollback)
+        options.scrollback = chosen.scrollback;
+      options.theme = terminalTheme(dark);
+      // A new cell size changes how many rows and columns fit.
+      if (resized && live && !catchingUp) fit.fit();
+    };
+
+    // Scrollback search: matches are highlighted, the current one stands out.
+    search.onDidChangeResults(
+      ({ resultIndex, resultCount }) =>
+        (results = { index: resultIndex, count: resultCount }),
+    );
+    find = (direction, incremental = false) => {
+      if (query === "") {
+        search.clearDecorations();
+        results = null;
+        return;
+      }
+      const dark = isDark();
+      const options: ISearchOptions = {
+        caseSensitive,
+        regex,
+        incremental,
+        decorations: {
+          matchBackground: dark ? "#5c4a00" : "#fff1a8",
+          activeMatchBackground: dark ? "#b36b00" : "#ffb340",
+          matchOverviewRuler: "#d29922",
+          activeMatchColorOverviewRuler: "#ff8800",
+        },
+      };
+      try {
+        if (direction === "next") search.findNext(query, options);
+        else search.findPrevious(query, options);
+      } catch {
+        // An unfinished regular expression: no results yet.
+        results = { index: -1, count: 0 };
+      }
+    };
+    clearSearch = () => search.clearDecorations();
+
+    // Copy and paste. Every paste (shortcut, right click, the browser's own
+    // paste) goes through `pasteText`, then the terminal's own (bracketed
+    // paste, line endings), so later checks have one way in.
+    const copySelection = () => {
+      const text = terminal.getSelection();
+      if (text) void navigator.clipboard.writeText(text).catch(() => {});
+    };
+    const pasteText = (text: string) => {
+      if (text) terminal.paste(text);
+    };
+    const paste = async () => {
+      try {
+        pasteText(await navigator.clipboard.readText());
+      } catch {
+        // Nothing readable on the clipboard.
+      }
+    };
+    /** What a key does in the terminal instead of reaching the device. */
+    const terminalKey = (event: KeyboardEvent): (() => void) | null => {
+      if (event.altKey || event.metaKey) return null;
+      const ctrl = event.ctrlKey;
+      const shift = event.shiftKey;
+      const letter = (name: string) =>
+        event.code === `Key${name.toUpperCase()}` ||
+        event.key.toLowerCase() === name;
+      if (ctrl && shift && letter("c")) return copySelection;
+      // Ctrl+C copies only text that is selected; otherwise it interrupts.
+      if (ctrl && !shift && letter("c") && terminal.hasSelection()) {
+        return () => {
+          copySelection();
+          terminal.clearSelection();
+        };
+      }
+      if (ctrl && !shift && event.key === "Insert") return copySelection;
+      if (ctrl && letter("v")) return () => void paste();
+      if (!ctrl && shift && event.key === "Insert") return () => void paste();
+      if (ctrl && shift && letter("f")) return openSearch;
+      return null;
+    };
+    /** The key whose press was taken, so that its keypress and keyup are. */
+    let taken: string | null = null;
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown") {
+        if (taken === null || event.code !== taken) return true;
+        if (event.type === "keyup") taken = null;
+        return false;
+      }
+      const action = terminalKey(event);
+      if (!action) return true;
+      // Also keeps the browser from pasting a second time by itself.
+      event.preventDefault();
+      taken = event.code;
+      action();
+      return false;
+    });
+    // The browser's own paste (its context menu) is taken from xterm.js.
+    const onpaste = (event: ClipboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      pasteText(event.clipboardData?.getData("text/plain") ?? "");
+    };
+    // Copy-on-select copies what the mouse selects (not a search match),
+    // when the button is released, wherever the drag ends. (Copying later,
+    // outside the click, is refused by the webview.)
+    const onmouseup = (event: MouseEvent) => {
+      if (event.button !== 0) return;
+      if (untrack(() => preferences.current.copyOnSelect)) copySelection();
+    };
+    const onmousedown = (event: MouseEvent) => {
+      if (event.button !== 0) return;
+      window.addEventListener("mouseup", onmouseup, { once: true });
+    };
+    const oncontextmenu = (event: MouseEvent) => {
+      if (!untrack(() => preferences.current.rightClickPaste)) return;
+      event.preventDefault();
+      void paste();
+    };
+    // Ctrl+scroll sizes the font (every terminal's: it is a preference). A
+    // mouse wheel's notch is one step; a touchpad's small steps add up.
+    let wheel = 0;
+    const onwheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const delta =
+        event.deltaMode === WheelEvent.DOM_DELTA_PIXEL
+          ? event.deltaY
+          : event.deltaY * 40;
+      if (Math.sign(delta) !== Math.sign(wheel)) wheel = 0;
+      wheel += delta;
+      if (Math.abs(wheel) < 40) return;
+      void zoomFont(wheel < 0 ? "in" : "out");
+      wheel = 0;
+    };
+    container.addEventListener("paste", onpaste, { capture: true });
+    container.addEventListener("mousedown", onmousedown, { capture: true });
+    container.addEventListener("contextmenu", oncontextmenu);
+    container.addEventListener("wheel", onwheel, {
+      capture: true,
+      passive: false,
+    });
 
     let disposed = false;
     const encoder = new TextEncoder();
@@ -285,6 +505,13 @@
 
     return () => {
       disposed = true;
+      container.removeEventListener("paste", onpaste, { capture: true });
+      container.removeEventListener("mousedown", onmousedown, {
+        capture: true,
+      });
+      window.removeEventListener("mouseup", onmouseup);
+      container.removeEventListener("contextmenu", oncontextmenu);
+      container.removeEventListener("wheel", onwheel, { capture: true });
       resizeObserver.disconnect();
       // Gone with its terminal: it can no longer be reconnected.
       session?.discard();
@@ -297,6 +524,17 @@
   $effect(() => {
     if (shown) reveal();
     else conceal();
+  });
+
+  $effect(() => applyPreferences(preferences.current, isDark()));
+
+  // A changed option (or theme: the match colours) searches again from
+  // where the search is.
+  $effect(() => {
+    void caseSensitive;
+    void regex;
+    void isDark();
+    if (untrack(() => searching)) untrack(() => find("next", true));
   });
 </script>
 
@@ -360,6 +598,65 @@
   </header>
   <div class="body">
     <div class="terminal" bind:this={container}></div>
+    {#if searching}
+      <form
+        class="search"
+        role="search"
+        data-terminal-search
+        onsubmit={(event) => {
+          event.preventDefault();
+          find("next");
+        }}
+      >
+        <input
+          name="search"
+          aria-label="Search the scrollback"
+          placeholder="Search"
+          autocomplete="off"
+          spellcheck="false"
+          bind:this={searchInput}
+          bind:value={query}
+          oninput={() => find("next", true)}
+          onkeydown={onsearchkey}
+        />
+        <span class="results" data-search-results aria-live="polite"
+          >{resultsText}</span
+        >
+        <label title="Match case">
+          <input
+            type="checkbox"
+            name="search-case"
+            bind:checked={caseSensitive}
+          />
+          Aa
+        </label>
+        <label title="Regular expression">
+          <input type="checkbox" name="search-regex" bind:checked={regex} />
+          .*
+        </label>
+        <button
+          type="button"
+          data-search="previous"
+          title="Previous match (Shift+Enter)"
+          aria-label="Previous match"
+          onclick={() => find("previous")}>&uarr;</button
+        >
+        <button
+          type="button"
+          data-search="next"
+          title="Next match (Enter)"
+          aria-label="Next match"
+          onclick={() => find("next")}>&darr;</button
+        >
+        <button
+          type="button"
+          data-search="close"
+          title="Close (Escape)"
+          aria-label="Close the search"
+          onclick={closeSearch}>&times;</button
+        >
+      </form>
+    {/if}
     {#if status.state === "closed" && session}
       <div class="ended" role="alert" data-session-ended>
         <span class="reason">{status.reason}.</span>
@@ -566,6 +863,47 @@
     border-radius: 3px;
     font-family: inherit;
     font-size: 0.8rem;
+  }
+
+  .search {
+    position: absolute;
+    top: 0.4rem;
+    right: 1.2rem;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    max-width: calc(100% - 2rem);
+    padding: 0.3rem 0.4rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: 0 4px 14px rgb(0 0 0 / 0.3);
+    font-size: 0.8rem;
+  }
+
+  .search input[name="search"] {
+    width: 12rem;
+    min-width: 4rem;
+    flex: 1 1 auto;
+  }
+
+  .search .results {
+    min-width: 4.5rem;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .search label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    white-space: nowrap;
+    font-family: monospace;
+  }
+
+  .search button {
+    padding: 0.15rem 0.45rem;
   }
 
   .terminal {

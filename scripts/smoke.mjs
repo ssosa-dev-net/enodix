@@ -168,6 +168,7 @@ function startApp() {
     },
   });
   children.push(app);
+  return app;
 }
 
 /** A minimal DevTools protocol client for the app's page. */
@@ -203,7 +204,7 @@ async function connectDevTools() {
 async function main() {
   createWorkspace();
   await startServer();
-  startApp();
+  const app = startApp();
   const devtools = await connectDevTools();
 
   const evaluate = async (expression) => {
@@ -807,7 +808,431 @@ async function main() {
     step,
   });
 
+  await terminalComforts({
+    evaluate,
+    centreOf,
+    mouse,
+    devtools,
+    type,
+    screen,
+    screenshot,
+    step,
+  });
+
   devtools.close();
+
+  // Preferences survive a restart: the app comes back light, with the
+  // font size and scrollback chosen.
+  app.kill();
+  await new Promise((resolve) =>
+    app.exitCode === null ? app.once("exit", resolve) : resolve(),
+  );
+  await sleep(1500);
+  startApp();
+  const restarted = await connectDevTools();
+  const evaluateAgain = async (expression) => {
+    const { result, exceptionDetails } = await restarted.send(
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: true,
+      },
+    );
+    if (exceptionDetails) fail(`page error: ${exceptionDetails.text}`);
+    return result.value;
+  };
+  await until("the light theme after a restart", () =>
+    evaluateAgain(`document.documentElement.dataset.theme === "light"`),
+  );
+  await evaluateAgain(
+    `document.querySelector("[data-open-preferences]").click()`,
+  );
+  const kept = await until("the preferences dialog after a restart", () =>
+    evaluateAgain(`(() => {
+      const dialog = document.querySelector("[data-dialog=preferences]");
+      const field = (name) => dialog?.querySelector("[name=" + name + "]");
+      return dialog && {
+        theme: field("preference-theme").value,
+        family: field("preference-font-family").value,
+        size: field("preference-font-size").value,
+        scrollback: field("preference-scrollback").value,
+        copyOnSelect: field("preference-copy-on-select").checked,
+        rightClickPaste: field("preference-right-click-paste").checked,
+      };
+    })()`),
+  );
+  const expected = {
+    theme: "light",
+    family: "Consolas",
+    size: "15",
+    scrollback: "2000",
+    copyOnSelect: true,
+    rightClickPaste: true,
+  };
+  if (JSON.stringify(kept) !== JSON.stringify(expected)) {
+    fail(`preferences after a restart: ${JSON.stringify(kept)}`);
+  }
+  step("the preferences were kept across a restart");
+  restarted.close();
+}
+
+/** Reads the system clipboard's text (independently of the app). */
+function readClipboard() {
+  const result = spawnSync(
+    "powershell",
+    ["-NoProfile", "-Command", "[Console]::Out.Write((Get-Clipboard -Raw))"],
+    { encoding: "utf8" },
+  );
+  return result.stdout ?? "";
+}
+
+/** Puts `text` on the system clipboard (independently of the app). */
+function writeClipboard(text) {
+  spawnSync(
+    "powershell",
+    ["-NoProfile", "-Command", "Set-Clipboard -Value $env:SMOKE_CLIPBOARD"],
+    { env: { ...process.env, SMOKE_CLIPBOARD: text } },
+  );
+}
+
+/**
+ * Themes (following the system, then chosen), the terminal font and its
+ * size (dialog, shortcuts, Ctrl+scroll), the scrollback length and search,
+ * and copy and paste (shortcuts, copy-on-select, right-click paste). Runs
+ * in the shown session of the tabs part; the system clipboard is used and
+ * restored after.
+ */
+async function terminalComforts({
+  evaluate,
+  centreOf,
+  mouse,
+  devtools,
+  type,
+  screen,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const CTRL = 2;
+  const SHIFT = 8;
+  const press = async (key, code, windowsVirtualKeyCode, modifiers = 0) => {
+    const event = { key, code, windowsVirtualKeyCode, modifiers };
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...event,
+    });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+  };
+  const terminal = `document.querySelector("${SHOWN_SESSION} .terminal").xterm`;
+  const option = (name) => evaluate(`${terminal}.options.${name}`);
+  const pageTheme = () => evaluate("document.documentElement.dataset.theme");
+  const preferencesFile = () =>
+    existsSync(join(appData, "preferences.yaml"))
+      ? readFileSync(join(appData, "preferences.yaml"), "utf8")
+      : "";
+  const emulateSystem = (scheme) =>
+    devtools.send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-color-scheme", value: scheme }],
+    });
+  const openPreferences = async () => {
+    await evaluate(`document.querySelector("[data-open-preferences]").click()`);
+    await until("the preferences dialog", () =>
+      evaluate(`!!document.querySelector("[data-dialog=preferences]")`),
+    );
+  };
+  // Sets a preferences field as the user does, then leaves it (change).
+  const setPreference = (name, value) =>
+    evaluate(`(() => {
+      const field = document.querySelector("[data-dialog=preferences] [name=${name}]");
+      if (field.type === "checkbox") field.checked = ${json(value)};
+      else field.value = ${json(value)};
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+  const closePreferences = async () => {
+    await evaluate(
+      `[...document.querySelectorAll("[data-dialog=preferences] button")].find((b) => b.textContent.trim() === "Close").click()`,
+    );
+    await until(
+      "the preferences dialog closed",
+      async () =>
+        !(await evaluate(
+          `!!document.querySelector("[data-dialog=preferences]")`,
+        )),
+    );
+  };
+  const savedClipboard = readClipboard();
+
+  try {
+    // The theme follows the system by default, live.
+    await emulateSystem("light");
+    await until(
+      "the light theme from the system",
+      async () =>
+        (await pageTheme()) === "light" &&
+        (await option("theme.background")) === "#fbfbfc",
+    );
+    await screenshot("theme-light");
+    await emulateSystem("dark");
+    await until(
+      "the dark theme from the system",
+      async () =>
+        (await pageTheme()) === "dark" &&
+        (await option("theme.background")) === "#0e1116",
+    );
+    step("the theme followed the system setting, live");
+
+    // A chosen theme wins over the system's, and is saved.
+    await openPreferences();
+    await setPreference("preference-theme", "light");
+    await until(
+      "the light theme chosen",
+      async () =>
+        (await pageTheme()) === "light" &&
+        /theme: light/.test(preferencesFile()),
+    );
+    const colours = await evaluate(
+      `getComputedStyle(document.documentElement).backgroundColor`,
+    );
+    if (colours !== "rgb(246, 247, 249)") {
+      fail(`the page is not light: ${colours}`);
+    }
+    step("choosing the light theme applied it to the whole app and saved it");
+
+    // The terminal's font, size and scrollback, from the dialog.
+    const columnsBefore = await evaluate(`${terminal}.cols`);
+    await setPreference("preference-font-family", "Consolas");
+    await setPreference("preference-font-size", "18");
+    await setPreference("preference-scrollback", "2000");
+    await until(
+      "the terminal with the chosen font",
+      async () =>
+        (await option("fontSize")) === 18 &&
+        (await option("fontFamily")).startsWith(`"Consolas"`) &&
+        (await option("scrollback")) === 2000,
+    );
+    await until(
+      "fewer columns with a larger font",
+      async () => (await evaluate(`${terminal}.cols`)) < columnsBefore,
+    );
+    await until("the font saved", () =>
+      /font_family: Consolas[\s\S]*font_size: 18[\s\S]*scrollback: 2000/.test(
+        preferencesFile(),
+      ),
+    );
+    await closePreferences();
+    step("the terminal font, its size and the scrollback length are set");
+
+    // Shortcuts and Ctrl+scroll size the font.
+    await press("=", "Equal", 187, CTRL);
+    await until(
+      "a larger font (Ctrl+=)",
+      async () => (await option("fontSize")) === 19,
+    );
+    await press("-", "Minus", 189, CTRL);
+    await press("-", "Minus", 189, CTRL);
+    await until(
+      "a smaller font (Ctrl+-)",
+      async () => (await option("fontSize")) === 17,
+    );
+    const middle = await centreOf(`${SHOWN_SESSION} .terminal`);
+    await mouse("mouseWheel", middle, {
+      deltaX: 0,
+      deltaY: -100,
+      modifiers: CTRL,
+    });
+    await until(
+      "a larger font (Ctrl+scroll)",
+      async () => (await option("fontSize")) === 18,
+    );
+    await mouse("mouseWheel", middle, {
+      deltaX: 0,
+      deltaY: 100,
+      modifiers: CTRL,
+    });
+    await mouse("mouseWheel", middle, {
+      deltaX: 0,
+      deltaY: 100,
+      modifiers: CTRL,
+    });
+    await until(
+      "a smaller font (Ctrl+scroll)",
+      async () => (await option("fontSize")) === 16,
+    );
+    await press("0", "Digit0", 48, CTRL);
+    await until(
+      "the default font size (Ctrl+0)",
+      async () => (await option("fontSize")) === 14,
+    );
+    await press("=", "Equal", 187, CTRL);
+    await until(
+      "the size saved",
+      async () =>
+        (await option("fontSize")) === 15 &&
+        /font_size: 15/.test(preferencesFile()),
+    );
+    step("Ctrl+= / Ctrl+- / Ctrl+0 and Ctrl+scroll sized the font");
+
+    // The scrollback keeps the chosen number of lines.
+    await type("lines 3000\r");
+    await until("the end of the listing", async () =>
+      /line 3000\s*test-ssh\$/.test(await screen()),
+    );
+    const kept = await evaluate(
+      `${terminal}.buffer.active.length - ${terminal}.rows`,
+    );
+    if (kept !== 2000) fail(`the scrollback kept ${kept} lines, not 2000`);
+    step("the scrollback kept the 2000 lines chosen");
+
+    // Searching the scrollback: Ctrl+Shift+F, then next and previous.
+    await press("F", "KeyF", 70, CTRL | SHIFT);
+    await until("the search bar, taking the keys", () =>
+      evaluate(
+        `document.activeElement?.matches("${SHOWN_SESSION} [data-terminal-search] input[name=search]") ?? false`,
+      ),
+    );
+    await type("line 2999");
+    const results = () =>
+      evaluate(
+        `document.querySelector("${SHOWN_SESSION} [data-search-results]").textContent`,
+      );
+    await until("one match", async () => (await results()) === "1 of 1");
+    await evaluate(`(() => {
+      const input = document.querySelector("${SHOWN_SESSION} [data-terminal-search] input[name=search]");
+      input.select();
+    })()`);
+    // Of the lines kept (the last 2000 and a screen), "line 29" is in
+    // 2900-2999 only: 100 matches.
+    await type("line 29");
+    await until("a hundred matches", async () =>
+      /^\d+ of 100$/.test(await results()),
+    );
+    const current = async () =>
+      Number((await results()).match(/^(\d+) of/)?.[1]);
+    const first = await current();
+    await press("Enter", "Enter", 13);
+    await until(
+      "the next match",
+      async () => (await current()) === (first % 100) + 1,
+    );
+    await press("Enter", "Enter", 13, SHIFT);
+    await until("the previous match", async () => (await current()) === first);
+    await evaluate(
+      `document.querySelector("${SHOWN_SESSION} [data-search=next]").click()`,
+    );
+    await until(
+      "the next match (button)",
+      async () => (await current()) === (first % 100) + 1,
+    );
+    const selected = await evaluate(`${terminal}.getSelection()`);
+    if (selected !== "line 29") fail(`the match is not selected: ${selected}`);
+    await screenshot("scrollback-search");
+    step("the scrollback was searched, with next and previous");
+
+    // Copying the selected match by keyboard; Escape closes the search and
+    // gives the terminal the keys again.
+    await press("Escape", "Escape", 27);
+    await until(
+      "the search closed",
+      async () =>
+        !(await evaluate(
+          `!!document.querySelector("${SHOWN_SESSION} [data-terminal-search]")`,
+        )),
+    );
+    // The clipboard may hold CR LF line ends where the terminal has LF.
+    const same = (a, b) =>
+      a.replace(/\r\n/g, "\n").trim() === b.replace(/\r\n/g, "\n").trim();
+    writeClipboard("nothing yet");
+    await press("C", "KeyC", 67, CTRL | SHIFT);
+    await until("the selection copied (Ctrl+Shift+C)", () =>
+      same(readClipboard(), "line 29"),
+    );
+    // Ctrl+C with a selection copies it (and does not interrupt).
+    await evaluate(`${terminal}.selectAll()`);
+    const all = await evaluate(`${terminal}.getSelection()`);
+    await press("c", "KeyC", 67, CTRL);
+    await until("the selection copied (Ctrl+C)", () =>
+      same(readClipboard(), all),
+    );
+    if (await evaluate(`${terminal}.hasSelection()`)) {
+      fail("Ctrl+C did not clear the selection it copied");
+    }
+    await sleep(300);
+    if (/\^C/.test(await screen())) {
+      fail("Ctrl+C with a selection interrupted");
+    }
+    step("Ctrl+Shift+C and Ctrl+C (with a selection) copied to the clipboard");
+
+    // `later 0 <text>` prints the text, before or after the next prompt.
+    const ran = (marker) => async () =>
+      new RegExp(`(^|\\n|\\$ )${marker}\\s*(\\n|$)`).test(await screen());
+    // Pasting by keyboard, three ways.
+    const pastes = [
+      ["Ctrl+Shift+V", () => press("V", "KeyV", 86, CTRL | SHIFT)],
+      ["Ctrl+V", () => press("v", "KeyV", 86, CTRL)],
+      ["Shift+Insert", () => press("Insert", "Insert", 45, SHIFT)],
+    ];
+    for (const [name, paste] of pastes) {
+      const marker = `pasted-${name.replace(/\W/g, "").toLowerCase()}`;
+      writeClipboard(`later 0 ${marker}\n`);
+      await paste();
+      await until(`the ${name} paste run`, ran(marker));
+    }
+    step("Ctrl+Shift+V, Ctrl+V and Shift+Insert pasted into the session");
+
+    // Copy-on-select is off by default. (Right-click paste too: a right
+    // click then opens the browser's own menu, which is not tried here.)
+    const box = await evaluate(`(() => {
+      const box = document.querySelector("${SHOWN_SESSION} .xterm-screen").getBoundingClientRect();
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
+    })()`);
+    const rowHeight = box.height / (await evaluate(`${terminal}.rows`));
+    const dragSelect = async () => {
+      const y = box.y + rowHeight * 1.5;
+      const from = { x: box.x + 2, y };
+      const to = { x: box.x + box.width / 3, y };
+      await mouse("mousePressed", from, { button: "left", clickCount: 1 });
+      await mouse("mouseMoved", to, { button: "left", buttons: 1 });
+      await mouse("mouseReleased", to, { button: "left", clickCount: 1 });
+    };
+    const rightClick = async () => {
+      const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      await mouse("mousePressed", at, { button: "right", clickCount: 1 });
+      await mouse("mouseReleased", at, { button: "right", clickCount: 1 });
+    };
+    writeClipboard("not a selection");
+    await dragSelect();
+    if (!(await evaluate(`${terminal}.hasSelection()`))) {
+      fail("dragging selected nothing");
+    }
+    await sleep(800);
+    if (!same(readClipboard(), "not a selection")) {
+      fail(`selecting copied while copy-on-select is off: ${readClipboard()}`);
+    }
+
+    await openPreferences();
+    await setPreference("preference-copy-on-select", true);
+    await setPreference("preference-right-click-paste", true);
+    await until("the copy and paste options saved", () =>
+      /copy_on_select: true[\s\S]*right_click_paste: true/.test(
+        preferencesFile(),
+      ),
+    );
+    await closePreferences();
+    await dragSelect();
+    const selection = await evaluate(`${terminal}.getSelection()`);
+    if (!selection.trim()) fail("dragging selected nothing");
+    await until("the selection copied on select", () =>
+      same(readClipboard(), selection),
+    );
+    writeClipboard("later 0 pasted-right-click\n");
+    await rightClick();
+    await until("the right-click paste run", ran("pasted-right-click"));
+    step("copy-on-select and right-click paste work once turned on");
+  } finally {
+    await devtools.send("Emulation.setEmulatedMedia", { features: [] });
+    writeClipboard(savedClipboard);
+  }
 }
 
 /** Ctrl+K finds a host from the terminal, connects to it or shows it in the

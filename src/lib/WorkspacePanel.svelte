@@ -16,6 +16,7 @@
     viewThrough,
     type Item,
   } from "./inventory.svelte";
+  import { preferences } from "./preferences.svelte";
   import { profiles } from "./profiles.svelte";
   import { findHost, type Host } from "./workspace";
 
@@ -174,6 +175,20 @@
       {workspace?.tree.name ?? "No workspace"}
     </button>
     <button onclick={onopen}>Open workspace…</button>
+    <button
+      class="preferences"
+      data-open-preferences
+      title="Preferences: theme, terminal font, scrollback, copy and paste"
+      aria-label="Preferences"
+      onclick={() => (preferences.dialog = true)}
+    >
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <path
+          fill="currentColor"
+          d="M9.4 1l.3 1.8c.4.1.8.3 1.1.5l1.5-1 1.4 1.4-1 1.5c.2.3.4.7.5 1.1L15 6.6v2l-1.8.3c-.1.4-.3.8-.5 1.1l1 1.5-1.4 1.4-1.5-1c-.3.2-.7.4-1.1.5L9.4 15h-2l-.3-1.8c-.4-.1-.8-.3-1.1-.5l-1.5 1-1.4-1.4 1-1.5c-.2-.3-.4-.7-.5-1.1L1.8 9.4v-2l1.8-.3c.1-.4.3-.8.5-1.1l-1-1.5 1.4-1.4 1.5 1c.3-.2.7-.4 1.1-.5L7.4 1h2zM8.4 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z"
+        />
+      </svg>
+    </button>
   </header>
 
   {#if workspace}
@@ -324,6 +339,12 @@
 
   header button {
     padding: 0.25rem 0.6rem;
+  }
+
+  header .preferences {
+    display: inline-grid;
+    place-items: center;
+    padding: 0.3rem 0.4rem;
   }
 
   header .name {
