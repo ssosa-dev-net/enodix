@@ -1,0 +1,11 @@
+set / system name host-name srl1
+set / interface ethernet-1/1 admin-state enable
+set / interface ethernet-1/1 description "to ceos1 eth1"
+set / interface ethernet-1/1 subinterface 0 ipv4 admin-state enable
+set / interface ethernet-1/1 subinterface 0 ipv4 address 10.0.12.1/30
+set / interface ethernet-1/2 admin-state enable
+set / interface ethernet-1/2 description "to frr1 eth2"
+set / interface ethernet-1/2 subinterface 0 ipv4 admin-state enable
+set / interface ethernet-1/2 subinterface 0 ipv4 address 10.0.31.2/30
+set / network-instance default interface ethernet-1/1.0
+set / network-instance default interface ethernet-1/2.0

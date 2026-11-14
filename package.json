@@ -12,6 +12,7 @@
     "app:build": "tauri build --no-bundle",
     "test": "cargo test --workspace",
     "smoke": "node scripts/smoke.mjs",
+    "test:lab": "cargo test -p netterm-core --test containerlab -- --ignored --nocapture --test-threads=1",
     "release": "node scripts/release.mjs",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "cargo clippy --workspace --all-targets -- -D warnings && npm run typecheck",
