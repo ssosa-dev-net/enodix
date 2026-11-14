@@ -29,6 +29,11 @@
 //! echo and the final prompt left out) in a [`crate::configs::ConfigStore`]
 //! as a new version of the host's configuration, if it changed.
 //!
+//! The [`JobStep::Script`] step runs a Python script of the workspace
+//! instead (see [`script`]): one process for the whole job, which reaches
+//! the hosts itself through the inventory plugin, limited to the job's
+//! hosts. Pre-flight and the production confirmation are the same.
+//!
 //! Every run is kept, outside the workspace, by [`results::RunStore`]:
 //! listed newest first, searched, compared line by line, exported, deleted,
 //! and planned again on the same target with [`plan_again`].
@@ -36,8 +41,10 @@
 mod login;
 pub mod results;
 mod run;
+pub mod script;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +52,7 @@ use crate::credentials::{HostLogin, ProfileError, Profiles};
 use crate::session::{SshAuth, SshTarget};
 use crate::template::Variables;
 use crate::workspace::{
-    Environment, ExpandError, Folder, HostId, Protocol, ResolvedHost, Workspace,
+    Environment, ExpandError, Folder, HostId, Protocol, ResolvedHost, ScriptError, Workspace,
 };
 
 pub use login::{LoginBackup, LoginBackupOutcome, SessionLogin};
@@ -54,6 +61,7 @@ pub use run::{
     StartError, DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL, JOB_TERMINAL_SIZE, MAX_PARALLEL,
     PROMPT_SETTLE,
 };
+pub use script::{ScriptOptions, ScriptTargets, SCRIPT_OUTPUT};
 
 /// Which hosts a job runs on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +90,10 @@ pub enum JobStep {
     /// show-config command and keeps it in the config history if it
     /// changed (see [`crate::configs`]).
     ConfigBackup,
+    /// Runs the Python script at `path` (relative to the workspace root,
+    /// `/`-separated) once, for all the hosts: it reaches them itself,
+    /// through the inventory plugin, which shows it only the job's hosts.
+    Script { path: String },
 }
 
 /// The pre-flight list of a job.
@@ -105,6 +117,18 @@ pub struct JobPlan {
     /// keeps what it fetched.
     #[serde(skip)]
     workspace: Option<String>,
+    /// For a script step: the script's file and the workspace folder.
+    #[serde(skip)]
+    script: Option<PlannedScript>,
+}
+
+/// The script a script step runs, as planned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedScript {
+    /// The workspace folder: the script's working folder.
+    root: PathBuf,
+    /// The script file.
+    file: PathBuf,
 }
 
 impl JobPlan {
@@ -260,6 +284,9 @@ pub enum PlanError {
     /// A snippet step that the workspace does not have.
     #[error("there is no snippet called {0}")]
     NoSuchSnippet(String),
+    /// A script step whose script the workspace does not have.
+    #[error("{0}")]
+    NoSuchScript(#[from] ScriptError),
 }
 
 /// Works out the pre-flight list of running `step` on `target`, connecting
@@ -267,6 +294,12 @@ pub enum PlanError {
 /// definition applies to it, its credential profile is stored, and its jump
 /// hosts (if any) all have stored profiles too; every other host is
 /// skipped with the first of those reasons that applies.
+///
+/// A script step runs on every host of the target that the inventory
+/// plugin can hand over: only a host whose credential profile is named but
+/// not stored here (the plugin would refuse to load) is skipped. How the
+/// script reaches the others (protocol, platform, jump hosts) is its own
+/// business, as for a script run from a shell.
 pub fn plan(
     workspace: &Workspace,
     profiles: &Profiles<'_>,
@@ -279,6 +312,14 @@ pub fn plan(
         }
     }
 
+    let script = match step {
+        JobStep::Script { path } => Some(PlannedScript {
+            root: workspace.root().to_path_buf(),
+            file: workspace.script_file(path)?,
+        }),
+        _ => None,
+    };
+
     let mut plan = JobPlan {
         step: step.clone(),
         hosts: Vec::new(),
@@ -286,6 +327,7 @@ pub fn plan(
         production: Vec::new(),
         missing_variables: Vec::new(),
         workspace: workspace.id().map(str::to_string),
+        script,
     };
     for id in target_hosts(workspace, target)? {
         let Some(host) = workspace.resolve_host(&id) else {
@@ -297,7 +339,11 @@ pub fn plan(
             });
             continue;
         };
-        match runnable(workspace, profiles, &host, step) {
+        let runs = match step {
+            JobStep::Script { .. } => script_runnable(profiles, &host),
+            _ => runnable(workspace, profiles, &host, step),
+        };
+        match runs {
             Ok((work, platform)) => {
                 let environment = host.settings.environment.as_ref().map(|e| e.value);
                 if environment == Some(Environment::Production) {
@@ -401,7 +447,7 @@ fn runnable(
             platform: host.settings.platform.as_ref().map(|p| p.value.clone()),
         })?;
     let backup = match step {
-        JobStep::Snippet { .. } => None,
+        JobStep::Snippet { .. } | JobStep::Script { .. } => None,
         JobStep::ConfigBackup => Some(BackupWork {
             command: given(&definition.show_config).ok_or_else(|| SkipReason::NoShowConfig {
                 platform: definition.name.clone(),
@@ -440,6 +486,45 @@ fn runnable(
         backup,
     };
     Ok((work, definition.name.clone()))
+}
+
+/// How `host` takes part in a script job (nothing to drive: the script
+/// does) and its platform as written (`""` if none), or why it cannot: its
+/// credential profile is named but not stored, or the store cannot say.
+fn script_runnable(
+    profiles: &Profiles<'_>,
+    host: &ResolvedHost,
+) -> Result<(HostWork, String), SkipReason> {
+    if let Some(profile) = &host.settings.credential_profile {
+        let name = &profile.value;
+        if profiles.profile(name).map_err(skip)?.is_none() {
+            return Err(SkipReason::ProfileNotSetUp {
+                profile: name.clone(),
+            });
+        }
+    }
+    let work = HostWork {
+        target: None,
+        profile: host
+            .settings
+            .credential_profile
+            .as_ref()
+            .map(|p| p.value.clone()),
+        enable_secret: None,
+        prompt: String::new(),
+        privilege_command: None,
+        privilege_prompt: None,
+        disable_paging: None,
+        lines: Vec::new(),
+        backup: None,
+    };
+    let platform = host
+        .settings
+        .platform
+        .as_ref()
+        .map(|p| p.value.clone())
+        .unwrap_or_default();
+    Ok((work, platform))
 }
 
 fn skip(error: ProfileError) -> SkipReason {

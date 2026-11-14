@@ -221,3 +221,88 @@ fn help_and_version_print_and_succeed() {
     assert_eq!(version.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&version.stdout).contains(env!("CARGO_PKG_VERSION")));
 }
+
+/// Runs `inventory` on the `export` fixture as a script job whose targets
+/// file holds `hosts` for the workspace `workspace` (the fixture if `None`).
+fn as_job(hosts: &[&str], workspace: Option<&Path>, limit: &[&str]) -> Output {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = fixture("export");
+    let targets = temp.path().join("targets.json");
+    std::fs::write(
+        &targets,
+        serde_json::json!({
+            "format": 1,
+            "workspace": workspace.unwrap_or(&root),
+            "hosts": hosts,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut args = vec!["inventory", root.to_str().unwrap()];
+    args.extend_from_slice(limit);
+    Command::new(env!("CARGO_BIN_EXE_netterm-cli"))
+        .args(&args)
+        .env("NETTERM_JOB_TARGETS", &targets)
+        .output()
+        .expect("the binary starts")
+}
+
+fn job_ids(output: &Output) -> Vec<String> {
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(output));
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    ids(&json).into_iter().map(str::to_owned).collect()
+}
+
+#[test]
+fn run_by_a_script_job_it_shows_only_the_jobs_hosts() {
+    let job = ["Madrid/core-r1.yaml", "bastion.yaml"];
+    assert_eq!(job_ids(&as_job(&job, None, &[])), job);
+    // A narrower limit of the script's own still applies.
+    assert_eq!(
+        job_ids(&as_job(&job, None, &["--folder", "Madrid"])),
+        ["Madrid/core-r1.yaml"]
+    );
+    let output = as_job(&job, None, &["--folder", "Madrid"]);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Only the folders of the hosts shown.
+    assert_eq!(json["folders"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        job_ids(&as_job(&job, None, &["--host", "bastion.yaml"])),
+        ["bastion.yaml"]
+    );
+}
+
+#[test]
+fn run_by_a_script_job_it_refuses_other_hosts_and_workspaces() {
+    let job = ["bastion.yaml"];
+    let outside = as_job(&job, None, &["--host", "old-sw1.yaml"]);
+    assert_eq!(outside.status.code(), Some(1));
+    assert!(
+        stderr(&outside).contains("not among the hosts of the job"),
+        "{}",
+        stderr(&outside)
+    );
+    let other = fixture("inherit");
+    let elsewhere = as_job(&job, Some(&other), &[]);
+    assert_eq!(elsewhere.status.code(), Some(1));
+    assert!(
+        stderr(&elsewhere).contains("reads no other workspace"),
+        "{}",
+        stderr(&elsewhere)
+    );
+
+    // A targets file that cannot be read never shows everything.
+    let root = fixture("export");
+    let missing = Command::new(env!("CARGO_BIN_EXE_netterm-cli"))
+        .args(["inventory", root.to_str().unwrap()])
+        .env("NETTERM_JOB_TARGETS", root.join("no-such-targets.json"))
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(missing.stdout.is_empty());
+    assert!(
+        stderr(&missing).contains("targets file"),
+        "{}",
+        stderr(&missing)
+    );
+}

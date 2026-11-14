@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use netterm_core::job::ScriptOptions;
 use netterm_core::python::{
     self, create_environment, package_version, status, system_candidates, Library, PythonChoice,
     PythonStatus, Setup, SetupCanceller, SetupOffer, SetupPlan, SetupProgress,
@@ -21,6 +22,8 @@ pub struct PythonSetup {
     /// `python` beside the program: the installer and the portable zip put
     /// the wheel there, and `app:build` leaves it in `target/release/python`.
     wheel_folder: PathBuf,
+    /// Where the program is: the headless binary is beside it.
+    program_folder: PathBuf,
     app_version: String,
     offer: Mutex<Option<SetupOffer>>,
     plan: Mutex<Option<SetupPlan>>,
@@ -40,6 +43,7 @@ impl PythonSetup {
         Arc::new(Self {
             data_folder,
             wheel_folder: program_folder.join("python"),
+            program_folder,
             app_version,
             offer: Mutex::new(None),
             plan: Mutex::new(None),
@@ -57,6 +61,28 @@ impl PythonSetup {
                 .join(python::wheel_name(&self.app_version)),
         )
         .filter(|w| w.is_file())
+    }
+
+    /// How a script job runs its script: the chosen interpreter if it is
+    /// ready (else the message saying what is wrong), the headless binary
+    /// beside the program, and this app's data folder (so that the binary
+    /// asks this app for credentials). Probes the interpreter: blocks.
+    pub fn script_options(&self) -> Result<ScriptOptions, String> {
+        let interpreter = match self.view().status {
+            PythonStatus::Ready { interpreter, .. } => interpreter,
+            other => return Err(other.message().to_string()),
+        };
+        let cli = self
+            .program_folder
+            .join(format!("netterm-cli{}", std::env::consts::EXE_SUFFIX));
+        Ok(ScriptOptions {
+            interpreter,
+            cli: cli.is_file().then_some(cli),
+            environment: vec![(
+                crate::DATA_DIR_VARIABLE.into(),
+                self.data_folder.clone().into(),
+            )],
+        })
     }
 
     fn view(&self) -> PythonView {

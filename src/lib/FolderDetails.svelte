@@ -11,6 +11,7 @@
     openBackup,
     openCsvImport,
     openJob,
+    openScript,
     openNornirImport,
     remove,
     renameTo,
@@ -67,6 +68,13 @@
         onclick={() =>
           openJob({ kind: "folder", path: folder.path }, folder.name)}
         >Run snippet…</button
+      >
+      <button
+        data-folder-run-script
+        title="Run a Python script of the workspace for every host in this folder, as a job"
+        onclick={() =>
+          openScript({ kind: "folder", path: folder.path }, folder.name)}
+        >Run script…</button
       >
       <button
         data-folder-back-up

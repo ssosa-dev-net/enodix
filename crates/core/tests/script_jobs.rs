@@ -1,0 +1,499 @@
+//! Script jobs: a Python script of the workspace run once for a job's
+//! hosts. Most tests run a stand-in interpreter (a batch file or shell
+//! script, `support::python::FakePython::running`) that prints what the
+//! job gave it; one runs a tiny real Python script and is SKIPPED without
+//! Python 3.10+.
+
+mod support;
+
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
+
+use netterm_core::credentials::{
+    CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
+};
+use netterm_core::job::results::{OutputRef, RunStore, OUTPUT_FOLDER};
+use netterm_core::job::script::{ScriptTargets, TARGETS_FORMAT};
+use netterm_core::job::{
+    self, HostState, Job, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget, PlanError,
+    ScriptOptions, SkipReason, StartError, SCRIPT_OUTPUT,
+};
+use netterm_core::workspace::{HostId, ScriptError, Workspace};
+use support::python::{real_python, FakePython};
+use tempfile::TempDir;
+
+/// The workspace every test uses: three hosts that run (one telnet, one
+/// production), one whose profile is not stored here, and some scripts
+/// among files that are not listed.
+fn workspace(temp: &TempDir) -> Workspace {
+    let root = temp.path().join("workspace");
+    let files = [
+        (
+            "Madrid/r1.yaml",
+            "address: 10.0.0.1\ncredential_profile: lab\n",
+        ),
+        (
+            "Madrid/p1.yaml",
+            "address: 10.0.0.2\nenvironment: production\n",
+        ),
+        ("Madrid/t1.yaml", "address: 10.0.0.3\nprotocol: telnet\n"),
+        (
+            "Madrid/ghost.yaml",
+            "address: 10.0.0.4\ncredential_profile: ghost\n",
+        ),
+        ("Paris/r9.yaml", "address: 10.0.9.9\n"),
+        ("scripts/show.py", "print('hello')\n"),
+        ("top.py", "print('top')\n"),
+        ("Madrid/notes.txt", "not a script\n"),
+        (".hidden/secret.py", "print('hidden')\n"),
+        ("scripts/__pycache__/show.py", "\n"),
+        ("venv/pyvenv.cfg", "home = x\n"),
+        ("venv/lib/site.py", "\n"),
+    ];
+    for (path, text) in files {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+    let mut workspace = Workspace::open(&root).unwrap();
+    workspace.ensure_id().unwrap();
+    assert!(
+        workspace.problems().is_empty(),
+        "{:?}",
+        workspace.problems()
+    );
+    workspace
+}
+
+fn store(workspace: &Workspace) -> MemoryStore {
+    let store = MemoryStore::new();
+    store
+        .put(
+            &workspace.credential_scope(),
+            &CredentialProfile {
+                name: "lab".into(),
+                username: "admin".into(),
+                auth: ProfileAuth::Password {
+                    password: "secret".into(),
+                },
+                enable_secret: None,
+            },
+        )
+        .unwrap();
+    store
+}
+
+fn script(path: &str) -> JobStep {
+    JobStep::Script { path: path.into() }
+}
+
+fn madrid() -> JobTarget {
+    JobTarget::Folder {
+        path: "Madrid".into(),
+    }
+}
+
+fn plan(workspace: &Workspace, step: &JobStep) -> JobPlan {
+    let store = store(workspace);
+    job::plan(
+        workspace,
+        &Profiles::new(&store, workspace),
+        &madrid(),
+        step,
+    )
+    .unwrap()
+}
+
+fn ids(plan: &JobPlan) -> Vec<&str> {
+    plan.hosts.iter().map(|host| host.id.as_str()).collect()
+}
+
+fn options(interpreter: &Path) -> JobOptions {
+    JobOptions {
+        script: Some(ScriptOptions {
+            interpreter: interpreter.to_path_buf(),
+            cli: Some("C:/somewhere/netterm-cli.exe".into()),
+            environment: vec![("NETTERM_TEST_EXTRA".into(), "extra-value".into())],
+        }),
+        ..JobOptions::default()
+    }
+}
+
+/// Every event until the end, with the report.
+async fn finish(job: &mut Job) -> (Vec<JobEvent>, JobReport) {
+    let mut events = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(30), job.next())
+            .await
+            .expect("the job ends")
+            .expect("the job reports its end");
+        if let JobEvent::Finished(report) = event {
+            return (events, report);
+        }
+        events.push(event);
+    }
+}
+
+fn states(events: &[JobEvent]) -> Vec<HostState> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            JobEvent::State { host, state } => {
+                assert_eq!(host.as_str(), SCRIPT_OUTPUT);
+                Some(state.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A stand-in that prints its environment, working folder, script and the
+/// targets file, then exits 0.
+fn printing(folder: &Path) -> FakePython {
+    FakePython::running(
+        folder,
+        "printing",
+        "echo workspace=%NETTERM_WORKSPACE%\r\necho cli=%NETTERM_CLI%\r\necho extra=%NETTERM_TEST_EXTRA%\r\necho args=%1 %2\r\necho cwd=%CD%\r\ntype \"%NETTERM_JOB_TARGETS%\"\r\necho.\r\necho targets=%NETTERM_JOB_TARGETS%",
+        "echo \"workspace=$NETTERM_WORKSPACE\"\necho \"cli=$NETTERM_CLI\"\necho \"extra=$NETTERM_TEST_EXTRA\"\necho \"args=$1 $2\"\necho \"cwd=$(pwd)\"\ncat \"$NETTERM_JOB_TARGETS\"\necho\necho \"targets=$NETTERM_JOB_TARGETS\"",
+    )
+}
+
+#[test]
+fn the_workspace_lists_its_python_scripts() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    assert_eq!(workspace.scripts(), ["scripts/show.py", "top.py"]);
+    assert_eq!(
+        workspace.script_file("scripts\\show.py").unwrap(),
+        workspace.root().join("scripts/show.py")
+    );
+    for bad in [
+        "../top.py",
+        "Madrid/notes.txt",
+        ".hidden/secret.py",
+        "",
+        "/top.py",
+        "scripts/__pycache__/show.py",
+        "venv/lib/site.py",
+    ] {
+        assert_eq!(
+            workspace.script_file(bad),
+            Err(ScriptError::BadPath(bad.into())),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        workspace.script_file("gone.py"),
+        Err(ScriptError::NotFound("gone.py".into()))
+    );
+}
+
+#[test]
+fn pre_flight_lists_the_targets_and_skips_only_what_the_inventory_cannot_hand_over() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let plan = plan(&workspace, &script("scripts/show.py"));
+    // Telnet and no profile are the script's business; a profile named but
+    // not stored here would stop the inventory from loading.
+    assert_eq!(
+        ids(&plan),
+        ["Madrid/p1.yaml", "Madrid/r1.yaml", "Madrid/t1.yaml"]
+    );
+    assert_eq!(plan.skipped.len(), 1);
+    assert_eq!(plan.skipped[0].id.as_str(), "Madrid/ghost.yaml");
+    assert_eq!(
+        plan.skipped[0].reason,
+        SkipReason::ProfileNotSetUp {
+            profile: "ghost".into()
+        }
+    );
+    assert_eq!(plan.production, [HostId::new("Madrid/p1.yaml")]);
+    assert!(plan.ready());
+}
+
+#[test]
+fn a_script_the_workspace_does_not_have_cannot_be_planned() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let store = store(&workspace);
+    let profiles = Profiles::new(&store, &workspace);
+    assert_eq!(
+        job::plan(&workspace, &profiles, &madrid(), &script("missing.py")),
+        Err(PlanError::NoSuchScript(ScriptError::NotFound(
+            "missing.py".into()
+        )))
+    );
+    assert_eq!(
+        job::plan(&workspace, &profiles, &madrid(), &script("../top.py")),
+        Err(PlanError::NoSuchScript(ScriptError::BadPath(
+            "../top.py".into()
+        )))
+    );
+}
+
+#[tokio::test]
+async fn without_an_interpreter_a_script_job_does_not_start() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let plan = plan(&workspace, &script("top.py"));
+    assert_eq!(
+        job::check(&plan, &JobOptions::default()),
+        Err(StartError::NoPython)
+    );
+    let manager = support::manager();
+    assert!(matches!(
+        job::start(&manager, plan, JobOptions::default()),
+        Err(StartError::NoPython)
+    ));
+}
+
+#[tokio::test]
+async fn the_script_gets_exactly_the_jobs_hosts_and_succeeds_by_exit_status() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let python = printing(temp.path());
+    let plan = plan(&workspace, &script("scripts/show.py"));
+    let manager = support::manager();
+    let mut job = job::start(&manager, plan, options(&python.path)).unwrap();
+    let (events, report) = finish(&mut job).await;
+
+    assert_eq!(
+        states(&events),
+        [HostState::Waiting, HostState::Running, HostState::Done]
+    );
+    let [result] = report.hosts.as_slice() else {
+        panic!("one output: {report:?}")
+    };
+    assert_eq!(result.id.as_str(), SCRIPT_OUTPUT);
+    assert_eq!(result.name, "scripts/show.py");
+    assert_eq!(result.exit_status, Some(0));
+    let output = &result.output;
+    let streamed: String = events
+        .iter()
+        .filter_map(|event| match event {
+            JobEvent::Output { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(&streamed, output);
+
+    let line = |name: &str| {
+        output
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("no {name}= in {output}"))
+            .to_string()
+    };
+    let root = workspace.root();
+    assert_eq!(Path::new(&line("workspace")), root);
+    assert_eq!(Path::new(&line("cwd")), root);
+    assert_eq!(line("cli"), "C:/somewhere/netterm-cli.exe");
+    assert_eq!(line("extra"), "extra-value");
+    let args = line("args");
+    assert!(args.starts_with("-u "), "{args}");
+    assert!(args.ends_with("show.py"), "{args}");
+
+    // The targets file it was given, and gone once the script ended.
+    let json: String = output
+        .lines()
+        .skip_while(|line| !line.starts_with('{'))
+        .take_while(|line| !line.starts_with("targets="))
+        .collect();
+    let targets: ScriptTargets = serde_json::from_str(&json).unwrap();
+    assert_eq!(targets.format, TARGETS_FORMAT);
+    assert_eq!(targets.workspace, root);
+    assert_eq!(
+        targets.hosts,
+        ["Madrid/p1.yaml", "Madrid/r1.yaml", "Madrid/t1.yaml"].map(HostId::new)
+    );
+    assert!(!Path::new(&line("targets")).exists());
+}
+
+#[tokio::test]
+async fn a_script_that_exits_with_another_status_fails_naming_it() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let python = FakePython::running(
+        temp.path(),
+        "failing",
+        "echo to stdout\r\necho to stderr 1>&2\r\nexit /b 3",
+        "echo to stdout\necho to stderr >&2\nexit 3",
+    );
+    let plan = plan(&workspace, &script("top.py"));
+    let manager = support::manager();
+    let mut job = job::start(&manager, plan, options(&python.path)).unwrap();
+    let (_, report) = finish(&mut job).await;
+    let result = &report.hosts[0];
+    assert_eq!(
+        result.state,
+        HostState::Failed {
+            reason: "the script exited with status 3".into()
+        }
+    );
+    assert_eq!(result.exit_status, Some(3));
+    assert!(result.output.contains("to stdout\n"), "{}", result.output);
+    assert!(result.output.contains("to stderr\n"), "{}", result.output);
+}
+
+#[tokio::test]
+async fn an_interpreter_that_cannot_start_fails_the_job() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let plan = plan(&workspace, &script("top.py"));
+    let manager = support::manager();
+    let missing = temp.path().join("no-python.exe");
+    let mut job = job::start(&manager, plan, options(&missing)).unwrap();
+    let (_, report) = finish(&mut job).await;
+    let HostState::Failed { reason } = &report.hosts[0].state else {
+        panic!("{report:?}")
+    };
+    assert!(
+        reason.starts_with("the script could not be started"),
+        "{reason}"
+    );
+    assert_eq!(report.hosts[0].exit_status, None);
+}
+
+#[tokio::test]
+async fn output_streams_while_the_script_runs_and_cancel_stops_it_keeping_the_output() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let python = FakePython::running(
+        temp.path(),
+        "slow",
+        "echo started\r\nping -n 60 127.0.0.1 > nul\r\necho never",
+        "echo started\nsleep 60\necho never",
+    );
+    let plan = plan(&workspace, &script("top.py"));
+    let manager = support::manager();
+    let mut job = job::start(&manager, plan, options(&python.path)).unwrap();
+
+    // The first line arrives while the script still runs.
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), job.next())
+            .await
+            .expect("output arrives while it runs")
+            .unwrap();
+        match event {
+            JobEvent::Output { text, .. } => {
+                assert_eq!(text, "started\n");
+                break;
+            }
+            JobEvent::Finished(report) => panic!("ended before any output: {report:?}"),
+            _ => {}
+        }
+    }
+    let cancelled = std::time::Instant::now();
+    job.cancel();
+    let (_, report) = finish(&mut job).await;
+    assert!(
+        cancelled.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        cancelled.elapsed()
+    );
+    let result = &report.hosts[0];
+    assert_eq!(result.state, HostState::Cancelled);
+    assert_eq!(result.output, "started\n");
+}
+
+#[tokio::test]
+async fn a_script_run_is_kept_with_its_targets_one_output_and_its_exit_status() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let python = FakePython::running(
+        temp.path(),
+        "reporting",
+        "echo checked 3 hosts\r\necho Madrid/r1.yaml ok\r\nexit /b 1",
+        "echo checked 3 hosts\necho Madrid/r1.yaml ok\nexit 1",
+    );
+    let step = script("scripts/show.py");
+    let plan = plan(&workspace, &step);
+    let store = RunStore::new(temp.path().join("data/jobs"));
+    let ws = workspace.id().unwrap().to_string();
+    let mut recorder = store.begin(&ws, &madrid(), &plan).unwrap();
+    let run = recorder.id().to_string();
+    let manager = support::manager();
+    let mut job = job::start(&manager, plan, options(&python.path)).unwrap();
+    while let Some(event) = job.next().await {
+        recorder.record(&event).unwrap();
+    }
+
+    let stored = store.run(&ws, &run).unwrap();
+    assert!(stored.ended());
+    assert_eq!(stored.step, step);
+    let [script_host] = stored.hosts.as_slice() else {
+        panic!("{stored:?}")
+    };
+    assert_eq!(script_host.id.as_str(), SCRIPT_OUTPUT);
+    assert_eq!(script_host.name, "scripts/show.py");
+    assert_eq!(script_host.file, format!("{OUTPUT_FOLDER}/script.txt"));
+    assert_eq!(script_host.exit_status, Some(1));
+    assert!(matches!(script_host.state, HostState::Failed { .. }));
+    let targets: Vec<&str> = stored.targets.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(
+        targets,
+        ["Madrid/p1.yaml", "Madrid/r1.yaml", "Madrid/t1.yaml"]
+    );
+    assert_eq!(stored.skipped.len(), 1);
+
+    let reference = OutputRef {
+        run: run.clone(),
+        host: HostId::new(SCRIPT_OUTPUT),
+    };
+    assert_eq!(
+        store.output(&ws, &reference).unwrap(),
+        "checked 3 hosts\nMadrid/r1.yaml ok\n"
+    );
+    let hits = store.search(&ws, &run, "r1.yaml").unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].lines[0].number, 2);
+    assert_eq!(store.list(&ws).unwrap().runs[0].id, run);
+
+    // Run again: the same script and target, against the workspace now.
+    let again = {
+        let credentials = self::store(&workspace);
+        job::plan_again(
+            &workspace,
+            &Profiles::new(&credentials, &workspace),
+            &stored,
+        )
+        .unwrap()
+    };
+    assert_eq!(again.step, step);
+    assert_eq!(
+        ids(&again),
+        ["Madrid/p1.yaml", "Madrid/r1.yaml", "Madrid/t1.yaml"]
+    );
+}
+
+#[tokio::test]
+async fn a_real_python_script_prints_its_targets() {
+    let Some(python) = real_python() else {
+        eprintln!("script job with a real Python SKIPPED: no Python 3.10+ found");
+        return;
+    };
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    fs::write(
+        workspace.root().join("scripts/targets.py"),
+        "import json, os, sys\n\
+         with open(os.environ['NETTERM_JOB_TARGETS'], encoding='utf-8') as f:\n\
+         \x20   targets = json.load(f)\n\
+         for host in targets['hosts']:\n\
+         \x20   print('target', host)\n\
+         print('done', file=sys.stderr)\n\
+         sys.exit(2)\n",
+    )
+    .unwrap();
+    let plan = plan(&workspace, &script("scripts/targets.py"));
+    let manager = support::manager();
+    let mut job = job::start(&manager, plan, options(&python.executable)).unwrap();
+    let (_, report) = finish(&mut job).await;
+    let result = &report.hosts[0];
+    assert_eq!(result.exit_status, Some(2), "{}", result.output);
+    assert_eq!(
+        result.output,
+        "target Madrid/p1.yaml\ntarget Madrid/r1.yaml\ntarget Madrid/t1.yaml\ndone\n"
+    );
+}

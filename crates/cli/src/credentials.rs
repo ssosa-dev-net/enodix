@@ -40,6 +40,11 @@ pub fn host(args: &[String]) -> Result<(), Failure> {
     if workspace.resolve_host(&id).is_none() {
         return Err(Failure::Error(format!("there is no host {id}")));
     }
+    if crate::job_scope(&workspace)?.is_some_and(|targets| !targets.allows(&id)) {
+        return Err(Failure::Error(format!(
+            "the host {id} is not among the hosts of the job this script runs in"
+        )));
+    }
     let store = open_store()?;
     let profile = Profiles::new(store.as_ref(), &workspace)
         .host_profile(&id)
@@ -52,6 +57,7 @@ pub fn secret(args: &[String]) -> Result<(), Failure> {
     let [root, name] = two_arguments(args, "a secret name")?;
     let name = name.trim();
     let workspace = open_workspace(root)?;
+    crate::job_scope(&workspace)?;
     let store = open_store()?;
     let value = Secrets::new(store.as_ref(), &workspace)
         .get(name)

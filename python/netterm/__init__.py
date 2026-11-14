@@ -9,10 +9,15 @@ the environment.
 The Nornir inventory plugin is :class:`netterm.nornir.NettermInventory`
 (registered as ``NettermInventory``); it needs Nornir, which this package
 does not install.
+
+Run by the app as a script job, a script finds its workspace in
+``NETTERM_WORKSPACE`` (the default of every ``workspace`` argument here), and
+the binary shows it only the job's hosts and hands over only their logins.
 """
 
 from __future__ import annotations
 
+import os
 from os import PathLike, fspath
 from typing import Any, Dict, Iterable, Optional, Union
 
@@ -29,6 +34,7 @@ __all__ = [
     "NettermError",
     "credentials",
     "default_location",
+    "job_workspace",
     "find_cli",
     "inventory",
     "secret",
@@ -36,9 +42,30 @@ __all__ = [
 
 Folder = Union[str, "PathLike[str]"]
 
+#: The variable the app sets for a script job: the workspace folder.
+WORKSPACE_VARIABLE = "NETTERM_WORKSPACE"
+
+
+def job_workspace() -> Optional[str]:
+    """The workspace folder of the script job this script runs in (the app
+    sets ``NETTERM_WORKSPACE``), or ``None`` when it was not started by one."""
+    return os.environ.get(WORKSPACE_VARIABLE) or None
+
+
+def _workspace(workspace: Optional[Folder]) -> str:
+    if workspace is not None:
+        return fspath(workspace)
+    found = job_workspace()
+    if found is None:
+        raise NettermError(
+            "no workspace given: pass the workspace folder (it is only known by itself "
+            f"in a script job, which sets {WORKSPACE_VARIABLE})"
+        )
+    return found
+
 
 def inventory(
-    workspace: Folder,
+    workspace: Optional[Folder] = None,
     *,
     folder: Optional[str] = None,
     filter: Optional[str] = None,
@@ -48,8 +75,10 @@ def inventory(
     (``netterm-cli inventory``, format 1): every host with the settings
     that apply to it, its jump hosts, folders, tags and custom fields; no
     secrets. Limit it to one of: the hosts in ``folder`` and below, those
-    of the saved filter ``filter``, or the host ids in ``hosts``."""
-    args = ["inventory", fspath(workspace)]
+    of the saved filter ``filter``, or the host ids in ``hosts``. In a
+    script job, only the job's hosts are ever given, and ``workspace``
+    defaults to the job's."""
+    args = ["inventory", _workspace(workspace)]
     host_ids = [hosts] if isinstance(hosts, str) else list(hosts or [])
     given = [name for name, value in (("folder", folder), ("filter", filter)) if value is not None]
     if host_ids:
@@ -65,17 +94,18 @@ def inventory(
     return run(args)
 
 
-def credentials(workspace: Folder, host: str) -> Dict[str, Any]:
+def credentials(workspace: Optional[Folder], host: str) -> Dict[str, Any]:
     """The login of the credential profile the host ``host`` (a host id)
     uses (``netterm-cli credentials``, format 1): ``username``, ``auth``
     (``{"kind": "password", "password"}``, ``{"kind": "private_key",
     "key_file", "passphrase"}`` or ``{"kind": "agent"}``) and
     ``enable_secret``. From the running app, else the store itself (the
-    vault asks for its master password on the terminal)."""
-    return run(["credentials", fspath(workspace), host])
+    vault asks for its master password on the terminal). ``None`` is the
+    script job's workspace; a job hands over only its hosts' logins."""
+    return run(["credentials", _workspace(workspace), host])
 
 
-def secret(workspace: Folder, name: str) -> str:
+def secret(workspace: Optional[Folder], name: str) -> str:
     """The value of the workspace's named secret ``name``, from the
     running app or the store, as :func:`credentials`."""
-    return run(["secret", fspath(workspace), name])["value"]
+    return run(["secret", _workspace(workspace), name])["value"]

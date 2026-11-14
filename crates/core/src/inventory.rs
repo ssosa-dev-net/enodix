@@ -62,6 +62,10 @@ pub enum ExportError {
     /// References in [`Limit::Hosts`] that name no host, as given, once
     /// each.
     UnknownHosts(Vec<String>),
+    /// References in [`Limit::Hosts`] that name hosts outside the scope
+    /// given to [`export_within`] (a script job's hosts), as given.
+    #[error("{} not among the hosts of the job this script runs in: {}", if .0.len() == 1 { "this host is" } else { "these hosts are" }, .0.join(", "))]
+    OutsideJob(Vec<String>),
 }
 
 fn known_filters(known: &[String]) -> String {
@@ -198,7 +202,41 @@ pub struct ExportedFolder {
 
 /// Exports the hosts `limit` names from `workspace`.
 pub fn export(workspace: &Workspace, limit: &Limit) -> Result<InventoryExport, ExportError> {
-    let ids = selected(workspace, limit)?;
+    export_within(workspace, limit, None)
+}
+
+/// Exports the hosts `limit` names from `workspace` that are also in
+/// `scope`, if given (the hosts of the script job asking): a folder, a
+/// filter or everything gives only those of them in the scope; host ids
+/// outside it are refused ([`ExportError::OutsideJob`]).
+pub fn export_within(
+    workspace: &Workspace,
+    limit: &Limit,
+    scope: Option<&[HostId]>,
+) -> Result<InventoryExport, ExportError> {
+    let mut ids = selected(workspace, limit)?;
+    if let Some(scope) = scope {
+        if let Limit::Hosts(references) = limit {
+            let outside: Vec<String> = references
+                .iter()
+                .filter(|reference| {
+                    workspace
+                        .find_host_id(reference.trim())
+                        .is_some_and(|id| !scope.contains(&id))
+                })
+                .fold(Vec::new(), |mut outside, reference| {
+                    if !outside.contains(reference) {
+                        outside.push(reference.clone());
+                    }
+                    outside
+                });
+            if !outside.is_empty() {
+                return Err(ExportError::OutsideJob(outside));
+            }
+        }
+        let scope: std::collections::HashSet<&HostId> = scope.iter().collect();
+        ids.retain(|id| scope.contains(id));
+    }
     let hosts: Vec<ExportedHost> = ids
         .iter()
         .filter_map(|id| workspace.resolve_host(id))

@@ -146,7 +146,7 @@
     return entry.ended ? "ended" : "interrupted";
   }
 
-  /** A run's title: its snippet, or "Config backup". */
+  /** A run's title: its snippet, its script, or "Config backup". */
   function runTitle(entry: StoredRun) {
     return stepTitle(entry.step);
   }
@@ -157,7 +157,7 @@
         ? "the whole workspace"
         : `folder ${entry.target.path}`;
     }
-    const names = entry.hosts.map((h) => h.name);
+    const names = (entry.targets ?? entry.hosts).map((h) => h.name);
     const all = names.length + entry.skipped.length;
     return all <= 3 && names.length === all ? names.join(", ") : `${all} hosts`;
   }
@@ -205,7 +205,7 @@
       if (entry.hosts.some((h) => h.id === compareOld)) {
         choices.push({
           value: `${entry.id}|${compareOld}`,
-          label: `the same host, run at ${when(entry.started)}`,
+          label: `the same ${run.step.kind === "script" ? "script" : "host"}, run at ${when(entry.started)}`,
         });
       }
     }
@@ -358,7 +358,9 @@
                 type="button"
                 data-run-action="again"
                 disabled={busy}
-                title="Plan the same snippet on the same target, as the workspace is now"
+                title={run.step.kind === "script"
+                  ? "Plan the same script for the same target, as the workspace is now"
+                  : "Plan the same snippet on the same target, as the workspace is now"}
                 onclick={again}>Run again…</button
               >
               {#if !isRunning(run.id)}
@@ -406,6 +408,15 @@
                   {#if state.kind === "failed"}
                     <span class="reason" data-run-reason>{state.reason}</span>
                   {/if}
+                  {#if (live?.exits[entry.id] ?? entry.exit_status) !== undefined}
+                    <span
+                      class="backup"
+                      data-run-exit-status={live?.exits[entry.id] ??
+                        entry.exit_status}
+                      >exit status {live?.exits[entry.id] ??
+                        entry.exit_status}</span
+                    >
+                  {/if}
                   {#if live?.backups[entry.id] ?? entry.backup}
                     {@const outcome = (live?.backups[entry.id] ??
                       entry.backup)!}
@@ -414,6 +425,13 @@
                     >
                   {/if}
                 </button>
+              {/each}
+              {#each run.targets ?? [] as entry (entry.id)}
+                <div class="skipped" data-run-target={entry.id}>
+                  <span class="state">In inventory</span>
+                  <span>{entry.name}</span>
+                  <span class="reason">{entry.address}</span>
+                </div>
               {/each}
               {#each run.skipped as entry (entry.id)}
                 <div class="skipped" data-run-skipped={entry.id}>

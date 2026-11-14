@@ -69,14 +69,15 @@ export const inventory = $state({
   platforms: false,
   /**
    * While the job dialog is open: the hosts it runs on, the plan it starts
-   * from ("Run again"), if any, and whether it backs up configs (else it
-   * runs a snippet).
+   * from ("Run again"), if any, and whether it backs up configs or runs a
+   * script (else it runs a snippet).
    */
   job: null as {
     target: JobTarget;
     label: string;
     planned?: JobPlan | null;
     backup?: boolean;
+    script?: boolean;
   } | null,
   /** While the config history is open: the host it shows. */
   configHistory: null as string | null,
@@ -96,7 +97,13 @@ export function openJob(
     label,
     planned,
     backup: planned?.step.kind === "configBackup",
+    script: planned?.step.kind === "script",
   };
+}
+
+/** Opens the job dialog running a Python script for `target`'s hosts. */
+export function openScript(target: JobTarget, label: string) {
+  inventory.job = { target, label, planned: null, script: true };
 }
 
 /** Opens the job dialog backing up the configs of `target`'s hosts. */

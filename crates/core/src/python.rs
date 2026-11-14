@@ -971,7 +971,7 @@ fn exit_code(status: ExitStatus) -> String {
 
 /// A command with no window of its own (on Windows a console would flash
 /// up for every check), its input closed and its output captured.
-fn quiet_command(program: &OsStr) -> Command {
+pub(crate) fn quiet_command(program: &OsStr) -> Command {
     let mut command = Command::new(program);
     command
         .stdin(Stdio::null())
@@ -1062,7 +1062,7 @@ fn run(
 
 /// Ends `child` and, on Windows, the processes it started (the launcher's
 /// Python, pip's helpers), which `kill` alone would leave running.
-fn stop(child: &mut Child) {
+pub(crate) fn stop(child: &mut Child) {
     #[cfg(windows)]
     {
         let mut tree = quiet_command(OsStr::new("taskkill"));

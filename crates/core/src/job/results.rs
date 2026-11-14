@@ -12,6 +12,11 @@
 //! job's events, so a run interrupted by the app closing is still listed
 //! (without an end). Nothing is pruned and nothing is encrypted: device
 //! output can hold secrets the device shows.
+//!
+//! A script run has one output instead of one per host: its `hosts` hold
+//! the script alone (id [`super::SCRIPT_OUTPUT`], its output in
+//! `output/script.txt`, its exit status), and its `targets` the hosts it
+//! ran for.
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -21,7 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use super::{HostState, JobEvent, JobPlan, JobStep, JobTarget};
+use super::{HostState, JobEvent, JobPlan, JobStep, JobTarget, SCRIPT_OUTPUT};
 use crate::configs::SaveOutcome;
 use crate::diff::{diff_lines, DiffLine};
 use crate::workspace::HostId;
@@ -53,6 +58,18 @@ pub struct StoredRun {
     /// The hosts pre-flight skipped.
     #[serde(default)]
     pub skipped: Vec<RunSkipped>,
+    /// For a script run: the hosts it ran for (its `hosts` holding the
+    /// script's one output).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<RunTarget>,
+}
+
+/// A host a script run ran for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunTarget {
+    pub id: HostId,
+    pub name: String,
+    pub address: String,
 }
 
 impl StoredRun {
@@ -81,6 +98,9 @@ pub struct RunHost {
     /// (saved by this run, or found unchanged).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backup: Option<SaveOutcome>,
+    /// For a script: its exit status, once it exited with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_status: Option<i32>,
 }
 
 /// A host pre-flight skipped, and why.
@@ -218,18 +238,35 @@ impl RunStore {
         active.insert((workspace.to_string(), id.clone()));
         drop(active);
 
-        let hosts = plan
-            .hosts
-            .iter()
-            .map(|host| RunHost {
-                id: host.id.clone(),
-                name: host.name.clone(),
-                address: host.address.clone(),
-                state: HostState::Waiting,
-                file: output_file(&host.id),
-                backup: None,
-            })
-            .collect();
+        let run_host = |id: &HostId, name: &str, address: &str| RunHost {
+            id: id.clone(),
+            name: name.to_string(),
+            address: address.to_string(),
+            state: HostState::Waiting,
+            file: output_file(id),
+            backup: None,
+            exit_status: None,
+        };
+        let (hosts, targets) = match &plan.step {
+            JobStep::Script { path } => (
+                vec![run_host(&HostId::new(SCRIPT_OUTPUT), path, "")],
+                plan.hosts
+                    .iter()
+                    .map(|host| RunTarget {
+                        id: host.id.clone(),
+                        name: host.name.clone(),
+                        address: host.address.clone(),
+                    })
+                    .collect(),
+            ),
+            _ => (
+                plan.hosts
+                    .iter()
+                    .map(|host| run_host(&host.id, &host.name, &host.address))
+                    .collect(),
+                Vec::new(),
+            ),
+        };
         let run = StoredRun {
             id,
             workspace: workspace.to_string(),
@@ -247,6 +284,7 @@ impl RunStore {
                     reason: host.message.clone(),
                 })
                 .collect(),
+            targets,
         };
         let recorder = RunRecorder {
             folder,
@@ -495,6 +533,7 @@ impl RunRecorder {
                     };
                     entry.state = result.state.clone();
                     entry.backup.clone_from(&result.backup);
+                    entry.exit_status = result.exit_status;
                     // The whole output again, in case a piece was not kept.
                     let path = self.folder.join(&entry.file);
                     if let Err(error) = fs::write(&path, &result.output) {

@@ -1184,12 +1184,16 @@ async function main() {
     step,
   });
 
+  await scriptJobWithoutPython({ evaluate, screenshot, step });
+
   const pythonInterpreter = await pythonSetup({
     evaluate,
     fillForm,
     screenshot,
     step,
   });
+
+  await pythonBridge({ evaluate, screenshot, step, ready: pythonInterpreter });
 
   await sidePanels({ evaluate, mouse, centreOf, devtools, screenshot, step });
 
@@ -1798,6 +1802,309 @@ async function updateCheck({ evaluate, text, screenshot, step }) {
  * start; "Check now" asks once and only announces the release, with its
  * download page (recorded, never opened in a browser) and no install.
  */
+/** Where the smoke's script jobs keep their scripts (removed after). */
+const BRIDGE_SCRIPT = "Jobs/bridge_check.py";
+const SLOW_SCRIPT = "Jobs/bridge_slow.py";
+
+/**
+ * The script a script job (#52) runs against the example server: it lists
+ * the inventory the job gives it (only the Jobs folder's hosts), reads the
+ * SSH banner of each SSH host itself and asks the app for its login (the
+ * username only is printed), then exits 0.
+ */
+const BRIDGE_SCRIPT_TEXT = `import socket
+import sys
+
+import netterm
+
+export = netterm.inventory()
+print("hosts", len(export["hosts"]))
+for host in export["hosts"]:
+    print("target", host["id"])
+    if host["settings"]["protocol"] != "ssh":
+        continue
+    with socket.create_connection((host["address"], host["settings"]["port"]), timeout=10) as s:
+        banner = s.recv(256).decode("ascii", "replace").strip()
+    print("banner", host["id"], banner)
+    print("login", host["id"], netterm.credentials(None, host["id"])["username"])
+print("finished on stderr", file=sys.stderr)
+`;
+
+/** Opens the run-script dialog on the Jobs folder. */
+async function openScriptJob(evaluate) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const folderRow = 'nav button[data-item=folder][data-path="Jobs"]';
+  await until("the Jobs folder in the tree", () => exists(folderRow));
+  await evaluate(`document.querySelector(${json(folderRow)}).click()`);
+  await until("the Jobs folder's run-script button", () =>
+    exists(".side [data-folder-run-script]"),
+  );
+  await evaluate(
+    `document.querySelector(".side [data-folder-run-script]").click()`,
+  );
+  await until("the run-script dialog", () =>
+    exists("[data-dialog=job][data-step=script]"),
+  );
+}
+
+/**
+ * Before Python is set up, "Run script…" lists the workspace's scripts but
+ * says how to turn Python on instead of running one.
+ */
+async function scriptJobWithoutPython({ evaluate, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const dialog = "[data-dialog=job]";
+  writeFileSync(join(workspace, BRIDGE_SCRIPT), BRIDGE_SCRIPT_TEXT);
+  await openScriptJob(evaluate);
+  const shown = await until("the scripts listed, Python off", () =>
+    evaluate(`(() => {
+      const d = document.querySelector(${json(dialog)});
+      const scripts = [...d.querySelectorAll("[name=job-script] option")].map((o) => o.value);
+      const off = d.querySelector("[data-job-python-off]");
+      return scripts.length > 0 && off && {
+        scripts,
+        off: off.textContent,
+        preferences: !!d.querySelector("[data-job-python-preferences]"),
+      };
+    })()`),
+  );
+  if (!shown.scripts.includes(BRIDGE_SCRIPT))
+    fail(`the scripts listed: ${json(shown.scripts)}`);
+  if (!/Python features are off/.test(shown.off) || !shown.preferences)
+    fail(`run script without Python: ${json(shown)}`);
+  await screenshot("script-job-python-off");
+  step(
+    "Run script… lists the workspace's scripts and, without Python, says how to set it up",
+  );
+  await evaluate(
+    `document.querySelector("${dialog} [data-job=dismiss]").click()`,
+  );
+  await until(
+    "the run-script dialog closed",
+    async () => !(await evaluate(`!!document.querySelector("${dialog}")`)),
+  );
+}
+
+/**
+ * Script jobs (#52), with the app's environment set up by pythonSetup: a
+ * script runs for the Jobs folder's hosts (pre-flight and the production
+ * confirmation as for snippets), sees only them, reaches the example
+ * server and gets a login from the app; its output streams into the
+ * dialog and the jobs view (searchable) and it ends by exit status. A
+ * second, slow script is cancelled, keeping its output. Skipped without a
+ * Python 3.10+.
+ */
+async function pythonBridge({ evaluate, screenshot, step, ready }) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const dialog = "[data-dialog=job]";
+  const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
+  const pickScript = (path) =>
+    evaluate(`(() => {
+      const select = document.querySelector("${dialog} [name=job-script]");
+      select.value = ${json(path)};
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+  const result = () =>
+    evaluate(`(() => {
+      const row = document.querySelector('${dialog} [data-job-result="script"]');
+      return row && {
+        state: row.dataset.hostState,
+        exit: row.dataset.exitStatus ?? null,
+        reason: row.querySelector("[data-job-reason]")?.textContent ?? "",
+        output: row.querySelector("[data-job-output]").textContent,
+      };
+    })()`);
+  const slowFile = join(workspace, SLOW_SCRIPT);
+  try {
+    if (!ready) {
+      step("pythonBridge SKIPPED: no Python 3.10 or newer on this machine");
+      return;
+    }
+    writeFileSync(
+      slowFile,
+      `import time\nprint("waiting for ever", flush=True)\ntime.sleep(120)\nprint("never")\n`,
+    );
+    await openScriptJob(evaluate);
+    await until("the bridge script listed", () =>
+      exists(`${dialog} [name=job-script] option[value="${BRIDGE_SCRIPT}"]`),
+    );
+    if (await exists(`${dialog} [data-job-python-off]`))
+      fail("Python is ready, yet the run-script dialog says it is off");
+    await pickScript(BRIDGE_SCRIPT);
+    await clickOn(`${dialog} [data-job=plan]`);
+    await until("the script's pre-flight", () => atStep("preflight"));
+    const plan = await evaluate(`(() => {
+      const d = document.querySelector("${dialog}");
+      return {
+        hosts: [...d.querySelectorAll("[data-job-host]")].map((r) => r.dataset.jobHost).sort(),
+        production: d.querySelector("[data-job-production-names]")?.textContent ?? "",
+        startDisabled: d.querySelector("[data-job=start]").disabled,
+        parallel: !!d.querySelector("[data-job-parallel]"),
+      };
+    })()`);
+    const targets = [
+      "Jobs/jobs-odd.yaml",
+      "Jobs/jobs-r1.yaml",
+      "Jobs/jobs-telnet.yaml",
+    ];
+    if (json(plan.hosts) !== json(targets))
+      fail(`the script's pre-flight lists ${json(plan)}`);
+    if (plan.production !== "jobs-r1" || !plan.startDisabled || plan.parallel)
+      fail(`the script's production confirmation: ${json(plan)}`);
+    await clickOn(`${dialog} [name=job-confirm-production]`);
+    await until("the script's start enabled", () =>
+      evaluate(
+        `!document.querySelector("${dialog} [data-job=start]").disabled`,
+      ),
+    );
+    await screenshot("script-job-preflight");
+    step("a script job's pre-flight lists its hosts and confirms production");
+
+    await clickOn(`${dialog} [data-job=start]`);
+    await until(
+      "the script finished",
+      () => exists(`${dialog} [data-job-progress][data-finished]`),
+      60000,
+    );
+    const done = await result();
+    const lines = done.output.split("\n").filter(Boolean);
+    const expected = [
+      "hosts 3",
+      ...targets.map((id) => `target ${id}`),
+      "login Jobs/jobs-r1.yaml " + USERNAME,
+      "finished on stderr",
+    ];
+    if (done.state !== "done" || done.exit !== "0")
+      fail(`the script job ended ${json(done)}`);
+    for (const line of expected)
+      if (!lines.includes(line))
+        fail(`the script's output lacks ${json(line)}: ${done.output}`);
+    if (
+      !lines.some((line) => /^banner Jobs\/jobs-r1\.yaml SSH-2\.0-/.test(line))
+    )
+      fail(`the script did not reach the example server: ${done.output}`);
+    if (done.output.includes(PASSWORD))
+      fail("the script job's output shows the password");
+    await screenshot("script-job-done");
+    step(
+      "the script saw only the job's hosts, reached the example server, got its login, and succeeded by exit status",
+    );
+
+    // The jobs view keeps it: one output, its exit status, searchable.
+    await clickOn(`${dialog} [data-job=view]`);
+    await until("the script run in the jobs view", () =>
+      exists('[data-dialog=jobs] [data-run-host="script"]'),
+    );
+    const kept = await until("the kept script output", () =>
+      evaluate(`(() => {
+        const view = document.querySelector("[data-dialog=jobs]");
+        const output = view.querySelector('[data-run-output="script"]')?.textContent ?? "";
+        return output.includes("finished on stderr") && {
+          exit: view.querySelector('[data-run-host="script"] [data-run-exit-status]')?.dataset.runExitStatus,
+          targets: [...view.querySelectorAll("[data-run-target]")].map((r) => r.dataset.runTarget).sort(),
+        };
+      })()`),
+    );
+    if (kept.exit !== "0" || json(kept.targets) !== json(targets))
+      fail(`the kept script run: ${json(kept)}`);
+    await evaluate(`(() => {
+      const input = document.querySelector("[data-dialog=jobs] [name=run-search]");
+      input.value = "banner";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      document.querySelector("[data-dialog=jobs] [data-run-action=search]").click();
+    })()`);
+    const hit = await until("the search in the script's output", () =>
+      evaluate(
+        `document.querySelector('[data-dialog=jobs] [data-search-hit="script"]')?.dataset.count ?? null`,
+      ),
+    );
+    // jobs-r1 and jobs-odd are SSH hosts; jobs-telnet is not.
+    if (hit !== "2")
+      fail(`"banner" found on ${hit} lines of the script's output`);
+    step(
+      "the script run is kept: its output, exit status and targets, searchable",
+    );
+    // Run again plans the same script for the same target.
+    await clickOn("[data-dialog=jobs] [data-run-action=again]");
+    const again = await until("the script planned again", () =>
+      evaluate(`(() => {
+        const d = document.querySelector("${dialog}[data-step=preflight]");
+        return d && {
+          summary: d.querySelector("[data-job-summary]").textContent,
+          hosts: d.querySelectorAll("[data-job-host]").length,
+        };
+      })()`),
+    );
+    if (!again.summary.includes(BRIDGE_SCRIPT) || again.hosts !== 3)
+      fail(`Run again of the script run: ${json(again)}`);
+    step("Run again plans the same script for the same hosts");
+    await clickOn(`${dialog} [data-job=dismiss]`);
+    await until("the job dialog closed", async () => !(await exists(dialog)));
+    if (!(await exists("[data-dialog=jobs]"))) {
+      await evaluate(`document.querySelector("[data-open-jobs]").click()`);
+      await until("the jobs view", () => exists("[data-dialog=jobs]"));
+    }
+    await evaluate(
+      `[...document.querySelectorAll("[data-dialog=jobs] button")].find((b) => b.textContent.trim() === "Close").click()`,
+    );
+    await until(
+      "the jobs view closed",
+      async () => !(await exists("[data-dialog=jobs]")),
+    );
+
+    // A script that does not end is cancelled, keeping its output.
+    await openScriptJob(evaluate);
+    await until("the slow script listed", () =>
+      exists(`${dialog} [name=job-script] option[value="${SLOW_SCRIPT}"]`),
+    );
+    await pickScript(SLOW_SCRIPT);
+    await clickOn(`${dialog} [data-job=plan]`);
+    await until("the slow script's pre-flight", () => atStep("preflight"));
+    await clickOn(`${dialog} [name=job-confirm-production]`);
+    await until("the slow script's start enabled", () =>
+      evaluate(
+        `!document.querySelector("${dialog} [data-job=start]").disabled`,
+      ),
+    );
+    await clickOn(`${dialog} [data-job=start]`);
+    await until(
+      "the slow script's first line while it runs",
+      async () => {
+        const shown = await result();
+        return (
+          shown?.state === "running" &&
+          shown.output.includes("waiting for ever")
+        );
+      },
+      30000,
+    );
+    step("a script job's output appears while it runs");
+    await clickOn(`${dialog} [data-job=cancel]`);
+    await until("the slow script cancelled", () =>
+      exists(`${dialog} [data-job-progress][data-finished]`),
+    );
+    const cancelled = await result();
+    if (
+      cancelled.state !== "cancelled" ||
+      !cancelled.output.includes("waiting for ever") ||
+      cancelled.output.includes("never")
+    )
+      fail(`the cancelled script: ${json(cancelled)}`);
+    step("cancelling a script job stops it and keeps its output");
+    await clickOn(`${dialog} [data-job=close]`);
+    await until("the job dialog closed", async () => !(await exists(dialog)));
+  } finally {
+    rmSync(join(workspace, BRIDGE_SCRIPT), { force: true });
+    rmSync(slowFile, { force: true });
+  }
+}
+
 /** A Python 3.10 or newer of this machine ({ executable, version }), or null. */
 function systemPython() {
   for (const [command, ...args] of [["py", "-3"], ["python3"], ["python"]]) {

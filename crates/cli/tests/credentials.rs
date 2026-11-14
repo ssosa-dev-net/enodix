@@ -340,6 +340,50 @@ fn a_host_id_may_use_backslashes() {
     );
 }
 
+#[test]
+fn run_by_a_script_job_it_gives_only_the_jobs_hosts_credentials() {
+    let setup = Setup::new();
+    let _app = setup.serve(memory_store());
+    let targets = setup.data.join("targets.json");
+    let write = |workspace: &Path| {
+        fs::write(
+            &targets,
+            json!({ "format": 1, "workspace": workspace, "hosts": ["site/r1.yaml"] }).to_string(),
+        )
+        .unwrap();
+    };
+    let as_job = |args: &[&str]| {
+        let mut command = setup.command(args);
+        command.env("NETTERM_JOB_TARGETS", &targets);
+        without_terminal(&mut command);
+        command.output().unwrap()
+    };
+    write(&setup.workspace);
+    let ws = setup.ws();
+    assert_eq!(
+        answered(&as_job(&["credentials", ws, "site/r1.yaml"])),
+        r1_credentials()
+    );
+    refused(
+        &as_job(&["credentials", ws, "r2.yaml"]),
+        "the host r2.yaml is not among the hosts of the job this script runs in",
+    );
+    assert_eq!(
+        answered(&as_job(&["secret", ws, "netbox-token"])),
+        netbox_token()
+    );
+    // Written for another workspace: this one is not read at all.
+    write(&setup.data);
+    refused(
+        &as_job(&["credentials", ws, "site/r1.yaml"]),
+        "reads no other workspace",
+    );
+    refused(
+        &as_job(&["secret", ws, "netbox-token"]),
+        "reads no other workspace",
+    );
+}
+
 /// With the app closed and no vault, the binary reads the keychain itself
 /// (entries under this test's own prefix, removed afterwards).
 #[cfg(windows)]

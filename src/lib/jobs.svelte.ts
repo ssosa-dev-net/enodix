@@ -28,6 +28,8 @@ export interface LiveJob {
   outputs: Record<string, string>;
   /** What a config backup kept, per host. */
   backups: Record<string, SaveOutcome>;
+  /** A script's exit status, once it ended with one. */
+  exits: Record<string, number>;
   finished: boolean;
 }
 
@@ -81,6 +83,7 @@ function apply(job: LiveJob, event: JobEvent) {
       job.states[host.id] = host.state;
       job.outputs[host.id] = host.output;
       if (host.backup) job.backups[host.id] = host.backup;
+      if (host.exit_status !== null) job.exits[host.id] = host.exit_status;
     }
     job.finished = true;
     liveJobs.revision += 1;
@@ -114,6 +117,7 @@ export async function launchJob(
     states: {},
     outputs: {},
     backups: {},
+    exits: {},
     finished: false,
   });
   // The proxied entry, so that changes show.

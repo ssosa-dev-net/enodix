@@ -9,7 +9,12 @@
         "options": {"workspace": r"C:\\Work\\inventory", "folder": "Europe/Madrid"},
     })
 
-Options: ``workspace`` (the folder, required); at most one of ``folder``
+In a script job of the app, ``InitNornir(inventory={"plugin":
+"NettermInventory"})`` is enough: the workspace is the job's and the
+inventory holds only the job's hosts.
+
+Options: ``workspace`` (the folder; in a script job, the job's by default);
+at most one of ``folder``
 (that folder and below), ``filter`` (a saved filter's name) and ``hosts``
 (host ids); ``credentials`` (default ``True``: hand over each host's login
 from its credential profile; ``False`` reads no store).
@@ -91,7 +96,7 @@ class NettermInventory:
 
     def __init__(
         self,
-        workspace: Folder,
+        workspace: Optional[Folder] = None,
         folder: Optional[str] = None,
         filter: Optional[str] = None,
         hosts: Optional[Union[str, Iterable[str]]] = None,

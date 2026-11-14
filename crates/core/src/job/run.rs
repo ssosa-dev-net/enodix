@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch, Semaphore};
 use tokio::time::Instant;
 
+use super::script::{self, ScriptOptions};
 use super::{BackupWork, JobPlan, JobStep, PlannedHost};
 use crate::configs::{ConfigStore, SaveOutcome};
 use crate::logging::PlainText;
@@ -48,6 +49,9 @@ pub struct JobOptions {
     /// Where a config backup keeps the configurations it fetches; a config
     /// backup cannot start without it.
     pub configs: Option<ConfigStore>,
+    /// How a script step runs its script (the interpreter, the headless
+    /// binary); a script job cannot start without it.
+    pub script: Option<ScriptOptions>,
 }
 
 impl Default for JobOptions {
@@ -56,6 +60,7 @@ impl Default for JobOptions {
             parallel: DEFAULT_PARALLEL,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
             configs: None,
+            script: None,
         }
     }
 }
@@ -120,6 +125,9 @@ pub struct HostResult {
     pub output: String,
     /// For a config backup that got the configuration: what was kept.
     pub backup: Option<SaveOutcome>,
+    /// For a script step: the script's exit status, if it exited with one
+    /// (not when it could not start, or was ended by a signal).
+    pub exit_status: Option<i32>,
 }
 
 /// Why a plan cannot start.
@@ -141,6 +149,9 @@ pub enum StartError {
     /// the config history.
     #[error("the workspace has no id, which config backups are kept by")]
     NoWorkspaceId,
+    /// A script step with no [`JobOptions::script`]: no usable Python.
+    #[error("no Python interpreter is set up to run the script")]
+    NoPython,
 }
 
 /// A running job: its events, and a way to cancel it. Dropping it does not
@@ -198,6 +209,9 @@ pub fn check(plan: &JobPlan, options: &JobOptions) -> Result<(), StartError> {
             return Err(StartError::NoWorkspaceId);
         }
     }
+    if matches!(plan.step, JobStep::Script { .. }) && options.script.is_none() {
+        return Err(StartError::NoPython);
+    }
     Ok(())
 }
 
@@ -213,6 +227,17 @@ pub fn start(
     check(&plan, &options)?;
     let (events_tx, events) = mpsc::unbounded_channel();
     let (cancel_tx, cancel) = watch::channel(false);
+    if let (JobStep::Script { .. }, Some(script)) = (&plan.step, &options.script) {
+        let planned = plan
+            .script
+            .as_ref()
+            .expect("plan keeps the script of a script step");
+        script::spawn(&plan, planned, script, events_tx, cancel);
+        return Ok(Job {
+            events,
+            cancel: JobCanceller(Arc::new(cancel_tx)),
+        });
+    }
     let room = Arc::new(Semaphore::new(options.parallel));
     let configs = match (&options.configs, &plan.workspace) {
         (Some(store), Some(workspace)) => Some((store.clone(), workspace.clone())),
@@ -259,6 +284,7 @@ pub fn start(
                     state,
                     output: String::new(),
                     backup: None,
+                    exit_status: None,
                 }
             });
             hosts.push(result);
@@ -421,6 +447,7 @@ impl HostRunner {
             state,
             output: self.output,
             backup: self.backup,
+            exit_status: None,
         }
     }
 

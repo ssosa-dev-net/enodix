@@ -3,9 +3,11 @@
   import {
     cancelJob,
     DEFAULT_PARALLEL,
+    listScripts,
     MAX_PARALLEL,
     outcomeText,
     planJob,
+    SCRIPT_OUTPUT,
     type HostState,
     type JobPlan,
     type JobStep,
@@ -19,6 +21,8 @@
     type LiveJob,
   } from "./jobs.svelte";
   import { inventory } from "./inventory.svelte";
+  import { preferences } from "./preferences.svelte";
+  import { python, pythonOff, refreshPython } from "./python.svelte";
 
   interface Props {
     /** The hosts to run on. */
@@ -32,6 +36,8 @@
     planned?: JobPlan | null;
     /** Back up configs instead of running a snippet. */
     backup?: boolean;
+    /** Run a Python script of the workspace instead of a snippet. */
+    script?: boolean;
     onclose: () => void;
   }
 
@@ -40,10 +46,11 @@
     label,
     planned = null,
     backup = false,
+    script = false,
     onclose,
   }: Props = $props();
 
-  type Step = "snippet" | "variables" | "preflight" | "running";
+  type Step = "snippet" | "script" | "variables" | "preflight" | "running";
 
   const snippets = $derived(inventory.workspace?.snippets ?? []);
   const initial = untrack(() => planned);
@@ -51,16 +58,49 @@
   const backingUp = untrack(
     () => backup || initial?.step.kind === "configBackup",
   );
+  /** Whether the job runs a script (fixed for the dialog's life). */
+  const scripting = untrack(() => script || initial?.step.kind === "script");
   const initialStep = initial?.step.kind === "snippet" ? initial.step : null;
   let step = $state<Step>(
     backingUp
       ? "preflight"
       : initial === null
-        ? "snippet"
+        ? scripting
+          ? "script"
+          : "snippet"
         : initial.missingVariables.length > 0
           ? "variables"
           : "preflight",
   );
+  /** The step to go back to from pre-flight. */
+  const firstStep: Step = scripting ? "script" : "snippet";
+
+  /** The workspace's scripts, once listed. */
+  let scripts = $state<string[] | null>(null);
+  let scriptPath = $state(
+    untrack(() => (initial?.step.kind === "script" ? initial.step.path : "")),
+  );
+  /** Why a script cannot run now (no usable Python), with how to fix it. */
+  const scriptOff = $derived(scripting ? pythonOff() : null);
+  if (scripting) {
+    // The interpreter may have changed since the app started.
+    void refreshPython();
+    listScripts()
+      .then((found) => {
+        scripts = found;
+        if (!scriptPath) scriptPath = found[0] ?? "";
+      })
+      .catch((reason) => {
+        scripts = [];
+        error = String(reason);
+      });
+  }
+
+  /** Closes the dialog and opens Preferences (its Python section). */
+  function openPreferences() {
+    close();
+    preferences.dialog = true;
+  }
   let snippet = $state(
     untrack(() => initialStep?.name ?? snippets[0]?.name ?? ""),
   );
@@ -117,9 +157,9 @@
 
   /** The step the job runs. */
   function jobStep(): JobStep {
-    return backingUp
-      ? { kind: "configBackup" }
-      : { kind: "snippet", name: snippet, answers: { ...answers } };
+    if (backingUp) return { kind: "configBackup" };
+    if (scripting) return { kind: "script", path: scriptPath };
+    return { kind: "snippet", name: snippet, answers: { ...answers } };
   }
 
   // A config backup has nothing to choose first: straight to pre-flight.
@@ -153,6 +193,7 @@
       plan.hosts.length > 0 &&
       plan.missingVariables.length === 0 &&
       parallelValid &&
+      scriptOff === null &&
       (plan.production.length === 0 || productionConfirmed),
   );
 
@@ -204,10 +245,69 @@
     data-step={step}
   >
     <h2 id="job-title">
-      {backingUp ? `Back up configs of ${label}` : `Run a snippet on ${label}`}
+      {backingUp
+        ? `Back up configs of ${label}`
+        : scripting
+          ? `Run a script for ${label}`
+          : `Run a snippet on ${label}`}
     </h2>
 
-    {#if step === "snippet"}
+    {#if scriptOff !== null && step !== "running"}
+      <div class="python-off" role="status" data-job-python-off>
+        <p>{python.busy ? "Checking the Python interpreter…" : scriptOff}</p>
+        <button
+          type="button"
+          data-job-python-preferences
+          onclick={openPreferences}>Open Preferences</button
+        >
+      </div>
+    {/if}
+
+    {#if step === "script"}
+      {#if scripts === null}
+        <p class="note">Looking for scripts…</p>
+      {:else if scripts.length === 0}
+        <p class="note" data-job-no-scripts>
+          The workspace has no Python scripts yet: put a <code>.py</code> file in
+          its folder (or a folder below it) first.
+        </p>
+      {:else}
+        <form
+          onsubmit={(event) => {
+            event.preventDefault();
+            void preflight();
+          }}
+        >
+          <label>
+            Script
+            <select
+              name="job-script"
+              bind:this={firstInput}
+              bind:value={scriptPath}
+            >
+              {#each scripts as path (path)}
+                <option value={path}>{path}</option>
+              {/each}
+            </select>
+          </label>
+          <p class="note" data-job-script-note>
+            The script runs once, on this computer, with the Python chosen in
+            Preferences, in the workspace folder. Its inventory (the netterm
+            package and its Nornir plugin) holds only the hosts of this job,
+            with the logins of their credential profiles; it connects to them
+            itself. Nothing runs before you start.
+          </p>
+          <div class="actions">
+            <button
+              type="submit"
+              class="primary"
+              data-job="plan"
+              disabled={busy || !scriptPath}>Next</button
+            >
+          </div>
+        </form>
+      {/if}
+    {:else if step === "snippet"}
       {#if snippets.length === 0}
         <p class="note">
           The workspace has no snippets yet: add one in the snippets panel
@@ -305,10 +405,16 @@
         </p>
       {/if}
       <p class="note" data-job-summary>
-        {plan.hosts.length === 1
-          ? "1 host runs"
-          : `${plan.hosts.length} hosts run`},
-        {plan.skipped.length} skipped.
+        {#if scripting}
+          {plan.step.kind === "script" ? plan.step.path : ""} runs for
+          {plan.hosts.length === 1 ? "1 host" : `${plan.hosts.length} hosts`},
+          {plan.skipped.length} skipped.
+        {:else}
+          {plan.hosts.length === 1
+            ? "1 host runs"
+            : `${plan.hosts.length} hosts run`},
+          {plan.skipped.length} skipped.
+        {/if}
       </p>
       <div class="scroll">
         <table>
@@ -321,13 +427,16 @@
                 data-job-host={host.id}
                 class:production={host.environment === "production"}
               >
-                <td class="outcome">Runs</td>
+                <td class="outcome">{scripting ? "In inventory" : "Runs"}</td>
                 <td>{host.name}</td>
                 <td>{host.address}</td>
                 <td class="details">
-                  Platform {host.platform}{host.environment === "production"
-                    ? " · production"
-                    : ""}
+                  {[
+                    host.platform ? `Platform ${host.platform}` : "",
+                    host.environment === "production" ? "production" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </td>
               </tr>
             {/each}
@@ -355,7 +464,8 @@
             bind:checked={productionConfirmed}
           />
           <span>
-            Run on {plan.production.length === 1
+            {scripting ? "Run the script for" : "Run on"}
+            {plan.production.length === 1
               ? "the production host"
               : `${plan.production.length} production hosts`}:
             <strong data-job-production-names
@@ -364,22 +474,24 @@
           </span>
         </label>
       {/if}
-      <label class="parallel" data-job-parallel>
-        <span>Hosts at once</span>
-        <input
-          type="number"
-          name="job-parallel"
-          min="1"
-          max={MAX_PARALLEL}
-          step="1"
-          bind:value={parallel}
-          aria-invalid={!parallelValid}
-        />
-        <span class="hint">1 to {MAX_PARALLEL}</span>
-      </label>
+      {#if !scripting}
+        <label class="parallel" data-job-parallel>
+          <span>Hosts at once</span>
+          <input
+            type="number"
+            name="job-parallel"
+            min="1"
+            max={MAX_PARALLEL}
+            step="1"
+            bind:value={parallel}
+            aria-invalid={!parallelValid}
+          />
+          <span class="hint">1 to {MAX_PARALLEL}</span>
+        </label>
+      {/if}
       <div class="actions">
         {#if !backingUp}
-          <button type="button" onclick={() => (step = "snippet")}>Back</button>
+          <button type="button" onclick={() => (step = firstStep)}>Back</button>
         {/if}
         <button
           type="button"
@@ -387,8 +499,69 @@
           data-job="start"
           disabled={busy || !ready}
           onclick={start}
-          >Run on {plan.hosts.length}
+          >{scripting ? "Run the script for" : "Run on"}
+          {plan.hosts.length}
           {plan.hosts.length === 1 ? "host" : "hosts"}</button
+        >
+      </div>
+    {:else if step === "running" && plan && scripting}
+      {@const state = states[SCRIPT_OUTPUT] ?? { kind: "waiting" }}
+      {@const exit = live?.exits[SCRIPT_OUTPUT]}
+      <p
+        class="note"
+        data-job-progress
+        data-finished={finished ? "" : undefined}
+      >
+        {finished
+          ? state.kind === "done"
+            ? "Finished: the script succeeded"
+            : state.kind === "cancelled"
+              ? "Finished: cancelled"
+              : "Finished: the script failed"
+          : "Running"}{exit !== undefined ? ` (exit status ${exit})` : ""}.
+      </p>
+      <div class="scroll results">
+        <details
+          data-job-result={SCRIPT_OUTPUT}
+          data-host-state={state.kind}
+          data-exit-status={exit}
+          open
+        >
+          <summary>
+            <span class="state {state.kind}">{STATE_LABELS[state.kind]}</span>
+            <span>{plan.step.kind === "script" ? plan.step.path : ""}</span>
+            {#if state.kind === "failed"}
+              <span class="reason" data-job-reason>{state.reason}</span>
+            {/if}
+          </summary>
+          <pre data-job-output={SCRIPT_OUTPUT}>{outputs[SCRIPT_OUTPUT] ??
+              ""}</pre>
+        </details>
+      </div>
+      <div class="actions">
+        {#if !finished && live !== null}
+          {@const id = live.id}
+          <button
+            type="button"
+            data-job="cancel"
+            onclick={() => cancelJob(id).catch((e) => (error = String(e)))}
+            >Cancel job</button
+          >
+        {/if}
+        {#if live !== null}
+          {@const run = live.run}
+          <button
+            type="button"
+            data-job="view"
+            title="The kept run, with search, compare and save"
+            onclick={() => {
+              close();
+              openJobsView(run);
+            }}>Open in Jobs</button
+          >
+        {/if}
+        <button type="button" class="primary" data-job="close" onclick={close}
+          >{finished ? "Close" : "Hide"}</button
         >
       </div>
     {:else if step === "running" && plan}
@@ -646,6 +819,22 @@
   .note {
     margin: 0;
     color: var(--muted);
+  }
+
+  .python-off {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--warning, var(--border));
+    border-radius: 4px;
+  }
+
+  .python-off p {
+    margin: 0;
+    flex: 1 1 20rem;
   }
 
   .actions,
