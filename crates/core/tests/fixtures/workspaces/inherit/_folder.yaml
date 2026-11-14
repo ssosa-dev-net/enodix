@@ -1,0 +1,8 @@
+description: Acme Corp
+credential_profile: corp-admin
+logging: false
+tags:
+- acme
+web_links:
+  Wiki: https://wiki.example.net/{name}
+  NMS: https://nms.example.net/

@@ -4,7 +4,15 @@
 // the reloaded workspace.
 
 import * as api from "./workspace";
-import type { Edited, Folder, Host, WorkspaceView } from "./workspace";
+import type {
+  Edited,
+  EffectiveSettings,
+  Folder,
+  Host,
+  Origin,
+  Settings,
+  WorkspaceView,
+} from "./workspace";
 
 /** A tree item: a host (by id) or a folder (by path; "" is the root). */
 export type Item =
@@ -334,4 +342,87 @@ export function setFolderDescription(path: string, description: string) {
   return attempt(async () => {
     apply(await api.setFolderDescription(path, description));
   });
+}
+
+/**
+ * Saves the settings of the folder at `path`, as a function of what it
+ * sets as last saved; queued with the host saves.
+ */
+export function saveFolderSettings(
+  path: string,
+  change: (current: Settings) => Settings,
+) {
+  saving = saving.then(() =>
+    attempt(async () => {
+      const tree = inventory.workspace?.tree;
+      const found = tree ? api.findFolder(tree, path) : null;
+      if (!found) throw new Error(`${path} is no longer in the workspace`);
+      apply(
+        await api.saveFolderSettings(
+          path,
+          change($state.snapshot(found.settings)),
+        ),
+      );
+    }),
+  );
+  return saving;
+}
+
+/** Saves the tags of the folder at `path`, as a function of its last tags. */
+export function setFolderTags(
+  path: string,
+  change: (current: string[]) => string[],
+) {
+  saving = saving.then(() =>
+    attempt(async () => {
+      const tree = inventory.workspace?.tree;
+      const found = tree ? api.findFolder(tree, path) : null;
+      if (!found) throw new Error(`${path} is no longer in the workspace`);
+      apply(await api.setFolderTags(path, change($state.snapshot(found.tags))));
+    }),
+  );
+  return saving;
+}
+
+/**
+ * The settings that apply to `item`, kept up to date as the workspace
+ * changes; null until the core has answered. Call during component setup.
+ */
+export function effectiveSettings(item: () => Item) {
+  const state = $state({ current: null as EffectiveSettings | null });
+  $effect(() => {
+    const target = item();
+    // Any edit can change what is inherited.
+    void inventory.workspace;
+    let stale = false;
+    api
+      .resolveSettings(target)
+      .then((settings) => {
+        if (!stale) state.current = settings;
+      })
+      .catch((error) => {
+        if (!stale) inventory.editError = String(error);
+      });
+    return () => {
+      stale = true;
+    };
+  });
+  return state;
+}
+
+/** Where a setting of `item` comes from, in words. */
+export function describeOrigin(origin: Origin, item: Item): string {
+  if (origin.kind === "default") return "default";
+  if (origin.kind === "host") return "set on this host";
+  if (item.kind === "folder" && item.path === origin.path) {
+    return "set on this folder";
+  }
+  return origin.path === "" ? "from the workspace root" : `from ${origin.path}`;
+}
+
+/** Whether `origin` is `item` itself. */
+export function isOwn(origin: Origin, item: Item): boolean {
+  return item.kind === "host"
+    ? origin.kind === "host"
+    : origin.kind === "folder" && origin.path === item.path;
 }

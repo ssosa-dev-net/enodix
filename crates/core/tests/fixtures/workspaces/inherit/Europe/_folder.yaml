@@ -1,0 +1,8 @@
+port: 2222
+environment: production
+tags:
+- europe
+web_links:
+  NMS: https://nms-eu.example.net/
+serial:
+  baud_rate: 115200

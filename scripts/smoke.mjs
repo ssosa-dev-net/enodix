@@ -31,13 +31,17 @@ const userData = mkdtempSync(join(tmpdir(), "netterm-smoke-"));
 const appData = join(userData, "app-data");
 const workspace = join(userData, "smoke-workspace");
 
-/** A workspace with one host (the test server) and one malformed file. */
+/** A workspace with one host (the test server, whose port its folder
+ * sets) and one malformed file. */
 function createWorkspace() {
   mkdirSync(join(workspace, "Lab"), { recursive: true });
-  writeFileSync(join(workspace, "Lab", "_folder.yaml"), "description: Lab\n");
+  writeFileSync(
+    join(workspace, "Lab", "_folder.yaml"),
+    `description: Lab\nport: ${SSH_PORT}\n`,
+  );
   writeFileSync(
     join(workspace, "Lab", "smoke-r1.yaml"),
-    `name: smoke-r1\naddress: 127.0.0.1\nport: ${SSH_PORT}\n`,
+    "name: smoke-r1\naddress: 127.0.0.1\n",
   );
   writeFileSync(join(workspace, "broken.yaml"), "name: [\n");
   mkdirSync(appData);
@@ -367,7 +371,7 @@ async function main() {
   step("a wrong password is reported");
 
   // Double-clicking a host in the tree prompts for credentials and opens an
-  // SSH session to its management address.
+  // SSH session to its management address, on the port its folder sets.
   await evaluate(
     `[...document.querySelectorAll("nav button[aria-expanded]")].find((b) => b.textContent.includes("Lab")).click()`,
   );
@@ -379,6 +383,9 @@ async function main() {
   await until("the credentials prompt", async () =>
     (await text("h2")).includes("smoke-r1"),
   );
+  await until("the inherited port in the prompt", async () =>
+    (await text("main form p")).includes(`127.0.0.1:${SSH_PORT}`),
+  );
   await fillForm({ username: USERNAME, password: PASSWORD });
   await until(
     "the Connected status",
@@ -388,7 +395,7 @@ async function main() {
     (await screen()).includes("test-ssh$"),
   );
   await screenshot("host-session");
-  step("double-clicking a host opened a session to it");
+  step("double-clicking a host opened a session to it on its folder's port");
 
   await editInventory({
     evaluate,
@@ -431,6 +438,13 @@ async function editInventory({
   const folderRow = (path) => `nav [data-item=folder][data-path="${path}"]`;
   const hostRow = (id) => `nav [data-host="${id}"]`;
   const hostFile = "address: 10.9.0.1\nvendor: Arista\nrack_unit: 12\n";
+  // What the side panel says applies, and where it comes from.
+  const shows = (key, expected) =>
+    until(
+      `${key} shown as "${expected}"`,
+      async () =>
+        (await text(`.side [data-origin="${key}"]`)).trim() === expected,
+    );
 
   // A folder and a host, created from the toolbar at the top level.
   await clickOn("aside header .name");
@@ -540,6 +554,36 @@ async function editInventory({
   );
   step("dragging a host onto a folder moved its file");
 
+  // The side panel shows each effective setting and where it comes from,
+  // and sets and clears it on the host.
+  await until("the moved host in the tree", () =>
+    evaluate(
+      `!!document.querySelector(${JSON.stringify(hostRow("Lab/edge-r2.yaml"))})`,
+    ),
+  );
+  await clickOn(hostRow("Lab/edge-r2.yaml"));
+  await shows("port", `${SSH_PORT} · from Lab`);
+  await shows("protocol", "ssh · default");
+  await shows("serial.baud_rate", "9600 · default");
+  await changeField("[name=setting-legacy_crypto]", "on");
+  await until(
+    "the host's own setting in its file",
+    () =>
+      contents("Lab/edge-r2.yaml") ===
+      "address: 10.9.0.1\nlegacy_crypto: true\nvendor: Arista\nrack_unit: 12\n",
+  );
+  await shows("legacy_crypto", "on · set on this host");
+  await screenshot("host-settings");
+  await clickOn('.side [aria-label="Clear Legacy crypto"]');
+  await until(
+    "the host's setting cleared from its file",
+    () => contents("Lab/edge-r2.yaml") === hostFile,
+  );
+  await shows("legacy_crypto", "off · default");
+  step(
+    "the side panel showed effective settings and origins, set and cleared one",
+  );
+
   // A folder's description is saved to its settings file.
   await clickOn(folderRow("Edge"));
   await until(
@@ -552,6 +596,17 @@ async function editInventory({
     () => contents("Edge/_folder.yaml") === "description: Edge routers\n",
   );
   step("a folder description was written to its settings file");
+
+  // A setting on a folder is written to its settings file.
+  await changeField("[name=setting-environment]", "lab");
+  await until(
+    "the folder's setting in its file",
+    () =>
+      contents("Edge/_folder.yaml") ===
+      "description: Edge routers\nenvironment: lab\n",
+  );
+  await shows("environment", "lab · set on this folder");
+  step("a setting on a folder was written to its settings file");
 
   // Moving a folder from its context menu.
   const openMenu = async (selector) => {

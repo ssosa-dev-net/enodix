@@ -1,0 +1,9 @@
+address: 10.1.0.1
+port: 22
+credential_profile: madrid-ops
+tags:
+- core
+web_links:
+  GUI: https://10.1.0.1/
+serial:
+  baud_rate: 9600

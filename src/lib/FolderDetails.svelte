@@ -1,15 +1,20 @@
 <script lang="ts">
   import CopyButton from "./CopyButton.svelte";
+  import SettingsPanel from "./SettingsPanel.svelte";
+  import TagEditor from "./TagEditor.svelte";
   import {
+    effectiveSettings,
     inventory,
     move,
     newFolder,
     newHost,
     remove,
     renameTo,
+    saveFolderSettings,
     setFolderDescription,
+    setFolderTags,
   } from "./inventory.svelte";
-  import type { Folder } from "./workspace";
+  import { allHosts, type Folder } from "./workspace";
 
   interface Props {
     folder: Folder;
@@ -19,6 +24,12 @@
 
   const item = $derived({ kind: "folder" as const, path: folder.path });
   const isRoot = $derived(folder.path === "");
+  const effective = effectiveSettings(() => item);
+  const hostIds = $derived(
+    inventory.workspace
+      ? allHosts(inventory.workspace.tree).map((host) => host.id)
+      : [],
+  );
 
   function countHosts(folder: Folder): number {
     return (
@@ -73,6 +84,21 @@
       <CopyButton value={folder.description ?? ""} what="description" />
     </span>
   </label>
+
+  <TagEditor
+    tags={folder.tags}
+    effective={effective.current?.tags ?? null}
+    {item}
+    onchange={(change) => setFolderTags(folder.path, change)}
+  />
+
+  <SettingsPanel
+    {item}
+    settings={folder.settings}
+    effective={effective.current}
+    {hostIds}
+    onchange={(change) => saveFolderSettings(folder.path, change)}
+  />
 </div>
 
 <style>
