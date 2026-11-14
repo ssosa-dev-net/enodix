@@ -479,7 +479,7 @@ fn clearing_fields_removes_their_keys() {
 
     core.vendor = Some("   ".into());
     core.rack_unit = None;
-    core.port = None;
+    core.settings.port = None;
     core.tags.clear();
     core.custom.clear();
     workspace.write_host(&core).unwrap();

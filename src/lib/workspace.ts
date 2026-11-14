@@ -11,13 +11,78 @@ export interface CustomField {
   value: string;
 }
 
+export type Protocol = "ssh" | "telnet" | "serial";
+export type Environment = "production" | "staging" | "lab";
+export type Parity = "none" | "odd" | "even" | "mark" | "space";
+export type FlowControl = "none" | "hardware" | "software";
+
+export interface WebLink {
+  name: string;
+  url: string;
+}
+
+export interface SerialSettings {
+  baud_rate: number | null;
+  data_bits: number | null;
+  parity: Parity | null;
+  stop_bits: number | null;
+  flow_control: FlowControl | null;
+}
+
+/**
+ * The connection settings a host or folder sets itself; null (or an empty
+ * list) inherits from the folders above.
+ */
+export interface Settings {
+  protocol: Protocol | null;
+  port: number | null;
+  credential_profile: string | null;
+  /** The id of another host to connect through. */
+  jump_host: string | null;
+  legacy_crypto: boolean | null;
+  logging: boolean | null;
+  environment: Environment | null;
+  web_links: WebLink[];
+  serial: SerialSettings;
+}
+
+/** Where an effective setting comes from. */
+export type Origin =
+  { kind: "default" } | { kind: "host" } | { kind: "folder"; path: string };
+
+export interface Effective<T> {
+  value: T;
+  origin: Origin;
+}
+
+/** What applies to a host or folder once inheritance is resolved. */
+export interface EffectiveSettings {
+  protocol: Effective<Protocol>;
+  /** Null: the protocol's own default port. */
+  port: Effective<number> | null;
+  credential_profile: Effective<string> | null;
+  jump_host: Effective<string> | null;
+  legacy_crypto: Effective<boolean>;
+  logging: Effective<boolean>;
+  environment: Effective<Environment> | null;
+  web_links: Effective<WebLink>[];
+  serial: {
+    baud_rate: Effective<number>;
+    data_bits: Effective<number>;
+    parity: Effective<Parity>;
+    stop_bits: Effective<number>;
+    flow_control: Effective<FlowControl>;
+  };
+  /** Every tag from the root down, with its nearest origin. */
+  tags: Effective<string>[];
+}
+
 export interface Host {
   /** The host file's path in the workspace; identifies the host. */
   id: string;
   name: string;
   /** The management address. */
   address: string;
-  port: number | null;
   vendor: string | null;
   platform: string | null;
   model: string | null;
@@ -30,6 +95,8 @@ export interface Host {
   description: string | null;
   tags: string[];
   custom: CustomField[];
+  /** The settings the host sets itself. */
+  settings: Settings;
 }
 
 /** The optional built-in text fields of a host, in display order. */
@@ -50,6 +117,10 @@ export interface Folder {
   /** Path relative to the workspace root; empty for the root. */
   path: string;
   description: string | null;
+  /** Tags every host below carries too. */
+  tags: string[];
+  /** The settings the folder sets for everything below it. */
+  settings: Settings;
   folders: Folder[];
   hosts: Host[];
 }
@@ -127,6 +198,22 @@ export function setFolderDescription(path: string, description: string) {
   });
 }
 
+/** Saves the settings a folder sets for everything below it. */
+export function saveFolderSettings(path: string, settings: Settings) {
+  return invoke<Edited<null>>("folder_save_settings", { path, settings });
+}
+
+export function setFolderTags(path: string, tags: string[]) {
+  return invoke<Edited<null>>("folder_set_tags", { path, tags });
+}
+
+/** The settings that apply to a host or folder, with their origins. */
+export function resolveSettings(
+  item: { kind: "host"; id: string } | { kind: "folder"; path: string },
+) {
+  return invoke<EffectiveSettings>("settings_resolve", { item });
+}
+
 /** Returns the new host's id. */
 export function createHost(folder: string, name: string, address: string) {
   return invoke<Edited<string>>("host_create", { folder, name, address });
@@ -171,6 +258,11 @@ export function findHost(tree: Folder, id: string): Host | null {
 export function parentPath(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash < 0 ? "" : path.slice(0, slash);
+}
+
+/** Every host of the tree, depth first. */
+export function allHosts(tree: Folder): Host[] {
+  return [...tree.hosts, ...tree.folders.flatMap(allHosts)];
 }
 
 /** Every folder of the tree, root first, depth first. */

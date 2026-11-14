@@ -10,7 +10,8 @@ use netterm_core::session::{
     SessionEvent, SessionId, SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{
-    EditError, Folder, FolderDeletion, Host, HostId, Problem, Workspace,
+    EditError, EffectiveSettings, Folder, FolderDeletion, Host, HostId, Problem, Settings,
+    Workspace,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -161,7 +162,7 @@ struct Edited<T> {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum FolderDeleted {
     Deleted {
-        workspace: WorkspaceView,
+        workspace: Box<WorkspaceView>,
     },
     /// Nothing was deleted: the folder holds hosts and the user must confirm.
     NeedsConfirmation {
@@ -229,7 +230,9 @@ fn folder_delete(
         Edited {
             workspace,
             result: None,
-        } => Ok(FolderDeleted::Deleted { workspace }),
+        } => Ok(FolderDeleted::Deleted {
+            workspace: Box::new(workspace),
+        }),
     }
 }
 
@@ -242,6 +245,51 @@ fn folder_set_description(
     edit(&shell, |workspace| {
         workspace.set_folder_description(&path, description.as_deref())
     })
+}
+
+/// Saves the settings a folder sets for everything below it.
+#[tauri::command]
+fn folder_save_settings(
+    shell: State<'_, Shell>,
+    path: String,
+    settings: Settings,
+) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| {
+        workspace.write_folder_settings(&path, &settings)
+    })
+}
+
+#[tauri::command]
+fn folder_set_tags(
+    shell: State<'_, Shell>,
+    path: String,
+    tags: Vec<String>,
+) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| workspace.set_folder_tags(&path, &tags))
+}
+
+/// A tree item, as the interface names it.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum Item {
+    Host { id: HostId },
+    Folder { path: String },
+}
+
+/// The settings that apply to a host or folder, and where each comes from.
+#[tauri::command]
+fn settings_resolve(shell: State<'_, Shell>, item: Item) -> Result<EffectiveSettings, String> {
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    match item {
+        Item::Host { id } => workspace
+            .resolve_host(&id)
+            .map(|host| host.settings)
+            .ok_or_else(|| format!("{id} is not in the open workspace")),
+        Item::Folder { path } => workspace
+            .resolve_folder(&path)
+            .ok_or_else(|| format!("{path} is not in the open workspace")),
+    }
 }
 
 #[tauri::command]
@@ -317,7 +365,7 @@ async fn session_open(
         } => shell
             .workspace()
             .as_ref()
-            .and_then(|workspace| workspace.host(&id))
+            .and_then(|workspace| workspace.resolve_host(&id))
             .ok_or_else(|| format!("{id} is not in the open workspace"))?
             .ssh_target(username, password),
     });
@@ -401,6 +449,9 @@ pub fn run() {
             folder_move,
             folder_delete,
             folder_set_description,
+            folder_save_settings,
+            folder_set_tags,
+            settings_resolve,
             host_create,
             host_rename,
             host_move,

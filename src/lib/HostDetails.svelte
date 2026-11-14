@@ -1,7 +1,21 @@
 <script lang="ts">
   import CopyButton from "./CopyButton.svelte";
-  import { move, remove, renameTo, saveHost } from "./inventory.svelte";
-  import { HOST_TEXT_FIELDS, type CustomField, type Host } from "./workspace";
+  import SettingsPanel from "./SettingsPanel.svelte";
+  import TagEditor from "./TagEditor.svelte";
+  import {
+    effectiveSettings,
+    inventory,
+    move,
+    remove,
+    renameTo,
+    saveHost,
+  } from "./inventory.svelte";
+  import {
+    allHosts,
+    HOST_TEXT_FIELDS,
+    type CustomField,
+    type Host,
+  } from "./workspace";
 
   interface Props {
     host: Host;
@@ -11,8 +25,15 @@
   let { host, onconnect }: Props = $props();
 
   const item = $derived({ kind: "host" as const, id: host.id });
+  const effective = effectiveSettings(() => item);
+  const otherHosts = $derived(
+    inventory.workspace
+      ? allHosts(inventory.workspace.tree)
+          .map((h) => h.id)
+          .filter((id) => id !== host.id)
+      : [],
+  );
 
-  let newTag = $state("");
   let newKey = $state("");
   let newValue = $state("");
 
@@ -37,14 +58,6 @@
     const input = event.currentTarget as Field;
     await save(changes(input.value));
     input.value = stored();
-  }
-
-  function addTag(event: SubmitEvent) {
-    event.preventDefault();
-    const tag = newTag;
-    if (tag.trim() === "") return;
-    save((current) => ({ tags: [...current.tags, tag] }));
-    newTag = "";
   }
 
   /** Changes the custom field named `key`, wherever it is by then. */
@@ -113,26 +126,6 @@
         <CopyButton value={host.address} what="management address" />
       </span>
     </label>
-    <label class="field">
-      <span>Port</span>
-      <span class="row">
-        <input
-          name="port"
-          type="number"
-          min="1"
-          max="65535"
-          placeholder="default"
-          value={host.port ?? ""}
-          onchange={(event) =>
-            commit(
-              event,
-              (port) => ({ port: port.trim() === "" ? null : Number(port) }),
-              () => host.port?.toString() ?? "",
-            )}
-        />
-        <CopyButton value={host.port?.toString() ?? ""} what="port" />
-      </span>
-    </label>
     {#each HOST_TEXT_FIELDS as [key, label] (key)}
       <label class="field">
         <span>{label}</span>
@@ -170,40 +163,21 @@
     </label>
   </section>
 
-  <section>
-    <h3>
-      Tags
-      <CopyButton value={host.tags.join(", ")} what="tags" />
-    </h3>
-    {#if host.tags.length > 0}
-      <ul class="tags">
-        {#each host.tags as tag (tag)}
-          <li class="tag">
-            {tag}
-            <button
-              class="remove"
-              aria-label="Remove tag {tag}"
-              onclick={() =>
-                save((current) => ({
-                  tags: current.tags.filter((t) => t !== tag),
-                }))}>×</button
-            >
-          </li>
-        {/each}
-      </ul>
-    {/if}
-    <form class="row" onsubmit={addTag}>
-      <input
-        name="new-tag"
-        placeholder="Add a tag"
-        spellcheck="false"
-        bind:value={newTag}
-      />
-      <button type="submit" class="small" disabled={newTag.trim() === ""}
-        >Add</button
-      >
-    </form>
-  </section>
+  <TagEditor
+    tags={host.tags}
+    effective={effective.current?.tags ?? null}
+    {item}
+    onchange={(change) => save((current) => ({ tags: change(current.tags) }))}
+  />
+
+  <SettingsPanel
+    {item}
+    settings={host.settings}
+    effective={effective.current}
+    hostIds={otherHosts}
+    onchange={(change) =>
+      save((current) => ({ settings: change(current.settings) }))}
+  />
 
   <section>
     <h3>Custom fields</h3>
@@ -348,24 +322,6 @@
 
   .custom .key {
     flex: 0 1 40%;
-  }
-
-  .tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .tag {
-    display: flex;
-    align-items: center;
-    padding: 0.05rem 0 0.05rem 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
   }
 
   .remove {

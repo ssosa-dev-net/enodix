@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { effectiveSettings } from "./inventory.svelte";
   import type { Host } from "./workspace";
 
   interface Props {
@@ -8,6 +9,9 @@
   }
 
   let { host, onconnect, oncancel }: Props = $props();
+
+  // The port the session will use: the resolved one, else SSH's default.
+  const effective = effectiveSettings(() => ({ kind: "host", id: host.id }));
 
   let username = $state("");
   let password = $state("");
@@ -21,7 +25,7 @@
 <main>
   <form onsubmit={submit}>
     <h2>{host.name}</h2>
-    <p>SSH to {host.address}{host.port ? `:${host.port}` : ""}</p>
+    <p>SSH to {host.address}:{effective.current?.port?.value ?? 22}</p>
 
     <label>
       Username

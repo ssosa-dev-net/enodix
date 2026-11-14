@@ -1,0 +1,7 @@
+jump_host: Europe/Madrid/bastion.yaml
+legacy_crypto: true
+tags:
+- madrid
+- europe
+serial:
+  parity: even

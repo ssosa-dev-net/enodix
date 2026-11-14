@@ -1,0 +1,3 @@
+address: 10.1.0.9
+protocol: telnet
+environment: lab

@@ -22,7 +22,10 @@ fn outline(folder: &Folder) -> String {
             walk(child, depth + 1, out);
         }
         for host in &folder.hosts {
-            let port = host.port.map_or("-".to_string(), |port| port.to_string());
+            let port = host
+                .settings
+                .port
+                .map_or("-".to_string(), |port| port.to_string());
             writeln!(out, "{indent}{} {}:{port}", host.name, host.address).unwrap();
         }
     }
@@ -123,7 +126,7 @@ fn rewriting_a_host_file_keeps_the_keys_it_does_not_know() {
     let mut host = workspace.host(&id).unwrap().clone();
 
     host.address = "10.9.0.2".into();
-    host.port = None;
+    host.settings.port = None;
     workspace.write_host(&host).unwrap();
 
     assert_eq!(
@@ -153,15 +156,15 @@ fn a_host_is_found_by_its_id_and_gives_its_ssh_target() {
     let workspace = Workspace::open(fixture("nested")).unwrap();
 
     let fw = workspace
-        .host(&HostId::new("Europe/Madrid/DC1/Rack-A1/fw1.yml"))
+        .resolve_host(&HostId::new("Europe/Madrid/DC1/Rack-A1/fw1.yml"))
         .unwrap();
     let target = fw.ssh_target("admin".into(), "secret".into());
     assert_eq!((target.host.as_str(), target.port), ("10.1.0.254", 2222));
     assert_eq!(target.username, "admin");
 
-    // Without a port in the file, SSH's default applies.
+    // Without a port anywhere, SSH's default applies.
     let border = workspace
-        .host(&HostId::new("Europe/Lisbon/border-r1.yaml"))
+        .resolve_host(&HostId::new("Europe/Lisbon/border-r1.yaml"))
         .unwrap();
     assert_eq!(border.ssh_target("a".into(), "b".into()).port, 22);
 
@@ -182,7 +185,9 @@ async fn connecting_to_a_host_from_the_tree_opens_an_ssh_session() {
     )
     .unwrap();
     let workspace = Workspace::open(temp.path()).unwrap();
-    let host = workspace.host(&HostId::new("Lab/test-r1.yaml")).unwrap();
+    let host = workspace
+        .resolve_host(&HostId::new("Lab/test-r1.yaml"))
+        .unwrap();
 
     let manager = SessionManager::new();
     let target = SessionTarget::Ssh(host.ssh_target(USERNAME.into(), PASSWORD.into()));
@@ -203,7 +208,7 @@ fn a_host_named_by_its_file_stays_that_way_when_rewritten() {
         .clone();
     assert_eq!(host.name, "edge-r2");
 
-    host.port = Some(830);
+    host.settings.port = Some(830);
     workspace.write_host(&host).unwrap();
 
     assert_eq!(

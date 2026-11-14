@@ -12,7 +12,8 @@
 //! workspace loads.
 //!
 //! Edits (creating, renaming, moving and deleting folders and hosts, saving
-//! a host's fields, a folder's description) go straight to the files, and
+//! a host's fields, a folder's description, tags and settings) go straight
+//! to the files, and
 //! the workspace reloads its tree afterwards. Files are written so that git
 //! diffs show only real changes: keys the app does not change keep their
 //! place and their exact value, new built-in keys take a fixed place
@@ -30,14 +31,25 @@ use serde_norway::{Mapping, Value};
 
 use crate::session::{SshTarget, DEFAULT_SSH_PORT};
 
-/// The settings file a directory may hold (description now; inherited
-/// settings and web links later).
+mod settings;
+
+use settings::{
+    apply_settings, settings_from_document, Level, CREDENTIAL_PROFILE, ENVIRONMENT, JUMP_HOST,
+    LEGACY_CRYPTO, LOGGING, PORT, PROTOCOL, SERIAL, WEB_LINKS,
+};
+pub use settings::{
+    Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, Origin, Parity,
+    Protocol, SerialSettings, Settings, WebLink, DEFAULT_BAUD_RATE, DEFAULT_DATA_BITS,
+    DEFAULT_STOP_BITS,
+};
+
+/// The settings file a directory may hold: its description, tags and
+/// inherited settings.
 pub const FOLDER_SETTINGS_FILE: &str = "_folder.yaml";
 
 /// Host file keys.
 const NAME: &str = "name";
 const ADDRESS: &str = "address";
-const PORT: &str = "port";
 const VENDOR: &str = "vendor";
 const PLATFORM: &str = "platform";
 const MODEL: &str = "model";
@@ -54,10 +66,17 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 15] = [
+pub const HOST_KEY_ORDER: [&str; 23] = [
     NAME,
     ADDRESS,
+    PROTOCOL,
     PORT,
+    CREDENTIAL_PROFILE,
+    JUMP_HOST,
+    LEGACY_CRYPTO,
+    LOGGING,
+    ENVIRONMENT,
+    SERIAL,
     VENDOR,
     PLATFORM,
     MODEL,
@@ -69,7 +88,23 @@ pub const HOST_KEY_ORDER: [&str; 15] = [
     RACK_UNIT,
     DESCRIPTION,
     TAGS,
+    WEB_LINKS,
     CUSTOM,
+];
+
+/// The same for a folder's settings file.
+pub const FOLDER_KEY_ORDER: [&str; 11] = [
+    DESCRIPTION,
+    TAGS,
+    PROTOCOL,
+    PORT,
+    CREDENTIAL_PROFILE,
+    JUMP_HOST,
+    LEGACY_CRYPTO,
+    LOGGING,
+    ENVIRONMENT,
+    SERIAL,
+    WEB_LINKS,
 ];
 
 /// The extension of host files the app creates.
@@ -92,6 +127,10 @@ pub struct Folder {
     /// for the root.
     pub path: String,
     pub description: Option<String>,
+    /// Tags every host below gets too.
+    pub tags: Vec<String>,
+    /// The settings this folder sets for everything below it.
+    pub settings: Settings,
     /// Subfolders, ordered by name.
     pub folders: Vec<Folder>,
     /// Hosts in this directory, ordered by name.
@@ -143,8 +182,6 @@ pub struct Host {
     pub name: String,
     /// The management address (`address` in the file).
     pub address: String,
-    /// `port` in the file, if set.
-    pub port: Option<u16>,
     pub vendor: Option<String>,
     pub platform: Option<String>,
     pub model: Option<String>,
@@ -160,6 +197,10 @@ pub struct Host {
     pub tags: Vec<String>,
     /// The user's own fields (`custom` in the file), in file order.
     pub custom: Vec<CustomField>,
+    /// The settings the host sets itself (`port` and the rest); see
+    /// [`Workspace::resolve_host`] for what applies to it.
+    #[serde(default)]
+    pub settings: Settings,
     /// Everything the file holds, in file order, so that keys this version
     /// does not know survive a rewrite.
     #[serde(skip)]
@@ -183,17 +224,6 @@ impl CustomField {
 }
 
 impl Host {
-    /// The SSH target for this host with the given credentials. Without a
-    /// port in the file, the SSH default applies.
-    pub fn ssh_target(&self, username: String, password: String) -> SshTarget {
-        SshTarget {
-            host: self.address.clone(),
-            port: self.port.unwrap_or(DEFAULT_SSH_PORT),
-            username,
-            password,
-        }
-    }
-
     /// The optional built-in text fields with their file keys.
     fn text_fields(&self) -> [(&'static str, &Option<String>); 10] {
         [
@@ -208,6 +238,30 @@ impl Host {
             (RACK_UNIT, &self.rack_unit),
             (DESCRIPTION, &self.description),
         ]
+    }
+}
+
+/// A host with the settings that apply to it once inheritance is resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ResolvedHost {
+    pub host: Host,
+    pub settings: EffectiveSettings,
+}
+
+impl ResolvedHost {
+    /// The SSH target for this host with the given credentials, on the
+    /// resolved port, or SSH's default port when nothing sets one.
+    pub fn ssh_target(&self, username: String, password: String) -> SshTarget {
+        SshTarget {
+            host: self.host.address.clone(),
+            port: self
+                .settings
+                .port
+                .as_ref()
+                .map_or(DEFAULT_SSH_PORT, |port| port.value),
+            username,
+            password,
+        }
     }
 }
 
@@ -334,6 +388,42 @@ impl Workspace {
         })
     }
 
+    /// The host `id` with the settings that apply to it: its own, else its
+    /// folder's, else each parent's up to the root, else the defaults.
+    pub fn resolve_host(&self, id: &HostId) -> Option<ResolvedHost> {
+        let host = self.host(id)?;
+        let (folder, _) = id.split();
+        let mut levels = self.levels(folder)?;
+        levels.push(Level {
+            origin: Origin::Host,
+            settings: &host.settings,
+            tags: &host.tags,
+        });
+        Some(ResolvedHost {
+            host: host.clone(),
+            settings: settings::resolve(&levels),
+        })
+    }
+
+    /// The settings that apply to the folder at `path`, and so to what is
+    /// below it unless overridden there.
+    pub fn resolve_folder(&self, path: &str) -> Option<EffectiveSettings> {
+        Some(settings::resolve(&self.levels(path)?))
+    }
+
+    /// The folders from the root down to the one at `path`.
+    fn levels(&self, path: &str) -> Option<Vec<Level<'_>>> {
+        let mut folder = &self.tree;
+        let mut levels = vec![Level::of(folder)];
+        if !path.is_empty() {
+            for name in path.split('/') {
+                folder = folder.folders.iter().find(|child| child.name == name)?;
+                levels.push(Level::of(folder));
+            }
+        }
+        Some(levels)
+    }
+
     /// Creates folder `name` inside the folder at `parent`; returns its path.
     pub fn create_folder(&mut self, parent: &str, name: &str) -> Result<String, EditError> {
         self.existing_folder(parent)?;
@@ -407,22 +497,63 @@ impl Workspace {
         if description == current {
             return Ok(());
         }
+        self.edit_folder_file(path, |document| {
+            match description {
+                Some(text) => set_folder_key(document, DESCRIPTION, text.into()),
+                None => {
+                    document.shift_remove(DESCRIPTION);
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Sets the tags of the folder at `path`, which every host below it
+    /// carries too. Blank and repeated tags are dropped.
+    pub fn set_folder_tags(&mut self, path: &str, tags: &[String]) -> Result<(), EditError> {
+        let current = self.existing_folder(path)?.tags.clone();
+        let tags = clean_tags(tags);
+        if tags == current {
+            return Ok(());
+        }
+        self.edit_folder_file(path, |document| {
+            write_tags(document, tags, set_folder_key);
+            Ok(())
+        })
+    }
+
+    /// Saves the settings the folder at `path` sets for everything below it
+    /// (`None` and empty lists clear them), keeping the rest of its settings
+    /// file. Text is trimmed and blank text clears a setting; only changed
+    /// settings are touched.
+    pub fn write_folder_settings(&mut self, path: &str, edit: &Settings) -> Result<(), EditError> {
+        let current = self.existing_folder(path)?.settings.clone();
+        self.edit_folder_file(path, |document| {
+            apply_settings(document, &current, edit, set_folder_key)
+        })
+    }
+
+    /// Changes the settings file of the folder at `path`: it is written if
+    /// the change made a difference, and removed if left empty.
+    fn edit_folder_file(
+        &mut self,
+        path: &str,
+        change: impl FnOnce(&mut Mapping) -> Result<(), EditError>,
+    ) -> Result<(), EditError> {
+        self.existing_folder(path)?;
         let file = join(path, FOLDER_SETTINGS_FILE);
         let full = self.root.join(&file);
-        let mut document = if full.exists() {
+        let original = if full.exists() {
             read_mapping(&full).map_err(|message| {
                 EditError::Invalid(format!("{file} cannot be updated: {message}"))
             })?
         } else {
             Mapping::new()
         };
-        match description {
-            Some(text) => {
-                document.insert(DESCRIPTION.into(), text.into());
-            }
-            None => {
-                document.shift_remove(DESCRIPTION);
-            }
+        let mut document = original.clone();
+        change(&mut document)?;
+        if document == original {
+            return Ok(());
         }
         if document.is_empty() {
             if full.exists() {
@@ -590,6 +721,18 @@ impl Workspace {
     }
 }
 
+impl<'a> Level<'a> {
+    fn of(folder: &'a Folder) -> Self {
+        Self {
+            origin: Origin::Folder {
+                path: folder.path.clone(),
+            },
+            settings: &folder.settings,
+            tags: &folder.tags,
+        }
+    }
+}
+
 /// What is about to be created under a name.
 enum Entry<'a> {
     Folder(&'a str),
@@ -691,14 +834,7 @@ fn updated_document(current: &Host, edit: &Host) -> Result<Mapping, EditError> {
         set_key(&mut document, ADDRESS, address.into());
     }
 
-    if edit.port != current.port {
-        match edit.port {
-            Some(port) => set_key(&mut document, PORT, port.into()),
-            None => {
-                document.shift_remove(PORT);
-            }
-        }
-    }
+    apply_settings(&mut document, &current.settings, &edit.settings, set_key)?;
 
     for ((key, old), (_, new)) in current.text_fields().into_iter().zip(edit.text_fields()) {
         let new = normalize(new.as_deref());
@@ -720,20 +856,9 @@ fn updated_document(current: &Host, edit: &Host) -> Result<Mapping, EditError> {
         }
     }
 
-    let mut tags: Vec<String> = Vec::new();
-    for tag in &edit.tags {
-        let tag = tag.trim();
-        if !tag.is_empty() && !tags.iter().any(|seen| seen == tag) {
-            tags.push(tag.to_string());
-        }
-    }
+    let tags = clean_tags(&edit.tags);
     if tags != current.tags {
-        if tags.is_empty() {
-            document.shift_remove(TAGS);
-        } else {
-            let list = tags.into_iter().map(Value::from).collect();
-            set_key(&mut document, TAGS, Value::Sequence(list));
-        }
+        write_tags(&mut document, tags, set_key);
     }
 
     let mut custom: Vec<CustomField> = Vec::new();
@@ -779,20 +904,52 @@ fn updated_document(current: &Host, edit: &Host) -> Result<Mapping, EditError> {
     Ok(document)
 }
 
-/// Sets `key` in place if the document has it; otherwise inserts it after
-/// the nearest key before it in [`HOST_KEY_ORDER`] that the document has
-/// (or before the nearest one after it, or at the end).
+/// Trimmed tags without blanks or repeats.
+fn clean_tags(tags: &[String]) -> Vec<String> {
+    let mut clean: Vec<String> = Vec::new();
+    for tag in tags {
+        let tag = tag.trim();
+        if !tag.is_empty() && !clean.iter().any(|seen| seen == tag) {
+            clean.push(tag.to_string());
+        }
+    }
+    clean
+}
+
+/// Writes `tags`, or removes the key if there are none.
+fn write_tags(document: &mut Mapping, tags: Vec<String>, set: fn(&mut Mapping, &str, Value)) {
+    if tags.is_empty() {
+        document.shift_remove(TAGS);
+    } else {
+        let list = tags.into_iter().map(Value::from).collect();
+        set(document, TAGS, Value::Sequence(list));
+    }
+}
+
+/// [`set_key_in`] for host files.
 fn set_key(document: &mut Mapping, key: &str, value: Value) {
+    set_key_in(document, key, value, &HOST_KEY_ORDER);
+}
+
+/// [`set_key_in`] for folder settings files.
+fn set_folder_key(document: &mut Mapping, key: &str, value: Value) {
+    set_key_in(document, key, value, &FOLDER_KEY_ORDER);
+}
+
+/// Sets `key` in place if the document has it; otherwise inserts it after
+/// the nearest key before it in `order` that the document has (or before
+/// the nearest one after it, or at the end).
+fn set_key_in(document: &mut Mapping, key: &str, value: Value, order: &[&str]) {
     if let Some(slot) = document.get_mut(key) {
         *slot = value;
         return;
     }
     let rank = |key: &Value| {
         key.as_str()
-            .and_then(|key| HOST_KEY_ORDER.iter().position(|known| *known == key))
+            .and_then(|key| order.iter().position(|known| *known == key))
     };
     let mut entries: Vec<(Value, Value)> = std::mem::take(document).into_iter().collect();
-    let position = HOST_KEY_ORDER
+    let position = order
         .iter()
         .position(|known| *known == key)
         .and_then(|mine| {
@@ -834,6 +991,8 @@ fn load_folder(dir: &Path, name: String, path: String, problems: &mut Vec<Proble
         name,
         path: path.clone(),
         description: None,
+        tags: Vec::new(),
+        settings: Settings::default(),
         folders: Vec::new(),
         hosts: Vec::new(),
     };
@@ -879,8 +1038,18 @@ fn load_folder(dir: &Path, name: String, path: String, problems: &mut Vec<Proble
             let child = load_folder(&entry.path(), entry_name, entry_path, problems);
             folder.folders.push(child);
         } else if entry_name == FOLDER_SETTINGS_FILE {
-            match read_mapping(&entry.path()).and_then(|document| folder_description(&document)) {
-                Ok(description) => folder.description = description,
+            match read_mapping(&entry.path()).and_then(|document| {
+                Ok((
+                    optional_text(&document, DESCRIPTION)?,
+                    read_tags(&document)?,
+                    settings_from_document(&document)?,
+                ))
+            }) {
+                Ok((description, tags, settings)) => {
+                    folder.description = description;
+                    folder.tags = tags;
+                    folder.settings = settings;
+                }
                 Err(message) => problems.push(problem(&entry_path, message)),
             }
         } else if entry_name.starts_with('_') {
@@ -935,27 +1104,9 @@ fn host_from_document(id: HostId, stem: &str, document: Mapping) -> Result<Host,
     let name = optional_text(&document, NAME)?.unwrap_or_else(|| stem.to_string());
     let address =
         optional_text(&document, ADDRESS)?.ok_or_else(|| format!("missing `{ADDRESS}`"))?;
-    let port = match document.get(PORT) {
-        None | Some(Value::Null) => None,
-        Some(Value::Number(number)) => Some(
-            number
-                .as_u64()
-                .and_then(|port| u16::try_from(port).ok())
-                .filter(|port| *port != 0)
-                .ok_or_else(|| format!("`{PORT}` must be a number from 1 to 65535"))?,
-        ),
-        Some(_) => return Err(format!("`{PORT}` must be a number from 1 to 65535")),
-    };
+    let settings = settings_from_document(&document)?;
     let field = |key| detail_text(&document, key);
-    let tags = match document.get(TAGS) {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Sequence(items)) => items
-            .iter()
-            .map(scalar_text)
-            .collect::<Option<_>>()
-            .ok_or_else(|| format!("`{TAGS}` must be a list of text"))?,
-        Some(_) => return Err(format!("`{TAGS}` must be a list of text")),
-    };
+    let tags = read_tags(&document)?;
     let custom_error = || format!("`{CUSTOM}` must map names to text");
     let custom = match document.get(CUSTOM) {
         None | Some(Value::Null) => Vec::new(),
@@ -976,7 +1127,6 @@ fn host_from_document(id: HostId, stem: &str, document: Mapping) -> Result<Host,
         id,
         name,
         address,
-        port,
         vendor: field(VENDOR)?,
         platform: field(PLATFORM)?,
         model: field(MODEL)?,
@@ -989,12 +1139,22 @@ fn host_from_document(id: HostId, stem: &str, document: Mapping) -> Result<Host,
         description: field(DESCRIPTION)?,
         tags,
         custom,
+        settings,
         document,
     })
 }
 
-fn folder_description(document: &Mapping) -> Result<Option<String>, String> {
-    optional_text(document, DESCRIPTION)
+fn read_tags(document: &Mapping) -> Result<Vec<String>, String> {
+    let error = || format!("`{TAGS}` must be a list of text");
+    match document.get(TAGS) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Sequence(items)) => items
+            .iter()
+            .map(scalar_text)
+            .collect::<Option<_>>()
+            .ok_or_else(error),
+        Some(_) => Err(error()),
+    }
 }
 
 /// A key whose value, when present, must be non-empty text (a number is

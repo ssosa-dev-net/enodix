@@ -73,7 +73,7 @@
         data-path={host.id}
         data-drop={folder.path}
         data-label={host.name}
-        title="{host.address}{host.port ? `:${host.port}` : ''}"
+        title={host.address}
         onclick={() => (inventory.selected = { kind: "host", id: host.id })}
         ondblclick={() => onconnect(host)}
         onkeydown={(event) => onkeydown(event, host)}
