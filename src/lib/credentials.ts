@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { Protocol } from "./workspace";
 
 /** A stored profile, without its secrets. */
 export interface ProfileSummary {
@@ -41,7 +42,9 @@ export interface ProfileDraft {
 export type HostLogin =
   | { kind: "profile"; profile: string; username: string }
   | { kind: "notSetUp"; profile: string }
-  | { kind: "prompt" };
+  | { kind: "prompt" }
+  /** Over telnet: connect at once; the device asks in the terminal. */
+  | { kind: "telnet" };
 
 export function listProfiles() {
   return invoke<ProfilesView>("profiles_list");
@@ -56,8 +59,12 @@ export function deleteProfile(name: string) {
   return invoke<ProfilesView>("profile_delete", { name });
 }
 
-export function hostLogin(id: string) {
-  return invoke<HostLogin>("host_login", { id });
+/**
+ * How the host logs in over `protocol`, or over its own protocol setting
+ * if none is given.
+ */
+export function hostLogin(id: string, protocol: Protocol | null = null) {
+  return invoke<HostLogin>("host_login", { id, protocol });
 }
 
 /** Asks the user for a private key file; null if they cancel. */

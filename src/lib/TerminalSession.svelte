@@ -233,6 +233,15 @@
       </span>
     {/if}
     <span class="title">{title}</span>
+    {#if session && !session.encrypted}
+      <span
+        class="unencrypted"
+        data-unencrypted
+        title="Everything this session sends, passwords included, crosses the network unencrypted (telnet)"
+      >
+        Unencrypted
+      </span>
+    {/if}
     {#if status.state === "connected" && legacy.length > 0}
       <span
         class="legacy"
@@ -392,6 +401,16 @@
 
   .title {
     font-weight: 600;
+  }
+
+  .unencrypted {
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--danger);
+    border-radius: 999px;
+    color: var(--danger);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    cursor: help;
   }
 
   .legacy {

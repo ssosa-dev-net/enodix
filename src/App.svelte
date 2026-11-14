@@ -29,6 +29,7 @@
     onWorkspaceChanged,
     restoreWorkspace,
     type Host,
+    type Protocol,
   } from "./lib/workspace";
 
   /** What the centre of the window shows when no session is shown. */
@@ -37,6 +38,8 @@
     | {
         kind: "prompt";
         host: Host;
+        /** The protocol the user chose; null: the host's own. */
+        protocol: Protocol | null;
         missingProfile: string | null;
         /** Why the host's profile could not log in, and its username. */
         fallback?: { reason: string; username: string };
@@ -111,7 +114,7 @@
       key,
       source: { kind: "target", target },
       title,
-      hostId: target.kind === "host" ? target.id : null,
+      hostId: target.kind === "quick" ? null : target.id,
       profileLogin,
     });
     shown = key;
@@ -143,21 +146,25 @@
   });
 
   /**
-   * Connects to an inventory host: at once with its credential profile,
-   * else after asking for credentials (or for the profile to set up).
+   * Connects to an inventory host over `protocol` (null: its own protocol
+   * setting): by telnet at once (the device asks for the login in the
+   * terminal); otherwise at once with its credential profile, else after
+   * asking for credentials (or for the profile to set up).
    */
-  async function prompt(host: Host) {
+  async function prompt(host: Host, protocol: Protocol | null = null) {
     inventory.selected = { kind: "host", id: host.id };
     let login;
     try {
-      login = await hostLogin(host.id);
+      login = await hostLogin(host.id, protocol);
     } catch (error) {
       // The profiles cannot be read (the keychain refused, say): say so,
       // and let the user log in by hand meanwhile.
       inventory.editError = `Cannot read the credential profiles: ${error}`;
       login = { kind: "prompt" } as const;
     }
-    if (login.kind === "profile") {
+    if (login.kind === "telnet") {
+      connect({ kind: "telnet", id: host.id }, `${host.name} (telnet)`);
+    } else if (login.kind === "profile") {
       connect(
         { kind: "host", id: host.id, credentials: null },
         `${login.username}@${host.name}`,
@@ -166,7 +173,7 @@
     } else {
       const missingProfile = login.kind === "notSetUp" ? login.profile : null;
       leaveShown();
-      view = { kind: "prompt", host, missingProfile };
+      view = { kind: "prompt", host, protocol, missingProfile };
     }
   }
 
@@ -182,6 +189,8 @@
       view = {
         kind: "prompt",
         host: login.host,
+        // Only SSH sessions log in with an agent.
+        protocol: "ssh",
         missingProfile: null,
         fallback: { reason, username: login.username },
       };
@@ -244,6 +253,7 @@
       {#if shown === null}
         {#if view.kind === "prompt"}
           {@const host = view.host}
+          {@const protocol = view.protocol}
           {#key host.id}
             <CredentialsPrompt
               {host}
@@ -255,7 +265,7 @@
                   { kind: "host", id: host.id, credentials },
                   `${credentials.username}@${host.name}`,
                 )}
-              onprofile={() => prompt(host)}
+              onprofile={() => prompt(host, protocol)}
             />
           {/key}
         {:else}

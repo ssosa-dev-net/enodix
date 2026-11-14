@@ -24,6 +24,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 const SSH_PORT = 22722;
 // A second test server, restricted to an old device's algorithms.
 const OLD_DEVICE_PORT = 22723;
+// The test telnet device (same username and password, asked in the terminal).
+const TELNET_PORT = 22724;
 const DEVTOOLS_PORT = 9333;
 const USERNAME = "engineer";
 const PASSWORD = "correct horse";
@@ -115,6 +117,8 @@ function startServer() {
       AGENT_PIPE,
       "--old-device",
       String(OLD_DEVICE_PORT),
+      "--telnet",
+      String(TELNET_PORT),
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
@@ -700,6 +704,18 @@ async function main() {
     doubleClick,
     hostKeyCheck,
     decideHostKey,
+    status,
+    screen,
+    screenshot,
+    step,
+  });
+
+  await telnet({
+    evaluate,
+    text,
+    click,
+    type,
+    doubleClick,
     status,
     screen,
     screenshot,
@@ -1321,6 +1337,9 @@ async function legacyCrypto({
     async () => (await status()) === "Connected",
   );
   if (await exists(marker)) fail("a modern session is marked as legacy");
+  if (await exists("[data-unencrypted]")) {
+    fail("an SSH session is marked unencrypted");
+  }
   step("a modern session is not marked");
   await click("Disconnect");
   await newConnection();
@@ -1328,6 +1347,120 @@ async function legacyCrypto({
   rmSync(hostFile);
   await until(
     "the old device gone from the tree",
+    async () => !(await exists(hostRow)),
+  );
+}
+
+/** A host whose protocol is telnet opens a telnet session on double-click,
+ * logging in in the terminal, marked unencrypted; the side panel offers
+ * telnet for an SSH host, and SSH for a telnet one. */
+async function telnet({
+  evaluate,
+  text,
+  click,
+  type,
+  doubleClick,
+  status,
+  screen,
+  screenshot,
+  step,
+}) {
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const hostRow = 'nav [data-host="Lab/console-sw.yaml"]';
+  const hostFile = join(workspace, "Lab", "console-sw.yaml");
+  const marker = ".slot:not([hidden]) [data-unencrypted]";
+  const sidePanelButton = (way) => `.side [data-connect=${way}]`;
+  const hasButton = (label) =>
+    evaluate(
+      `[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === ${JSON.stringify(label)})`,
+    );
+  const newConnection = async () => {
+    await until("the New connection button", () => hasButton("New connection"));
+    await click("New connection");
+  };
+  const loginPrompt = async () => {
+    await until(
+      "the Connected status",
+      async () => (await status()) === "Connected",
+    );
+    await until("the device's login prompt", async () =>
+      (await screen()).includes("Username:"),
+    );
+  };
+
+  await click("Disconnect").catch(() => {});
+  await click("New connection").catch(() => {});
+  writeFileSync(
+    hostFile,
+    `name: console-sw\naddress: 127.0.0.1\nport: ${TELNET_PORT}\nprotocol: telnet\n`,
+  );
+  await until("the telnet host in the tree", () => exists(hostRow));
+
+  // Double-click: no credentials prompt; the device asks in the terminal.
+  await doubleClick(hostRow);
+  await loginPrompt();
+  if (await exists("main input[name=password]")) {
+    fail("a telnet host asked for credentials before connecting");
+  }
+  if ((await text(marker)).trim() !== "Unencrypted") {
+    fail(
+      `the telnet session is not marked unencrypted: "${await text(marker)}"`,
+    );
+  }
+  await type(`${USERNAME}\r`);
+  await until("the password prompt", async () =>
+    (await screen()).includes("Password:"),
+  );
+  await type(`${PASSWORD}\r`);
+  await until("the telnet device's prompt", async () =>
+    (await screen()).includes("test-telnet>"),
+  );
+  if ((await screen()).includes(PASSWORD)) fail("the password was shown");
+  await type("size\r");
+  const size = await until(
+    "the output of `size`",
+    async () => (await screen()).match(/size\s*(\d+x\d+)/)?.[1],
+  );
+  if (size.startsWith("0x") || size.endsWith("x0")) {
+    fail(`the telnet device was not told the window size: ${size}`);
+  }
+  await screenshot("telnet-session");
+  step(
+    `double-clicking a telnet host logged in in the terminal (${size}), marked unencrypted`,
+  );
+
+  // The side panel offers SSH for the telnet host, and telnet for an SSH one.
+  await click("Disconnect");
+  await newConnection();
+  await evaluate(`document.querySelector(${JSON.stringify(hostRow)}).click()`);
+  await until("the SSH button for the telnet host", () =>
+    exists(sidePanelButton("ssh")),
+  );
+  if (await exists(sidePanelButton("telnet"))) {
+    fail("the side panel offers telnet for a host whose protocol is telnet");
+  }
+  writeFileSync(
+    hostFile,
+    `name: console-sw\naddress: 127.0.0.1\nport: ${TELNET_PORT}\n`,
+  );
+  await until("the Telnet button for an SSH host", () =>
+    exists(sidePanelButton("telnet")),
+  );
+  await evaluate(
+    `document.querySelector(${JSON.stringify(sidePanelButton("telnet"))}).click()`,
+  );
+  await loginPrompt();
+  if (!(await exists(marker))) fail("the telnet session is not marked");
+  step(
+    "the side panel opened a telnet session to a host whose protocol is SSH",
+  );
+  await click("Disconnect");
+  await newConnection();
+
+  rmSync(hostFile);
+  await until(
+    "the telnet host gone from the tree",
     async () => !(await exists(hostRow)),
   );
 }

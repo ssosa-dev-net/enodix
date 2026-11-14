@@ -2,7 +2,7 @@
 //! tried by hand without a real device:
 //!
 //! ```text
-//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>]
+//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>]
 //! ```
 //!
 //! Then quick-connect to 127.0.0.1 on that port with the printed login.
@@ -13,14 +13,19 @@
 //! profile. With `--old-device`, a second server with the same login
 //! listens on the given port, restricted to an old device's algorithms
 //! (`support::algorithms::old_device`): it is reached only with the
-//! legacy-crypto switch on. The shell behind it is scripted; see
-//! `tests/support/mod.rs` for its commands.
+//! legacy-crypto switch on. With `--telnet`, the in-process telnet server
+//! (`tests/support/telnet.rs`, same username and password, asked for in
+//! the terminal) listens on the given port. The shells behind them are
+//! scripted; see `tests/support/mod.rs` and `tests/support/telnet.rs` for
+//! their commands.
 
 #[path = "../tests/support/mod.rs"]
 mod support;
 
 fn usage() -> ! {
-    eprintln!("usage: test_ssh_server [port] [--agent <pipe or socket>] [--old-device <port>]");
+    eprintln!(
+        "usage: test_ssh_server [port] [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>]"
+    );
     std::process::exit(2);
 }
 
@@ -29,6 +34,7 @@ async fn main() {
     let mut port = 2222;
     let mut agent_path = None;
     let mut old_device_port = None;
+    let mut telnet_port = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--agent" {
@@ -36,6 +42,9 @@ async fn main() {
         } else if arg == "--old-device" {
             let port = args.next().unwrap_or_else(|| usage());
             old_device_port = Some(port.parse().unwrap_or_else(|_| usage()));
+        } else if arg == "--telnet" {
+            let port = args.next().unwrap_or_else(|| usage());
+            telnet_port = Some(port.parse().unwrap_or_else(|_| usage()));
         } else {
             port = arg.parse().unwrap_or_else(|_| usage());
         }
@@ -48,6 +57,13 @@ async fn main() {
                 support::algorithms::old_device(),
             )
             .await,
+        ),
+        None => None,
+    };
+    let telnet = match telnet_port {
+        Some(port) => Some(
+            support::telnet::TestTelnetServer::start_on(port, support::telnet::EchoMode::Remote)
+                .await,
         ),
         None => None,
     };
@@ -79,6 +95,9 @@ async fn main() {
             "old device (legacy algorithms only) listening on 127.0.0.1:{}",
             old_device.port()
         );
+    }
+    if let Some(telnet) = &telnet {
+        println!("telnet device listening on 127.0.0.1:{}", telnet.port());
     }
     std::future::pending::<()>().await;
 }

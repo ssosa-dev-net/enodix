@@ -24,8 +24,8 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::{JumpHost, SshAgent, SshAuth, SshTarget};
-use crate::workspace::{Folder, HostId, JumpChainError, ResolvedHost, Workspace};
+use crate::session::{JumpHost, SshAgent, SshAuth, SshTarget, TelnetTarget};
+use crate::workspace::{Folder, HostId, JumpChainError, Protocol, ResolvedHost, Workspace};
 
 mod keychain;
 
@@ -268,6 +268,10 @@ pub enum HostLogin {
     NotSetUp { profile: String },
     /// No profile: ask for a username and password.
     Prompt,
+    /// Over telnet: the device asks for the login in the terminal, so
+    /// nothing is asked before connecting. Connect with
+    /// [`Profiles::telnet_target`].
+    Telnet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -285,6 +289,9 @@ pub enum ProfileError {
     /// The host's jump hosts cannot be worked out (missing, a loop, ...).
     #[error("{0}")]
     JumpChain(#[from] JumpChainError),
+    /// The host is reached through a jump host, which telnet cannot use.
+    #[error("{host} is reached through the jump host {jump_host}, and telnet sessions cannot go through jump hosts")]
+    TelnetThroughJumpHost { host: HostId, jump_host: HostId },
 }
 
 /// The credential profiles of one workspace.
@@ -395,12 +402,32 @@ impl<'a> Profiles<'a> {
         }
     }
 
-    /// How the host `id` logs in: with the profile its settings resolve to,
-    /// if that profile is stored.
-    /// The target in [`HostLogin::Profile`] is the host alone, without its
-    /// jump hosts: connect with [`Self::profile_target`].
+    /// How the host `id` logs in over the protocol its settings resolve
+    /// to: see [`Self::login_with`].
     pub fn login(&self, id: &HostId) -> Result<HostLogin, ProfileError> {
         let host = self.resolve(id)?;
+        self.login_over(&host, host.settings.protocol.value)
+    }
+
+    /// How the host `id` logs in when reached over `protocol`: over telnet
+    /// in the terminal ([`HostLogin::Telnet`]); otherwise with the profile
+    /// its settings resolve to, if that profile is stored. Serial is not a
+    /// session transport yet, so it logs in as SSH does for now.
+    /// The target in [`HostLogin::Profile`] is the host alone, without its
+    /// jump hosts: connect with [`Self::profile_target`].
+    pub fn login_with(&self, id: &HostId, protocol: Protocol) -> Result<HostLogin, ProfileError> {
+        let host = self.resolve(id)?;
+        self.login_over(&host, protocol)
+    }
+
+    fn login_over(
+        &self,
+        host: &ResolvedHost,
+        protocol: Protocol,
+    ) -> Result<HostLogin, ProfileError> {
+        if protocol == Protocol::Telnet {
+            return Ok(HostLogin::Telnet);
+        }
         let Some(name) = host.settings.credential_profile.as_ref() else {
             return Ok(HostLogin::Prompt);
         };
@@ -420,10 +447,10 @@ impl<'a> Profiles<'a> {
     /// it cannot (no profile, or one that is not set up here, or a jump
     /// host that cannot be used).
     pub fn profile_target(&self, id: &HostId) -> Result<SshTarget, ProfileError> {
-        let mut target = match self.login(id)? {
+        let mut target = match self.login_with(id, Protocol::Ssh)? {
             HostLogin::Profile { target, .. } => target,
             HostLogin::NotSetUp { profile } => return Err(ProfileError::NotSetUp(profile)),
-            HostLogin::Prompt => {
+            HostLogin::Prompt | HostLogin::Telnet => {
                 return Err(ProfileError::Invalid(format!(
                     "{id} has no credential profile"
                 )))
@@ -445,6 +472,21 @@ impl<'a> Profiles<'a> {
         let mut target = host.ssh_target(username, password);
         target.jump_hosts = self.jump_hosts(id)?;
         Ok(target)
+    }
+
+    /// The target for reaching the host `id` by telnet, whatever protocol
+    /// its settings name (the side panel offers telnet for every host).
+    /// Telnet does not go through jump hosts: a host that has one is
+    /// refused rather than reached around it.
+    pub fn telnet_target(&self, id: &HostId) -> Result<TelnetTarget, ProfileError> {
+        let host = self.resolve(id)?;
+        if let Some(jump) = self.workspace.jump_chain(&host)?.last() {
+            return Err(ProfileError::TelnetThroughJumpHost {
+                host: id.clone(),
+                jump_host: jump.host.id.clone(),
+            });
+        }
+        Ok(host.telnet_target())
     }
 
     /// The jump hosts the host `id` is reached through, in the order they

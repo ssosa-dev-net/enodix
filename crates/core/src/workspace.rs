@@ -38,7 +38,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_norway::{Mapping, Value};
 
-use crate::session::{SshAuth, SshTarget, DEFAULT_SSH_PORT};
+use crate::session::{SshAuth, SshTarget, TelnetTarget, DEFAULT_SSH_PORT, DEFAULT_TELNET_PORT};
 
 mod filters;
 mod jumps;
@@ -298,17 +298,37 @@ impl ResolvedHost {
     pub fn ssh_target_with(&self, username: String, auth: SshAuth) -> SshTarget {
         SshTarget {
             host: self.host.address.clone(),
-            port: self
-                .settings
-                .port
-                .as_ref()
-                .map_or(DEFAULT_SSH_PORT, |port| port.value),
+            port: self.port_or(DEFAULT_SSH_PORT),
             username,
             auth,
             jump_hosts: Vec::new(),
             legacy_crypto: self.settings.legacy_crypto.value,
-            connect_timeout: Duration::from_secs(self.settings.connect_timeout.value.into()),
+            connect_timeout: self.connect_timeout(),
         }
+    }
+
+    /// The telnet target for this host: on the resolved port, or telnet's
+    /// default when nothing sets one, with its connect timeout. Its jump
+    /// hosts are not looked at (connect through
+    /// [`crate::credentials::Profiles::telnet_target`], which refuses them).
+    pub fn telnet_target(&self) -> TelnetTarget {
+        TelnetTarget {
+            host: self.host.address.clone(),
+            port: self.port_or(DEFAULT_TELNET_PORT),
+            connect_timeout: self.connect_timeout(),
+        }
+    }
+
+    /// The resolved port, or `default` (the protocol's) if nothing sets one.
+    fn port_or(&self, default: u16) -> u16 {
+        self.settings
+            .port
+            .as_ref()
+            .map_or(default, |port| port.value)
+    }
+
+    fn connect_timeout(&self) -> Duration {
+        Duration::from_secs(self.settings.connect_timeout.value.into())
     }
 }
 

@@ -11,6 +11,8 @@ mod algorithms;
 mod output;
 mod recording;
 mod ssh;
+mod tcp;
+mod telnet;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -44,10 +46,29 @@ pub struct TerminalSize {
 #[derive(Clone)]
 pub enum SessionTarget {
     Ssh(SshTarget),
+    Telnet(TelnetTarget),
+}
+
+impl SessionTarget {
+    /// Whether the session's traffic is encrypted on the network. Telnet
+    /// sends everything, passwords included, in the clear.
+    pub fn encrypted(&self) -> bool {
+        match self {
+            Self::Ssh(_) => true,
+            Self::Telnet(_) => false,
+        }
+    }
 }
 
 /// The port SSH uses when nothing sets one.
 pub const DEFAULT_SSH_PORT: u16 = 22;
+
+/// The port telnet uses when nothing sets one.
+pub const DEFAULT_TELNET_PORT: u16 = 23;
+
+/// The terminal type sessions announce (the SSH pty, telnet's terminal
+/// type); xterm.js emulates xterm.
+const TERM: &str = "xterm-256color";
 
 /// How long a connection may wait on the network while it is being opened
 /// when nothing sets it: see [`SshTarget::connect_timeout`].
@@ -73,6 +94,16 @@ pub struct SshTarget {
     /// shell to start. The time the user takes to answer a question (host
     /// key, password, one-time code) does not count, and the clock starts
     /// again after each answer. Jump hosts have their own.
+    pub connect_timeout: Duration,
+}
+
+/// A telnet server. Telnet has no login of its own: the device asks for
+/// one in its output, and the user answers in the terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelnetTarget {
+    pub host: String,
+    pub port: u16,
+    /// How long opening the session may wait for the TCP connection.
     pub connect_timeout: Duration,
 }
 
@@ -270,7 +301,7 @@ pub enum OpenError {
     ConnectionRefused { host: String, port: u16 },
     /// The device did not answer in time while the session was being
     /// opened: no connection, no handshake, or no answer while logging in
-    /// ([`SshTarget::connect_timeout`]).
+    /// ([`SshTarget::connect_timeout`], [`TelnetTarget::connect_timeout`]).
     #[error("the device did not answer within {} s", .after.as_secs_f64())]
     TimedOut { after: Duration },
     /// The device could not be reached for another reason, or the
@@ -523,6 +554,7 @@ impl SessionManager {
             link.state(SessionState::Connecting);
             let reason = match target {
                 SessionTarget::Ssh(target) => ssh::run(target, known_hosts, &mut link).await,
+                SessionTarget::Telnet(target) => telnet::run(target, &mut link).await,
             };
             // Mark the session closed before announcing it, so that nobody
             // who has seen `Closed` can still reach it, and anybody can
@@ -534,6 +566,16 @@ impl SessionManager {
         });
 
         SessionEvents::new(event_rx, flow, self.inner.output)
+    }
+
+    /// Whether the session `id` (open or closed, until it is discarded) is
+    /// encrypted on the network: see [`SessionTarget::encrypted`].
+    pub fn encrypted(&self, id: SessionId) -> Result<bool, SessionError> {
+        self.inner
+            .sessions()
+            .get(&id)
+            .map(|entry| entry.target.encrypted())
+            .ok_or(SessionError::NotFound)
     }
 
     /// Tells the session that `bytes` bytes of its output have been consumed,
