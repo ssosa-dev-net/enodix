@@ -13,7 +13,22 @@ test = false
 
 [dependencies]
 netterm-core = { path = "../core" }
+rpassword = "7"
+serde = "1"
 serde_json = "1"
+zeroize = "1"
+
+# Whether there is a console to ask for the master password on.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 
 [dev-dependencies]
+portable-pty = "0.9.0"
 tempfile = "3"
+
+# A process without a controlling terminal, for the "no terminal" checks.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
+[build-dependencies]
+serde_json = "1"

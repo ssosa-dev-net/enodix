@@ -150,6 +150,22 @@ function headlessInventory() {
   console.log("ok - the headless binary exports the inventory");
 }
 
+/** The headless binary asks the running app for `host`'s credentials
+ * (#49), as a script would, with no console to ask a master password on
+ * (`windowsHide`). */
+function headlessCredentials(host) {
+  return spawnSync(
+    "target/release/netterm-cli.exe",
+    ["credentials", workspace, host],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      env: { ...process.env, NETTERM_DATA_DIR: appData },
+      timeout: 30_000,
+    },
+  );
+}
+
 /** OpenSSH's SHA-256 fingerprint of a public key line. */
 function fingerprint(keyLine) {
   const blob = Buffer.from(keyLine.split(/\s+/)[1], "base64");
@@ -1445,6 +1461,15 @@ async function vault({ app, devtools, evaluate, step }) {
   await until("the unlock screen", () => shown("[data-unlock-screen]"));
   if (!(await shown("[data-unlock=quit]")))
     fail("the unlock screen has no Quit");
+  const whileLocked = headlessCredentials("vault-r1.yaml");
+  if (
+    whileLocked.status !== 1 ||
+    !whileLocked.stderr.includes("running but its vault is locked")
+  ) {
+    fail(
+      `netterm-cli with the vault locked: ${whileLocked.status} ${whileLocked.stderr} ${whileLocked.error ?? ""}`,
+    );
+  }
   if (await shown("nav [data-host]")) {
     fail("the workspace opened before unlocking");
   }
@@ -1481,6 +1506,20 @@ async function vault({ app, devtools, evaluate, step }) {
   );
   if (await shown("input[name=password]")) fail("a password was asked for");
   step("unlocked, the workspace opened and the vault's profile logged in");
+
+  const unlocked = headlessCredentials("vault-r1.yaml");
+  if (unlocked.status !== 0) {
+    fail(
+      `netterm-cli with the vault unlocked: ${unlocked.status} ${unlocked.stderr}`,
+    );
+  }
+  const login = JSON.parse(unlocked.stdout);
+  if (login.username !== USERNAME || login.auth.password !== PASSWORD) {
+    fail(`netterm-cli got ${login.username} / ${login.auth.kind}`);
+  }
+  step(
+    "the headless binary was refused while the vault was locked, and got the login from the unlocked app",
+  );
 
   return vaultUpkeep({ current: next, vaultFile, hostRow, step });
 }

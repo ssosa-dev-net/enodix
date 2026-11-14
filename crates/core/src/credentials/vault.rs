@@ -631,10 +631,14 @@ impl CredentialStore for Vault {
     fn contents(&self) -> Result<StoreContents, StoreError> {
         Ok(self.body().contents())
     }
+
+    fn vault_status(&self) -> VaultStatus {
+        VaultStatus::Unlocked
+    }
 }
 
 /// Whether the app's credentials are in a vault, and whether it is open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum VaultStatus {
     /// No vault file: the keychain is used.
@@ -1002,5 +1006,9 @@ impl CredentialStore for ActiveStore {
 
     fn contents(&self) -> Result<StoreContents, StoreError> {
         self.with(|store| store.contents())
+    }
+
+    fn vault_status(&self) -> VaultStatus {
+        self.status()
     }
 }

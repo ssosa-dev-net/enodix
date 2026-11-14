@@ -30,10 +30,12 @@ use serde::{Deserialize, Serialize};
 use crate::session::{JumpHost, SerialTarget, SshAgent, SshAuth, SshTarget, TelnetTarget};
 use crate::workspace::{Folder, HostId, JumpChainError, Protocol, ResolvedHost, Workspace};
 
+mod agent;
 mod keychain;
 mod secrets;
 mod vault;
 
+pub use agent::{AgentEndpoint, AgentError, AgentServer, AgentStore, HostCredentials, NamedSecret};
 pub use keychain::KeychainStore;
 pub use secrets::{SecretError, SecretValue, Secrets, MAX_SECRET_NAME};
 pub use vault::{vault_file, ActiveStore, KdfParams, Vault, VaultError, VaultStatus, VAULT_FILE};
@@ -160,6 +162,12 @@ pub trait CredentialStore: Send + Sync {
     /// Everything kept, of every scope: what moving to another store
     /// copies.
     fn contents(&self) -> Result<StoreContents, StoreError>;
+
+    /// Whether this is a vault, and whether it is unlocked: a store that
+    /// is not a vault is [`VaultStatus::Off`].
+    fn vault_status(&self) -> VaultStatus {
+        VaultStatus::Off
+    }
 }
 
 /// Everything a store keeps, across scopes, in no particular order.
@@ -584,6 +592,20 @@ impl<'a> Profiles<'a> {
                 profile: name.value.clone(),
             },
         })
+    }
+
+    /// The profile the host `id` logs in with over SSH, secrets included
+    /// (what the headless binary hands to scripts); an error says why there
+    /// is none (an unknown host, no profile, or one not set up here).
+    pub fn host_profile(&self, id: &HostId) -> Result<CredentialProfile, ProfileError> {
+        let host = self.resolve(id)?;
+        let Some(name) = host.settings.credential_profile.as_ref() else {
+            return Err(ProfileError::Invalid(format!(
+                "{id} has no credential profile"
+            )));
+        };
+        self.profile(&name.value)?
+            .ok_or_else(|| ProfileError::NotSetUp(name.value.clone()))
     }
 
     /// The target the host `id` logs in with through its profile, jump
