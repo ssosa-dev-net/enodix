@@ -7,6 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# File system notifications, for reloading on external changes (git pull).
+notify = "8"
 # Pinned exactly: the russh API changes roughly monthly (see docs/spec-v1.md).
 # `ring` backend (no extra native build tooling on Windows); `des` and `dsa`
 # compile in the legacy algorithms, `rsa` the RSA host/user keys.

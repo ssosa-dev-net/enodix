@@ -4,6 +4,7 @@
 // reloaded workspace.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 export interface CustomField {
@@ -205,6 +206,8 @@ export interface SearchResults {
 }
 
 export interface WorkspaceView {
+  /** Higher is newer: a view older than the one shown is stale. */
+  revision: number;
   root: string;
   tree: Folder;
   /** The roles a host can be given. */
@@ -238,6 +241,18 @@ export async function pickWorkspaceFolder(): Promise<string | null> {
 /** Opens a workspace folder; it reopens on the next launch. */
 export function openWorkspace(path: string): Promise<WorkspaceView> {
   return invoke<WorkspaceView>("workspace_open", { path });
+}
+
+/**
+ * Calls `handler` with the open workspace each time files changed outside
+ * the app (a git pull, an editor) and the core reloaded it.
+ */
+export function onWorkspaceChanged(
+  handler: (workspace: WorkspaceView) => void,
+): Promise<UnlistenFn> {
+  return listen<WorkspaceView>("workspace-changed", (event) =>
+    handler(event.payload),
+  );
 }
 
 /** Reopens the last opened workspace, if any. */

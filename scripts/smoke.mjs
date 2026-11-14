@@ -439,6 +439,8 @@ async function main() {
     step,
   });
 
+  await liveReload({ evaluate, text, screenshot, step });
+
   await editInventory({
     evaluate,
     text,
@@ -576,6 +578,47 @@ async function searchAndFilter({
   await until("the filters file removed", () => !existsSync(filters));
   await until("every host back", () => exists(odd));
   step("the filter was deleted");
+}
+
+/** Files changed outside the app (as by a git pull or an editor) show in
+ * the tree and the side panel without a restart, keeping the selection. */
+async function liveReload({ evaluate, text, screenshot, step }) {
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const odd = 'nav [data-host="odd.yaml"]';
+  const pulled = 'nav [data-host="pulled-r1.yaml"]';
+  const oddSelected = () =>
+    evaluate(
+      `document.querySelector(${JSON.stringify(odd)})?.getAttribute("aria-pressed") === "true"`,
+    );
+
+  await evaluate(`document.querySelector(${JSON.stringify(odd)}).click()`);
+  await until("odd.yaml's side panel", async () =>
+    (await text(".side h2")).includes("odd"),
+  );
+
+  writeFileSync(join(workspace, "pulled-r1.yaml"), "address: 192.0.2.20\n");
+  writeFileSync(
+    join(workspace, "odd.yaml"),
+    "address: 192.0.2.9\nrole: mainframe\nvendor: Juniper\n",
+  );
+  await until("the new host in the tree", () => exists(pulled));
+  await until("the edited field in the side panel", () =>
+    evaluate(
+      `document.querySelector(".side [name=vendor]")?.value === "Juniper"`,
+    ),
+  );
+  if (!(await oddSelected())) fail("the reload lost the selection");
+  await screenshot("live-reload");
+  step("a host added and a host edited on disk showed without a restart");
+
+  rmSync(join(workspace, "pulled-r1.yaml"));
+  await until(
+    "the deleted host gone from the tree",
+    async () => !(await exists(pulled)),
+  );
+  if (!(await oddSelected())) fail("the reload lost the selection");
+  step("a host deleted on disk left the tree; the selection stayed");
 }
 
 /** The inventory is edited from the tree and the side panel, and each

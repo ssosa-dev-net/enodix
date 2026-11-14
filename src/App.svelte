@@ -13,11 +13,13 @@
     selectedFolder,
     selectedHost,
     setWorkspace,
+    workspaceChanged,
   } from "./lib/inventory.svelte";
   import { appName, type ConnectTarget } from "./lib/session";
   import {
     openWorkspace,
     pickWorkspaceFolder,
+    onWorkspaceChanged,
     restoreWorkspace,
     type Host,
   } from "./lib/workspace";
@@ -40,6 +42,10 @@
     name = value;
     document.title = value;
   });
+
+  // Changes from outside the app (a git pull) show without a restart. The
+  // window lives as long as the app, so the listener is never removed.
+  void onWorkspaceChanged(workspaceChanged);
 
   restoreWorkspace().then(setWorkspace, (error) => {
     inventory.openError = `Could not reopen the last workspace: ${error}`;

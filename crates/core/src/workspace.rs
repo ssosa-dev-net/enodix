@@ -23,6 +23,9 @@
 //! The workspace keeps a search index over its hosts ([`Workspace::search`]),
 //! rebuilt from the files every time it loads, and the saved filters of its
 //! [`FILTERS_FILE`] ([`Workspace::filters`]).
+//!
+//! Changes made outside the app are picked up by watching the folder
+//! ([`WorkspaceWatcher`]) and calling [`Workspace::refresh`].
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -40,6 +43,7 @@ mod filters;
 mod roles;
 mod search;
 mod settings;
+mod watch;
 
 pub use filters::{Condition, SavedFilter, FILTERS_FILE};
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
@@ -54,6 +58,7 @@ pub use settings::{
     Protocol, SerialSettings, Settings, WebLink, DEFAULT_BAUD_RATE, DEFAULT_DATA_BITS,
     DEFAULT_STOP_BITS,
 };
+pub use watch::{Changes, WatchError, WatchOptions, WorkspaceWatcher};
 
 /// The settings file a directory may hold: its description, tags and
 /// inherited settings.
@@ -135,6 +140,8 @@ pub struct Workspace {
     filters: Vec<SavedFilter>,
     index: SearchIndex,
     problems: Vec<Problem>,
+    /// See [`Workspace::revision`].
+    revision: u64,
 }
 
 /// A directory of the workspace.
@@ -380,7 +387,16 @@ impl Workspace {
             filters,
             index,
             problems,
+            revision: 0,
         })
+    }
+
+    /// Counts the reloads since the workspace was opened: every edit that
+    /// wrote files and every [`Self::refresh`] that found a change. Of two
+    /// views of the same workspace, the one with the higher revision is
+    /// newer.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The folder this workspace was opened from.
@@ -775,12 +791,37 @@ impl Workspace {
         self.reload()
     }
 
+    /// Loads the workspace again from its files, after changes made outside
+    /// the app (see [`WorkspaceWatcher`]). Returns whether anything differs
+    /// from what was loaded before: the tree, a host file's content, the
+    /// roles, the filters or the problems. After the app's own edits it
+    /// finds nothing, as each edit already reloaded. If the folder can no
+    /// longer be opened, the workspace is left as it was.
+    pub fn refresh(&mut self) -> Result<bool, OpenError> {
+        let fresh = Self::open(&self.root)?;
+        let changed = fresh.tree != self.tree
+            || fresh.roles != self.roles
+            || fresh.filters != self.filters
+            || fresh.problems != self.problems;
+        if changed {
+            self.replace_with(fresh);
+        }
+        Ok(changed)
+    }
+
     fn reload(&mut self) -> Result<(), EditError> {
-        *self = Self::open(&self.root).map_err(|error| EditError::Io {
+        let fresh = Self::open(&self.root).map_err(|error| EditError::Io {
             file: ".".into(),
             source: io::Error::other(error.reason),
         })?;
+        self.replace_with(fresh);
         Ok(())
+    }
+
+    /// Takes the freshly loaded `fresh` as the next revision of this one.
+    fn replace_with(&mut self, fresh: Self) {
+        let revision = self.revision + 1;
+        *self = Self { revision, ..fresh };
     }
 
     fn existing_folder(&self, path: &str) -> Result<&Folder, EditError> {
