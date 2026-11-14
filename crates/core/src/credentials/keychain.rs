@@ -4,10 +4,14 @@
 //! named `<prefix>:<scope>:<profile name in lower case>`, persisted for
 //! this user on this machine (never roaming). Its secret is the whole
 //! profile as JSON, with the scope again so that a listing keeps only the
-//! scope's own entries. Other systems have no keychain support yet: every
-//! call fails with a [`StoreError`].
+//! scope's own entries. A named secret is one generic credential named
+//! `<prefix>.secret:<scope>:<secret name in lower case>`: a profile's name
+//! always has `:` right after the prefix, so the two never meet, whatever
+//! the names. Its secret is the scope, the name as written and the value,
+//! as JSON. Other systems have no keychain support yet: every call fails
+//! with a [`StoreError`].
 
-use super::{CredentialProfile, CredentialStore, StoreError};
+use super::{CredentialProfile, CredentialStore, SecretValue, StoreError};
 
 /// Profiles in the OS keychain, under names starting with a prefix.
 #[derive(Debug, Clone)]
@@ -32,6 +36,43 @@ impl KeychainStore {
     fn filter(&self, scope: &str) -> String {
         format!("{}:{scope}:*", self.prefix)
     }
+
+    fn secret_target(&self, scope: &str, name: &str) -> String {
+        format!("{}.secret:{scope}:{}", self.prefix, name.to_lowercase())
+    }
+
+    fn secret_filter(&self, scope: &str) -> String {
+        format!("{}.secret:{scope}:*", self.prefix)
+    }
+}
+
+/// What kind of entry is written: its comment in Credential Manager and
+/// what an error calls it.
+struct EntryKind {
+    comment: &'static str,
+    noun: &'static str,
+}
+
+const PROFILE: EntryKind = EntryKind {
+    comment: "Credential profile (written by the app; edit it there)",
+    noun: "the profile",
+};
+const SECRET: EntryKind = EntryKind {
+    comment: "Named secret (written by the app; edit it there)",
+    noun: "the secret",
+};
+
+/// What one keychain entry of a named secret holds.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SecretEntry {
+    scope: String,
+    name: String,
+    value: SecretValue,
+}
+
+fn decode_secret(blob: &[u8], scope: &str) -> Option<SecretEntry> {
+    let entry: SecretEntry = serde_json::from_slice(blob).ok()?;
+    (entry.scope == scope).then_some(entry)
 }
 
 /// What one keychain entry holds.
@@ -68,11 +109,45 @@ impl CredentialStore for KeychainStore {
 
     fn put(&self, scope: &str, profile: &CredentialProfile) -> Result<(), StoreError> {
         let blob = encode(scope, profile)?;
-        os::write(&self.target(scope, &profile.name), &profile.username, &blob)
+        os::write(
+            &self.target(scope, &profile.name),
+            &profile.username,
+            &PROFILE,
+            &blob,
+        )
     }
 
     fn delete(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
         os::delete(&self.target(scope, name))
+    }
+
+    fn secret_names(&self, scope: &str) -> Result<Vec<String>, StoreError> {
+        Ok(os::list(&self.secret_filter(scope))?
+            .iter()
+            .filter_map(|blob| decode_secret(blob, scope))
+            .map(|entry| entry.name)
+            .collect())
+    }
+
+    fn get_secret(&self, scope: &str, name: &str) -> Result<Option<SecretValue>, StoreError> {
+        Ok(os::read(&self.secret_target(scope, name))?
+            .and_then(|blob| decode_secret(&blob, scope))
+            .map(|entry| entry.value))
+    }
+
+    fn put_secret(&self, scope: &str, name: &str, value: &SecretValue) -> Result<(), StoreError> {
+        let entry = SecretEntry {
+            scope: scope.to_owned(),
+            name: name.to_owned(),
+            value: value.clone(),
+        };
+        let blob = serde_json::to_vec(&entry)
+            .map_err(|error| StoreError(format!("cannot encode: {error}")))?;
+        os::write(&self.secret_target(scope, name), name, &SECRET, &blob)
+    }
+
+    fn delete_secret(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
+        os::delete(&self.secret_target(scope, name))
     }
 }
 
@@ -88,9 +163,7 @@ mod os {
         CRED_MAX_CREDENTIAL_BLOB_SIZE, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
     };
 
-    use super::StoreError;
-
-    const COMMENT: &str = "Credential profile (written by the app; edit it there)";
+    use super::{EntryKind, StoreError};
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(Some(0)).collect()
@@ -166,15 +239,21 @@ mod os {
         Ok(Some(secret))
     }
 
-    pub fn write(target: &str, username: &str, secret: &[u8]) -> Result<(), StoreError> {
+    pub fn write(
+        target: &str,
+        username: &str,
+        kind: &EntryKind,
+        secret: &[u8],
+    ) -> Result<(), StoreError> {
         if secret.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize {
             return Err(StoreError(format!(
-                "the profile is too long for the Windows credential store (at most {CRED_MAX_CREDENTIAL_BLOB_SIZE} bytes)"
+                "{} is too long for the Windows credential store (at most {CRED_MAX_CREDENTIAL_BLOB_SIZE} bytes)",
+                kind.noun
             )));
         }
         let mut target = wide(target);
         let mut username = wide(username);
-        let mut comment = wide(COMMENT);
+        let mut comment = wide(kind.comment);
         // The struct takes mutable pointers; Windows only reads them.
         let mut secret = secret.to_vec();
         let credential = CREDENTIALW {
@@ -216,7 +295,7 @@ mod os {
 
 #[cfg(not(windows))]
 mod os {
-    use super::StoreError;
+    use super::{EntryKind, StoreError};
 
     fn unsupported() -> StoreError {
         StoreError("this system's keychain is not supported yet".into())
@@ -230,7 +309,12 @@ mod os {
         Err(unsupported())
     }
 
-    pub fn write(_target: &str, _username: &str, _secret: &[u8]) -> Result<(), StoreError> {
+    pub fn write(
+        _target: &str,
+        _username: &str,
+        _kind: &EntryKind,
+        _secret: &[u8],
+    ) -> Result<(), StoreError> {
         Err(unsupported())
     }
 

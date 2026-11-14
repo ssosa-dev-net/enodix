@@ -22,6 +22,8 @@ export interface ProfilesView {
   profiles: ProfileSummary[];
   /** Profile names the workspace uses that are not set up here. */
   missing: string[];
+  /** The names of the workspace's named secrets; values never come back. */
+  secrets: string[];
 }
 
 /**
@@ -59,6 +61,18 @@ export function saveProfile(previous: string | null, draft: ProfileDraft) {
 
 export function deleteProfile(name: string) {
   return invoke<ProfilesView>("profile_delete", { name });
+}
+
+/**
+ * Adds a named secret, or (`replace`) gives the one called `name` a new
+ * value. The value goes to the core and is never sent back.
+ */
+export function saveSecret(name: string, value: string, replace: boolean) {
+  return invoke<ProfilesView>("secret_save", { name, value, replace });
+}
+
+export function deleteSecret(name: string) {
+  return invoke<ProfilesView>("secret_delete", { name });
 }
 
 /**

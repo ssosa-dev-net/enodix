@@ -3455,10 +3455,82 @@ async function credentialProfiles({
   await until("the deleted profile shown as missing", async () =>
     (await text(profileRow("team-login"))).includes("not set up"),
   );
-  await click("Close");
   step("a profile was edited and another deleted in the profiles dialog");
 
-  for (const secret of [PASSWORD, "en4ble-s3cret"]) {
+  // Named secrets: added, value replaced, refused twice by name, deleted;
+  // the dialog shows names only, and a profile of the same name is kept
+  // apart.
+  const secretForm = `${profilesDialog} form[data-secret-form]`;
+  const secretRow = (name) => `${profilesDialog} [data-secret="${name}"]`;
+  const secretValues = ["t0ken-v4lue", "r0tated-v4lue"];
+  // Neither the page's markup nor any field's value holds a secret value.
+  const valueShown = () =>
+    evaluate(`(() => {
+      const values = ${JSON.stringify(secretValues)};
+      const page = document.documentElement.outerHTML;
+      const fields = [...document.querySelectorAll("input, textarea")].map((i) => i.value);
+      return values.some((v) => page.includes(v) || fields.includes(v));
+    })()`);
+  await clickOn(`${profilesDialog} [data-secret-new]`);
+  await until("the secret form", () =>
+    exists(`${secretForm} [name=secret-name]`),
+  );
+  await fillForm(
+    { "secret-name": "lab-login", "secret-value": secretValues[0] },
+    secretForm,
+  );
+  await until("the new secret listed", () => exists(secretRow("lab-login")));
+  if (!(await exists(profileRow("lab-login")))) {
+    fail("adding a secret named like a profile changed the profile");
+  }
+  if (await valueShown()) fail("a secret's value is shown after saving");
+  await clickOn(`${secretRow("lab-login")} [data-secret-replace]`);
+  await until(
+    "the replace form",
+    async () =>
+      (await exists(`${secretForm} [name=secret-value]`)) &&
+      !(await exists(`${secretForm} [name=secret-name]`)),
+  );
+  await fillForm({ "secret-value": secretValues[1] }, secretForm);
+  await until(
+    "the secret list again",
+    async () =>
+      !(await exists(secretForm)) && (await exists(secretRow("lab-login"))),
+  );
+  if (await valueShown()) fail("a replaced secret's value is shown");
+  await clickOn(`${profilesDialog} [data-secret-new]`);
+  await until("the secret form", () =>
+    exists(`${secretForm} [name=secret-name]`),
+  );
+  await fillForm(
+    { "secret-name": "LAB-LOGIN", "secret-value": "x" },
+    secretForm,
+  );
+  await until("the duplicate name refused", async () =>
+    (await text(`${profilesDialog} [data-secret-error]`)).includes(
+      "already exists",
+    ),
+  );
+  await clickOn(`${secretForm} [data-secret-action=cancel]`);
+  await screenshot("secrets");
+  await clickOn(`${secretRow("lab-login")} [data-secret-delete]`);
+  await until("the secret delete confirmation", () =>
+    exists(`${profilesDialog} [data-secret-action=delete]`),
+  );
+  await clickOn(`${profilesDialog} [data-secret-action=delete]`);
+  await until(
+    "the secret gone",
+    async () =>
+      (await exists(`${profilesDialog} [data-secrets]`)) &&
+      !(await exists(secretRow("lab-login"))),
+  );
+  if (!(await exists(profileRow("lab-login")))) {
+    fail("deleting a secret named like a profile deleted the profile");
+  }
+  await click("Close");
+  step("a named secret was added, replaced and deleted; only its name shown");
+
+  for (const secret of [PASSWORD, "en4ble-s3cret", ...secretValues]) {
     if (everyFile().includes(secret)) fail(`a secret was written to a file`);
   }
   step("no secret was written to the workspace or the app's data folder");

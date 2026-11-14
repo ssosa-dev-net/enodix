@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { ProfileSummary } from "./credentials";
   import ProfileForm from "./ProfileForm.svelte";
-  import { deleteProfile, profiles } from "./profiles.svelte";
+  import SecretForm from "./SecretForm.svelte";
+  import { deleteProfile, deleteSecret, profiles } from "./profiles.svelte";
 
   interface Props {
     onclose: () => void;
@@ -9,11 +10,14 @@
 
   let { onclose }: Props = $props();
 
-  /** What the dialog shows: the list, or a form for one profile. */
+  /** What the dialog shows: the lists, or a form for one profile or secret. */
   type Mode =
     | { kind: "list" }
     | { kind: "edit"; profile: ProfileSummary | null; name?: string }
-    | { kind: "delete"; name: string };
+    | { kind: "delete"; name: string }
+    /** `name` null adds a secret; else its value is replaced. */
+    | { kind: "secret"; name: string | null }
+    | { kind: "deleteSecret"; name: string };
 
   let mode = $state<Mode>({ kind: "list" });
   let error = $state<string | null>(null);
@@ -31,6 +35,11 @@
 
   async function remove(name: string) {
     error = await deleteProfile(name);
+    mode = { kind: "list" };
+  }
+
+  async function removeSecret(name: string) {
+    error = await deleteSecret(name);
     mode = { kind: "list" };
   }
 
@@ -68,6 +77,31 @@
           oncancel={() => (mode = { kind: "list" })}
         />
       {/key}
+    {:else if mode.kind === "secret"}
+      <h2 id="profiles-title">
+        {mode.name ? `Replace the value of ${mode.name}` : "New secret"}
+      </h2>
+      {#key mode}
+        <SecretForm
+          replacing={mode.name}
+          onsaved={() => (mode = { kind: "list" })}
+          oncancel={() => (mode = { kind: "list" })}
+        />
+      {/key}
+    {:else if mode.kind === "deleteSecret"}
+      {@const name = mode.name}
+      <h2 id="profiles-title">Delete {name}</h2>
+      <p>Delete the secret {name} and its value from this computer?</p>
+      <div class="actions">
+        <button onclick={() => (mode = { kind: "list" })}>Cancel</button>
+        <!-- svelte-ignore a11y_autofocus -->
+        <button
+          class="danger"
+          autofocus
+          data-secret-action="delete"
+          onclick={() => removeSecret(name)}>Delete</button
+        >
+      </div>
     {:else if mode.kind === "delete"}
       {@const name = mode.name}
       <h2 id="profiles-title">Delete {name}</h2>
@@ -131,6 +165,37 @@
         <button onclick={() => (mode = { kind: "edit", profile: null })}
           >New profile…</button
         >
+      </div>
+      <h3>Secrets</h3>
+      <p>
+        Named values (tokens, keys) for scripts and integrations, kept for this
+        workspace in this computer's keychain. Only their names are shown.
+      </p>
+      <ul data-secrets>
+        {#each profiles.view.secrets as name (name)}
+          <li data-secret={name}>
+            <span class="text"><strong>{name}</strong></span>
+            <button
+              data-secret-replace
+              onclick={() => (mode = { kind: "secret", name })}
+              >Replace value…</button
+            >
+            <button
+              data-secret-delete
+              onclick={() => (mode = { kind: "deleteSecret", name })}
+              >Delete</button
+            >
+          </li>
+        {:else}
+          <li class="empty">No secrets yet.</li>
+        {/each}
+      </ul>
+      <div class="actions">
+        <button
+          data-secret-new
+          onclick={() => (mode = { kind: "secret", name: null })}
+          >New secret…</button
+        >
         <!-- svelte-ignore a11y_autofocus -->
         <button autofocus onclick={onclose}>Close</button>
       </div>
@@ -160,6 +225,12 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+  }
+
+  h3 {
+    margin: 0.4rem 0 0;
+    font-size: 0.95rem;
+    font-weight: 600;
   }
 
   h2 {
