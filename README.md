@@ -95,3 +95,9 @@ not been tested.
 
 For the layout and commands (`npm install`, `npm run check`,
 `npm run app:build`), and `docs/releasing.md` for making a release.
+
+## License
+
+netterm is free software under the GNU General Public License, version 3 only
+(`GPL-3.0-only`); see [LICENSE](LICENSE). It is funded by donations, with no paid
+tier, no hosted service and no contributor agreement.
