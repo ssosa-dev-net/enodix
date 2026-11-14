@@ -141,6 +141,11 @@ fn open_store() -> Result<Box<dyn CredentialStore>, Failure> {
     if Vault::exists(&vault) {
         return Ok(Box::new(unlock(&vault, app_locked)?));
     }
+    if !KeychainStore::is_supported() {
+        return Err(Failure::Error(format!(
+            "no credentials are stored: on this system {PRODUCT} keeps them only in its vault, which is not turned on (Preferences, Security)"
+        )));
+    }
     let prefix = std::env::var(KEYCHAIN_PREFIX_VARIABLE).unwrap_or_else(|_| IDENTIFIER.into());
     Ok(Box::new(KeychainStore::new(prefix)))
 }

@@ -414,6 +414,22 @@ fn with_the_app_closed_it_reads_the_keychain() {
     );
 }
 
+/// Elsewhere there is no keychain: with the app closed and no vault, the
+/// binary says the vault is where credentials are kept.
+#[cfg(not(windows))]
+#[test]
+fn with_the_app_closed_and_no_vault_it_points_to_the_vault() {
+    let setup = Setup::new();
+    refused(
+        &setup.run(&["credentials", setup.ws(), "site/r1.yaml"]),
+        "keeps them only in its vault, which is not turned on",
+    );
+    refused(
+        &setup.run(&["secret", setup.ws(), "netbox-token"]),
+        "keeps them only in its vault, which is not turned on",
+    );
+}
+
 /// A pseudo terminal running the binary, its screen collected as text.
 struct Terminal {
     screen: Arc<Mutex<String>>,

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use netterm_core::credentials::{
     prepare_workspace, vault_file, ActiveStore, AuthDraft, CredentialProfile, CredentialStore,
     KdfParams, MemoryStore, ProfileAuth, ProfileDraft, ProfileError, Profiles, SecretValue,
-    Secrets, StoreContents, Vault, VaultError, VaultStatus,
+    Secrets, StoreContents, Vault, VaultError, VaultStatus, VAULT_FILE,
 };
 use netterm_core::session::{SessionState, SessionTarget, TerminalSize};
 use netterm_core::workspace::{HostId, Workspace};
@@ -1032,4 +1032,91 @@ fn starting_over_needs_a_locked_vault() {
         unlocked(&data.vault()).contents().unwrap().sorted(),
         everything
     );
+}
+
+// A system with no keychain the app can use (Linux): the vault is the only
+// store.
+
+#[test]
+fn without_a_keychain_nothing_is_stored_until_the_vault_is_turned_on() {
+    let data = DataFolder::new();
+    let store = ActiveStore::without_keychain(data.vault());
+    assert!(!store.has_keychain());
+    assert_eq!(store.status(), VaultStatus::Off);
+    assert!(store.needs_vault());
+
+    // Reading finds nothing (no errors: the app lists no profiles).
+    assert!(store.list(SCOPE_A).unwrap().is_empty());
+    assert!(store.secret_names(SCOPE_A).unwrap().is_empty());
+    assert_eq!(store.get(SCOPE_A, "core").unwrap(), None);
+    assert!(store.get_secret(SCOPE_A, "token").unwrap().is_none());
+    assert!(store.contents().unwrap().is_empty());
+    assert!(!store.delete(SCOPE_A, "core").unwrap());
+
+    // Storing says the vault must be turned on.
+    let refused = store
+        .put(SCOPE_A, &password_profile("core", "pw"))
+        .unwrap_err();
+    assert!(refused.0.contains("turn on the vault"), "{refused}");
+    let refused = store
+        .put_secret(SCOPE_A, "token", &secret("t"))
+        .unwrap_err();
+    assert!(refused.0.contains("turn on the vault"), "{refused}");
+    let (_temp, workspace) = workspace_with_host(22);
+    match Profiles::new(&store, &workspace).save(None, &draft("lab-admin", Some(PASSWORD))) {
+        Err(ProfileError::Store(error)) => assert!(error.0.contains("turn on the vault")),
+        other => panic!("{other:?}"),
+    }
+    assert!(data.files().is_empty(), "{:?}", data.files());
+
+    // Turning it on moves nothing and then everything is kept there.
+    store.turn_on(MASTER, MASTER).unwrap();
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert!(!store.needs_vault());
+    behaves_as_a_store(&store);
+    Profiles::new(&store, &workspace)
+        .save(None, &draft("lab-admin", Some(PASSWORD)))
+        .unwrap();
+    let next_launch = ActiveStore::without_keychain(data.vault());
+    assert_eq!(next_launch.status(), VaultStatus::Locked);
+    assert!(!next_launch.needs_vault());
+}
+
+#[test]
+fn without_a_keychain_the_vault_cannot_be_turned_off() {
+    let data = DataFolder::new();
+    let store = ActiveStore::without_keychain(data.vault());
+    store.turn_on(MASTER, MASTER).unwrap();
+    store.put(SCOPE_A, &password_profile("core", "pw")).unwrap();
+
+    let refused = store.turn_off(MASTER).unwrap_err();
+    assert_eq!(refused, VaultError::NoKeychain);
+    assert!(refused.to_string().contains("no other store"), "{refused}");
+    // Even before the password is checked: there is nothing to try.
+    assert_eq!(store.turn_off("wrong").unwrap_err(), VaultError::NoKeychain);
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert_eq!(data.files(), [VAULT_FILE]);
+    assert!(store.get(SCOPE_A, "core").unwrap().is_some());
+}
+
+#[test]
+fn without_a_keychain_starting_over_needs_the_vault_again() {
+    let data = DataFolder::new();
+    let store = ActiveStore::without_keychain(data.vault());
+    store.turn_on(MASTER, MASTER).unwrap();
+    drop(store);
+
+    let next_launch = ActiveStore::without_keychain(data.vault());
+    next_launch.start_over().unwrap();
+    assert_eq!(next_launch.status(), VaultStatus::Off);
+    assert!(next_launch.needs_vault());
+    assert!(data.files().is_empty());
+}
+
+#[test]
+fn with_a_keychain_the_vault_is_never_needed() {
+    let data = DataFolder::new();
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert!(store.has_keychain());
+    assert!(!store.needs_vault());
 }

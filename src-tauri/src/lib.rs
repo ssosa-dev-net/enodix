@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
 use netterm_core::configs::{ConfigStore, ConfigVersion};
 use netterm_core::credentials::{
-    prepare_workspace, vault_file, ActiveStore, AgentEndpoint, AgentServer, CredentialStore,
-    HostLogin, KeychainStore, MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles,
-    Secrets, VaultError, VaultStatus,
+    prepare_workspace, vault_file, ActiveStore, AgentEndpoint, AgentServer, HostLogin,
+    KeychainStore, MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles, Secrets,
+    VaultError, VaultStatus,
 };
 use netterm_core::diff::DiffLine;
 use netterm_core::enrich::{self, EnrichPreview, EnrichReport};
@@ -614,6 +614,9 @@ struct ProfilesView {
     missing: Vec<String>,
     /// The names of the workspace's named secrets (never their values).
     secrets: Vec<String>,
+    /// Nothing can be stored until the vault is turned on: the system has
+    /// no keychain the app can use (Linux).
+    needs_vault: bool,
 }
 
 /// Runs `action` on the open workspace's credential profiles and secrets
@@ -632,6 +635,7 @@ fn with_profiles<E: std::fmt::Display>(
         profiles: profiles.list().map_err(text)?,
         missing: profiles.missing().map_err(text)?,
         secrets: secrets.list().map_err(|error| error.to_string())?,
+        needs_vault: shell.credentials.needs_vault(),
     })
 }
 
@@ -650,6 +654,7 @@ impl From<VaultError> for VaultFailure {
             VaultError::WrongPassword => "wrongPassword",
             VaultError::Damaged(_) => "damaged",
             VaultError::Invalid(_) => "invalid",
+            VaultError::NoKeychain => "noKeychain",
             _ => "failed",
         };
         Self {
@@ -662,6 +667,13 @@ impl From<VaultError> for VaultFailure {
 #[tauri::command]
 fn vault_status(shell: State<'_, Shell>) -> VaultStatus {
     shell.credentials.status()
+}
+
+/// Whether the system has a keychain the app keeps credentials in while
+/// the vault is off; without one (Linux) the vault is the only store.
+#[tauri::command]
+fn vault_keychain(shell: State<'_, Shell>) -> bool {
+    shell.credentials.has_keychain()
 }
 
 /// Unlocks the vault for as long as the app runs. The password is used for
@@ -2468,12 +2480,15 @@ fn session_close(manager: State<'_, SessionManager>, id: u64) -> Result<(), Stri
 pub fn run() {
     let context = tauri::generate_context!();
     // Only a release build (`scripts/release.mjs`) configures the updater:
-    // its public key and the release server's address.
+    // its public key and the release server's address. Only Windows
+    // installs updates (`InstallKind::detect`): elsewhere the address is
+    // used for the check alone, and the plugin is left out.
     let updater_config = context.config().plugins.0.get("updater").cloned();
+    let updater_plugin = cfg!(windows) && updater_config.is_some();
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
-    if updater_config.is_some() {
+    if updater_plugin {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
     builder
@@ -2487,16 +2502,22 @@ pub fn run() {
                 // Logs stay on this computer (local, not roaming, app data).
                 None => (app.path().app_data_dir()?, app.path().app_log_dir()?),
             };
-            let keychain: Box<dyn CredentialStore> =
-                match std::env::var(CREDENTIAL_STORE_VARIABLE).as_deref() {
-                    Ok("memory") => Box::new(MemoryStore::new()),
-                    // Entries are named after the app's identifier, which
-                    // stays put if the product is renamed.
-                    _ => Box::new(KeychainStore::new(app.config().identifier.clone())),
-                };
             // The vault, if its file is in the data folder, replaces the
             // keychain (layered the same way over the smoke's memory store).
-            let credentials = Arc::new(ActiveStore::new(keychain, vault_file(&data_folder)));
+            // Without a keychain (Linux; the smoke's `none`) it is the only
+            // store.
+            let vault = vault_file(&data_folder);
+            let credentials = Arc::new(match std::env::var(CREDENTIAL_STORE_VARIABLE).as_deref() {
+                Ok("memory") => ActiveStore::new(Box::new(MemoryStore::new()), vault),
+                Ok("none") => ActiveStore::without_keychain(vault),
+                // Entries are named after the app's identifier, which
+                // stays put if the product is renamed.
+                _ if KeychainStore::is_supported() => ActiveStore::new(
+                    Box::new(KeychainStore::new(app.config().identifier.clone())),
+                    vault,
+                ),
+                _ => ActiveStore::without_keychain(vault),
+            });
             // Scripts get credentials from the running app over a pipe only
             // this user can open (the headless binary asks there first).
             // Without it (another instance serves already) they read the
@@ -2539,14 +2560,22 @@ pub fn run() {
                 &app.package_info().version.to_string(),
                 InstallKind::detect(&program_folder),
             )?;
+            // Where the bundle's resources are (the Python wheel): beside
+            // the program on Windows and in a build folder, the package's
+            // `/usr/lib/<product>` on Linux.
+            let resource_folder = app
+                .path()
+                .resource_dir()
+                .unwrap_or_else(|_| program_folder.clone());
             app.manage(python::PythonSetup::new(
                 data_folder.clone(),
                 program_folder.clone(),
+                resource_folder,
                 app.package_info().version.to_string(),
             ));
             app.manage(Updates {
                 checker,
-                updater_plugin: updater_config.is_some(),
+                updater_plugin,
             });
             app.manage(Shell {
                 data_folder,
@@ -2571,6 +2600,7 @@ pub fn run() {
             app_name,
             app_quit,
             vault_status,
+            vault_keychain,
             vault_unlock,
             vault_turn_on,
             vault_change_password,

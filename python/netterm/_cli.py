@@ -53,7 +53,8 @@ def _executable(name: str) -> str:
 def default_location() -> Optional[Path]:
     """Where the installer puts the binary: on Windows, beside the app in
     ``%LOCALAPPDATA%\\<app name>`` (the per-user install). ``None``
-    elsewhere, where the binary is looked for on ``PATH``."""
+    elsewhere, where the binary is looked for on ``PATH`` (the Linux
+    packages install it in ``/usr/bin``; the AppImage needs ``NETTERM_CLI``)."""
     if sys.platform != "win32" or PRODUCT_NAME is None:
         return None
     local = os.environ.get("LOCALAPPDATA")

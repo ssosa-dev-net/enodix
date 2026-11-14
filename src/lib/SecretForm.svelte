@@ -60,8 +60,8 @@
     />
   </label>
   <p class="note">
-    Kept for this workspace in this computer's keychain. The value is not shown
-    again after saving.
+    Kept for this workspace on this computer (in its keychain, or in the vault).
+    The value is not shown again after saving.
   </p>
 
   {#if error}

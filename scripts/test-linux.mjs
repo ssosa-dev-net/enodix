@@ -17,10 +17,9 @@
 // python3 with venv and Node.js: see docs/linux.md.
 
 import { spawnSync } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+import { ROOT, syncIntoWsl, wsl, WSL_FOLDER } from "./wsl.mjs";
+
 const CRATES = ["-p", "netterm-core", "-p", "netterm-cli"];
 const CHECKS = [
   `cargo clippy ${CRATES.join(" ")} --all-targets -- -D warnings`,
@@ -42,45 +41,8 @@ function run(command, args, options = {}) {
 if (process.platform === "linux") {
   for (const check of CHECKS) run("sh", ["-c", check], { cwd: ROOT });
 } else if (process.platform === "win32") {
-  const distro = process.env.NETTERM_WSL_DISTRO;
-  const wsl = (script, options) =>
-    run(
-      "wsl",
-      [...(distro ? ["-d", distro] : []), "--", "bash", "-lc", script],
-      options,
-    );
-  const where = spawnSync(
-    "wsl",
-    // Forward slashes: WSL takes backslashes in arguments as escapes.
-    [
-      ...(distro ? ["-d", distro] : []),
-      "--",
-      "wslpath",
-      "-a",
-      ROOT.replaceAll("\\", "/"),
-    ],
-    { encoding: "utf8" },
-  );
-  if (where.status !== 0)
-    fail(
-      "WSL cannot run here (is a distribution installed? `wsl -l -v`): " +
-        `${(where.stderr || where.stdout || "").trim()}`,
-    );
-  const source = where.stdout.trim().replace(/\/?$/, "/");
-  const target = process.env.NETTERM_WSL_DIR || "~/netterm-linux-check";
-  const quoted = (text) => `'${text.replaceAll("'", "'\\''")}'`;
-  const into = target.startsWith("~/")
-    ? `"$HOME"/${quoted(target.slice(2))}`
-    : quoted(target);
-  console.log(`test:linux: copying ${source} to ${target} in WSL`);
-  wsl(
-    `set -e; mkdir -p ${into}; ` +
-      // The Windows checkout's NUL files are artefacts of Windows tools.
-      `rsync -a --delete --filter=':- .gitignore' --exclude=/.git/ ` +
-      `--exclude=NUL ${quoted(source)} ${into}/`,
-  );
-  // A login shell, so that rustup's ~/.cargo/env is on the PATH.
-  wsl(`set -e; cd ${into}; ${CHECKS.join("; ")}`);
+  syncIntoWsl((message) => console.log(`test:linux: ${message}`), fail);
+  wsl(`set -e; cd ${WSL_FOLDER}; ${CHECKS.join("; ")}`, fail);
 } else {
   fail(`not written for ${process.platform} yet`);
 }

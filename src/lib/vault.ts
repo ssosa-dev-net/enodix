@@ -9,12 +9,18 @@ export type VaultStatus = "off" | "locked" | "unlocked";
 
 /** Why a vault action did not work. */
 export interface VaultFailure {
-  kind: "wrongPassword" | "damaged" | "invalid" | "failed";
+  kind: "wrongPassword" | "damaged" | "invalid" | "noKeychain" | "failed";
   message: string;
 }
 
 export function vaultStatus() {
   return invoke<VaultStatus>("vault_status");
+}
+
+/** Whether the system has a keychain; without one the vault is the only
+ * store (Linux). */
+export function vaultKeychain() {
+  return invoke<boolean>("vault_keychain");
 }
 
 export function unlockVault(password: string) {
