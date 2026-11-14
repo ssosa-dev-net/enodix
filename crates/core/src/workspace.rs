@@ -53,6 +53,7 @@ mod search;
 mod settings;
 mod snippets;
 mod watch;
+mod web_links;
 
 use crate::paste::PasteSafety;
 pub use filters::{Condition, SavedFilter, FILTERS_FILE};
@@ -74,6 +75,7 @@ pub use settings::{
 };
 pub use snippets::{ExpandError, Snippet, SNIPPETS_FILE};
 pub use watch::{Changes, WatchError, WatchOptions, WorkspaceWatcher};
+pub use web_links::{web_url, HostWebLink, WebLinkError};
 
 /// The settings file a directory may hold: its description, tags and
 /// inherited settings.

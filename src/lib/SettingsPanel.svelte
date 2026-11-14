@@ -431,7 +431,8 @@
     />
     <input
       name="new-link-url"
-      placeholder="https://…"
+      placeholder={"https://{{address}}/"}
+      title={"http or https; {{address}}, {{name}} and other fields are filled in"}
       spellcheck="false"
       bind:value={newLinkUrl}
     />

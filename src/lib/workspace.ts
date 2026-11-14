@@ -357,6 +357,31 @@ export function restoreWorkspace(): Promise<WorkspaceView | null> {
   return invoke<WorkspaceView | null>("workspace_restore");
 }
 
+/** One of a host's web links, filled and checked by the core. */
+export interface HostWebLink {
+  name: string;
+  /** The URL as written, with its variables. */
+  template: string;
+  origin: Origin;
+  /** What clicking it opens; `null` if it is refused. */
+  url: string | null;
+  /** Why it is refused (not an http/https URL, a field without a value). */
+  refused: string | null;
+}
+
+/** The web links that apply to the host `id`, merged down the tree. */
+export function hostWebLinks(id: string): Promise<HostWebLink[]> {
+  return invoke("host_web_links", { id });
+}
+
+/**
+ * Opens the host `id`'s web link `name` in the default browser and returns
+ * the URL; rejected with the reason unless it is an http or https URL.
+ */
+export function openWebLink(id: string, name: string): Promise<string> {
+  return invoke("web_link_open", { id, name });
+}
+
 /**
  * Shows the folder of the host's session logs in the system's file manager
  * (created first if nothing was logged yet).

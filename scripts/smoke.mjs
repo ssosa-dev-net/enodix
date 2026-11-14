@@ -47,6 +47,9 @@ const userData = mkdtempSync(join(tmpdir(), "netterm-smoke-"));
 // The app's own data folder, holding a last workspace to reopen on launch.
 const appData = join(userData, "app-data");
 const workspace = join(userData, "smoke-workspace");
+// Where the app writes the web links it would open in the browser (the
+// smoke test never starts a browser).
+const openedLinks = join(userData, "opened-links.txt");
 
 /** A workspace with one host (the test server, whose port its folder
  * sets, with a role of the workspace's own), a host whose role is not
@@ -163,6 +166,8 @@ function startApp() {
       // Credential profiles stay in memory: the smoke test never touches
       // the keychain.
       NETTERM_CREDENTIAL_STORE: "memory",
+      // Web links are recorded, not opened in the browser.
+      NETTERM_WEB_LINKS_TO: openedLinks,
       // Agent profiles use the test server's agent.
       SSH_AUTH_SOCK: AGENT_PIPE,
     },
@@ -888,6 +893,8 @@ async function main() {
     step,
   });
 
+  await webLinks({ evaluate, text, screenshot, step });
+
   devtools.close();
 
   // Preferences survive a restart: the app comes back light, with the
@@ -1336,6 +1343,158 @@ async function snippets({
   );
   step("a snippet written on disk showed in the panel");
   rmSync(hostFile);
+}
+
+/**
+ * Web links: links set on a folder and on the host are offered beside its
+ * ways in, filled from its fields; clicking one hands the URL to the
+ * browser (recorded in `openedLinks` here, through NETTERM_WEB_LINKS_TO),
+ * and a link that is not http/https, or lacks a field, is refused with a
+ * message and nothing opened.
+ */
+async function webLinks({ evaluate, text, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const opened = () =>
+    existsSync(openedLinks)
+      ? readFileSync(openedLinks, "utf8").split("\n").filter(Boolean)
+      : [];
+  const hostFile = join(workspace, "Firewalls", "fw-r1.yaml");
+  const link = (name) => `.side [data-web-link="${name}"]`;
+  const error = () => text(".side [data-web-link-error]");
+
+  mkdirSync(join(workspace, "Firewalls"), { recursive: true });
+  writeFileSync(
+    join(workspace, "Firewalls", "_folder.yaml"),
+    [
+      "web_links:",
+      "  GUI: https://{{address}}:8443/",
+      "  Explorer: 'file:///C:/Windows/explorer.exe'",
+      "  Controller: https://{{custom.controller}}/",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(hostFile, "address: 192.0.2.10\n");
+  const folderRow = 'nav button[data-item=folder][data-path="Firewalls"]';
+  await until("the Firewalls folder in the tree", () => exists(folderRow));
+  await evaluate(`(() => {
+    const row = document.querySelector(${json(folderRow)});
+    if (row.getAttribute("aria-expanded") !== "true") row.click();
+  })()`);
+  const hostRow = 'nav [data-host="Firewalls/fw-r1.yaml"]';
+  await until("fw-r1 in the tree", () => exists(hostRow));
+  await clickOn(hostRow);
+  await until("fw-r1 in the side panel", async () =>
+    (await text(".side h2")).includes("fw-r1"),
+  );
+
+  // The CLI ways in and the web links, side by side.
+  const waysIn = () =>
+    evaluate(`[...document.querySelectorAll(".side [data-ways-in] button")].map(
+      (b) => b.dataset.connect ?? "link:" + b.dataset.webLink + (b.dataset.refused === undefined ? "" : " (refused)"),
+    ).join(", ")`);
+  const expectedWays =
+    "default, telnet, serial, link:GUI, link:Explorer (refused), link:Controller (refused)";
+  await until(
+    `the ways in to be ${expectedWays}`,
+    async () => (await waysIn()) === expectedWays,
+  );
+  const title = await evaluate(
+    `document.querySelector(${json(link("GUI"))}).title`,
+  );
+  if (title !== "Open https://192.0.2.10:8443/ in the browser") {
+    fail(`the GUI link's title: ${title}`);
+  }
+  await screenshot("web-links");
+  step("the side panel offers SSH, telnet, serial and the web links together");
+
+  // A click opens the filled URL in the browser.
+  await clickOn(link("GUI"));
+  await until(
+    "the GUI link opened",
+    () => json(opened()) === json(["https://192.0.2.10:8443/"]),
+  );
+  step("clicking a web link opens its filled URL in the browser");
+
+  // Not http/https, or a field without a value: refused with a message.
+  await clickOn(link("Explorer"));
+  await until("the refused file: link's message", async () =>
+    (await error()).includes(
+      "Explorer was not opened: only http and https links are opened, not file",
+    ),
+  );
+  await clickOn(link("Controller"));
+  await until("the refused Controller link's message", async () =>
+    (await error()).includes(
+      "Controller was not opened: the host has no value for custom.controller",
+    ),
+  );
+  await sleep(300);
+  if (opened().length !== 1) fail(`refused links were opened: ${opened()}`);
+  step("links that are not http/https, or lack a field, are refused");
+
+  // A link added on the host from the side panel, then the host's own GUI
+  // link replacing the folder's (in its place) and a field filling the
+  // controller's.
+  await evaluate(`(() => {
+    const form = document.querySelector(".side form:has([name=new-link-name])");
+    for (const [name, value] of Object.entries({
+      "new-link-name": "Grafana",
+      "new-link-url": "https://grafana.example.net/d/{{name}}",
+    })) {
+      const input = form.querySelector("[name=" + name + "]");
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    form.requestSubmit();
+  })()`);
+  await until("the Grafana link on the host", () => exists(link("Grafana")));
+  if (!readFileSync(hostFile, "utf8").includes("Grafana:")) {
+    fail(`the host file lacks the link: ${readFileSync(hostFile, "utf8")}`);
+  }
+  await clickOn(link("Grafana"));
+  await until(
+    "the Grafana link opened",
+    () => opened().at(-1) === "https://grafana.example.net/d/fw-r1",
+  );
+  writeFileSync(
+    hostFile,
+    [
+      "address: 192.0.2.10",
+      "web_links:",
+      "  GUI: https://{{address}}/login",
+      "  Grafana: https://grafana.example.net/d/{{name}}",
+      "custom:",
+      "  controller: ctl.example.net",
+      "",
+    ].join("\n"),
+  );
+  const merged =
+    "default, telnet, serial, link:GUI, link:Explorer (refused), link:Controller, link:Grafana";
+  await until(
+    `the ways in to be ${merged}`,
+    async () => (await waysIn()) === merged,
+  );
+  await clickOn(link("GUI"));
+  await until(
+    "the host's own GUI link opened",
+    () => opened().at(-1) === "https://192.0.2.10/login",
+  );
+  await clickOn(link("Controller"));
+  await until(
+    "the Controller link opened",
+    () => opened().at(-1) === "https://ctl.example.net/",
+  );
+  step("host links merge with the folder's and are filled from its fields");
+
+  // The page is never shown inside the app.
+  if (await exists("iframe, webview, embed, object")) {
+    fail("a web page is embedded in the app");
+  }
+  step("no web page is embedded in the app");
 }
 
 /**

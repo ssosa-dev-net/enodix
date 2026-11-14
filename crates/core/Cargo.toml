@@ -25,6 +25,8 @@ serde_norway = "0.9"
 serialport = "4"
 thiserror = "2"
 tokio = { workspace = true }
+# Checking web links before they are opened (http and https only).
+url = "2"
 
 # The Windows keychain (Credential Manager) for credential profiles.
 [target.'cfg(windows)'.dependencies]
