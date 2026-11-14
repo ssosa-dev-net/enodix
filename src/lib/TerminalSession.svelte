@@ -46,6 +46,12 @@
     ontogglegroup: () => void;
     /** Ends the multi-send group. */
     onendgroup: () => void;
+    /**
+     * Takes a paste (or snippet text) made here while the tab is in the
+     * multi-send group: the group's paste is planned and confirmed once for
+     * every member, then sent to each with `pasteLines` (#36).
+     */
+    ongrouppaste: (text: string) => void;
     /** Shown in the header, such as `user@host:port`. */
     title: string;
     /** The role of the session's host, if it has one. */
@@ -79,6 +85,7 @@
     groupSize,
     ontogglegroup,
     onendgroup,
+    ongrouppaste,
     title,
     role,
     safety,
@@ -271,6 +278,24 @@
   let conceal: () => void = () => {};
   /** Sends text as pasted (set up on mount); see `sendText`. */
   let pasteText: (text: string) => void = () => {};
+  /** Pastes lines into this session alone (set up on mount). */
+  let sendLines: (
+    lines: string[],
+    lineDelayMs: number,
+  ) => Promise<void> = async () => {};
+
+  /**
+   * Pastes `lines` (each with its line break) into this session only, as
+   * one member's part of a multi-send group paste that was already planned
+   * and confirmed: `lineDelayMs` apart, stopping if the session ends.
+   * Resolves once the last line is sent (or the session ended).
+   */
+  export function pasteLines(
+    lines: string[],
+    lineDelayMs: number,
+  ): Promise<void> {
+    return sendLines(lines, lineDelayMs);
+  }
 
   /**
    * Sends `text` to the session the way a paste is sent (a snippet's
@@ -447,17 +472,40 @@
         });
         if (!send || ended()) return;
       }
-      for (const [index, line] of plan.lines.entries()) {
-        if (index > 0 && plan.lineDelayMs > 0) await wait(plan.lineDelayMs);
+      await pasteEach(plan.lines, plan.lineDelayMs, false);
+    };
+    /** Sends the lines; `alone`: to this session only, not its group. */
+    const pasteEach = async (
+      lines: string[],
+      lineDelayMs: number,
+      alone: boolean,
+    ) => {
+      for (const [index, line] of lines.entries()) {
+        if (index > 0 && lineDelayMs > 0) await wait(lineDelayMs);
         // A session that ended (or a terminal gone) takes no more lines.
         if (ended()) return;
-        input?.paste(line);
+        pastingAlone = alone;
+        try {
+          input?.paste(line);
+        } finally {
+          pastingAlone = false;
+        }
       }
     };
     let pasting: Promise<void> = Promise.resolve();
     pasteText = (text: string) => {
       if (text === "") return;
+      // A member's paste is the group's: planned once for every member.
+      if (untrack(() => groupSize) !== null) {
+        if (!ended()) ongrouppaste(text);
+        return;
+      }
       pasting = pasting.then(() => sendPaste(text)).catch(() => {});
+    };
+    sendLines = (lines, lineDelayMs) => {
+      const sent = pasting.then(() => pasteEach(lines, lineDelayMs, true));
+      pasting = sent.catch(() => {});
+      return pasting;
     };
     const paste = async () => {
       try {
@@ -552,6 +600,8 @@
     });
 
     let disposed = false;
+    /** Set while a group paste's line goes to this session alone. */
+    let pastingAlone = false;
     const encoder = new TextEncoder();
     const size = () => ({ cols: terminal.cols, rows: terminal.rows });
     currentSize = size;
@@ -573,7 +623,8 @@
         : encoder.encode(data);
       // Only a connected session shares (input while connecting is
       // dropped by the core anyway, and must not reach the other members).
-      const shared = origin === "typed" || origin === "pasted";
+      const shared =
+        origin === "typed" || (origin === "pasted" && !pastingAlone);
       if (shared && status.state === "connected") session?.input(bytes);
       else session?.write(bytes);
     });
