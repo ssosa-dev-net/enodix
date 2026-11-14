@@ -6,7 +6,8 @@
 //! requests) through `russh`'s server side, with a small scripted shell
 //! behind it instead of a real one.
 //!
-//! The scripted shell echoes input like a tty and understands:
+//! The scripted shell echoes input like a tty (Enter is CR, LF or CR LF)
+//! and understands:
 //!
 //! | line         | effect                                            |
 //! |--------------|---------------------------------------------------|
@@ -704,6 +705,8 @@ struct ShellState {
     page_length: u32,
     /// In device mode: what typed input goes to instead of a line.
     waiting: Waiting,
+    /// The last byte typed was CR (so a LF right after it ends no line).
+    after_cr: bool,
 }
 
 impl Default for ShellState {
@@ -716,6 +719,7 @@ impl Default for ShellState {
             privileged: true,
             page_length: PAGE_LENGTH,
             waiting: Waiting::Line,
+            after_cr: false,
         }
     }
 }
@@ -1133,6 +1137,15 @@ impl Handler for ScriptedShell {
             return Ok(());
         }
         for &byte in data {
+            // Enter is CR, LF or CR LF, as a tty's line discipline takes
+            // it (scripts such as Netmiko's send LF).
+            let state = self.channels.entry(channel).or_default();
+            let after_cr = std::mem::replace(&mut state.after_cr, byte == b'\r');
+            let byte = match byte {
+                b'\n' if after_cr => continue,
+                b'\n' => b'\r',
+                other => other,
+            };
             if byte == CTRL_C {
                 let state = self.channels.entry(channel).or_default();
                 state.line.clear();
