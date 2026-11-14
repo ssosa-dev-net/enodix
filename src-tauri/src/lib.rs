@@ -12,6 +12,7 @@ use netterm_core::credentials::{
     ProfileSummary, Profiles,
 };
 use netterm_core::known_hosts::KnownHosts;
+use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
     NegotiatedAlgorithms, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent,
@@ -806,6 +807,108 @@ async fn session_duplicate(
     })
 }
 
+/// The window's tabs and panes.
+struct Tabs(Mutex<Layout>);
+
+/// A change to the window's tabs and panes, as `Layout`'s methods name them.
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum LayoutEdit {
+    OpenTab,
+    OpenTabBeside {
+        tab: TabId,
+    },
+    Activate {
+        tab: TabId,
+    },
+    ActivatePane {
+        pane: PaneId,
+    },
+    ShowConnectView {
+        pane: PaneId,
+    },
+    NextTab,
+    PreviousTab,
+    CloseTab {
+        tab: TabId,
+    },
+    DismissTab {
+        tab: TabId,
+    },
+    MoveTabBy {
+        tab: TabId,
+        offset: isize,
+    },
+    MoveTab {
+        tab: TabId,
+        pane: PaneId,
+        index: usize,
+    },
+    Split {
+        pane: PaneId,
+        direction: Split,
+    },
+    ClosePane {
+        pane: PaneId,
+    },
+}
+
+/// The layout after an edit, and the tab or pane the edit created.
+#[derive(Serialize)]
+struct LayoutChanged {
+    layout: Layout,
+    created: Option<u64>,
+}
+
+/// Starts the window's layout afresh: one empty pane (the interface's
+/// sessions start afresh too when it loads).
+#[tauri::command]
+fn layout_reset(tabs: State<'_, Tabs>) -> Layout {
+    let mut layout = tabs.0.lock().unwrap_or_else(PoisonError::into_inner);
+    *layout = Layout::new();
+    layout.clone()
+}
+
+#[tauri::command]
+fn layout_edit(tabs: State<'_, Tabs>, edit: LayoutEdit) -> Result<LayoutChanged, String> {
+    let mut layout = tabs.0.lock().unwrap_or_else(PoisonError::into_inner);
+    let created = apply_layout_edit(&mut layout, edit).map_err(|error| error.to_string())?;
+    Ok(LayoutChanged {
+        layout: layout.clone(),
+        created,
+    })
+}
+
+fn apply_layout_edit(layout: &mut Layout, edit: LayoutEdit) -> Result<Option<u64>, LayoutError> {
+    Ok(match edit {
+        LayoutEdit::OpenTab => Some(layout.open_tab().0),
+        LayoutEdit::OpenTabBeside { tab } => Some(layout.open_tab_beside(tab).map(|t| t.0)?),
+        LayoutEdit::Activate { tab } => layout.activate(tab).map(|()| None)?,
+        LayoutEdit::ActivatePane { pane } => layout.activate_pane(pane).map(|()| None)?,
+        LayoutEdit::ShowConnectView { pane } => layout.show_connect_view(pane).map(|()| None)?,
+        LayoutEdit::NextTab => {
+            layout.next_tab();
+            None
+        }
+        LayoutEdit::PreviousTab => {
+            layout.previous_tab();
+            None
+        }
+        LayoutEdit::CloseTab { tab } => layout.close_tab(tab).map(|()| None)?,
+        LayoutEdit::DismissTab { tab } => layout.dismiss_tab(tab).map(|()| None)?,
+        LayoutEdit::MoveTabBy { tab, offset } => layout.move_tab_by(tab, offset).map(|()| None)?,
+        LayoutEdit::MoveTab { tab, pane, index } => {
+            layout.move_tab(tab, pane, index).map(|()| None)?
+        }
+        LayoutEdit::Split { pane, direction } => Some(layout.split(pane, direction)?.0),
+        LayoutEdit::ClosePane { pane } => layout.close_pane(pane).map(|()| None)?,
+    })
+}
+
 /// Forgets the session (closing it if it is open): its terminal is gone.
 #[tauri::command]
 fn session_discard(manager: State<'_, SessionManager>, id: u64) {
@@ -903,6 +1006,7 @@ pub fn run() {
             app.manage(SessionManager::new(KnownHosts::in_data_folder(
                 &data_folder,
             )));
+            app.manage(Tabs(Mutex::new(Layout::new())));
             app.manage(Shell {
                 data_folder,
                 credentials,
@@ -953,7 +1057,9 @@ pub fn run() {
             serial_ports,
             session_reconnect,
             session_duplicate,
-            session_discard
+            session_discard,
+            layout_reset,
+            layout_edit
         ])
         .run(tauri::generate_context!())
         .expect("failed to start the app");

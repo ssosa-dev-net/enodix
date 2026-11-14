@@ -15,6 +15,7 @@
 //! | `fullscreen` | prints [`FULLSCREEN_OUTPUT`]                      |
 //! | `lines <n>`  | prints `line 1` to `line <n>`, one per row          |
 //! | `flood`      | prints [`FLOOD_LINE`] without end until Ctrl+C    |
+//! | `later <s> <text>` | prompts at once, prints `<text>` `<s>` seconds later |
 //! | `exit [n]`   | ends the shell with exit status `n` (default 0)   |
 //! | `drop`       | drops the connection without ending the shell     |
 //! | `freeze`     | the connection stops answering anything (silent)  |
@@ -463,6 +464,15 @@ impl ScriptedShell {
                 session.eof(channel)?;
                 session.close(channel)?;
                 return Ok(());
+            }
+            Some("later") => {
+                let seconds: u64 = words.next().and_then(|n| n.parse().ok()).unwrap_or(1);
+                let text = format!("{}\r\n", words.collect::<Vec<_>>().join(" "));
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(seconds)).await;
+                    let _ = handle.data(channel, text.into_bytes()).await;
+                });
             }
             Some("drop") => return Err(russh::Error::Disconnect),
             _ => {}

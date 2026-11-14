@@ -1,7 +1,8 @@
 <script lang="ts">
   import { FitAddon } from "@xterm/addon-fit";
   import { Terminal } from "@xterm/xterm";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
+  import { webglRenderer } from "./renderer";
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
@@ -24,8 +25,14 @@
     title: string;
     /** The role of the session's host, if it has one. */
     role: Role | null;
-    /** Whether this session is the one on screen. */
+    /** Whether this session is on screen (the tab its pane shows). */
     shown: boolean;
+    /** Whether the keyboard goes to it (the session of the active pane). */
+    focused: boolean;
+    /** Raised to give the focused terminal the keys again (a tab clicked). */
+    focusRequest?: number;
+    /** Told every state the session goes through. */
+    onstate?: (state: SessionState) => void;
     /** Called when the user leaves this session's view. */
     ondismiss: () => void;
     /** Called with this session's id when the user duplicates it. */
@@ -42,10 +49,16 @@
     title,
     role,
     shown,
+    focused,
+    focusRequest = 0,
+    onstate,
     ondismiss,
     onduplicate,
     onpasswordlogin,
   }: Props = $props();
+
+  /** Output held for a hidden terminal, acknowledged at once (see `deliver`). */
+  const HIDDEN_BUFFER_BYTES = 1 << 20;
 
   let container: HTMLDivElement;
   /** For focusing the terminal again after a login prompt. */
@@ -133,8 +146,16 @@
   // The terminal takes the keys when it comes on screen and when the
   // session closes (Enter reconnects), unless a card over it takes them.
   $effect(() => {
-    if (shown && !prompt && !hostKey && !closedCard) xterm?.focus();
+    void focusRequest;
+    if (focused && !prompt && !hostKey && !closedCard) xterm?.focus();
   });
+
+  $effect(() => onstate?.(status));
+
+  /** Brings the terminal up to date and on screen; set up on mount. */
+  let reveal: () => void = () => {};
+  /** Keeps the terminal's output aside while it is out of sight. */
+  let conceal: () => void = () => {};
 
   onMount(() => {
     const terminal = new Terminal({
@@ -149,6 +170,52 @@
     terminal.loadAddon(fit);
     terminal.open(container);
     fit.fit();
+    // For the smoke test, which reads the screen from the buffer: the WebGL
+    // renderer draws no text into the page.
+    Object.assign(container, { xterm: terminal });
+    const webgl = webglRenderer(terminal);
+
+    // Output reaches the terminal only while it is on screen; meanwhile it
+    // is held, and written when the terminal is shown again. Held output is
+    // acknowledged at once up to `HIDDEN_BUFFER_BYTES`, so the device keeps
+    // sending; beyond that only once written, so flow control then pauses
+    // the device instead of the buffer growing without end.
+    let live = false;
+    /** Set while held output is parsed at the old size (no fitting). */
+    let catchingUp = false;
+    let held: { bytes: Uint8Array; consumed: (() => void) | undefined }[] = [];
+    let heldBytes = 0;
+    const deliver = (bytes: Uint8Array, consumed: () => void) => {
+      if (live) {
+        terminal.write(bytes, consumed);
+        return;
+      }
+      const early = heldBytes < HIDDEN_BUFFER_BYTES;
+      if (early) consumed();
+      held.push({ bytes, consumed: early ? undefined : consumed });
+      heldBytes += bytes.length;
+    };
+    reveal = () => {
+      if (live) return;
+      live = true;
+      webgl.show();
+      // The held output was sent for the terminal's old size: it is parsed
+      // at that size, and the terminal fits its pane after it.
+      for (const { bytes, consumed } of held) terminal.write(bytes, consumed);
+      held = [];
+      heldBytes = 0;
+      catchingUp = true;
+      terminal.write("", () => {
+        catchingUp = false;
+        fit.fit();
+      });
+    };
+    conceal = () => {
+      if (!live) return;
+      live = false;
+      webgl.hide();
+    };
+    if (untrack(() => shown)) reveal();
 
     let disposed = false;
     const encoder = new TextEncoder();
@@ -170,14 +237,16 @@
       session?.write(Uint8Array.from(text, (char) => char.charCodeAt(0))),
     );
     terminal.onResize((newSize) => session?.resize(newSize));
-    const resizeObserver = new ResizeObserver(() => fit.fit());
+    const resizeObserver = new ResizeObserver(() => {
+      if (!catchingUp) fit.fit();
+    });
     resizeObserver.observe(container);
 
     const requestedSize = size();
     openSession(source, requestedSize, {
       // Acknowledged once xterm.js has parsed it, so a flood of output
       // never queues up faster than the terminal can show it.
-      onOutput: (bytes, consumed) => terminal.write(bytes, consumed),
+      onOutput: deliver,
       onState: (state) => {
         status = state;
         if (state.state !== "connecting") {
@@ -203,7 +272,7 @@
         ) {
           opened.resize(current);
         }
-        if (shown) terminal.focus();
+        if (untrack(() => focused)) terminal.focus();
       },
       (error) =>
         (status = {
@@ -219,8 +288,15 @@
       resizeObserver.disconnect();
       // Gone with its terminal: it can no longer be reconnected.
       session?.discard();
+      webgl.dispose();
       terminal.dispose();
     };
+  });
+
+  // Declared after onMount, so that the terminal exists when it first runs.
+  $effect(() => {
+    if (shown) reveal();
+    else conceal();
   });
 </script>
 

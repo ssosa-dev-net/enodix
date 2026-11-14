@@ -36,6 +36,8 @@ const ONE_TIME_CODE = "424242";
 // the user's own agent is never used.
 const AGENT_PIPE = String.raw`\\.\pipe\netterm-smoke-agent-${process.pid}`;
 const TIMEOUT_MS = 15000;
+/** The session the keyboard goes to: the one the active pane shows. */
+const SHOWN_SESSION = ".slot[data-active]";
 // A public key the test server does not have: stored as the server's key,
 // it makes the server's real key look changed.
 const OTHER_KEY_FILE = "crates/core/tests/fixtures/keys/rsa_client.pub";
@@ -81,6 +83,27 @@ function fingerprint(keyLine) {
   const blob = Buffer.from(keyLine.split(/\s+/)[1], "base64");
   const digest = createHash("sha256").update(blob).digest("base64");
   return `SHA256:${digest.replace(/=+$/, "")}`;
+}
+
+/**
+ * The rows on screen of the session `slot` selects, read from xterm.js's
+ * buffer (the WebGL renderer draws no text into the page).
+ */
+function screenOf(evaluate, slot) {
+  return evaluate(`(() => {
+    const terminal = document.querySelector(${JSON.stringify(slot + " .terminal")})?.xterm;
+    if (!terminal) return "";
+    const buffer = terminal.buffer.active;
+    let text = "";
+    for (let y = buffer.viewportY; y < buffer.viewportY + terminal.rows; y++) {
+      const line = buffer.getLine(y);
+      if (!line) break;
+      // A long line wrapped onto the next row reads as one.
+      const separator = y === buffer.viewportY || line.isWrapped ? "" : String.fromCharCode(10);
+      text += separator + line.translateToString(!buffer.getLine(y + 1)?.isWrapped);
+    }
+    return text;
+  })()`);
 }
 
 function fail(message) {
@@ -195,13 +218,15 @@ async function main() {
     evaluate(
       `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ""`,
     );
-  // The session on screen; others (duplicates) may run out of sight.
-  const shownSession = ".slot:not([hidden])";
-  const screen = () => text(`${shownSession} .xterm-rows`);
+  // The session the keyboard goes to (the active pane's); others run in
+  // other tabs and panes.
+  const shownSession = SHOWN_SESSION;
+  const screen = () => screenOf(evaluate, shownSession);
   const status = () => text(`${shownSession} [role=status]`);
+  // Clicks the button on screen with this label (other tabs have theirs).
   const click = (label) =>
     evaluate(
-      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)}).click()`,
+      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && b.checkVisibility()).click()`,
     );
   const type = async (keys) => {
     for (const char of keys) {
@@ -350,9 +375,29 @@ async function main() {
   await type("colors\r");
   await until("coloured output", () =>
     evaluate(`(() => {
-      const spans = [...document.querySelectorAll(".xterm-rows span")];
-      const has = (text, cls) => spans.some((span) => span.textContent === text && span.classList.contains(cls));
-      return has("down", "xterm-bold") && has("up", "xterm-fg-46");
+      // From the buffer: the WebGL renderer draws no text into the page.
+      const buffer = document.querySelector("${SHOWN_SESSION} .terminal").xterm.buffer.active;
+      const cells = [];
+      for (let y = 0; y < buffer.length; y++) {
+        const line = buffer.getLine(y);
+        let word = "";
+        let first = null;
+        for (let x = 0; x <= line.length; x++) {
+          const cell = x < line.length ? line.getCell(x) : null;
+          const char = cell?.getChars() ?? "";
+          if (char && char !== " ") {
+            word += char;
+            first ??= cell;
+          } else if (word) {
+            cells.push({ word, cell: first });
+            word = "";
+            first = null;
+          }
+        }
+      }
+      const has = (text, test) => cells.some(({ word, cell }) => word === text && test(cell));
+      return has("down", (cell) => cell.isBold()) &&
+        has("up", (cell) => cell.isFgPalette() && cell.getFgColor() === 46);
     })()`),
   );
   await screenshot("session");
@@ -477,14 +522,13 @@ async function main() {
   }
   step("a dropped session said why and reconnected in place with Enter");
 
-  // Duplicate opens a second session to the same host beside the first.
+  // Duplicate opens a second session to the same host in a tab beside the
+  // first.
   const switchTo = (index) =>
-    evaluate(
-      `document.querySelectorAll("[data-session-switch]")[${index}].click()`,
-    );
+    evaluate(`document.querySelectorAll("[role=tab]")[${index}].click()`);
   await click("Duplicate");
   await until("two sessions", () =>
-    evaluate(`document.querySelectorAll(".slot").length === 2`),
+    evaluate(`document.querySelectorAll(".slot[data-tab]").length === 2`),
   );
   await until(
     "the duplicate connected",
@@ -525,7 +569,7 @@ async function main() {
   );
   await clickShown("New connection");
   await until("one session left", () =>
-    evaluate(`document.querySelectorAll(".slot").length === 1`),
+    evaluate(`document.querySelectorAll(".slot[data-tab]").length === 1`),
   );
   await switchTo(0);
   await until(
@@ -649,8 +693,15 @@ async function main() {
     }
   };
   await expectIcon("tree", hostButton, "router", orange);
-  await expectIcon("session header", ".session header", "router", orange);
-  if (!(await text(".session header")).includes("Lab router")) {
+  await expectIcon(
+    "session header",
+    `${SHOWN_SESSION} .session header`,
+    "router",
+    orange,
+  );
+  if (
+    !(await text(`${SHOWN_SESSION} .session header`)).includes("Lab router")
+  ) {
     fail("the session header does not name the host's role");
   }
   await expectIcon("undefined role", '[data-host="odd.yaml"]', "unknown");
@@ -746,6 +797,16 @@ async function main() {
     step,
   });
 
+  await tabsAndPanes({
+    evaluate,
+    fillForm,
+    centreOf,
+    mouse,
+    devtools,
+    screenshot,
+    step,
+  });
+
   devtools.close();
 }
 
@@ -810,7 +871,9 @@ async function searchAndFilter({
     `document.querySelector("nav [data-item=folder][data-path=Lab]").click()`,
   );
   await until("the Lab folder collapsed", async () => !(await exists(hostRow)));
-  await evaluate(`document.querySelector(".xterm textarea")?.focus()`);
+  await evaluate(
+    `document.querySelector("${SHOWN_SESSION} .xterm textarea")?.focus()`,
+  );
   await search("smoke");
   await screenshot("palette");
   await key({ ...enter, modifiers: 8 });
@@ -999,7 +1062,11 @@ async function credentialProfiles({
   );
   await doubleClick(hostRow);
   await connected();
-  if (!(await text(".session header")).includes(`${USERNAME}@smoke-r1`)) {
+  if (
+    !(await text(`${SHOWN_SESSION} .session header`)).includes(
+      `${USERNAME}@smoke-r1`,
+    )
+  ) {
     fail(`the session is not titled with the profile's username`);
   }
   if (await exists("input[name=password]")) fail("a password was asked for");
@@ -1179,7 +1246,11 @@ async function agentAndKeyboardInteractive({
   await useProfile("agent-login");
   await doubleClick(hostRow);
   await connected();
-  if (!(await text(".session header")).includes(`${USERNAME}@smoke-r1`)) {
+  if (
+    !(await text(`${SHOWN_SESSION} .session header`)).includes(
+      `${USERNAME}@smoke-r1`,
+    )
+  ) {
     fail("the agent session is not titled with the profile's username");
   }
   step("a profile using the SSH agent logged in with the agent's key");
@@ -1247,7 +1318,7 @@ async function legacyCrypto({
   const marker = "[data-legacy-crypto]";
   const hasButton = (label) =>
     evaluate(
-      `[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === ${JSON.stringify(label)})`,
+      `[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === ${JSON.stringify(label)} && b.checkVisibility())`,
     );
   // Ends the session and goes back to the quick-connect view.
   const newConnection = async () => {
@@ -1380,11 +1451,11 @@ async function telnet({
     evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
   const hostRow = 'nav [data-host="Lab/console-sw.yaml"]';
   const hostFile = join(workspace, "Lab", "console-sw.yaml");
-  const marker = ".slot:not([hidden]) [data-unencrypted]";
+  const marker = `${SHOWN_SESSION} [data-unencrypted]`;
   const sidePanelButton = (way) => `.side [data-connect=${way}]`;
   const hasButton = (label) =>
     evaluate(
-      `[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === ${JSON.stringify(label)})`,
+      `[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === ${JSON.stringify(label)} && b.checkVisibility())`,
     );
   const newConnection = async () => {
     await until("the New connection button", () => hasButton("New connection"));
@@ -1542,7 +1613,7 @@ async function serial({
 
   await fillForm({ "serial-port": missingPort }, "[data-quick-serial]");
   await until(`"${failure}"`, async () => (await status()).startsWith(failure));
-  if (await exists(".slot:not([hidden]) [data-unencrypted]")) {
+  if (await exists(`${SHOWN_SESSION} [data-unencrypted]`)) {
     fail("a serial session is marked unencrypted");
   }
   step(
@@ -1845,6 +1916,324 @@ async function editInventory({
   await click("Delete 2 hosts");
   await until("the folder with hosts deleted", () => !existsSync(file("Lab")));
   step("deleting a folder with hosts asked for confirmation first");
+}
+
+/** Sessions in tabs, split panes, WebGL on visible terminals only, hidden
+ * terminals brought up to date, and twenty sessions at once. */
+async function tabsAndPanes({
+  evaluate,
+  fillForm,
+  centreOf,
+  mouse,
+  devtools,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const press = async (key, code, windowsVirtualKeyCode, modifiers) => {
+    const event = { key, code, windowsVirtualKeyCode, modifiers };
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...event,
+    });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+  };
+  const CTRL = 2;
+  const SHIFT = 8;
+  const nextTab = () => press("Tab", "Tab", 9, CTRL);
+  const previousTab = () => press("Tab", "Tab", 9, CTRL | SHIFT);
+  const type = async (keys) => {
+    for (const char of keys) {
+      const key =
+        char === "\r"
+          ? { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }
+          : { key: char };
+      await devtools.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        text: char,
+        ...key,
+      });
+      await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+    }
+  };
+  // Every tab, pane by pane: [{ pane, tabs: [{ id, name, state, selected }] }].
+  const layout = () =>
+    evaluate(`[...document.querySelectorAll(".pane")].map((pane) => ({
+      pane: Number(pane.dataset.pane),
+      active: pane.classList.contains("active"),
+      tabs: [...pane.querySelectorAll("[role=tab]")].map((tab) => ({
+        id: Number(tab.dataset.tab),
+        name: tab.querySelector("[data-tab-name]").textContent,
+        state: tab.dataset.tabState,
+        selected: tab.getAttribute("aria-selected") === "true",
+      })),
+    }))`);
+  const allTabs = async () => (await layout()).flatMap((pane) => pane.tabs);
+  const activeTab = async () =>
+    (await layout()).find((pane) => pane.active)?.tabs.find((t) => t.selected)
+      ?.id ?? null;
+  const slot = (tab) => `.slot[data-tab="${tab}"]`;
+  const screenOfTab = (tab) => screenOf(evaluate, slot(tab));
+  // Whether each terminal draws with WebGL: [{ tab, hidden, webgl, lost }].
+  const renderers = () =>
+    evaluate(`[...document.querySelectorAll(".slot[data-tab]")].map((slot) => {
+      const canvas = slot.querySelector(".xterm-screen canvas:not(.xterm-link-layer)");
+      const gl = canvas?.getContext("webgl2");
+      return {
+        tab: Number(slot.dataset.tab),
+        hidden: slot.hidden,
+        webgl: !!gl,
+        lost: gl ? gl.isContextLost() : null,
+      };
+    })`);
+  const checkRenderers = async (where) => {
+    const all = await renderers();
+    const wrong = all.filter(
+      (r) => r.hidden === r.webgl || (r.webgl && r.lost),
+    );
+    if (wrong.length > 0) {
+      fail(`${where}: WebGL not only on visible terminals: ${json(all)}`);
+    }
+  };
+  const confirmClose = async (choice) => {
+    await until("the close confirmation", () => exists("[data-confirm-close]"));
+    await clickOn(`[data-confirm=${choice}]`);
+    await until(
+      "the confirmation gone",
+      async () => !(await exists("[data-confirm-close]")),
+    );
+  };
+  // Opens a quick-connect session in a new tab of the active pane and
+  // waits for its prompt; returns its tab.
+  const openSession = async () => {
+    const before = new Set((await allTabs()).map((tab) => tab.id));
+    await clickOn(".pane.active [data-new-tab]");
+    await until("the quick-connect form", () => exists("input[name=host]"));
+    await fillForm({
+      host: "127.0.0.1",
+      port: String(SSH_PORT),
+      username: USERNAME,
+      password: PASSWORD,
+    });
+    const tab = await until(
+      "the new tab",
+      async () => (await allTabs()).find((t) => !before.has(t.id))?.id,
+    );
+    if ((await activeTab()) !== tab) fail("the new tab is not shown");
+    await until(`tab ${tab} connected`, async () =>
+      (await allTabs()).some((t) => t.id === tab && t.state === "connected"),
+    );
+    await until(`tab ${tab}'s prompt`, async () =>
+      (await screenOfTab(tab)).includes("test-ssh$"),
+    );
+    return tab;
+  };
+  const drag = async (fromSelector, toSelector, offsetX = 0) => {
+    const from = await centreOf(fromSelector);
+    const to = await centreOf(toSelector);
+    to.x += offsetX;
+    await mouse("mousePressed", from, { button: "left", clickCount: 1 });
+    await mouse(
+      "mouseMoved",
+      { x: from.x + 10, y: from.y + 2 },
+      {
+        button: "left",
+        buttons: 1,
+      },
+    );
+    await mouse("mouseMoved", to, { button: "left", buttons: 1 });
+    await mouse("mouseReleased", to, { button: "left", clickCount: 1 });
+  };
+
+  // Start from no tabs: closed sessions close at once, live ones ask.
+  for (let left = await allTabs(); left.length > 0; left = await allTabs()) {
+    const [tab] = left;
+    await clickOn(`[data-tab="${tab.id}"] [data-tab-close]`);
+    if (tab.state !== "disconnected") await confirmClose("close");
+    await until("the tab closed", async () =>
+      (await allTabs()).every((t) => t.id !== tab.id),
+    );
+  }
+  if (await exists("[data-session-switch]")) {
+    fail("the session switcher is still there");
+  }
+
+  // Each session opens in a new tab named after its host, showing its state.
+  const a = await openSession();
+  const b = await openSession();
+  let tabs = await allTabs();
+  if (
+    tabs.length !== 2 ||
+    tabs.some((t) => t.name !== "127.0.0.1" || t.state !== "connected")
+  ) {
+    fail(`unexpected tabs: ${json(tabs)}`);
+  }
+  await screenshot("tabs");
+  step("each session opened in its own tab, named after the host, connected");
+
+  // Next, previous and moving tabs from the keyboard.
+  await nextTab();
+  await until(
+    "the next tab (round to the first)",
+    async () => (await activeTab()) === a,
+  );
+  await previousTab();
+  await until("the previous tab", async () => (await activeTab()) === b);
+  await press("PageUp", "PageUp", 33, CTRL);
+  await until(
+    "the previous tab (Ctrl+PageUp)",
+    async () => (await activeTab()) === a,
+  );
+  await press("PageDown", "PageDown", 34, CTRL | SHIFT);
+  await until(
+    "the tab moved right",
+    async () => json((await allTabs()).map((t) => t.id)) === json([b, a]),
+  );
+  // Dragging the tab back before the other one.
+  await drag(`[data-tab="${a}"]`, `[data-tab="${b}"]`, -20);
+  await until(
+    "the tab dragged back",
+    async () => json((await allTabs()).map((t) => t.id)) === json([a, b]),
+  );
+  step(
+    "Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+PageUp switch tabs; tabs reorder by keyboard and drag",
+  );
+
+  // A hidden terminal keeps its output aside, and shows it when shown.
+  await clickOn(`[data-tab="${a}"]`);
+  await until("tab A shown", async () => (await activeTab()) === a);
+  await type("later 2 hidden-update\r");
+  await until("the command echoed", async () =>
+    (await screenOfTab(a)).includes("later 2 hidden-update"),
+  );
+  await nextTab();
+  await until("tab B shown", async () => (await activeTab()) === b);
+  await sleep(3500);
+  // It arrives after the new prompt: `test-ssh$ hidden-update`.
+  const arrived = async () => /\$ hidden-update/.test(await screenOfTab(a));
+  if (await arrived()) {
+    fail("the hidden terminal was written to while out of sight");
+  }
+  await checkRenderers("one tab hidden");
+  await previousTab();
+  await until("the held output written once shown", arrived);
+  step("a hidden terminal held its output and caught up when shown again");
+
+  // Splitting right moves the shown tab into a new pane beside the other.
+  await clickOn(".pane.active [data-split=right]");
+  await until("two panes", async () => (await layout()).length === 2);
+  let panes = await layout();
+  if (
+    json(panes.map((p) => p.tabs.map((t) => t.id))) !== json([[b], [a]]) ||
+    !panes[1].active
+  ) {
+    fail(`unexpected panes after splitting: ${json(panes)}`);
+  }
+  const boxes = await evaluate(`[${a}, ${b}].map((tab) => {
+    const box = document.querySelector('.slot[data-tab="' + tab + '"]').getBoundingClientRect();
+    return { x: box.x, y: box.y, width: box.width };
+  })`);
+  if (!(boxes[0].x > boxes[1].x + boxes[1].width - 1)) {
+    fail(`the panes are not side by side: ${json(boxes)}`);
+  }
+  await until("both terminals drawn with WebGL", async () =>
+    (await renderers()).every((r) => r.webgl && !r.lost),
+  );
+  await checkRenderers("two panes");
+  // Typing goes to the active pane's session.
+  await type("size\r");
+  await until("output in the active pane", async () =>
+    /size\s*\d+x\d+/.test(await screenOfTab(a)),
+  );
+  // Splitting a pane with one tab gives an empty pane for a new session.
+  await clickOn(".pane.active [data-split=down]");
+  await until("three panes", async () => (await layout()).length === 3);
+  const c = await openSession();
+  panes = await layout();
+  if (!panes[2].tabs.some((t) => t.id === c)) {
+    fail(`the new session is not in the new pane: ${json(panes)}`);
+  }
+  await screenshot("split-panes");
+  step("the window split right and down, each pane showing its own session");
+
+  // A tab dragged into another pane moves there; its old pane, now empty,
+  // goes. The terminal (and its session) move with it.
+  await drag(
+    `[data-tab="${c}"]`,
+    `.pane[data-pane="${panes[0].pane}"] [data-new-tab]`,
+  );
+  await until("the tab moved into the first pane", async () => {
+    const now = await layout();
+    return (
+      now.length === 2 &&
+      json(now[0].tabs.map((t) => t.id)) === json([b, c]) &&
+      now[0].active
+    );
+  });
+  if (!(await screenOfTab(c)).includes("test-ssh$")) {
+    fail("the moved tab lost its terminal");
+  }
+  await checkRenderers("after moving a tab");
+  step("a tab moved into another pane, keeping its session");
+
+  // A lost WebGL context is recovered from.
+  await evaluate(`document.querySelector('${slot(c)} .xterm-screen canvas:not(.xterm-link-layer)')
+    .getContext("webgl2").getExtension("WEBGL_lose_context").loseContext()`);
+  await until("the WebGL renderer back after a lost context", async () =>
+    (await renderers()).some((r) => r.tab === c && r.webgl && !r.lost),
+  );
+  await type("size\r");
+  await until("output after the lost context", async () =>
+    /size\s*\d+x\d+/.test(await screenOfTab(c)),
+  );
+  step("the terminal recovered from a lost WebGL context");
+
+  // Closing a tab with a live session asks first; Cancel keeps it.
+  await clickOn(`[data-tab="${c}"] [data-tab-close]`);
+  await screenshot("close-confirmation");
+  await confirmClose("cancel");
+  if (!(await allTabs()).some((t) => t.id === c)) fail("Cancel closed the tab");
+  await press("W", "KeyW", 87, CTRL | SHIFT);
+  await confirmClose("close");
+  await until("the tab closed", async () =>
+    (await allTabs()).every((t) => t.id !== c),
+  );
+  step(
+    "closing a live session's tab asked for confirmation (Ctrl+Shift+W too)",
+  );
+
+  // Closing a pane gives its tabs to the pane beside it.
+  await clickOn(
+    `.pane[data-pane="${(await layout())[1].pane}"] [data-close-pane]`,
+  );
+  await until("one pane with both tabs", async () => {
+    const now = await layout();
+    return now.length === 1 && now[0].tabs.length === 2;
+  });
+  step("closing a pane moved its tabs into the other");
+
+  // Twenty sessions at once, each drawn when shown; only the visible one
+  // has a WebGL context.
+  while ((await allTabs()).length < 20) await openSession();
+  const twenty = (await allTabs()).map((t) => t.id);
+  for (const tab of twenty) {
+    await clickOn(`[data-tab="${tab}"]`);
+    await until(`tab ${tab} shown`, async () => (await activeTab()) === tab);
+    await type("size\r");
+    await until(`tab ${tab}'s output`, async () =>
+      /size\s*\d+x\d+/.test(await screenOfTab(tab)),
+    );
+    await checkRenderers(`twenty sessions, tab ${tab}`);
+  }
+  if ((await allTabs()).some((t) => t.state !== "connected")) {
+    fail(`not every session stayed connected: ${json(await allTabs())}`);
+  }
+  await screenshot("twenty-sessions");
+  step("twenty sessions were open at once, each rendering when shown");
 }
 
 let exitCode = 0;
