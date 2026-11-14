@@ -1,0 +1,327 @@
+// Builds a Windows release: the installer (NSIS, per user, signed for the
+// updater), the portable zip, the update manifest `latest.json` and
+// `SHA256SUMS.txt`, all in `target/dist/<version>/`. It publishes nothing:
+// uploading the files is left to the person making the release.
+//
+//   npm run release
+//
+// See docs/releasing.md. It reads:
+//
+//   TAURI_SIGNING_PRIVATE_KEY           the updater's private key: the path
+//                                       of the key file (never inside the
+//                                       repository) or its contents
+//   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
+//   NETTERM_UPDATE_ENDPOINT             https address of `latest.json`, which
+//                                       the app checks (built into the app)
+//   NETTERM_RELEASE_URL                 https address of the folder this
+//                                       release's files will be downloaded from
+//   NETTERM_RELEASE_PAGE                optional: the release's web page
+//                                       (default NETTERM_RELEASE_URL)
+//   NETTERM_RELEASE_NOTES               optional: a short text for the notice
+//   NETTERM_UPDATER_PUBKEY              optional: the public key (path or
+//                                       contents); default
+//                                       src-tauri/updater-key.pub
+
+import { spawnSync } from "node:child_process";
+import { createHash, createPublicKey, verify } from "node:crypto";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PUBLIC_KEY_FILE = join(ROOT, "src-tauri", "updater-key.pub");
+/** The file that makes a copy portable (`netterm_core::update::PORTABLE_MARKER`). */
+const PORTABLE_MARKER = "portable.txt";
+/** The updater's name for 64-bit Windows in `latest.json`. */
+const PLATFORM = "windows-x86_64";
+
+function fail(message) {
+  console.error(`release: ${message}`);
+  process.exit(1);
+}
+
+function required(name) {
+  const value = process.env[name]?.trim();
+  if (!value) fail(`${name} is not set (see docs/releasing.md)`);
+  return value;
+}
+
+function httpsUrl(name, value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    fail(`${name} is not a web address: ${value}`);
+  }
+  if (url.protocol !== "https:") fail(`${name} must be an https address`);
+  return url;
+}
+
+/** Whether `path` is inside the repository (where a key must never be). */
+function insideRepository(path) {
+  const rel = relative(ROOT, resolve(path));
+  return !rel.startsWith("..") && !/^[a-zA-Z]:/.test(rel);
+}
+
+/** A value that is either a file's path or the contents themselves. */
+function contentsOf(value) {
+  return existsSync(value) && statSync(value).isFile()
+    ? readFileSync(value, "utf8").trim()
+    : value.trim();
+}
+
+function run(command, args, env = {}) {
+  const result = spawnSync(command, args, {
+    cwd: ROOT,
+    stdio: "inherit",
+    env: { ...process.env, ...env },
+  });
+  if (result.status !== 0) fail(`${command} ${args.join(" ")} failed`);
+}
+
+// --- Minisign, as the Tauri updater signs and checks ----------------------
+
+/** The lines of a base64-wrapped minisign file (Tauri's .pub and .sig). */
+function minisignLines(base64) {
+  return Buffer.from(base64.trim(), "base64").toString("utf8").split(/\r?\n/);
+}
+
+function publicKey(base64) {
+  const [, line] = minisignLines(base64);
+  const raw = Buffer.from(line ?? "", "base64");
+  if (raw.length !== 42 || raw.subarray(0, 2).toString() !== "Ed") {
+    fail("the updater public key is not a minisign public key");
+  }
+  return {
+    id: raw.subarray(2, 10),
+    key: createPublicKey({
+      key: {
+        kty: "OKP",
+        crv: "Ed25519",
+        x: raw.subarray(10).toString("base64url"),
+      },
+      format: "jwk",
+    }),
+  };
+}
+
+/** Checks `file` against its signature the way the updater will, so that a
+ * release signed with another key never goes out (it would strand every
+ * installed copy). Returns the signature's trusted comment. */
+function verifySignature(file, signature, pub) {
+  const lines = minisignLines(signature);
+  const sig = Buffer.from(lines[1] ?? "", "base64");
+  const trusted = (lines[2] ?? "").replace(/^trusted comment: /, "");
+  const global = Buffer.from(lines[3] ?? "", "base64");
+  if (sig.length !== 74) fail(`${basename(file)}'s signature is not readable`);
+  const algorithm = sig.subarray(0, 2).toString();
+  if (!sig.subarray(2, 10).equals(pub.id)) {
+    fail(
+      `${basename(file)} was signed with another key than the public key given: ` +
+        "check TAURI_SIGNING_PRIVATE_KEY and the public key",
+    );
+  }
+  const data = readFileSync(file);
+  const message =
+    algorithm === "ED" ? createHash("blake2b512").update(data).digest() : data;
+  if (!verify(null, message, pub.key, sig.subarray(10))) {
+    fail(`${basename(file)}'s signature does not match the file`);
+  }
+  const signed = Buffer.concat([sig.subarray(10), Buffer.from(trusted)]);
+  if (!verify(null, signed, pub.key, global)) {
+    fail(`${basename(file)}'s signature comment does not match`);
+  }
+  return trusted;
+}
+
+function sha256(file) {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+// --- The release ----------------------------------------------------------
+
+const tauriConfig = JSON.parse(
+  readFileSync(join(ROOT, "src-tauri", "tauri.conf.json"), "utf8"),
+);
+const productName = tauriConfig.productName;
+const version = readFileSync(join(ROOT, "Cargo.toml"), "utf8").match(
+  /\[workspace\.package\][^[]*?\nversion\s*=\s*"([^"]+)"/,
+)?.[1];
+if (!version) fail("no version in Cargo.toml's [workspace.package]");
+const npmVersion = JSON.parse(
+  readFileSync(join(ROOT, "package.json"), "utf8"),
+).version;
+if (npmVersion !== version) {
+  fail(
+    `package.json has version ${npmVersion}, Cargo.toml ${version}: make them agree`,
+  );
+}
+
+const privateKey = required("TAURI_SIGNING_PRIVATE_KEY");
+if (existsSync(privateKey) && insideRepository(privateKey)) {
+  fail(
+    "the private key is inside the repository: move it out (see docs/releasing.md)",
+  );
+}
+if (process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD === undefined) {
+  fail("TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not set (see docs/releasing.md)");
+}
+const pubkeySource =
+  process.env.NETTERM_UPDATER_PUBKEY?.trim() || PUBLIC_KEY_FILE;
+if (pubkeySource === PUBLIC_KEY_FILE && !existsSync(PUBLIC_KEY_FILE)) {
+  fail(
+    `no public key: create the release key and commit ${relative(ROOT, PUBLIC_KEY_FILE)}`,
+  );
+}
+const pubkey = contentsOf(pubkeySource);
+const pub = publicKey(pubkey);
+const endpoint = httpsUrl(
+  "NETTERM_UPDATE_ENDPOINT",
+  required("NETTERM_UPDATE_ENDPOINT"),
+);
+const releaseUrl = httpsUrl(
+  "NETTERM_RELEASE_URL",
+  required("NETTERM_RELEASE_URL"),
+);
+const base = releaseUrl.href.endsWith("/")
+  ? releaseUrl.href
+  : `${releaseUrl.href}/`;
+const page = process.env.NETTERM_RELEASE_PAGE?.trim()
+  ? httpsUrl("NETTERM_RELEASE_PAGE", process.env.NETTERM_RELEASE_PAGE.trim())
+      .href
+  : releaseUrl.href;
+
+// The updater exists only in this build: its key and the release server.
+const configFile = join(ROOT, "target", "release-config.json");
+mkdirSync(dirname(configFile), { recursive: true });
+writeFileSync(
+  configFile,
+  JSON.stringify(
+    {
+      bundle: {
+        active: true,
+        targets: ["nsis"],
+        createUpdaterArtifacts: true,
+        windows: { nsis: { installMode: "currentUser" } },
+      },
+      plugins: {
+        updater: {
+          pubkey,
+          endpoints: [endpoint.href],
+          // The signature names the version it was signed for, so a forged
+          // manifest cannot pass an older signed release off as newer.
+          requireSignedVersion: true,
+          windows: { installMode: "passive" },
+        },
+      },
+    },
+    null,
+    2,
+  ),
+);
+
+// Earlier output goes first, so that a failed build leaves nothing to upload.
+const dist = join(ROOT, "target", "dist", version);
+rmSync(dist, { recursive: true, force: true });
+const bundleFolder = join(ROOT, "target", "release", "bundle", "nsis");
+rmSync(bundleFolder, { recursive: true, force: true });
+const tauriCli = join(ROOT, "node_modules", "@tauri-apps", "cli", "tauri.js");
+run(process.execPath, [tauriCli, "build", "--config", configFile]);
+
+const installerName = readdirSync(bundleFolder).find(
+  (name) => name.endsWith("-setup.exe") && name.includes(`_${version}_`),
+);
+if (!installerName) fail(`no installer for ${version} in ${bundleFolder}`);
+const installer = join(bundleFolder, installerName);
+if (!existsSync(`${installer}.sig`))
+  fail(`${installerName} has no updater signature`);
+const signature = readFileSync(`${installer}.sig`, "utf8").trim();
+const trusted = verifySignature(installer, signature, pub);
+// The app requires the signed version (requireSignedVersion): without it
+// every install of this release would fail.
+if (!trusted.split("\t").includes(`version:${version}`)) {
+  fail(
+    `${installerName}'s signature does not name version ${version}: ${trusted}`,
+  );
+}
+console.log(
+  `release: ${installerName} is signed by the release key (${trusted})`,
+);
+
+mkdirSync(dist, { recursive: true });
+copyFileSync(installer, join(dist, installerName));
+copyFileSync(`${installer}.sig`, join(dist, `${installerName}.sig`));
+
+// The portable zip: the program, the marker that makes it portable (it only
+// announces updates) and the README.
+const exeName = `${tauriConfig.mainBinaryName ?? "netterm"}.exe`;
+const portableName = `${productName}_${version}_x64-portable`;
+const stage = join(ROOT, "target", "dist", "stage", portableName);
+rmSync(dirname(stage), { recursive: true, force: true });
+mkdirSync(stage, { recursive: true });
+copyFileSync(join(ROOT, "target", "release", exeName), join(stage, exeName));
+writeFileSync(
+  join(stage, PORTABLE_MARKER),
+  `This file makes this copy of ${productName} portable: it tells you when a new\r\n` +
+    "version is out but never installs one. Download the new portable zip and\r\n" +
+    "unpack it over this folder. Settings and known host keys are kept in your\r\n" +
+    "user profile, not here.\r\n",
+);
+copyFileSync(join(ROOT, "README.md"), join(stage, "README.md"));
+const zip = join(dist, `${portableName}.zip`);
+// Windows' own bsdtar (not Git's GNU tar, which cannot write zip files):
+// unlike PowerShell's Compress-Archive it stores `/` separators, which every
+// unzip tool reads.
+const windowsTar = join(
+  process.env.SystemRoot ?? "C:\\Windows",
+  "System32",
+  "tar.exe",
+);
+run(windowsTar, ["-a", "-c", "-f", zip, "-C", dirname(stage), portableName]);
+rmSync(dirname(stage), { recursive: true, force: true });
+
+// The manifest the app checks: the Tauri updater's static format, plus the
+// page that the notice links to.
+const manifest = {
+  version,
+  notes:
+    process.env.NETTERM_RELEASE_NOTES?.trim() || `${productName} ${version}`,
+  pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+  page,
+  platforms: {
+    [PLATFORM]: {
+      signature,
+      url: new URL(encodeURIComponent(installerName), base).href,
+    },
+  },
+};
+writeFileSync(
+  join(dist, "latest.json"),
+  `${JSON.stringify(manifest, null, 2)}\n`,
+);
+
+const files = readdirSync(dist)
+  .filter((name) => name !== "SHA256SUMS.txt")
+  .sort();
+writeFileSync(
+  join(dist, "SHA256SUMS.txt"),
+  files.map((name) => `${sha256(join(dist, name))}  ${name}\n`).join(""),
+);
+
+console.log(
+  `\nrelease: ${productName} ${version} is ready in ${relative(ROOT, dist)}:`,
+);
+for (const name of [...files, "SHA256SUMS.txt"]) console.log(`  ${name}`);
+console.log(
+  `\nNothing was uploaded. Upload these files to ${base}` +
+    ` and latest.json to ${endpoint.href} (see docs/releasing.md).`,
+);

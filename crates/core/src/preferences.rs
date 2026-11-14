@@ -1,8 +1,8 @@
 //! The user's preferences: the app's theme, the terminal's font and
 //! scrollback, how copy and paste behave (multi-line paste confirmation
-//! included), and whether keywords are highlighted. They live per user in the
-//! application data folder (`preferences.yaml`), never in a workspace; the
-//! caller chooses that folder.
+//! included), whether keywords are highlighted and whether the app checks for
+//! updates. They live per user in the application data folder
+//! (`preferences.yaml`), never in a workspace; the caller chooses that folder.
 //!
 //! Reading is forgiving: a value that is missing, of the wrong kind or out of
 //! range falls back to (or is brought into) its allowed range on its own,
@@ -70,6 +70,9 @@ pub struct Preferences {
     /// A paste of more than one line asks first. Turning it off only
     /// applies to non-production hosts: see [`crate::paste`].
     pub confirm_multi_line_paste: bool,
+    /// The app looks for a newer release once at start (see
+    /// [`crate::update`]). Off, it makes no connection on its own.
+    pub check_for_updates: bool,
 }
 
 impl Default for Preferences {
@@ -83,6 +86,7 @@ impl Default for Preferences {
             right_click_paste: false,
             highlighting: true,
             confirm_multi_line_paste: true,
+            check_for_updates: true,
         }
     }
 }
@@ -108,6 +112,8 @@ impl Preferences {
             highlighting: read(&mapping, "highlighting").unwrap_or(defaults.highlighting),
             confirm_multi_line_paste: read(&mapping, "confirm_multi_line_paste")
                 .unwrap_or(defaults.confirm_multi_line_paste),
+            check_for_updates: read(&mapping, "check_for_updates")
+                .unwrap_or(defaults.check_for_updates),
         }
         .normalized()
     }
@@ -134,6 +140,7 @@ impl Preferences {
             "confirm_multi_line_paste",
             preferences.confirm_multi_line_paste.into(),
         );
+        put("check_for_updates", preferences.check_for_updates.into());
         let text = serde_norway::to_string(&mapping).map_err(io::Error::other)?;
         fs::create_dir_all(data_folder)?;
         let temporary = data_folder.join(format!("{FILE_NAME}.tmp"));
