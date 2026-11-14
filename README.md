@@ -74,6 +74,27 @@ The app sends no telemetry and has no crash reporting. The update check is a
 plain request for the release manifest (`latest.json`) and sends nothing
 about you, your machine or your inventory.
 
+## The headless binary
+
+`netterm-cli.exe` is installed beside `netterm.exe` (and is in the portable
+zip). It has no window and does not need the app running. It prints a
+workspace's inventory as JSON, each host with the settings that apply to it
+(inheritance resolved), its jump hosts, folders, tags and custom fields;
+credential profiles appear by name only, and custom fields named like a
+secret (password, key, community, token) are left out:
+
+```powershell
+netterm-cli inventory C:\Work\inventory
+netterm-cli inventory C:\Work\inventory --folder Europe/Madrid
+netterm-cli inventory C:\Work\inventory --filter "Arista in Madrid"
+netterm-cli inventory C:\Work\inventory --host core-r1.yaml --host Lab/sw1.yaml
+```
+
+Problems with workspace files are printed as warnings and do not stop the
+export. It exits with 1 (and says why) for a missing workspace or an
+unknown folder, filter or host, and with 2 for a command line it does not
+understand. `netterm-cli --help` lists the options.
+
 ## Tested platforms
 
 netterm claims support only for the device platforms below, each verified by the

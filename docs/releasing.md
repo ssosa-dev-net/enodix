@@ -10,9 +10,9 @@ tags or publishes anything. You publish by hand, as described below.
 
 | File                                 | Purpose                                                                          |
 | ------------------------------------ | -------------------------------------------------------------------------------- |
-| `netterm_<version>_x64-setup.exe`    | NSIS installer, per user (no administrator rights).                              |
+| `netterm_<version>_x64-setup.exe`    | NSIS installer, per user (no administrator rights); installs `netterm-cli.exe` beside the app. |
 | `netterm_<version>_x64-setup.exe.sig`| The updater signature of the installer (made with the release key).              |
-| `netterm_<version>_x64-portable.zip` | `netterm.exe`, `portable.txt` (makes the copy portable: it only notifies), README.|
+| `netterm_<version>_x64-portable.zip` | `netterm.exe`, `netterm-cli.exe`, `portable.txt` (makes the copy portable: it only notifies), README.|
 | `latest.json`                        | The update manifest the app checks (Tauri updater format, plus `page`).          |
 | `SHA256SUMS.txt`                     | SHA-256 of every other file, in `sha256sum` format.                              |
 

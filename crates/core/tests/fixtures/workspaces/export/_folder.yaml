@@ -1,0 +1,6 @@
+description: Acme lab
+credential_profile: corp-admin
+tags:
+- acme
+web_links:
+  GUI: https://admin:hunter2@{{address}}/
