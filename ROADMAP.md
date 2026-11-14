@@ -24,7 +24,7 @@ What comes after v1. The order and the decisions below were settled in a design 
 
 ## Status
 
-As of 2026-11-14, items 1, 2, 3, 5, 6 and 7 are built and on the main branch; none of it is in a release yet (the last release is 0.1.2). Item 4 was skipped for now, as it still needs its design session. What was built but not verified:
+As of 2026-11-14, items 1, 2, 3, 5, 6 and 7 are built and released in 0.2.0, an unsigned pre-release like 0.1.x. Item 4 was skipped for now, as it still needs its design session. What was built but not verified:
 
 - **Linux desktop:** the packages build and the core, the headless binary and the Python bridge pass their tests under WSL. The app itself has not been run on a real Linux desktop; the check list is in `docs/linux.md`.
 - **NX-OS:** its built-in platform definition has not been run against a device (no image in the lab). The other five are verified in the containerlab suite.

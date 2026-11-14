@@ -26,7 +26,9 @@ git). Free and open source under the GPL-3.0.
   fetched with NAPALM, reviewed before anything is written.
 
 Releases up to 0.1.2 have the sessions and the inventory only; everything
-else in the list came after it. [CHANGELOG.md](CHANGELOG.md) lists what
+else in the list came with 0.2.0. Releases so far are pre-releases: not
+code-signed, and without the automatic updates described below (install
+the next version over the old one by hand). [CHANGELOG.md](CHANGELOG.md) lists what
 each release added, and [ROADMAP.md](ROADMAP.md) says what is built, what
 is not yet verified and what comes next.
 
