@@ -8,6 +8,7 @@
 pub mod app_state;
 pub mod credentials;
 pub mod highlight;
+pub mod import;
 pub mod known_hosts;
 pub mod layout;
 pub mod logging;

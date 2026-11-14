@@ -21,6 +21,7 @@
   import TerminalSession from "./lib/TerminalSession.svelte";
   import WorkspacePanel from "./lib/WorkspacePanel.svelte";
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
+  import CsvImportDialog from "./lib/CsvImportDialog.svelte";
   import {
     hostRole,
     hostSafety,
@@ -753,6 +754,16 @@
     onsnippet={(snippet) => void sendSnippet(snippet)}
     target={snippetTarget}
     onclose={() => (inventory.palette = false)}
+  />
+{/if}
+
+{#if inventory.csvImport !== null && inventory.workspace}
+  <CsvImportDialog
+    folder={inventory.csvImport}
+    onclose={() => {
+      inventory.csvImport = null;
+      focusRequest += 1;
+    }}
   />
 {/if}
 

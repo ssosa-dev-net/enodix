@@ -48,6 +48,7 @@ use crate::template::Variables;
 mod filters;
 mod highlights;
 mod identity;
+pub(crate) mod import;
 mod jumps;
 mod roles;
 mod search;
@@ -150,7 +151,7 @@ pub const FOLDER_KEY_ORDER: [&str; 13] = [
 ];
 
 /// The extension of host files the app creates.
-const HOST_EXTENSION: &str = "yaml";
+pub(crate) const HOST_EXTENSION: &str = "yaml";
 
 /// A loaded workspace: its tree and the problems found while loading it.
 #[derive(Debug, Clone)]
@@ -1277,7 +1278,7 @@ fn io_error(file: &str) -> impl FnOnce(io::Error) -> EditError + '_ {
 }
 
 /// `parent/name`, or `name` at the root.
-fn join(parent: &str, name: &str) -> String {
+pub(crate) fn join(parent: &str, name: &str) -> String {
     if parent.is_empty() {
         name.to_string()
     } else {

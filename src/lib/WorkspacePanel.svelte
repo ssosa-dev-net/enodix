@@ -9,6 +9,7 @@
     newFilter,
     newFolder,
     newHost,
+    openCsvImport,
     remove,
     removeFilter,
     rename,
@@ -144,6 +145,7 @@
     const creating: [string, () => void][] = [
       ["New folder…", () => newFolder(item.path)],
       ["New host…", () => newHost(item.path)],
+      ["Import CSV…", () => openCsvImport(item.path)],
     ];
     if (item.path === "") return creating;
     return [
@@ -207,6 +209,11 @@
       >
       <button title="New host" onclick={() => newHost(targetFolder())}
         >+ Host</button
+      >
+      <button
+        data-open-csv-import
+        title="Import hosts from a CSV file into the selected folder"
+        onclick={() => openCsvImport(targetFolder())}>Import…</button
       >
       <button
         title="Credential profiles"

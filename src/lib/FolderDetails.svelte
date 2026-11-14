@@ -8,6 +8,7 @@
     move,
     newFolder,
     newHost,
+    openCsvImport,
     remove,
     renameTo,
     saveFolderSettings,
@@ -50,6 +51,9 @@
     <div class="actions">
       <button onclick={() => newFolder(folder.path)}>New folder…</button>
       <button onclick={() => newHost(folder.path)}>New host…</button>
+      <button data-folder-import onclick={() => openCsvImport(folder.path)}
+        >Import CSV…</button
+      >
       {#if !isRoot}
         <button onclick={() => move(item)}>Move…</button>
         <button class="danger" onclick={() => remove(item)}>Delete</button>
