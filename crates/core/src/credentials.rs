@@ -6,7 +6,8 @@
 //! Profiles live in a [`CredentialStore`], never in the workspace: the
 //! workspace files only name a profile, so a shared workspace lets each
 //! person keep their own secret under the same name. A store keeps
-//! profiles per workspace ([`Workspace::credential_scope`]) and matches
+//! profiles per workspace ([`Workspace::credential_scope`], its stable
+//! identifier; see [`prepare_workspace`]) and matches
 //! names ignoring case. [`KeychainStore`] is the operating system's
 //! keychain (Windows Credential Manager); [`MemoryStore`] keeps them in
 //! memory, for tests.
@@ -545,6 +546,34 @@ impl<'a> Profiles<'a> {
             .resolve_host(id)
             .ok_or_else(|| ProfileError::NotFound(id.to_string()))
     }
+}
+
+/// Makes `workspace` ready to keep its own profiles in `store`: gives it an
+/// identifier if it has none ([`Workspace::ensure_id`]), then moves the
+/// profiles earlier versions kept under its folder path to it. A profile
+/// the workspace already has under its identifier is not replaced; the old
+/// one is left where it was. Run it when the app opens a workspace.
+pub fn prepare_workspace(
+    store: &dyn CredentialStore,
+    workspace: &mut Workspace,
+) -> Result<(), ProfileError> {
+    workspace.ensure_id().map_err(|error| {
+        ProfileError::Invalid(format!(
+            "the workspace has no identifier to keep its credential profiles under: {error}"
+        ))
+    })?;
+    let scope = workspace.credential_scope();
+    let by_path = workspace.path_credential_scope();
+    if by_path == scope {
+        return Ok(());
+    }
+    for profile in store.list(&by_path)? {
+        if store.get(&scope, &profile.name)?.is_none() {
+            store.put(&scope, &profile)?;
+            store.delete(&by_path, &profile.name)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_name(name: &str) -> Result<(), ProfileError> {

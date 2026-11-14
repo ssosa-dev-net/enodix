@@ -27,6 +27,8 @@ thiserror = "2"
 tokio = { workspace = true }
 # Checking web links before they are opened (http and https only).
 url = "2"
+# Workspace identifiers (random, so that two workspaces never share one).
+uuid = { version = "1", features = ["v4"] }
 
 # The Windows keychain (Credential Manager) for credential profiles.
 [target.'cfg(windows)'.dependencies]

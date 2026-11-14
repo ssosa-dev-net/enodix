@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use netterm_core::app_state::AppState;
+use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
 use netterm_core::credentials::{
-    CredentialStore, HostLogin, KeychainStore, MemoryStore, ProfileDraft, ProfileError,
-    ProfileSummary, Profiles,
+    prepare_workspace, CredentialStore, HostLogin, KeychainStore, MemoryStore, ProfileDraft,
+    ProfileError, ProfileSummary, Profiles,
 };
 use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
 use netterm_core::known_hosts::KnownHosts;
@@ -27,7 +27,7 @@ use netterm_core::template::Variables;
 use netterm_core::workspace::{
     EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion, Host, HostId,
     HostWebLink, Problem, Protocol, ResolvedHost, Role, SavedFilter, SearchResults, Settings,
-    Snippet, WatchOptions, Workspace, WorkspaceWatcher,
+    Snippet, WatchOptions, Workspace, WorkspaceWatcher, WORKSPACE_FILE,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -55,6 +55,8 @@ const WORKSPACE_CHANGED_EVENT: &str = "workspace-changed";
 /// profiles are kept.
 struct Shell {
     data_folder: PathBuf,
+    /// Held while `state.yaml` is read, changed and written back.
+    app_state: Mutex<()>,
     /// Where session logs go: per user, outside every workspace.
     logs: LogFolder,
     credentials: Box<dyn CredentialStore>,
@@ -72,7 +74,11 @@ impl Shell {
 
     /// Makes `workspace` the open one and watches its folder, so that
     /// changes from outside (a git pull, an editor) reach the interface.
-    fn open(&self, app: &AppHandle, workspace: Workspace) -> WorkspaceView {
+    fn open(&self, app: &AppHandle, mut workspace: Workspace) -> WorkspaceView {
+        // Its profiles are kept under its own identifier (written to the
+        // folder if it has none yet). Without one they stay under its path;
+        // the interface shows why with the files that could not be loaded.
+        let unprepared = prepare_workspace(self.credentials.as_ref(), &mut workspace).err();
         let root = workspace.root().to_path_buf();
         *self.workspace() = Some(workspace);
         let app = app.clone();
@@ -93,7 +99,52 @@ impl Shell {
         if let Err(error) = workspace.refresh() {
             eprintln!("cannot reload the workspace: {error}");
         }
-        WorkspaceView::from(&*workspace)
+        let mut view = WorkspaceView::from(&*workspace);
+        if let Some(error) = unprepared {
+            view.problems.push(Problem {
+                file: WORKSPACE_FILE.into(),
+                message: error.to_string(),
+            });
+        }
+        view
+    }
+
+    /// Changes the app state kept in the data folder.
+    fn update_state<T>(&self, change: impl FnOnce(&mut AppState) -> T) -> std::io::Result<T> {
+        let _held = self
+            .app_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut state = AppState::load(&self.data_folder);
+        let result = change(&mut state);
+        state.save(&self.data_folder)?;
+        Ok(result)
+    }
+
+    /// The known workspaces, marking the open one.
+    fn known_workspaces(&self) -> Vec<KnownWorkspace> {
+        let open = self.workspace().as_ref().map(|w| w.root().to_path_buf());
+        let _held = self
+            .app_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        AppState::load(&self.data_folder).known_workspaces(open.as_deref())
+    }
+
+    /// Makes `workspace` the open one and adds it to the known workspaces
+    /// (at the top), to reopen on the next launch.
+    fn open_and_remember(
+        &self,
+        app: &AppHandle,
+        workspace: Workspace,
+    ) -> Result<WorkspaceView, String> {
+        let path = workspace.root().to_path_buf();
+        let view = self.open(app, workspace);
+        self.update_state(|state| state.remember(&path))
+            .map_err(|error| {
+                format!("the workspace opened, but could not be remembered: {error}")
+            })?;
+        Ok(view)
     }
 
     /// Reloads the workspace at `root`, if it is still the open one, and
@@ -283,22 +334,50 @@ fn app_name(app: AppHandle) -> String {
     product_name(&app)
 }
 
-/// Opens the workspace folder at `path` and remembers it for the next launch.
+/// Opens the workspace folder at `path` (an existing folder, which becomes
+/// a known workspace) and remembers it for the next launch.
 #[tauri::command]
 fn workspace_open(
     app: AppHandle,
     shell: State<'_, Shell>,
     path: PathBuf,
 ) -> Result<WorkspaceView, String> {
-    let workspace = Workspace::open(&path).map_err(|error| error.to_string())?;
-    let view = shell.open(&app, workspace);
-    let state = AppState {
-        last_workspace: Some(path),
-    };
-    state
-        .save(&shell.data_folder)
-        .map_err(|error| format!("the workspace opened, but could not be remembered: {error}"))?;
-    Ok(view)
+    // One root for the interface however the path was typed.
+    let workspace = Workspace::open(resolved_path(&path)).map_err(|error| error.to_string())?;
+    shell.open_and_remember(&app, workspace)
+}
+
+/// Creates a new, empty workspace in the folder at `path` and opens it.
+#[tauri::command]
+fn workspace_create(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    path: PathBuf,
+) -> Result<WorkspaceView, String> {
+    let created = Workspace::create(&path).map_err(|error| error.to_string())?;
+    // One root for the interface however the path was typed (it can only
+    // be resolved now that the folder is there).
+    let workspace =
+        Workspace::open(resolved_path(created.root())).map_err(|error| error.to_string())?;
+    shell.open_and_remember(&app, workspace)
+}
+
+/// The known workspaces, most recently opened first (the switcher's list).
+#[tauri::command]
+fn workspaces_list(shell: State<'_, Shell>) -> Vec<KnownWorkspace> {
+    shell.known_workspaces()
+}
+
+/// Takes the workspace at `path` off the known workspaces. Its folder is
+/// left as it is. The open workspace cannot be taken off.
+#[tauri::command]
+fn workspace_forget(shell: State<'_, Shell>, path: PathBuf) -> Result<Vec<KnownWorkspace>, String> {
+    let open = shell.workspace().as_ref().map(|w| w.root().to_path_buf());
+    shell
+        .update_state(|state| state.forget(&path, open.as_deref()))
+        .map_err(|error| format!("the list of workspaces could not be saved: {error}"))?
+        .map_err(|error| error.to_string())?;
+    Ok(shell.known_workspaces())
 }
 
 /// Reopens the workspace that was open last, if there was one.
@@ -1305,6 +1384,7 @@ pub fn run() {
             app.manage(UserPreferences(Mutex::new(preferences)));
             app.manage(Shell {
                 data_folder,
+                app_state: Mutex::new(()),
                 logs: LogFolder::new(log_folder),
                 credentials,
                 workspace: Mutex::new(None),
@@ -1322,6 +1402,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_name,
             workspace_open,
+            workspace_create,
+            workspaces_list,
+            workspace_forget,
             workspace_restore,
             folder_create,
             folder_rename,

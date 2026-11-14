@@ -895,6 +895,18 @@ async function main() {
 
   await webLinks({ evaluate, text, screenshot, step });
 
+  await workspaces({
+    evaluate,
+    fillForm,
+    doubleClick,
+    text,
+    status,
+    screen,
+    devtools,
+    screenshot,
+    step,
+  });
+
   devtools.close();
 
   // Preferences survive a restart: the app comes back light, with the
@@ -951,6 +963,30 @@ async function main() {
     fail(`preferences after a restart: ${JSON.stringify(kept)}`);
   }
   step("the preferences were kept across a restart");
+
+  // The known workspaces survive it too, and the last one opened reopens.
+  await until(
+    "the smoke workspace reopened",
+    async () =>
+      (await evaluateAgain(
+        `document.querySelector("aside header .name")?.textContent.trim()`,
+      )) === "smoke-workspace",
+  );
+  await evaluateAgain(
+    `document.querySelector("[data-open-workspaces]").click()`,
+  );
+  const listed = await until("the switcher after a restart", () =>
+    evaluateAgain(`(() => {
+      const rows = [...document.querySelectorAll("[data-workspace]")];
+      return rows.length > 0 && rows.map((row) => row.querySelector(".name").textContent);
+    })()`),
+  );
+  if (
+    JSON.stringify(listed) !== JSON.stringify(["smoke-workspace", "customer-b"])
+  ) {
+    fail(`the switcher lists after a restart: ${JSON.stringify(listed)}`);
+  }
+  step("the known workspaces were kept across a restart");
   restarted.close();
 }
 
@@ -1495,6 +1531,242 @@ async function webLinks({ evaluate, text, screenshot, step }) {
     fail("a web page is embedded in the app");
   }
   step("no web page is embedded in the app");
+}
+
+/**
+ * Multiple workspaces: the switcher lists the known ones; a new empty
+ * workspace is created in a folder that does not exist yet (each workspace
+ * gets its own identifier file); switching with a live session asks, and
+ * "keep" leaves the session in its tab with its own role; switching back
+ * by typing in the switcher; "close" closes the session; removing a
+ * workspace from the list leaves its folder, and it can be added again as
+ * an existing folder; creating over a non-empty folder is refused. Ends
+ * with the smoke workspace open again.
+ */
+async function workspaces({
+  evaluate,
+  fillForm,
+  doubleClick,
+  text,
+  status,
+  screen,
+  devtools,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const openName = () => text("aside header .name");
+  const second = join(userData, "customers", "customer-b");
+  const idOf = (folder) =>
+    readFileSync(join(folder, "_workspace.yaml"), "utf8").match(
+      /^id: (\S+)$/m,
+    )?.[1];
+  const known = () =>
+    evaluate(`[...document.querySelectorAll("[data-workspace]")].map(
+      (row) => row.dataset.workspace + (row.dataset.workspaceOpen === undefined ? "" : " (open)"),
+    )`);
+  const openSwitcher = async () => {
+    await clickOn("[data-open-workspaces]");
+    await until("the workspace switcher", () =>
+      exists("[data-dialog=workspaces] [data-workspace]"),
+    );
+  };
+  const escape = { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 };
+
+  // A live session to a host of the smoke workspace, with its role.
+  writeFileSync(
+    join(workspace, "ws-r1.yaml"),
+    `address: 127.0.0.1\nport: ${SSH_PORT}\nrole: lab_router\n`,
+  );
+  const hostButton = '[data-host="ws-r1.yaml"]';
+  await until("the host in the tree", () => exists(hostButton));
+  await doubleClick(hostButton);
+  await until("the credentials prompt", async () =>
+    (await text("main h2")).includes("ws-r1"),
+  );
+  await fillForm({ username: USERNAME, password: PASSWORD });
+  await until(
+    "the Connected status",
+    async () => (await status()) === "Connected",
+  );
+  await until("the shell prompt", async () =>
+    (await screen()).includes("test-ssh$"),
+  );
+  const tab = await evaluate(
+    `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
+  );
+  const slot = `.slot[data-tab="${tab}"]`;
+  const sessionRole = () =>
+    evaluate(
+      `document.querySelector(${json(slot + " .session header [data-role-icon]")})?.dataset.roleIcon ?? null`,
+    );
+
+  // The switcher lists the open workspace; an identifier file was given to
+  // it when it opened.
+  await openSwitcher();
+  if (json(await known()) !== json([`${workspace} (open)`])) {
+    fail(`the switcher lists ${json(await known())}`);
+  }
+  if (!idOf(workspace)) fail("the smoke workspace has no identifier file");
+  await screenshot("workspace-switcher");
+
+  // A new workspace in a folder that is not there yet: the live session
+  // is asked about first, and kept.
+  await fillForm(
+    { "workspace-folder": second },
+    "[data-workspace-form=create]",
+  );
+  await until("the keep-or-close question", () =>
+    exists("[data-confirm-switch]"),
+  );
+  // Earlier parts left sessions to its hosts open too.
+  if (
+    !/\d+ sessions? to hosts of smoke-workspace/.test(
+      await text("[data-confirm-switch]"),
+    )
+  ) {
+    fail(`the question says: ${await text("[data-confirm-switch]")}`);
+  }
+  await screenshot("workspace-switch-question");
+  await clickOn("[data-switch=keep]");
+  await until(
+    "the new workspace open",
+    async () => (await openName()) === "customer-b",
+  );
+  if (await exists("[data-dialog=workspaces]")) {
+    fail("the switcher stayed open after switching");
+  }
+  if (!idOf(second) || idOf(second) === idOf(workspace)) {
+    fail(`identifiers: ${idOf(second)} and ${idOf(workspace)}`);
+  }
+  if (await exists("nav [data-host]")) fail("the new workspace is not empty");
+  if (!(await exists(slot))) fail("the kept session's tab is gone");
+  if ((await text(`${slot} [role=status]`)) !== "Connected") {
+    fail(`the kept session is ${await text(`${slot} [role=status]`)}`);
+  }
+  // Its host's role comes from its own workspace, which defines it.
+  if ((await sessionRole()) !== "router") {
+    fail(`the kept session's role icon is ${await sessionRole()}`);
+  }
+  step(
+    "a new empty workspace was created and opened; the live session was kept",
+  );
+
+  // Back by typing in the switcher: nothing of customer-b is open, so
+  // nothing is asked.
+  await openSwitcher();
+  if (json(await known()) !== json([`${second} (open)`, workspace])) {
+    fail(`the switcher lists ${json(await known())}`);
+  }
+  await evaluate(`(() => {
+    const input = document.querySelector("[name=workspace-query]");
+    input.value = "smoke-work";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await until(
+    "only the smoke workspace listed",
+    async () => json(await known()) === json([workspace]),
+  );
+  await devtools.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+  });
+  await until(
+    "the smoke workspace open again",
+    async () => (await openName()) === "smoke-workspace",
+  );
+  if (await exists("[data-confirm-switch]")) {
+    fail("switching asked with no session of the open workspace live");
+  }
+  if (!(await exists(slot))) fail("the kept session's tab is gone");
+  step("the switcher switched back on Enter, without asking");
+
+  // Leaving again, closing the session this time.
+  await openSwitcher();
+  await clickOn(`[data-workspace=${json(second)}]`);
+  await until("the keep-or-close question", () =>
+    exists("[data-confirm-switch]"),
+  );
+  await clickOn("[data-switch=close]");
+  await until(
+    "customer-b open",
+    async () => (await openName()) === "customer-b",
+  );
+  await until("the session's tab closed", async () => !(await exists(slot)));
+  step("switching with a live session closed it when asked to");
+
+  // Removed from the list, the smoke workspace keeps its folder; added
+  // again as an existing folder, it opens.
+  await openSwitcher();
+  await clickOn(`[data-workspace=${json(workspace)}] [data-workspace-remove]`);
+  await until(
+    "the smoke workspace off the list",
+    async () => json(await known()) === json([`${second} (open)`]),
+  );
+  if (!existsSync(join(workspace, "ws-r1.yaml"))) {
+    fail("removing the workspace from the list deleted its files");
+  }
+  if (
+    readFileSync(join(appData, "state.yaml"), "utf8").includes(
+      "smoke-workspace",
+    )
+  ) {
+    fail("the removed workspace is still in the app state");
+  }
+  // Creating over a folder with files in it is refused.
+  await fillForm(
+    { "workspace-folder": workspace },
+    "[data-workspace-form=create]",
+  );
+  await until("the refusal", async () =>
+    (await text("[data-workspace-error]")).includes("not empty"),
+  );
+  await fillForm(
+    { "workspace-folder": workspace },
+    "[data-workspace-form=add]",
+  );
+  await until(
+    "the smoke workspace added and open",
+    async () => (await openName()) === "smoke-workspace",
+  );
+  await until("the smoke workspace's hosts", () => exists(hostButton));
+  const state = readFileSync(join(appData, "state.yaml"), "utf8");
+  if (!state.includes("smoke-workspace") || !state.includes("customer-b")) {
+    fail(`the app state lists: ${state}`);
+  }
+  step("a workspace removed from the list kept its folder and was added back");
+
+  // The shortcut opens the switcher too; Escape closes it.
+  const ctrlShiftO = {
+    key: "O",
+    code: "KeyO",
+    windowsVirtualKeyCode: 79,
+    modifiers: 2 | 8,
+  };
+  await devtools.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    ...ctrlShiftO,
+  });
+  await devtools.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    ...ctrlShiftO,
+  });
+  await until("the switcher from Ctrl+Shift+O", () =>
+    exists("[data-dialog=workspaces]"),
+  );
+  await devtools.send("Input.dispatchKeyEvent", { type: "keyDown", ...escape });
+  await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...escape });
+  await until(
+    "the switcher closed",
+    async () => !(await exists("[data-dialog=workspaces]")),
+  );
+  step("Ctrl+Shift+O opens the workspace switcher");
 }
 
 /**

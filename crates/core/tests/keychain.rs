@@ -6,7 +6,11 @@
 
 use std::path::PathBuf;
 
-use netterm_core::credentials::{CredentialProfile, CredentialStore, KeychainStore, ProfileAuth};
+use netterm_core::credentials::{
+    AuthDraft, CredentialProfile, CredentialStore, KeychainStore, ProfileAuth, ProfileDraft,
+    Profiles,
+};
+use netterm_core::workspace::Workspace;
 
 const SCOPE_A: &str = r"C:\netterm-test\customer-a";
 const SCOPE_B: &str = r"C:\netterm-test\customer-b";
@@ -133,4 +137,57 @@ fn a_profile_too_large_for_the_keychain_is_refused() {
 
     assert!(result.is_err());
     assert_eq!(store.get(SCOPE_A, "huge").unwrap(), None);
+}
+
+/// Deletes every profile of the scopes when dropped.
+struct Cleanup<'a> {
+    store: &'a KeychainStore,
+    scopes: Vec<String>,
+}
+
+impl Drop for Cleanup<'_> {
+    fn drop(&mut self) {
+        for scope in &self.scopes {
+            for profile in self.store.list(scope).unwrap_or_default() {
+                let _ = self.store.delete(scope, &profile.name);
+            }
+        }
+    }
+}
+
+#[test]
+fn two_workspaces_with_a_profile_of_the_same_name_do_not_collide_in_the_keychain() {
+    let keychain = TestKeychain::new();
+    let store = &keychain.store;
+    let parent = tempfile::TempDir::new().unwrap();
+    let acme = Workspace::create(parent.path().join("acme")).unwrap();
+    let globex = Workspace::create(parent.path().join("globex")).unwrap();
+    let _cleanup = Cleanup {
+        store,
+        scopes: vec![acme.credential_scope(), globex.credential_scope()],
+    };
+    let draft = |username: &str| ProfileDraft {
+        name: "core".into(),
+        username: username.into(),
+        auth: AuthDraft::Password {
+            password: Some("pw".into()),
+        },
+        enable_secret: None,
+    };
+
+    Profiles::new(store, &acme)
+        .save(None, &draft("acme-admin"))
+        .unwrap();
+    Profiles::new(store, &globex)
+        .save(None, &draft("globex-admin"))
+        .unwrap();
+
+    let username = |workspace: &Workspace| {
+        Profiles::new(store, workspace)
+            .profile("core")
+            .unwrap()
+            .map(|profile| profile.username)
+    };
+    assert_eq!(username(&acme).as_deref(), Some("acme-admin"));
+    assert_eq!(username(&globex).as_deref(), Some("globex-admin"));
 }

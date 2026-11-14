@@ -3,6 +3,7 @@
   import type { Attachment } from "svelte/attachments";
   import CommandPalette from "./lib/CommandPalette.svelte";
   import ConfirmClose from "./lib/ConfirmClose.svelte";
+  import ConfirmSwitch from "./lib/ConfirmSwitch.svelte";
   import CredentialsPrompt from "./lib/CredentialsPrompt.svelte";
   import Dialog from "./lib/Dialog.svelte";
   import FolderDetails from "./lib/FolderDetails.svelte";
@@ -19,6 +20,7 @@
   import SnippetVariables from "./lib/SnippetVariables.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
   import WorkspacePanel from "./lib/WorkspacePanel.svelte";
+  import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
   import {
     hostRole,
     hostSafety,
@@ -56,13 +58,13 @@
   } from "./lib/layout";
   import {
     expandSnippet,
-    openWorkspace,
-    pickWorkspaceFolder,
     onWorkspaceChanged,
     restoreWorkspace,
     type Host,
     type PasteSafety,
     type Protocol,
+    type Role,
+    type WorkspaceView,
   } from "./lib/workspace";
 
   /** What the active pane shows when it shows no session. */
@@ -88,10 +90,18 @@
     /** The inventory host it connects to, if any (for its role). */
     hostId: string | null;
     /**
+     * The root of the workspace that host is in; null for quick connect.
+     * Host ids only mean something in their own workspace, so a session
+     * kept open after switching to another uses what it opened with.
+     */
+    workspace: string | null;
+    /**
      * The host's environment and paste line delay when the session was
      * opened; kept for when the host is no longer in the open workspace.
      */
     safety: PasteSafety;
+    /** The host's role when the session was opened, kept likewise. */
+    role: Role | null;
     /** The host and username, when logging in with a profile. */
     profileLogin?: { host: Host; username: string };
   }
@@ -110,6 +120,14 @@
   let closing = $state<TabId | null>(null);
   /** Each tab's terminal, for sending snippets to it. */
   const terminals: Record<TabId, TerminalSession | null> = {};
+  /** Whether the workspace switcher is open. */
+  let switcher = $state(false);
+  /** A switch waiting for the user to keep or close the open sessions. */
+  let switching = $state<{
+    from: string;
+    live: number;
+    decide: (choice: "keep" | "close" | "cancel") => void;
+  } | null>(null);
   /** A snippet waiting for the user to give its variables a value. */
   let asking = $state<{ tab: TabId; name: string; names: string[] } | null>(
     null,
@@ -224,12 +242,25 @@
     if (layout) void tick().then(measure);
   });
 
+  /** The session's host id, if that host is in the open workspace. */
+  function liveHost(session: OpenSession): string | null {
+    return session.hostId !== null &&
+      session.workspace === inventory.workspace?.root
+      ? session.hostId
+      : null;
+  }
+
   /** What applies to the session's pastes and colours: its host's, as the
    * workspace now sets them (live), else as they were when it opened. */
   function safetyOf(session: OpenSession): PasteSafety {
-    return (
-      (session.hostId ? hostSafety(session.hostId) : null) ?? session.safety
-    );
+    const id = liveHost(session);
+    return (id ? hostSafety(id) : null) ?? session.safety;
+  }
+
+  /** The session's host's role, likewise. */
+  function roleOf(session: OpenSession): Role | null {
+    const id = liveHost(session);
+    return id ? hostRole(id) : session.role;
   }
 
   function tabState(tab: TabId): TabInfo["state"] {
@@ -244,7 +275,7 @@
       return {
         name: session.name,
         title: session.title,
-        role: session.hostId ? hostRole(session.hostId) : null,
+        role: roleOf(session),
         environment: safetyOf(session).environment,
         state: tabState(tab),
       };
@@ -324,15 +355,45 @@
     inventory.openError = `Could not reopen the last workspace: ${error}`;
   });
 
-  async function open() {
-    const folder = await pickWorkspaceFolder();
-    if (folder === null) return;
-    try {
-      setWorkspace(await openWorkspace(folder));
-      inventory.openError = null;
-    } catch (error) {
-      inventory.openError = String(error);
+  /**
+   * Switches to the workspace `open` opens. If sessions to hosts of the
+   * open workspace are live, the user first chooses to keep them (they stay
+   * in their tabs) or close them (their tabs close once the other workspace
+   * opened). Resolves to why it did not open, or null.
+   */
+  async function switchWorkspace(
+    open: () => Promise<WorkspaceView>,
+  ): Promise<string | null> {
+    const current = inventory.workspace;
+    const tabs = current
+      ? Object.keys(sessions)
+          .map(Number)
+          .filter((tab) => sessions[tab].workspace === current.root)
+      : [];
+    const live = tabs.filter((tab) => tabState(tab) !== "disconnected");
+    let choice: "keep" | "close" | "cancel" = "keep";
+    if (current && live.length > 0) {
+      choice = await new Promise((decide) => {
+        switching = { from: current.tree.name, live: live.length, decide };
+      });
+      switching = null;
+      if (choice === "cancel") return null;
     }
+    let next;
+    try {
+      next = await open();
+    } catch (error) {
+      return String(error);
+    }
+    // Reopening the same workspace leaves its sessions where they are.
+    if (choice === "close" && next.root !== current?.root) {
+      for (const tab of tabs) await edit({ kind: "closeTab", tab });
+    }
+    setWorkspace(next);
+    inventory.openError = null;
+    switcher = false;
+    focusRequest += 1;
+    return null;
   }
 
   /** Opens a session in a new tab of the active pane. */
@@ -343,13 +404,16 @@
     profileLogin?: { host: Host; username: string },
   ) {
     const hostId = "id" in target ? target.id : null;
+    const workspace = hostId ? (inventory.workspace?.root ?? null) : null;
     void edit({ kind: "openTab" }, (tab) => {
       sessions[tab] = {
         source: { kind: "target", target },
         name,
         title,
         hostId,
+        workspace,
         safety: (hostId ? hostSafety(hostId) : null) ?? NO_SAFETY,
+        role: hostId ? hostRole(hostId) : null,
         profileLogin,
       };
     });
@@ -432,7 +496,8 @@
    */
   function passwordLogin(tab: TabId, session: OpenSession) {
     const login = session.profileLogin;
-    if (!login) return undefined;
+    // Its host can only be reached through its own workspace.
+    if (!login || liveHost(session) === null) return undefined;
     return async (reason: string) => {
       await dismiss(tab);
       view = {
@@ -464,7 +529,8 @@
     }
     let expansion;
     try {
-      expansion = await expandSnippet(name, session.hostId, answers);
+      // A host of another workspace gives no values: all are asked for.
+      expansion = await expandSnippet(name, liveHost(session), answers);
     } catch (error) {
       inventory.editError = `Cannot send ${name}: ${error}`;
       return;
@@ -491,6 +557,9 @@
     const tab = layout ? (activePane?.active ?? null) : null;
     if (!event.shiftKey && letter("K")) {
       return inventory.workspace ? () => (inventory.palette = true) : null;
+    }
+    if (event.shiftKey && letter("O")) {
+      return () => (switcher = true);
     }
     if (
       event.key === "Tab" ||
@@ -549,6 +618,8 @@
       preferences.dialog ||
       highlighting.dialog ||
       inventory.palette ||
+      switcher ||
+      switching ||
       snippets.editing ||
       asking ||
       closing !== null;
@@ -564,7 +635,7 @@
 
 <div class="layout" class:with-details={host || folder}>
   <WorkspacePanel
-    onopen={open}
+    onopen={() => (switcher = true)}
     onconnect={prompt}
     {snippetTarget}
     onsnippet={(snippet) => void sendSnippet(snippet)}
@@ -602,7 +673,7 @@
             bind:this={terminals[tab]}
             source={session.source}
             title={session.title}
-            role={session.hostId ? hostRole(session.hostId) : null}
+            role={roleOf(session)}
             safety={safetyOf(session)}
             name={session.name}
             {shown}
@@ -682,6 +753,27 @@
     onsnippet={(snippet) => void sendSnippet(snippet)}
     target={snippetTarget}
     onclose={() => (inventory.palette = false)}
+  />
+{/if}
+
+{#if switcher}
+  <WorkspacesDialog
+    onswitch={switchWorkspace}
+    onclose={() => {
+      switcher = false;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if switching}
+  {@const { from, live, decide } = switching}
+  <ConfirmSwitch
+    {from}
+    {live}
+    onkeep={() => decide("keep")}
+    onclosesessions={() => decide("close")}
+    oncancel={() => decide("cancel")}
   />
 {/if}
 
