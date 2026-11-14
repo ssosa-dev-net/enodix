@@ -1,0 +1,61 @@
+# Saved jobs: good ones, ones whose step or target is gone, and bad ones.
+Madrid versions:
+  snippet: Show version
+  folder: Madrid
+Core interfaces:
+  snippet: Interface
+  answers:
+    interface: Ethernet1
+  filter: Core
+Check r1:
+  script: scripts/check.py
+  host: Madrid/r1.yaml
+Everything:
+  snippet: Interface
+  folder: ""
+
+Gone snippet:
+  snippet: Show clock
+  folder: Madrid
+Gone script:
+  script: scripts/missing.py
+  folder: Madrid
+Gone folder:
+  snippet: Show version
+  folder: Lisbon
+Gone filter:
+  snippet: Show version
+  filter: Edge
+Gone host:
+  snippet: Show version
+  host: Madrid/r9.yaml
+
+Just text: show version
+No step:
+  folder: Madrid
+No target:
+  snippet: Show version
+Two steps:
+  snippet: Show version
+  script: scripts/check.py
+  folder: Madrid
+Two targets:
+  snippet: Show version
+  folder: Madrid
+  filter: Core
+Answers for a script:
+  script: scripts/check.py
+  answers:
+    interface: Ethernet1
+  folder: Madrid
+Unknown key:
+  snippet: Show version
+  folder: Madrid
+  when: daily
+Bad answers:
+  snippet: Interface
+  answers: [Ethernet1]
+  folder: Madrid
+madrid VERSIONS:
+  snippet: Show version
+  folder: Paris

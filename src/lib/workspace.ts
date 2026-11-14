@@ -6,6 +6,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { ListedSavedJob, SavedJob } from "./jobs";
 
 export interface CustomField {
   key: string;
@@ -351,6 +352,8 @@ export interface WorkspaceView {
   platform_names: Record<string, { definition: string; usable: boolean }>;
   /** The snippets, in file order. */
   snippets: Snippet[];
+  /** The saved jobs, in file order. */
+  saved_jobs: ListedSavedJob[];
   problems: Problem[];
 }
 
@@ -780,6 +783,15 @@ export function saveSnippet(previous: string | null, snippet: Snippet) {
 
 export function deleteSnippet(name: string) {
   return invoke<Edited<null>>("snippet_delete", { name });
+}
+
+/** Saves a job in place of the one called `previous`, or as a new one. */
+export function saveJob(previous: string | null, job: SavedJob) {
+  return invoke<Edited<null>>("saved_job_save", { previous, job });
+}
+
+export function deleteJob(name: string) {
+  return invoke<Edited<null>>("saved_job_delete", { name });
 }
 
 /**

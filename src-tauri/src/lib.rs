@@ -44,8 +44,8 @@ use netterm_core::template::Variables;
 use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
 use netterm_core::workspace::{
     EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion, Host, HostId,
-    HostWebLink, Problem, Protocol, ResolvedHost, Role, SavedFilter, SearchResults, Settings,
-    Snippet, WatchOptions, Workspace, WorkspaceWatcher, WORKSPACE_FILE,
+    HostWebLink, Problem, Protocol, ResolvedHost, Role, SavedFilter, SavedJob, SearchResults,
+    Settings, Snippet, WatchOptions, Workspace, WorkspaceWatcher, WORKSPACE_FILE,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -270,7 +270,19 @@ struct WorkspaceView {
     platform_names: BTreeMap<String, PlatformName>,
     /// The snippets, in file order.
     snippets: Vec<Snippet>,
+    /// The saved jobs, in file order, each with why it cannot run (if so).
+    saved_jobs: Vec<ListedSavedJob>,
     problems: Vec<Problem>,
+}
+
+/// A saved job as the interface lists it.
+#[derive(Serialize, Clone)]
+struct ListedSavedJob {
+    #[serde(flatten)]
+    job: SavedJob,
+    /// `job::saved_job_problem`: what is gone, so it cannot run; `None`:
+    /// it can be planned.
+    problem: Option<String>,
 }
 
 impl From<&Workspace> for WorkspaceView {
@@ -287,6 +299,14 @@ impl From<&Workspace> for WorkspaceView {
             platforms: workspace.platforms().to_vec(),
             platform_names: workspace.platform_names(),
             snippets: workspace.snippets().to_vec(),
+            saved_jobs: workspace
+                .saved_jobs()
+                .iter()
+                .map(|saved| ListedSavedJob {
+                    problem: job::saved_job_problem(workspace, saved).map(|e| e.to_string()),
+                    job: saved.clone(),
+                })
+                .collect(),
             problems: workspace.problems().to_vec(),
         }
     }
@@ -1304,6 +1324,48 @@ fn job_run_again(
         target: stored.target,
         plan,
     })
+}
+
+/// Saves a job under a name in the workspace's jobs file, in place of the
+/// one called `previous` (a rename or a change), or as a new one.
+#[tauri::command]
+fn saved_job_save(
+    shell: State<'_, Shell>,
+    previous: Option<String>,
+    job: SavedJob,
+) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| {
+        workspace.save_job(previous.as_deref(), &job)
+    })
+}
+
+/// Deletes the saved job `name` from the workspace's jobs file.
+#[tauri::command]
+fn saved_job_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| workspace.delete_job(&name))
+}
+
+/// Plans the saved job `name` as the open workspace is now (refused, saying
+/// what is gone, if its step or target is); kept for `job_start` like
+/// `job_plan`'s.
+#[tauri::command]
+fn saved_job_plan(
+    shell: State<'_, Shell>,
+    plans: State<'_, JobPlans>,
+    name: String,
+) -> Result<PlannedAgain, String> {
+    let (target, plan) = {
+        let guard = shell.workspace();
+        let workspace = guard.as_ref().ok_or("no workspace is open")?;
+        job::plan_saved(
+            workspace,
+            &Profiles::new(&*shell.credentials, workspace),
+            &name,
+        )
+        .map_err(|error| error.to_string())?
+    };
+    let plan = keep_plan(&shell, &plans, target.clone(), |_, _| Ok(plan))?;
+    Ok(PlannedAgain { target, plan })
 }
 
 /// A started job: its id (for `job_cancel`) and its kept run's.
@@ -2478,6 +2540,9 @@ pub fn run() {
             job_start,
             job_cancel,
             job_run_again,
+            saved_job_save,
+            saved_job_delete,
+            saved_job_plan,
             job_runs,
             job_run,
             job_run_output,

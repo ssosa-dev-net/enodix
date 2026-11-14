@@ -1172,6 +1172,8 @@ async function main() {
     step,
   });
 
+  await savedJobs({ evaluate, fillForm, text, screenshot, step });
+
   await workspaces({
     evaluate,
     fillForm,
@@ -3875,6 +3877,220 @@ async function jobs({
     if (savedSnippets === null) rmSync(snippetsFile, { force: true });
     else writeFileSync(snippetsFile, savedSnippets);
   }
+}
+
+/**
+ * Saved jobs (after `jobs`, which leaves the Jobs folder with jobs-r1
+ * trusted and its profile): saved from pre-flight, run in one click from
+ * the panel, saved from a past run, renamed and deleted; an entry whose
+ * filter is gone says so instead of running, and a bad one is a problem.
+ */
+async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const dialog = "[data-dialog=job]";
+  const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
+  const view = "[data-dialog=jobs]";
+  const jobsFile = join(workspace, "_jobs.yaml");
+  const jobsText = () =>
+    existsSync(jobsFile) ? readFileSync(jobsFile, "utf8") : "";
+  const snippetsFile = join(workspace, "_snippets.yaml");
+  const savedSnippets = existsSync(snippetsFile)
+    ? readFileSync(snippetsFile, "utf8")
+    : null;
+  const savedJob = (name) => `[data-saved-job=${json(name)}]`;
+  const dialogButton = (label) =>
+    `[...document.querySelectorAll("[role=dialog] button")].find((b) => b.textContent.trim() === ${json(label)})`;
+
+  if (existsSync(jobsFile)) fail("the workspace already has a jobs file");
+  writeFileSync(
+    snippetsFile,
+    `${savedSnippets ?? ""}Saved check: show hostname\n`,
+  );
+  try {
+    await until("the saved jobs panel, empty", () =>
+      exists("[data-saved-jobs] .hint"),
+    );
+    await until("the snippet for saved jobs", () =>
+      exists('[data-snippet="Saved check"]'),
+    );
+
+    // Saved from pre-flight: a snippet on the Jobs folder.
+    await clickOn('nav button[data-item=folder][data-path="Jobs"]');
+    await until("the Jobs folder's side panel", () =>
+      exists(".side [data-folder-run-snippet]"),
+    );
+    await clickOn(".side [data-folder-run-snippet]");
+    await until("the run-snippet dialog", () => atStep("snippet"));
+    await evaluate(`(() => {
+      const select = document.querySelector("${dialog} [name=job-snippet]");
+      select.value = "Saved check";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await clickOn(`${dialog} [data-job=plan]`);
+    await until("the pre-flight list", () => atStep("preflight"));
+    await clickOn(`${dialog} [data-save-job=open]`);
+    await until("the save-as-job form", () =>
+      exists(`${dialog} [data-save-job-form]`),
+    );
+    const offered = await evaluate(
+      `document.querySelector("${dialog} [name=save-job-name]").value`,
+    );
+    if (offered !== "Saved check on Jobs") {
+      fail(`the name offered is ${json(offered)}`);
+    }
+    await fillForm(
+      { "save-job-name": "Jobs check" },
+      `${dialog} [data-save-job-form]`,
+    );
+    await until("the job saved", () =>
+      exists(`${dialog} [data-save-job-saved="Jobs check"]`),
+    );
+    if (
+      jobsText() !== "Jobs check:\n  snippet: Saved check\n  folder: Jobs\n"
+    ) {
+      fail(`the jobs file holds ${json(jobsText())}`);
+    }
+    await clickOn(`${dialog} [data-job=dismiss]`);
+    await until("the job dialog closed", async () => !(await exists(dialog)));
+    step("a job was saved from its pre-flight list into the workspace");
+
+    // One click in the panel: pre-flight first, then it runs.
+    await until("the saved job listed", () => exists(savedJob("Jobs check")));
+    await clickOn(savedJob("Jobs check"));
+    await until("the saved job's pre-flight", () => atStep("preflight"));
+    const runs = await evaluate(
+      `[...document.querySelectorAll("${dialog} [data-job-host]")].map((r) => r.dataset.jobHost)`,
+    );
+    if (json(runs) !== json(["Jobs/jobs-r1.yaml"])) {
+      fail(`the saved job would run on ${json(runs)}`);
+    }
+    if (!(await exists(`${dialog} [data-job-production]`))) {
+      fail("the saved job did not ask about the production host");
+    }
+    await screenshot("saved-job-preflight");
+    await clickOn(`${dialog} [name=job-confirm-production]`);
+    await until(
+      "the start button enabled",
+      async () =>
+        !(await evaluate(
+          `document.querySelector("${dialog} [data-job=start]").disabled`,
+        )),
+    );
+    await clickOn(`${dialog} [data-job=start]`);
+    await until("the saved job finished", () =>
+      exists(`${dialog} [data-job-progress][data-finished]`),
+    );
+    const result = await evaluate(`(() => {
+      const row = document.querySelector('${dialog} [data-job-result="Jobs/jobs-r1.yaml"]');
+      return { state: row.dataset.hostState, output: row.querySelector("[data-job-output]").textContent };
+    })()`);
+    if (
+      result.state !== "done" ||
+      !result.output.includes("lab-r1# show hostname")
+    ) {
+      fail(`the saved job's result: ${json(result)}`);
+    }
+    step("a saved job started from the panel showed pre-flight, then ran");
+
+    // Saved from the past run, in the jobs view.
+    await clickOn(`${dialog} [data-job=view]`);
+    await until("the run in the jobs view", () =>
+      exists(`${view} [data-run-details] [data-save-job=open]`),
+    );
+    await clickOn(`${view} [data-save-job=open]`);
+    await until("the jobs view's save form", () =>
+      exists(`${view} [data-save-job-form]`),
+    );
+    await fillForm(
+      { "save-job-name": "From a run" },
+      `${view} [data-save-job-form]`,
+    );
+    await until("the run saved as a job", () =>
+      exists(`${view} [data-save-job-saved="From a run"]`),
+    );
+    await clickOn(`${view} [data-jobs=close]`);
+    await until("the jobs view closed", async () => !(await exists(view)));
+    await until("the job saved from a run listed", () =>
+      exists(savedJob("From a run")),
+    );
+    if (
+      !jobsText().includes(
+        "From a run:\n  snippet: Saved check\n  folder: Jobs\n",
+      )
+    ) {
+      fail(`the jobs file holds ${json(jobsText())}`);
+    }
+    step("a past run was saved as a job from the jobs view");
+
+    // Renamed and deleted from the panel.
+    await clickOn('[data-saved-job-rename="From a run"]');
+    await until("the rename dialog", () =>
+      exists("[role=dialog] form [name=name]"),
+    );
+    await fillForm({ name: "Renamed job" }, "[role=dialog] form");
+    await until("the renamed job", () => exists(savedJob("Renamed job")));
+    if (
+      !jobsText().includes("Renamed job:") ||
+      jobsText().includes("From a run:")
+    ) {
+      fail(`the jobs file after the rename: ${json(jobsText())}`);
+    }
+    await clickOn('[data-saved-job-delete="Renamed job"]');
+    await until("the delete confirmation", () =>
+      evaluate(`!!${dialogButton("Delete")}`),
+    );
+    await evaluate(`${dialogButton("Delete")}.click()`);
+    await until(
+      "the deleted job gone",
+      async () => !(await exists(savedJob("Renamed job"))),
+    );
+    if (jobsText().includes("Renamed job:")) fail("the deleted job is on disk");
+    step("a saved job was renamed and deleted from the panel");
+
+    // Edited outside the app: picked up; a gone filter says so, a bad
+    // entry is a problem.
+    writeFileSync(
+      jobsFile,
+      `${jobsText()}Gone filter:\n  snippet: Saved check\n  filter: Nowhere\nBroken job: {}\n`,
+    );
+    await until("the edited jobs file picked up", () =>
+      exists('[data-saved-job-problem="Gone filter"]'),
+    );
+    if (
+      !(await text('[data-saved-job-problem="Gone filter"]')).includes(
+        "Nowhere",
+      )
+    ) {
+      fail("the gone filter's job does not name the filter");
+    }
+    await until("the bad entry listed as a problem", async () =>
+      (await text("aside .problems")).includes("saved job `Broken job`"),
+    );
+    if (await exists(savedJob("Broken job"))) fail("a bad entry was listed");
+    await clickOn(savedJob("Gone filter"));
+    await until("the refusal", async () =>
+      (await text("[data-saved-jobs-error]")).includes(
+        "there is no saved filter called Nowhere",
+      ),
+    );
+    if (await exists(dialog)) fail("a saved job whose filter is gone opened");
+    await screenshot("saved-jobs");
+    step(
+      "an external edit was picked up: a job whose filter is gone says so, a bad entry is a problem",
+    );
+  } finally {
+    rmSync(jobsFile, { force: true });
+    if (savedSnippets === null) rmSync(snippetsFile, { force: true });
+    else writeFileSync(snippetsFile, savedSnippets);
+  }
+  await until(
+    "the saved jobs gone",
+    async () => !(await exists("[data-saved-job]")),
+  );
 }
 
 async function workspaces({

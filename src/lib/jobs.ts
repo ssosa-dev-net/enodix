@@ -8,7 +8,10 @@ import type { Environment } from "./workspace";
 
 /** Which hosts a job runs on. */
 export type JobTarget =
-  { kind: "folder"; path: string } | { kind: "hosts"; ids: string[] };
+  | { kind: "folder"; path: string }
+  /** The hosts a saved filter shows when the job is planned. */
+  | { kind: "filter"; name: string }
+  | { kind: "hosts"; ids: string[] };
 
 /** What a job does on each host. */
 export type JobStep =
@@ -277,6 +280,44 @@ export function diffConfigs(host: string, old: string, new_: string) {
 /** Copies a version into `folder`; the copy's path. */
 export function exportConfig(host: string, version: string, folder: string) {
   return invoke<string>("config_export", { host, version, folder });
+}
+
+/**
+ * A job saved under a name in the workspace (`_jobs.yaml`): a snippet (with
+ * the answers it keeps) or a script, on a folder, a saved filter or one
+ * host.
+ */
+export interface SavedJob {
+  name: string;
+  step: JobStep;
+  target: JobTarget;
+}
+
+/** A saved job as the workspace lists it. */
+export interface ListedSavedJob extends SavedJob {
+  /** What is gone (its snippet, script, folder, filter or host), so it cannot run. */
+  problem: string | null;
+}
+
+/**
+ * Why `step` on `target` cannot be saved as a job, or null if it can: a
+ * config backup, or a list of several hosts.
+ */
+export function unsaveable(step: JobStep, target: JobTarget): string | null {
+  if (step.kind === "configBackup") {
+    return "A config backup cannot be saved as a job.";
+  }
+  if (target.kind === "hosts" && target.ids.length !== 1) {
+    return "Only a job on a folder, a saved filter or one host can be saved.";
+  }
+  return null;
+}
+
+/** Plans the saved job `name` as the workspace is now; kept for `startJob`. */
+export function planSavedJob(name: string) {
+  return invoke<{ target: JobTarget; plan: JobPlan }>("saved_job_plan", {
+    name,
+  });
 }
 
 /** Cancels a running job, keeping the output collected. */

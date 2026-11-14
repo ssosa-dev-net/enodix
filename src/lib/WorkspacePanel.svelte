@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SavedJobsPanel from "./SavedJobsPanel.svelte";
   import SnippetsPanel from "./SnippetsPanel.svelte";
   import TreeFolder from "./TreeFolder.svelte";
   import {
@@ -25,7 +26,7 @@
   import { openJobsView, runningCount } from "./jobs.svelte";
   import { preferences } from "./preferences.svelte";
   import { profiles } from "./profiles.svelte";
-  import { allHosts, findHost, type Host } from "./workspace";
+  import { findHost, type Host } from "./workspace";
 
   interface Props {
     /** Opens the workspace switcher. */
@@ -143,31 +144,19 @@
     return path.split("/").pop() ?? path;
   }
 
-  /** The hosts the active filter shows, in tree order. */
-  function filterHosts(): string[] | null {
-    const shown = inventory.filterView?.hosts;
-    if (!workspace || !shown) return null;
-    return allHosts(workspace.tree)
-      .map((host) => host.id)
-      .filter((id) => shown.has(id));
-  }
-
-  /** Runs a snippet on the hosts the active filter shows. */
+  /** Runs a snippet on the hosts the saved filter `name` shows. */
   function runOnFilter(name: string) {
-    const ids = filterHosts();
-    if (ids) openJob({ kind: "hosts", ids }, `the hosts of ${name}`);
+    openJob({ kind: "filter", name }, `the hosts of ${name}`);
   }
 
-  /** Runs a script for the hosts the active filter shows. */
+  /** Runs a script for the hosts the saved filter `name` shows. */
   function scriptOnFilter(name: string) {
-    const ids = filterHosts();
-    if (ids) openScript({ kind: "hosts", ids }, `the hosts of ${name}`);
+    openScript({ kind: "filter", name }, `the hosts of ${name}`);
   }
 
-  /** Backs up the configs of the hosts the active filter shows. */
+  /** Backs up the configs of the hosts the saved filter `name` shows. */
   function backUpFilter(name: string) {
-    const ids = filterHosts();
-    if (ids) openBackup({ kind: "hosts", ids }, `the hosts of ${name}`);
+    openBackup({ kind: "filter", name }, `the hosts of ${name}`);
   }
 
   /** The menu's entries for an item. */
@@ -435,6 +424,7 @@
       {/if}
     </nav>
     <SnippetsPanel target={snippetTarget} onsend={onsnippet} />
+    <SavedJobsPanel />
   {:else if !inventory.openError}
     <p class="hint">
       Create a workspace or add a workspace folder (Workspaces…) to see its
