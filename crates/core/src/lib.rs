@@ -8,5 +8,6 @@
 pub mod app_state;
 pub mod credentials;
 pub mod known_hosts;
+pub mod layout;
 pub mod session;
 pub mod workspace;
