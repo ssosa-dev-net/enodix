@@ -9,19 +9,28 @@
   } from "./inventory.svelte";
   import {
     findHost,
+    findSnippets,
     parentPath,
     searchHosts,
     type Host,
     type SearchHit,
     type SearchResults,
+    type Snippet,
   } from "./workspace";
 
   interface Props {
     onconnect: (host: Host) => void;
+    /** Sends the snippet called so to the active session. */
+    onsnippet: (name: string) => void;
+    /** The session snippets go to, by name; null: none. */
+    target: string | null;
     onclose: () => void;
   }
 
-  let { onconnect, onclose }: Props = $props();
+  let { onconnect, onsnippet, target, onclose }: Props = $props();
+
+  /** A query starting with this searches the snippets instead of hosts. */
+  const SNIPPET_PREFIX = ">";
 
   /** The most hits shown at once. */
   const LIMIT = 50;
@@ -31,6 +40,9 @@
   /** The query `results` answer, which lags while the core answers. */
   let answered: string | null = null;
   let active = $state(0);
+  /** The snippets found, when the query searches snippets; else null. */
+  let snippetHits = $state<Snippet[] | null>(null);
+  const snippetMode = $derived(query.startsWith(SNIPPET_PREFIX));
   let list = $state<HTMLElement>();
   let input = $state<HTMLInputElement>();
 
@@ -45,10 +57,20 @@
     const typed = query;
     void inventory.workspace;
     let stale = false;
-    searchHosts(typed, LIMIT)
-      .then((found) => {
+    const search = typed.startsWith(SNIPPET_PREFIX)
+      ? findSnippets(typed.slice(SNIPPET_PREFIX.length)).then((found) => {
+          if (stale) return;
+          snippetHits = found.slice(0, LIMIT);
+          results = null;
+        })
+      : searchHosts(typed, LIMIT).then((found) => {
+          if (stale) return;
+          results = found;
+          snippetHits = null;
+        });
+    search
+      .then(() => {
         if (stale) return;
-        results = found;
         answered = typed;
         active = 0;
       })
@@ -86,8 +108,13 @@
     row?.focus();
   }
 
+  function send(snippet: Snippet) {
+    onclose();
+    onsnippet(snippet.name);
+  }
+
   async function move(by: number) {
-    const count = results?.hits.length ?? 0;
+    const count = snippetHits?.length ?? results?.hits.length ?? 0;
     if (count === 0) return;
     active = (active + by + count) % count;
     await tick();
@@ -103,6 +130,12 @@
     return (await searchHosts(query, 1)).hits[0];
   }
 
+  /** The same for a snippet search. */
+  async function chosenSnippet(): Promise<Snippet | undefined> {
+    if (answered === query) return snippetHits?.[active];
+    return (await findSnippets(query.slice(SNIPPET_PREFIX.length)))[0];
+  }
+
   async function onkeydown(event: KeyboardEvent) {
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -112,6 +145,11 @@
       move(-1);
     } else if (event.key === "Enter") {
       event.preventDefault();
+      if (snippetMode) {
+        const snippet = await chosenSnippet();
+        if (snippet && target !== null) send(snippet);
+        return;
+      }
       const reveal = event.shiftKey;
       const hit = await chosen();
       if (!hit) return;
@@ -140,7 +178,7 @@
     <input
       bind:this={input}
       name="palette-query"
-      placeholder="Search hosts by name, address, tag or field"
+      placeholder="Search hosts by name, address, tag or field; > for snippets"
       bind:value={query}
       {onkeydown}
       autocomplete="off"
@@ -148,11 +186,31 @@
       role="combobox"
       aria-expanded="true"
       aria-controls="palette-results"
-      aria-activedescendant={results?.hits.length
+      aria-activedescendant={(snippetHits?.length ?? results?.hits.length)
         ? `palette-hit-${active}`
         : undefined}
     />
     <ul id="palette-results" role="listbox" bind:this={list}>
+      {#each snippetHits ?? [] as snippet, index (snippet.name)}
+        <li
+          id="palette-hit-{index}"
+          role="option"
+          aria-selected={index === active}
+          aria-disabled={target === null}
+          class:active={index === active}
+          data-index={index}
+          data-snippet-hit={snippet.name}
+          onclick={() => {
+            if (target !== null) send(snippet);
+          }}
+          onpointermove={() => (active = index)}
+        >
+          <span class="icon" aria-hidden="true">&gt;</span>
+          <span class="name">{snippet.name}</span>
+          <span class="detail">{snippet.text.split(/\r?\n/)[0]}</span>
+          {#if snippet.group}<span class="folder">{snippet.group}</span>{/if}
+        </li>
+      {/each}
       {#each results?.hits ?? [] as hit, index (hit.id)}
         {@const role = hostRole(hit.id)}
         {@const folder = parentPath(hit.id)}
@@ -180,17 +238,31 @@
     {#if results && results.total === 0}
       <p class="empty">No host matches.</p>
     {/if}
+    {#if snippetHits && snippetHits.length === 0}
+      <p class="empty">No snippet matches.</p>
+    {:else if snippetHits && target === null}
+      <p class="empty">Open a session to send snippets to it.</p>
+    {/if}
     <footer>
       <span>
-        {#if results && results.total > results.hits.length}
+        {#if snippetHits}
+          {snippetHits.length === 1
+            ? "1 snippet"
+            : `${snippetHits.length} snippets`}
+        {:else if results && results.total > results.hits.length}
           {results.hits.length} of {results.total} hosts
         {:else if results}
           {results.total === 1 ? "1 host" : `${results.total} hosts`}
         {/if}
       </span>
       <span class="keys">
-        <kbd>Enter</kbd> connect · <kbd>Shift+Enter</kbd> show in tree ·
-        <kbd>Esc</kbd> close
+        {#if snippetMode}
+          <kbd>Enter</kbd> send{target === null ? "" : ` to ${target}`} ·
+          <kbd>Esc</kbd> close
+        {:else}
+          <kbd>Enter</kbd> connect · <kbd>Shift+Enter</kbd> show in tree ·
+          <kbd>&gt;</kbd> snippets · <kbd>Esc</kbd> close
+        {/if}
       </span>
     </footer>
   </div>

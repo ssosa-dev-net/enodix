@@ -15,6 +15,8 @@
   import PreferencesDialog from "./lib/PreferencesDialog.svelte";
   import ProfilesDialog from "./lib/ProfilesDialog.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
+  import SnippetDialog from "./lib/SnippetDialog.svelte";
+  import SnippetVariables from "./lib/SnippetVariables.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
   import WorkspacePanel from "./lib/WorkspacePanel.svelte";
   import {
@@ -28,6 +30,7 @@
   import { hostLogin } from "./lib/credentials";
   import { highlighting, trackHighlightRules } from "./lib/highlight.svelte";
   import { profiles, refreshProfiles } from "./lib/profiles.svelte";
+  import { snippets } from "./lib/snippets.svelte";
   import {
     isDark,
     loadPreferences,
@@ -50,6 +53,7 @@
     type TabId,
   } from "./lib/layout";
   import {
+    expandSnippet,
     openWorkspace,
     pickWorkspaceFolder,
     onWorkspaceChanged,
@@ -96,10 +100,27 @@
   let focusRequest = $state(0);
   /** The tab whose closing waits for the user's confirmation. */
   let closing = $state<TabId | null>(null);
+  /** Each tab's terminal, for sending snippets to it. */
+  const terminals: Record<TabId, TerminalSession | null> = {};
+  /** A snippet waiting for the user to give its variables a value. */
+  let asking = $state<{ tab: TabId; name: string; names: string[] } | null>(
+    null,
+  );
 
   const panes = $derived(layout ? panesOf(layout.root) : []);
   const activePane = $derived(
     panes.find((pane) => pane.id === layout?.activePane) ?? null,
+  );
+  /** The tab snippets are sent to: the active pane's, if connected. */
+  const snippetTab = $derived.by(() => {
+    const tab = activePane?.active ?? null;
+    return tab !== null && sessions[tab] && states[tab] === "connected"
+      ? tab
+      : null;
+  });
+  /** That tab's name, as the snippet panel and palette show it. */
+  const snippetTarget = $derived(
+    snippetTab === null ? null : sessions[snippetTab].name,
   );
   /** Where each tab is: its pane, and whether that pane shows it. */
   const placement = $derived(
@@ -406,6 +427,41 @@
     };
   }
 
+  /**
+   * Sends the snippet `name` to the session of `tab` (the active pane's by
+   * default): the core fills in its variables from the session's host and
+   * `answers`; for any still without a value the user is asked first. The
+   * lines go through the terminal's paste path, one by one.
+   */
+  async function sendSnippet(
+    name: string,
+    answers: Record<string, string> = {},
+    tab: TabId | null = snippetTab,
+  ) {
+    const session = tab === null ? undefined : sessions[tab];
+    if (tab === null || !session || states[tab] !== "connected") {
+      inventory.editError = `Cannot send ${name}: no connected session.`;
+      return;
+    }
+    let expansion;
+    try {
+      expansion = await expandSnippet(name, session.hostId, answers);
+    } catch (error) {
+      inventory.editError = `Cannot send ${name}: ${error}`;
+      return;
+    }
+    if (expansion.kind === "missing") {
+      asking = { tab, name, names: expansion.names };
+      return;
+    }
+    const text = expansion.lines.map((line) => `${line}\n`).join("");
+    if (!terminals[tab]?.sendText(text)) {
+      inventory.editError = `Cannot send ${name}: the session is no longer connected.`;
+      return;
+    }
+    focusRequest += 1;
+  }
+
   /** The window's shortcuts, by what they do. */
   function shortcut(event: KeyboardEvent): (() => void) | null {
     if (!event.ctrlKey || event.altKey || event.metaKey) return null;
@@ -474,6 +530,8 @@
       preferences.dialog ||
       highlighting.dialog ||
       inventory.palette ||
+      snippets.editing ||
+      asking ||
       closing !== null;
     const action = zoomShortcut(event) ?? (busy ? null : shortcut(event));
     if (!action) return;
@@ -486,7 +544,12 @@
 <svelte:window {onkeydowncapture} />
 
 <div class="layout" class:with-details={host || folder}>
-  <WorkspacePanel onopen={open} onconnect={prompt} />
+  <WorkspacePanel
+    onopen={open}
+    onconnect={prompt}
+    {snippetTarget}
+    onsnippet={(snippet) => void sendSnippet(snippet)}
+  />
 
   <section class="centre" bind:this={area}>
     {#if layout}
@@ -517,6 +580,7 @@
           }}
         >
           <TerminalSession
+            bind:this={terminals[tab]}
             source={session.source}
             title={session.title}
             role={session.hostId ? hostRole(session.hostId) : null}
@@ -594,6 +658,8 @@
 {#if inventory.palette}
   <CommandPalette
     onconnect={prompt}
+    onsnippet={(snippet) => void sendSnippet(snippet)}
+    target={snippetTarget}
     onclose={() => (inventory.palette = false)}
   />
 {/if}
@@ -624,6 +690,37 @@
   <HighlightRulesDialog
     onclose={() => {
       highlighting.dialog = false;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if snippets.editing}
+  {@const editing = snippets.editing}
+  <SnippetDialog
+    previous={editing.previous}
+    initial={editing.snippet}
+    onclose={() => {
+      snippets.editing = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if asking}
+  {@const { tab, name, names } = asking}
+  <SnippetVariables
+    snippet={name}
+    target={sessions[tab]?.name ?? ""}
+    {names}
+    onsend={(answers) => {
+      // Read before clearing `asking`, which these are derived from.
+      const send = { name, tab };
+      asking = null;
+      void sendSnippet(send.name, answers, send.tab);
+    }}
+    oncancel={() => {
+      asking = null;
       focusRequest += 1;
     }}
   />

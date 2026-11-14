@@ -91,7 +91,7 @@ pub struct SerialSettings {
 }
 
 /// A named link to a web page about the host, such as its GUI. The URL is a
-/// template that a later feature fills from the host's fields.
+/// template, filled as snippets are (see [`crate::template`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebLink {
     pub name: String,
@@ -104,6 +104,15 @@ impl WebLink {
             name: name.into(),
             url: url.into(),
         }
+    }
+
+    /// The URL with its variables filled from `values` (a host's: see
+    /// [`super::ResolvedHost::variables`]). Values are inserted as they are.
+    pub fn fill(
+        &self,
+        values: &crate::template::Variables,
+    ) -> Result<String, crate::template::MissingVariables> {
+        crate::template::Template::parse(&self.url).fill(values)
     }
 }
 

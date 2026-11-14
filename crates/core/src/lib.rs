@@ -13,4 +13,5 @@ pub mod layout;
 pub mod logging;
 pub mod preferences;
 pub mod session;
+pub mod template;
 pub mod workspace;
