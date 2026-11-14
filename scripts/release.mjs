@@ -2,6 +2,12 @@
 // uploading the files is left to the person making the release.
 //
 //   npm run release
+//   npm run release -- --unsigned
+//
+// `--unsigned` builds a pre-release with no updater: no release key, no
+// signature, no `latest.json` and no update check's address, so those
+// copies never look for or install an update. It needs none of the
+// variables below and writes to `target/dist/<version>-unsigned/`.
 //
 // On Windows: the installer (NSIS, per user, signed for the updater), the
 // portable zip and the update manifest `latest.json`. On Linux: the
@@ -180,11 +186,17 @@ if (npmVersion !== version) {
 /** The Python bridge's wheel, of the same version. */
 const wheel = wheelName(version);
 
-const endpoint = httpsUrl(
-  "NETTERM_UPDATE_ENDPOINT",
-  required("NETTERM_UPDATE_ENDPOINT"),
+/** A pre-release without the updater (see the top of this file). */
+const unsigned = process.argv.includes("--unsigned");
+const endpoint = unsigned
+  ? null
+  : httpsUrl("NETTERM_UPDATE_ENDPOINT", required("NETTERM_UPDATE_ENDPOINT"));
+const dist = join(
+  ROOT,
+  "target",
+  "dist",
+  unsigned ? `${version}-unsigned` : version,
 );
-const dist = join(ROOT, "target", "dist", version);
 const tauriCli = join(ROOT, "node_modules", "@tauri-apps", "cli", "tauri.js");
 
 /** Writes the build's Tauri configuration (merged over tauri.conf.json);
@@ -206,7 +218,9 @@ function clearOwnFiles(pattern) {
   }
 }
 
-function windows() {
+/** The release key's public half and where this release will be served,
+ * checked before anything is built. */
+function signing() {
   const privateKey = required("TAURI_SIGNING_PRIVATE_KEY");
   if (existsSync(privateKey) && insideRepository(privateKey)) {
     fail(
@@ -238,13 +252,18 @@ function windows() {
     ? httpsUrl("NETTERM_RELEASE_PAGE", process.env.NETTERM_RELEASE_PAGE.trim())
         .href
     : releaseUrl.href;
+  return { pubkey, pub, base, page };
+}
 
-  // The updater exists only in this build: its key and the release server.
+function windows() {
+  const signed = unsigned ? null : signing();
+  // The updater exists only in a signed build: its key and the release
+  // server.
   const configFile = writeConfig({
     bundle: {
       active: true,
       targets: ["nsis"],
-      createUpdaterArtifacts: true,
+      createUpdaterArtifacts: !unsigned,
       // The headless binary and the Python bridge's wheel (both built by
       // `beforeBuildCommand`), installed beside the app.
       resources: {
@@ -253,16 +272,18 @@ function windows() {
       },
       windows: { nsis: { installMode: "currentUser" } },
     },
-    plugins: {
-      updater: {
-        pubkey,
-        endpoints: [endpoint.href],
-        // The signature names the version it was signed for, so a forged
-        // manifest cannot pass an older signed release off as newer.
-        requireSignedVersion: true,
-        windows: { installMode: "passive" },
+    ...(signed && {
+      plugins: {
+        updater: {
+          pubkey: signed.pubkey,
+          endpoints: [endpoint.href],
+          // The signature names the version it was signed for, so a forged
+          // manifest cannot pass an older signed release off as newer.
+          requireSignedVersion: true,
+          windows: { installMode: "passive" },
+        },
       },
-    },
+    }),
   });
 
   // Earlier output goes first, so that a failed build leaves nothing to upload.
@@ -276,28 +297,30 @@ function windows() {
   );
   if (!installerName) fail(`no installer for ${version} in ${bundleFolder}`);
   const installer = join(bundleFolder, installerName);
-  if (!existsSync(`${installer}.sig`))
-    fail(`${installerName} has no updater signature`);
-  const signature = readFileSync(`${installer}.sig`, "utf8").trim();
-  const trusted = verifySignature(installer, signature, pub);
-  // The app requires the signed version (requireSignedVersion): without it
-  // every install of this release would fail.
-  if (!trusted.split("\t").includes(`version:${version}`)) {
-    fail(
-      `${installerName}'s signature does not name version ${version}: ${trusted}`,
-    );
-  }
-  console.log(
-    `release: ${installerName} is signed by the release key (${trusted})`,
-  );
-
   mkdirSync(dist, { recursive: true });
   copyFileSync(installer, join(dist, installerName));
-  copyFileSync(`${installer}.sig`, join(dist, `${installerName}.sig`));
+  let signature = null;
+  if (signed) {
+    if (!existsSync(`${installer}.sig`))
+      fail(`${installerName} has no updater signature`);
+    signature = readFileSync(`${installer}.sig`, "utf8").trim();
+    const trusted = verifySignature(installer, signature, signed.pub);
+    // The app requires the signed version (requireSignedVersion): without it
+    // every install of this release would fail.
+    if (!trusted.split("\t").includes(`version:${version}`)) {
+      fail(
+        `${installerName}'s signature does not name version ${version}: ${trusted}`,
+      );
+    }
+    console.log(
+      `release: ${installerName} is signed by the release key (${trusted})`,
+    );
+    copyFileSync(`${installer}.sig`, join(dist, `${installerName}.sig`));
+  }
 
   // The portable zip: the program, the headless binary, the Python bridge's
-  // wheel, the marker that makes it portable (it only announces updates) and
-  // the README.
+  // wheel, the marker that makes it portable (it only announces updates), the
+  // README and the licence.
   const exeName = `${tauriConfig.mainBinaryName ?? "netterm"}.exe`;
   const portableName = `${productName}_${version}_x64-portable`;
   const stage = join(ROOT, "target", "dist", "stage", portableName);
@@ -318,6 +341,7 @@ function windows() {
       "user profile, not here.\r\n",
   );
   copyFileSync(join(ROOT, "README.md"), join(stage, "README.md"));
+  copyFileSync(join(ROOT, "LICENSE"), join(stage, "LICENSE"));
   const zip = join(dist, `${portableName}.zip`);
   // Windows' own bsdtar (not Git's GNU tar, which cannot write zip files):
   // unlike PowerShell's Compress-Archive it stores `/` separators, which every
@@ -330,8 +354,10 @@ function windows() {
   run(windowsTar, ["-a", "-c", "-f", zip, "-C", dirname(stage), portableName]);
   rmSync(dirname(stage), { recursive: true, force: true });
 
+  if (!signed) return;
   // The manifest the app checks: the Tauri updater's static format, plus the
   // page that the notice links to.
+  const { base, page } = signed;
   const manifest = {
     version,
     notes:
@@ -376,8 +402,8 @@ function linux() {
     },
     // Only the update check's address: off Windows the app never installs
     // an update (InstallKind::detect), so there is no updater plugin, no
-    // key and no signature.
-    plugins: { updater: { endpoints: [endpoint.href] } },
+    // key and no signature. An unsigned pre-release checks nothing at all.
+    ...(endpoint && { plugins: { updater: { endpoints: [endpoint.href] } } }),
   });
   run(process.execPath, [tauriCli, "build", "--config", configFile]);
   mkdirSync(dist, { recursive: true });
@@ -405,6 +431,9 @@ console.log(
 );
 for (const name of files) console.log(`  ${name}`);
 console.log(
-  "\nNothing was uploaded. Upload these files to the release, and the" +
-    ` Windows build's latest.json to ${endpoint.href} (see docs/releasing.md).`,
+  endpoint
+    ? "\nNothing was uploaded. Upload these files to the release, and the" +
+        ` Windows build's latest.json to ${endpoint.href} (see docs/releasing.md).`
+    : "\nNothing was uploaded. This is an unsigned pre-release: its copies" +
+        " never check for or install an update (see docs/releasing.md).",
 );
