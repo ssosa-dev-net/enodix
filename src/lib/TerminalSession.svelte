@@ -5,12 +5,14 @@
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
+  import NegotiationFailure from "./NegotiationFailure.svelte";
   import {
     openSession,
     type ConnectTarget,
     type HostKeyDecision,
     type HostKeyQuestion,
     type LoginPrompt,
+    type NegotiatedAlgorithms,
     type Session,
     type SessionState,
   } from "./session";
@@ -43,6 +45,18 @@
   let prompts = 0;
   /** The host key waiting for a decision, with a new key each. */
   let hostKey = $state<{ question: HostKeyQuestion; key: number } | null>(null);
+  /** What each connection agreed on, jump hosts first. */
+  let algorithms = $state<NegotiatedAlgorithms[]>([]);
+  /** The connections that use outdated algorithms (legacy crypto). */
+  const legacy = $derived(algorithms.filter((a) => a.legacy.length > 0));
+  const legacyTitle = $derived(
+    legacy
+      .map(
+        (a) =>
+          `${a.jumpHost ? `Jump host ${a.jumpHost}` : "This device"}: ${a.legacy.join(", ")}`,
+      )
+      .join("\n"),
+  );
 
   function decideHostKey(decision: HostKeyDecision) {
     session?.decideHostKey(decision);
@@ -112,6 +126,7 @@
       },
       (asked) => (prompt = { prompt: asked, key: ++prompts }),
       (question) => (hostKey = { question, key: ++prompts }),
+      (agreed) => (algorithms = agreed),
     ).then(
       (opened) => {
         if (disposed) {
@@ -134,6 +149,7 @@
           state: "closed",
           reason: String(error),
           offersPasswordLogin: false,
+          negotiation: null,
         }),
     );
 
@@ -155,6 +171,15 @@
       </span>
     {/if}
     <span class="title">{title}</span>
+    {#if status.state === "connected" && legacy.length > 0}
+      <span
+        class="legacy"
+        data-legacy-crypto={legacy.map((a) => a.legacy.join(",")).join(";")}
+        title={`Outdated algorithms in use:\n${legacyTitle}`}
+      >
+        Legacy crypto
+      </span>
+    {/if}
     <span class="status {status.state}" role="status">{statusText}</span>
     {#if status.state === "closed"}
       <button onclick={ondismiss}>New connection</button>
@@ -184,6 +209,9 @@
           oncancel={cancelLogin}
         />
       {/key}
+    {/if}
+    {#if status.state === "closed" && status.negotiation}
+      <NegotiationFailure failure={status.negotiation} {ondismiss} />
     {/if}
     {#if status.state === "closed" && status.offersPasswordLogin && onpasswordlogin}
       {@const reason = status.reason}
@@ -285,6 +313,16 @@
 
   .title {
     font-weight: 600;
+  }
+
+  .legacy {
+    padding: 0.05rem 0.45rem;
+    border: 1px solid var(--warning);
+    border-radius: 999px;
+    color: var(--warning);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    cursor: help;
   }
 
   .status {

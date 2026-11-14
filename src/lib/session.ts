@@ -35,7 +35,47 @@ export type SessionState =
       reason: string;
       /** Logging in with a password might work (the SSH agent did not). */
       offersPasswordLogin: boolean;
+      /** The algorithm negotiation failed; null for other failures. */
+      negotiation: NegotiationFailure | null;
     };
+
+export type AlgorithmKind = "keyExchange" | "hostKey" | "cipher" | "mac";
+
+/** Algorithms per kind, as named on the wire. */
+export interface AlgorithmLists {
+  keyExchange: string[];
+  hostKey: string[];
+  cipher: string[];
+  mac: string[];
+}
+
+/** The device had no algorithm in common with the session for some kind. */
+export interface NegotiationFailure {
+  /** The jump host that failed; null for the device. */
+  jumpHost: string | null;
+  /** The first kind nothing was in common for. */
+  kind: AlgorithmKind;
+  /** What the device (or jump host) offered. */
+  offered: AlgorithmLists;
+  /** Whether the session had the legacy-crypto switch on. */
+  legacyCrypto: boolean;
+  /** Turning the legacy-crypto switch on would help. */
+  legacyCryptoWouldHelp: boolean;
+  /** The kind nothing is supported for even with the switch on. */
+  unsupported: AlgorithmKind | null;
+}
+
+/** The algorithms one connection of a session agreed on. */
+export interface NegotiatedAlgorithms {
+  /** The jump host this connection went to; null for the device. */
+  jumpHost: string | null;
+  keyExchange: string;
+  hostKey: string;
+  cipher: string;
+  mac: string;
+  /** The outdated (legacy-crypto) algorithms among these. */
+  legacy: string[];
+}
 
 /** Questions the server asks while logging in (keyboard-interactive). */
 export interface LoginPrompt {
@@ -87,7 +127,8 @@ export function appName(): Promise<string> {
  * `onPrompt` receives the server's login questions; answer them with
  * `Session.answer`, or close the session to refuse. `onHostKey` receives
  * a host key to decide on (`Session.decideHostKey`); the connection waits
- * for the decision.
+ * for the decision. `onAlgorithms` receives what each connection agreed on
+ * (jump hosts first), just before the session is connected.
  */
 export async function openSession(
   target: ConnectTarget,
@@ -96,6 +137,7 @@ export async function openSession(
   onState: (state: SessionState) => void,
   onPrompt: (prompt: LoginPrompt) => void,
   onHostKey: (question: HostKeyQuestion) => void,
+  onAlgorithms: (algorithms: NegotiatedAlgorithms[]) => void,
 ): Promise<Session> {
   let id: number | null = null;
   // Output can be consumed before the session id is known.
@@ -112,6 +154,7 @@ export async function openSession(
   const stateChannel = new Channel<SessionState>(onState);
   const promptChannel = new Channel<LoginPrompt>(onPrompt);
   const hostKeyChannel = new Channel<HostKeyQuestion>(onHostKey);
+  const algorithmsChannel = new Channel<NegotiatedAlgorithms[]>(onAlgorithms);
 
   // A call can lose a race with the session closing; the closed state has
   // already told the interface, so that failure is not reported again.
@@ -126,6 +169,7 @@ export async function openSession(
     onState: stateChannel,
     onPrompt: promptChannel,
     onHostKey: hostKeyChannel,
+    onAlgorithms: algorithmsChannel,
   });
   if (consumedEarly > 0) acknowledge(consumedEarly);
 

@@ -22,6 +22,8 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const SSH_PORT = 22722;
+// A second test server, restricted to an old device's algorithms.
+const OLD_DEVICE_PORT = 22723;
 const DEVTOOLS_PORT = 9333;
 const USERNAME = "engineer";
 const PASSWORD = "correct horse";
@@ -107,7 +109,13 @@ function startServer() {
   if (build.status !== 0) fail("could not build the test SSH server");
   const server = spawn(
     "target/debug/examples/test_ssh_server.exe",
-    [String(SSH_PORT), "--agent", AGENT_PIPE],
+    [
+      String(SSH_PORT),
+      "--agent",
+      AGENT_PIPE,
+      "--old-device",
+      String(OLD_DEVICE_PORT),
+    ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
   children.push(server);
@@ -566,6 +574,21 @@ async function main() {
     fillForm,
     changeField,
     doubleClick,
+    status,
+    screen,
+    screenshot,
+    step,
+  });
+
+  await legacyCrypto({
+    evaluate,
+    text,
+    click,
+    fillForm,
+    changeField,
+    doubleClick,
+    hostKeyCheck,
+    decideHostKey,
     status,
     screen,
     screenshot,
@@ -1057,6 +1080,144 @@ async function agentAndKeyboardInteractive({
   await until(
     "the profile cleared from the host file",
     () => !readFileSync(hostFile, "utf8").includes("credential_profile"),
+  );
+}
+
+/** A host on an old device (the test server restricted to legacy
+ * algorithms) fails to negotiate with the switch off, and the failure
+ * lists what the device offered and suggests the switch; with the switch
+ * turned on in the side panel it connects, marked as using legacy crypto. */
+async function legacyCrypto({
+  evaluate,
+  text,
+  click,
+  fillForm,
+  changeField,
+  doubleClick,
+  hostKeyCheck,
+  decideHostKey,
+  status,
+  screen,
+  screenshot,
+  step,
+}) {
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const hostRow = 'nav [data-host="Lab/old-switch.yaml"]';
+  const hostFile = join(workspace, "Lab", "old-switch.yaml");
+  const failureCard = "[data-negotiation-failure]";
+  const marker = "[data-legacy-crypto]";
+  const hasButton = (label) =>
+    evaluate(
+      `[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === ${JSON.stringify(label)})`,
+    );
+  // Ends the session and goes back to the quick-connect view.
+  const newConnection = async () => {
+    await until("the New connection button", () => hasButton("New connection"));
+    await click("New connection");
+  };
+  const logIn = async () => {
+    await doubleClick(hostRow);
+    await until(
+      "the login prompt for the old device",
+      async () =>
+        (await text("main")).includes(`127.0.0.1:${OLD_DEVICE_PORT}`) &&
+        (await exists("main input[name=password]")),
+    );
+    await fillForm({ username: USERNAME, password: PASSWORD }, "main form");
+  };
+
+  await click("Disconnect").catch(() => {});
+  await click("New connection").catch(() => {});
+  writeFileSync(
+    hostFile,
+    `name: old-switch\naddress: 127.0.0.1\nport: ${OLD_DEVICE_PORT}\n`,
+  );
+  await until("the old device in the tree", () => exists(hostRow));
+
+  // Switch off: only modern algorithms are offered, and the device has none.
+  await logIn();
+  const failure = await until("the failed negotiation", async () =>
+    (await exists(`${failureCard}[data-negotiation-failure=legacy-would-help]`))
+      ? text(failureCard)
+      : null,
+  );
+  for (const expected of [
+    "No key-exchange algorithm in common with the device",
+    "Turning on Legacy crypto would help",
+    "diffie-hellman-group14-sha1",
+    "ssh-rsa",
+    "aes128-cbc",
+    "hmac-sha1",
+  ]) {
+    if (!failure.includes(expected)) {
+      fail(`the negotiation failure does not show "${expected}": ${failure}`);
+    }
+  }
+  if (await exists(marker)) fail("a failed session is marked as legacy");
+  await screenshot("negotiation-failure");
+  step("a failed negotiation listed the device's algorithms and the switch");
+
+  // Switch on, in the side panel: the session connects, marked.
+  await newConnection();
+  await evaluate(`document.querySelector(${JSON.stringify(hostRow)}).click()`);
+  await until("the old device's side panel", async () =>
+    (await text(".side h2")).includes("old-switch"),
+  );
+  await changeField("[name=setting-legacy_crypto]", "on");
+  await until("the switch in the host file", () =>
+    readFileSync(hostFile, "utf8").includes("legacy_crypto: true\n"),
+  );
+  await logIn();
+  await hostKeyCheck("first-use");
+  await decideHostKey("trustOnce");
+  await until(
+    "the Connected status",
+    async () => (await status()) === "Connected",
+  );
+  await until("the shell prompt", async () =>
+    (await screen()).includes("test-ssh$"),
+  );
+  const legacy = await until("the legacy-crypto marker", () =>
+    evaluate(
+      `document.querySelector(${JSON.stringify(marker)})?.getAttribute("data-legacy-crypto")`,
+    ),
+  );
+  if (!legacy.includes("diffie-hellman-group14-sha1")) {
+    fail(`the marker does not name the legacy algorithms: ${legacy}`);
+  }
+  if ((await text(marker)).trim() !== "Legacy crypto") {
+    fail(`the marker reads "${await text(marker)}"`);
+  }
+  await screenshot("legacy-crypto");
+  step("with the switch on, the old device connected, marked legacy crypto");
+  await click("Disconnect");
+
+  // A modern device is not marked.
+  await newConnection();
+  await until("the quick-connect form", () => exists("input[name=host]"));
+  await fillForm(
+    {
+      host: "127.0.0.1",
+      port: String(SSH_PORT),
+      username: USERNAME,
+      password: PASSWORD,
+    },
+    "main form",
+  );
+  await until(
+    "the Connected status",
+    async () => (await status()) === "Connected",
+  );
+  if (await exists(marker)) fail("a modern session is marked as legacy");
+  step("a modern session is not marked");
+  await click("Disconnect");
+  await newConnection();
+
+  rmSync(hostFile);
+  await until(
+    "the old device gone from the tree",
+    async () => !(await exists(hostRow)),
   );
 }
 

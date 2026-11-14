@@ -358,6 +358,7 @@ async fn a_port_nobody_listens_on_fails_the_session() {
         username: "engineer".into(),
         auth: SshAuth::Password("irrelevant".into()),
         jump_hosts: Vec::new(),
+        legacy_crypto: false,
     };
 
     let (_id, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);

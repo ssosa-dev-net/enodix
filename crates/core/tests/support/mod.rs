@@ -37,25 +37,26 @@
 #![allow(dead_code)]
 
 pub mod agent;
+pub mod algorithms;
 pub mod workspaces;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use std::sync::OnceLock;
 
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::{
-    HostKeyQuestion, LoginPrompt, OutputOptions, SessionEvent, SessionEvents, SessionManager,
-    SessionState, SshAuth, SshTarget,
+    HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, OutputOptions, SessionEvent, SessionEvents,
+    SessionManager, SessionState, SshAuth, SshTarget,
 };
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{
     Auth, ChannelOpenHandle, Handler, Msg, Response, Server, Session, VerifiedPublicKey,
 };
-use russh::{Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty};
+use russh::{Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Preferred, Pty};
 use tokio::net::{TcpListener, TcpStream};
 
 pub const USERNAME: &str = "engineer";
@@ -102,6 +103,10 @@ pub const RSA_CLIENT_KEY: &str = concat!(
     "/tests/fixtures/keys/rsa_client"
 );
 
+/// A DSA host key (OpenSSH format, no passphrase), for servers restricted
+/// to `ssh-dss`. A throwaway test key.
+pub const DSA_HOST_KEY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/keys/dsa_host");
+
 /// The host keys of every test server started in this process.
 pub fn known_hosts() -> KnownHosts {
     static KNOWN_HOSTS: OnceLock<KnownHosts> = OnceLock::new();
@@ -118,6 +123,9 @@ pub fn manager_with_output_options(options: OutputOptions) -> SessionManager {
     SessionManager::with_output_options(known_hosts(), options)
 }
 
+/// What each client of a server sent first, one entry per connection.
+type Received = Arc<Mutex<Vec<Arc<Mutex<Vec<u8>>>>>>;
+
 pub struct TestSshServer {
     port: u16,
     task: tokio::task::JoinHandle<()>,
@@ -125,6 +133,8 @@ pub struct TestSshServer {
     /// An Ed25519 client key the server accepts for [`USERNAME`].
     client_key: PrivateKey,
     forwarded: Arc<AtomicUsize>,
+    /// The first bytes each client sent, one entry per connection.
+    received: Received,
 }
 
 impl TestSshServer {
@@ -136,7 +146,26 @@ impl TestSshServer {
     /// Starts a server on a free loopback port that offers only `methods`
     /// at first (as a device that only takes keyboard-interactive does).
     pub async fn start_offering(methods: &[MethodKind]) -> Self {
-        Self::start_with(0, Some(MethodSet::from(methods))).await
+        Self::start_with(0, Some(MethodSet::from(methods)), Preferred::default()).await
+    }
+
+    /// Starts a server on a free loopback port that offers only the
+    /// algorithms in `preferred`, as an old device does. Its host key has
+    /// the type of `preferred.key`'s first entry (Ed25519, RSA or DSA).
+    pub async fn start_with_algorithms(preferred: Preferred) -> Self {
+        Self::start_with(0, None, preferred).await
+    }
+
+    /// [`Self::start_with_algorithms`] on the given loopback port.
+    pub async fn start_on_with_algorithms(port: u16, preferred: Preferred) -> Self {
+        Self::start_with(port, None, preferred).await
+    }
+
+    /// What the last client to connect offered in its key-exchange init.
+    pub fn client_offer(&self) -> Option<algorithms::Offer> {
+        let received = self.received.lock().unwrap();
+        let last = received.last()?.lock().unwrap();
+        algorithms::parse_offer(&last)
     }
 
     /// The Ed25519 client key the server accepts for [`USERNAME`].
@@ -176,17 +205,23 @@ impl TestSshServer {
 
     /// Starts a server on the given loopback port (0 picks a free one).
     pub async fn start_on(port: u16) -> Self {
-        Self::start_with(port, None).await
+        Self::start_with(port, None, Preferred::default()).await
     }
 
-    async fn start_with(port: u16, methods: Option<MethodSet>) -> Self {
+    async fn start_with(port: u16, methods: Option<MethodSet>, preferred: Preferred) -> Self {
         let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let rsa_key = russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap();
         let authorized_keys = Arc::new(vec![
             client_key.public_key().clone(),
             rsa_key.public_key().clone(),
         ]);
-        let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let host_key = match preferred.key.first() {
+            Some(Algorithm::Rsa { .. }) => {
+                russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap()
+            }
+            Some(Algorithm::Dsa) => russh::keys::load_secret_key(DSA_HOST_KEY, None).unwrap(),
+            _ => PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap(),
+        };
         let defaults = russh::server::Config::default();
         let config = Arc::new(russh::server::Config {
             methods: methods.unwrap_or(defaults.methods.clone()),
@@ -195,6 +230,7 @@ impl TestSshServer {
             // than this has to wait for the server to make room.
             window_size: 16 * 1024,
             keys: vec![host_key.clone()],
+            preferred,
             ..defaults
         });
         let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
@@ -203,13 +239,28 @@ impl TestSshServer {
             .remember("127.0.0.1", port, host_key.public_key())
             .unwrap();
         let forwarded = Arc::new(AtomicUsize::new(0));
+        let received = Received::default();
         let counter = forwarded.clone();
+        let connections = received.clone();
         let task = tokio::spawn(async move {
             let mut server = ScriptedServer {
                 authorized_keys,
                 forwarded: counter,
             };
-            let _ = server.run_on_socket(config, &listener).await;
+            // `run_on_socket`, but keeping what each client sends first.
+            while let Ok((socket, address)) = listener.accept().await {
+                let _ = socket.set_nodelay(true);
+                let bytes = Arc::<Mutex<Vec<u8>>>::default();
+                connections.lock().unwrap().push(bytes.clone());
+                let handler = server.new_client(Some(address));
+                let config = config.clone();
+                tokio::spawn(async move {
+                    let stream = algorithms::Recording::new(socket, bytes);
+                    if let Ok(session) = russh::server::run_stream(config, stream, handler).await {
+                        let _ = session.await;
+                    }
+                });
+            }
         });
         Self {
             port,
@@ -217,6 +268,7 @@ impl TestSshServer {
             host_key: host_key.public_key().clone(),
             client_key,
             forwarded,
+            received,
         }
     }
 
@@ -238,6 +290,7 @@ impl TestSshServer {
             username: USERNAME.into(),
             auth: SshAuth::Password(PASSWORD.into()),
             jump_hosts: Vec::new(),
+            legacy_crypto: false,
         }
     }
 }
@@ -559,12 +612,31 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
                 Some(SessionEvent::HostKey(question)) => {
                     panic!("expected a state change, got the host-key question {question:?}")
                 }
+                // Announced just before `Connected`; tests about it read it
+                // with `next_algorithms`.
+                Some(SessionEvent::Algorithms(_)) => {}
                 None => panic!("session events ended while waiting for a state change"),
             }
         }
     })
     .await
     .expect("timed out waiting for a state change")
+}
+
+/// Waits for the algorithms the session negotiated (announced just before
+/// `Connected`), discarding output on the way.
+pub async fn next_algorithms(events: &mut SessionEvents) -> Vec<NegotiatedAlgorithms> {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            match events.next().await {
+                Some(SessionEvent::Algorithms(algorithms)) => return algorithms,
+                Some(SessionEvent::Output(bytes)) => events.acknowledge(bytes.len()),
+                other => panic!("expected the negotiated algorithms, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for the negotiated algorithms")
 }
 
 /// Waits for the server's next login questions.

@@ -283,8 +283,9 @@ pub struct ResolvedHost {
 impl ResolvedHost {
     /// The SSH target for this host with a password login (as prompted
     /// for), on the resolved port, or SSH's default port when nothing sets
-    /// one. The host alone: its jump hosts are left out (connect through
-    /// [`crate::credentials::Profiles`], which adds them).
+    /// one, with its legacy-crypto switch. The host alone: its jump hosts
+    /// are left out (connect through [`crate::credentials::Profiles`],
+    /// which adds them).
     pub fn ssh_target(&self, username: String, password: String) -> SshTarget {
         self.ssh_target_with(username, SshAuth::Password(password))
     }
@@ -301,6 +302,7 @@ impl ResolvedHost {
             username,
             auth,
             jump_hosts: Vec::new(),
+            legacy_crypto: self.settings.legacy_crypto.value,
         }
     }
 }

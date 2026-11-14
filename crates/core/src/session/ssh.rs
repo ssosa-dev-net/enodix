@@ -17,10 +17,12 @@ use russh::{
     MethodKind, MethodSet,
 };
 
+use super::algorithms::{self, AlgorithmKind, NegotiationFailure};
+use super::recording::{FirstBytes, Recording};
 use super::{
     agent, AgentError, CloseReason, Command, HostKeyAsker, HostKeyDecision, HostKeyQuestion,
-    JumpHost, Link, LoginPrompt, LoginQuestion, OpenError, Prompter, SessionState, SshAuth,
-    SshTarget, TerminalSize,
+    JumpHost, Link, LoginPrompt, LoginQuestion, NegotiatedAlgorithms, OpenError, Prompter,
+    SessionState, SshAuth, SshTarget, TerminalSize,
 };
 use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
 
@@ -40,6 +42,8 @@ struct Client {
     /// True while the user is asked about the key: the handshake then
     /// waits for them, not for the network, and the timeout is paused.
     asking: watch::Sender<bool>,
+    /// The algorithms the last key exchange agreed on.
+    negotiated: Arc<std::sync::Mutex<Option<russh::Names>>>,
 }
 
 /// Asks about the host keys of every hop of a session, one at a time.
@@ -110,6 +114,19 @@ impl client::Handler for Client {
             })),
         }
     }
+
+    async fn kex_done(
+        &mut self,
+        _shared_secret: Option<&[u8]>,
+        names: &russh::Names,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        *self
+            .negotiated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(names.clone());
+        Ok(())
+    }
 }
 
 /// An open shell: the connection, its channel, and anything the shell sent
@@ -121,6 +138,8 @@ struct Shell {
     jumps: Vec<Handle<Client>>,
     channel: Channel<client::Msg>,
     early_output: Vec<u8>,
+    /// What each connection agreed on, jump hosts first.
+    algorithms: Vec<NegotiatedAlgorithms>,
 }
 
 /// Runs one SSH session over `link` until it ends.
@@ -140,6 +159,7 @@ pub(super) async fn run(
         jumps,
         channel,
         early_output,
+        algorithms,
     } = match opened {
         Ok(shell) => shell,
         Err(error) => return CloseReason::Failed(error),
@@ -147,6 +167,7 @@ pub(super) async fn run(
 
     let (mut incoming, outgoing) = channel.split();
 
+    link.algorithms(algorithms);
     link.state(SessionState::Connected);
     if link.size != requested_size && resize(&outgoing, link.size).await.is_err() {
         return CloseReason::ConnectionLost;
@@ -498,10 +519,13 @@ fn asks_only_for_password(prompts: &[russh::client::Prompt]) -> bool {
 
 /// One SSH server on the way to the device: a jump host or the target.
 struct Hop<'a> {
+    /// The jump host's name; `None` for the device.
+    jump_host: Option<&'a str>,
     host: &'a str,
     port: u16,
     username: &'a str,
     auth: &'a SshAuth,
+    legacy_crypto: bool,
 }
 
 /// The jump host a hop is reached through.
@@ -522,32 +546,39 @@ async fn open_shell(
     let asker = Arc::new(Mutex::new(asker));
     // The connections to the jump hosts so far, one per jump host.
     let mut jumps: Vec<Handle<Client>> = Vec::with_capacity(target.jump_hosts.len());
+    let mut algorithms = Vec::with_capacity(target.jump_hosts.len() + 1);
     for jump in &target.jump_hosts {
         let hop = Hop {
+            jump_host: Some(&jump.name),
             host: &jump.host,
             port: jump.port,
             username: &jump.username,
             auth: &jump.auth,
+            legacy_crypto: jump.legacy_crypto,
         };
         let through = last_via(&target.jump_hosts, &jumps);
         prompter.jump_host = Some(jump.name.clone());
-        let connection = connect(hop, through, &known_hosts, &asker, prompter)
+        let (connection, agreed) = connect(hop, through, &known_hosts, &asker, prompter)
             .await
             .map_err(|error| OpenError::JumpHost {
                 name: jump.name.clone(),
                 error: Box::new(error),
             })?;
         jumps.push(connection);
+        algorithms.push(agreed);
     }
     prompter.jump_host = None;
     let hop = Hop {
+        jump_host: None,
         host: &target.host,
         port: target.port,
         username: &target.username,
         auth: &target.auth,
+        legacy_crypto: target.legacy_crypto,
     };
     let through = last_via(&target.jump_hosts, &jumps);
-    let connection = connect(hop, through, &known_hosts, &asker, prompter).await?;
+    let (connection, agreed) = connect(hop, through, &known_hosts, &asker, prompter).await?;
+    algorithms.push(agreed);
 
     let mut channel = connection.channel_open_session().await.map_err(protocol)?;
     channel
@@ -584,6 +615,7 @@ async fn open_shell(
         jumps,
         channel,
         early_output,
+        algorithms,
     })
 }
 
@@ -597,27 +629,40 @@ fn last_via<'a>(jump_hosts: &'a [JumpHost], connections: &'a [Handle<Client>]) -
 }
 
 /// Connects to `hop` (directly, or through the jump host `via`), checks
-/// its host key and logs in.
+/// its host key and logs in. Also gives the algorithms agreed on.
 async fn connect(
     hop: Hop<'_>,
     via: Option<Via<'_>>,
     known_hosts: &KnownHosts,
     asker: &SharedAsker,
     prompter: &mut Prompter,
-) -> Result<Handle<Client>, OpenError> {
+) -> Result<(Handle<Client>, NegotiatedAlgorithms), OpenError> {
     let login = login(hop.auth).await?;
-    let config = Arc::new(client::Config::default());
+    let config = Arc::new(client::Config {
+        preferred: algorithms::preferred(hop.legacy_crypto),
+        ..client::Config::default()
+    });
     let (asking, asking_rx) = watch::channel(false);
+    let negotiated = Arc::default();
     let client = Client {
         host: hop.host.to_owned(),
         port: hop.port,
         known_hosts: known_hosts.clone(),
         asker: asker.clone(),
         asking,
+        negotiated: Arc::clone(&negotiated),
     };
+    // What the server sends first, for reporting a failed negotiation.
+    let first_bytes = FirstBytes::new();
     let connecting = async {
         let connected = match via {
-            None => client::connect(config, (hop.host, hop.port), client).await,
+            None => {
+                let socket = tokio::net::TcpStream::connect((hop.host, hop.port))
+                    .await
+                    .map_err(|error| OpenError::Connect(error.to_string()))?;
+                let stream = Recording::new(socket, first_bytes.clone());
+                client::connect_stream(config, stream, client).await
+            }
             Some(via) => {
                 let channel = via
                     .connection
@@ -630,7 +675,8 @@ async fn connect(
                             forwarding_failure(&error)
                         ))
                     })?;
-                client::connect_stream(config, channel.into_stream(), client).await
+                let stream = Recording::new(channel.into_stream(), first_bytes.clone());
+                client::connect_stream(config, stream, client).await
             }
         };
         match connected {
@@ -639,13 +685,25 @@ async fn connect(
             Err(ClientError::Ssh(russh::Error::IO(error))) => {
                 Err(OpenError::Connect(error.to_string()))
             }
+            Err(ClientError::Ssh(russh::Error::NoCommonAlgo { kind, theirs, .. })) => Err(
+                negotiation_failure(kind, theirs, &first_bytes.take(), hop.legacy_crypto),
+            ),
             Err(ClientError::Ssh(error)) => Err(protocol(error)),
         }
     };
-    let mut connection = tokio::select! {
-        connected = connecting => connected?,
-        () = handshake_deadline(asking_rx) => return Err(OpenError::Connect("timed out".into())),
+    let connected = tokio::select! {
+        connected = connecting => connected,
+        () = handshake_deadline(asking_rx) => Err(OpenError::Connect("timed out".into())),
     };
+    // Needed only for a failed negotiation: stop keeping what arrives.
+    drop(first_bytes.take());
+    let mut connection = connected?;
+    let agreed = negotiated
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|names| NegotiatedAlgorithms::from_names(hop.jump_host.map(str::to_owned), names))
+        .ok_or_else(|| OpenError::Protocol("the key exchange did not finish".into()))?;
     let asked;
     let (username, login) = match login {
         Login::Ask => {
@@ -655,7 +713,44 @@ async fn connect(
         login => (hop.username, login),
     };
     authenticate(&mut connection, username, login, prompter).await?;
-    Ok(connection)
+    Ok((connection, agreed))
+}
+
+/// What a failed negotiation reports: `russh`'s failure for the first kind
+/// of algorithm nothing was in common for (`theirs` being the device's list
+/// of that kind), and the device's whole offer from what it sent first, if
+/// that could be read.
+fn negotiation_failure(
+    kind: russh::AlgorithmKind,
+    theirs: Vec<String>,
+    first_bytes: &[u8],
+    legacy_crypto: bool,
+) -> OpenError {
+    let kind = match kind {
+        russh::AlgorithmKind::Kex => AlgorithmKind::KeyExchange,
+        russh::AlgorithmKind::Key => AlgorithmKind::HostKey,
+        russh::AlgorithmKind::Cipher => AlgorithmKind::Cipher,
+        russh::AlgorithmKind::Mac => AlgorithmKind::Mac,
+        // Every device takes `none`, which is always offered.
+        russh::AlgorithmKind::Compression => {
+            return OpenError::Protocol(format!(
+                "no compression in common with the device (it offered {})",
+                theirs.join(", ")
+            ))
+        }
+    };
+    let offered = algorithms::parse_offer(first_bytes).unwrap_or_else(|| {
+        // Only the one list is known.
+        let mut offered = algorithms::AlgorithmLists::default();
+        match kind {
+            AlgorithmKind::KeyExchange => offered.key_exchange = theirs,
+            AlgorithmKind::HostKey => offered.host_key = theirs,
+            AlgorithmKind::Cipher => offered.cipher = theirs,
+            AlgorithmKind::Mac => offered.mac = theirs,
+        }
+        offered
+    });
+    OpenError::Negotiation(NegotiationFailure::new(kind, offered, legacy_crypto))
 }
 
 /// Asks the user for the password, and for the username if `username` is
