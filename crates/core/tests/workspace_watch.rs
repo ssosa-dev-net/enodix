@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use netterm_core::session::{SessionManager, SessionState, SessionTarget, TerminalSize};
+use netterm_core::session::{SessionState, SessionTarget, TerminalSize};
 use netterm_core::workspace::{
     Changes, HostId, WatchOptions, Workspace, WorkspaceWatcher, FOLDER_SETTINGS_FILE,
 };
@@ -360,7 +360,7 @@ async fn an_open_session_survives_its_host_file_being_deleted() {
     );
     w.reload_after_change(&["Core/lab.yaml"]);
 
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let target = w
         .workspace
         .resolve_host(&HostId::new("Core/lab.yaml"))

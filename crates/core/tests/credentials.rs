@@ -12,7 +12,7 @@ use netterm_core::credentials::{
     ProfileAuth, ProfileDraft, ProfileError, ProfileSummary, Profiles,
 };
 use netterm_core::session::{
-    SessionManager, SessionState, SessionTarget, SshAgent, SshAuth, SshTarget, TerminalSize,
+    SessionState, SessionTarget, SshAgent, SshAuth, SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{HostId, Settings, Workspace};
 use support::agent::TestAgent;
@@ -74,7 +74,7 @@ fn profile_target(profiles: &Profiles<'_>, id: &str) -> SshTarget {
 }
 
 async fn connects(target: SshTarget) {
-    let manager = SessionManager::new();
+    let manager = support::manager();
     let (_id, mut events) = manager.open(
         SessionTarget::Ssh(target),
         TerminalSize { cols: 80, rows: 24 },

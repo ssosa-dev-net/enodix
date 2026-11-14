@@ -46,10 +46,32 @@ export interface LoginPrompt {
   questions: { text: string; echo: boolean }[];
 }
 
+/** A host key as the user sees it. */
+export interface HostKey {
+  /** The key type, such as `ssh-ed25519`. */
+  algorithm: string;
+  /** `SHA256:` and base64, as OpenSSH shows it. */
+  fingerprint: string;
+}
+
+/** The server presented a host key that is not trusted for it. */
+export interface HostKeyQuestion {
+  host: string;
+  port: number;
+  key: HostKey;
+  /** The keys trusted until now; empty on the first connection, otherwise
+   * the key has changed. */
+  stored: HostKey[];
+}
+
+export type HostKeyDecision = "trustAndRemember" | "trustOnce" | "cancel";
+
 export interface Session {
   write(data: Uint8Array): void;
   /** Answers the last login prompt, one answer per question. */
   answer(answers: string[]): void;
+  /** Decides the last host-key question. */
+  decideHostKey(decision: HostKeyDecision): void;
   resize(size: TerminalSize): void;
   close(): void;
 }
@@ -63,7 +85,9 @@ export function appName(): Promise<string> {
  * processed (for xterm.js, from the write callback): flow control in the
  * core stops reading from the device while too much output is unconsumed.
  * `onPrompt` receives the server's login questions; answer them with
- * `Session.answer`, or close the session to refuse.
+ * `Session.answer`, or close the session to refuse. `onHostKey` receives
+ * a host key to decide on (`Session.decideHostKey`); the connection waits
+ * for the decision.
  */
 export async function openSession(
   target: ConnectTarget,
@@ -71,6 +95,7 @@ export async function openSession(
   onOutput: (bytes: Uint8Array, consumed: () => void) => void,
   onState: (state: SessionState) => void,
   onPrompt: (prompt: LoginPrompt) => void,
+  onHostKey: (question: HostKeyQuestion) => void,
 ): Promise<Session> {
   let id: number | null = null;
   // Output can be consumed before the session id is known.
@@ -86,6 +111,7 @@ export async function openSession(
   );
   const stateChannel = new Channel<SessionState>(onState);
   const promptChannel = new Channel<LoginPrompt>(onPrompt);
+  const hostKeyChannel = new Channel<HostKeyQuestion>(onHostKey);
 
   // A call can lose a race with the session closing; the closed state has
   // already told the interface, so that failure is not reported again.
@@ -99,12 +125,14 @@ export async function openSession(
     onOutput: outputChannel,
     onState: stateChannel,
     onPrompt: promptChannel,
+    onHostKey: hostKeyChannel,
   });
   if (consumedEarly > 0) acknowledge(consumedEarly);
 
   return {
     write: (data) => send("session_write", { data: Array.from(data) }),
     answer: (answers) => send("session_answer", { answers }),
+    decideHostKey: (decision) => send("session_decide_host_key", { decision }),
     resize: (size) => send("session_resize", { size }),
     close: () => send("session_close", {}),
   };

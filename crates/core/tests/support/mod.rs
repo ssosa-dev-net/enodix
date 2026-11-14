@@ -27,7 +27,10 @@
 //! `examples/test_ssh_server.rs` runs the same server standalone, for trying
 //! the app by hand and for the end-to-end smoke test.
 //!
-//! Later tickets extend this file (more auth methods, host keys, ...).
+//! Each server has its own random Ed25519 host key. Every server started in
+//! the process is trusted in [`known_hosts`], which [`manager`] uses, so
+//! tests about something else are not asked about host keys; host-key tests
+//! use a `KnownHosts` of their own.
 #![allow(dead_code)]
 
 pub mod agent;
@@ -38,8 +41,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::sync::OnceLock;
+
+use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::{
-    LoginPrompt, SessionEvent, SessionEvents, SessionState, SshAuth, SshTarget,
+    HostKeyQuestion, LoginPrompt, OutputOptions, SessionEvent, SessionEvents, SessionManager,
+    SessionState, SshAuth, SshTarget,
 };
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{
@@ -92,9 +99,26 @@ pub const RSA_CLIENT_KEY: &str = concat!(
     "/tests/fixtures/keys/rsa_client"
 );
 
+/// The host keys of every test server started in this process.
+pub fn known_hosts() -> KnownHosts {
+    static KNOWN_HOSTS: OnceLock<KnownHosts> = OnceLock::new();
+    KNOWN_HOSTS.get_or_init(KnownHosts::in_memory).clone()
+}
+
+/// A session manager that trusts every test server's host key.
+pub fn manager() -> SessionManager {
+    SessionManager::new(known_hosts())
+}
+
+/// Like [`manager`], with the given output options.
+pub fn manager_with_output_options(options: OutputOptions) -> SessionManager {
+    SessionManager::with_output_options(known_hosts(), options)
+}
+
 pub struct TestSshServer {
     port: u16,
     task: tokio::task::JoinHandle<()>,
+    host_key: PublicKey,
     /// An Ed25519 client key the server accepts for [`USERNAME`].
     client_key: PrivateKey,
 }
@@ -132,6 +156,20 @@ impl TestSshServer {
         std::fs::write(file, text.as_bytes()).unwrap();
     }
 
+    /// The server's host key.
+    pub fn host_key(&self) -> &PublicKey {
+        &self.host_key
+    }
+
+    /// Stops this server and starts another on the same port, with a new
+    /// host key (and new client keys), as when a device is replaced.
+    pub async fn replace_with_new_host_key(&mut self) {
+        self.task.abort();
+        // The listener is closed once the task has ended.
+        let _ = (&mut self.task).await;
+        *self = Self::start_on(self.port).await;
+    }
+
     /// Starts a server on the given loopback port (0 picks a free one).
     pub async fn start_on(port: u16) -> Self {
         Self::start_with(port, None).await
@@ -144,6 +182,7 @@ impl TestSshServer {
             client_key.public_key().clone(),
             rsa_key.public_key().clone(),
         ]);
+        let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let defaults = russh::server::Config::default();
         let config = Arc::new(russh::server::Config {
             methods: methods.unwrap_or(defaults.methods.clone()),
@@ -151,11 +190,14 @@ impl TestSshServer {
             // A small receive window, as on network devices: input larger
             // than this has to wait for the server to make room.
             window_size: 16 * 1024,
-            keys: vec![PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()],
+            keys: vec![host_key.clone()],
             ..defaults
         });
         let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        known_hosts()
+            .remember("127.0.0.1", port, host_key.public_key())
+            .unwrap();
         let task = tokio::spawn(async move {
             let mut server = ScriptedServer { authorized_keys };
             let _ = server.run_on_socket(config, &listener).await;
@@ -163,6 +205,7 @@ impl TestSshServer {
         Self {
             port,
             task,
+            host_key: host_key.public_key().clone(),
             client_key,
         }
     }
@@ -457,6 +500,9 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
                 Some(SessionEvent::Prompt(prompt)) => {
                     panic!("expected a state change, got the login prompt {prompt:?}")
                 }
+                Some(SessionEvent::HostKey(question)) => {
+                    panic!("expected a state change, got the host-key question {question:?}")
+                }
                 None => panic!("session events ended while waiting for a state change"),
             }
         }
@@ -473,6 +519,17 @@ pub async fn next_prompt(events: &mut SessionEvents) -> LoginPrompt {
     match event {
         Some(SessionEvent::Prompt(prompt)) => prompt,
         other => panic!("expected a login prompt, got {other:?}"),
+    }
+}
+
+/// Waits for the question whether to trust the server's host key.
+pub async fn next_host_key_question(events: &mut SessionEvents) -> HostKeyQuestion {
+    let event = tokio::time::timeout(WAIT, events.next())
+        .await
+        .expect("timed out waiting for a host-key question");
+    match event {
+        Some(SessionEvent::HostKey(question)) => question,
+        other => panic!("expected a host-key question, got {other:?}"),
     }
 }
 

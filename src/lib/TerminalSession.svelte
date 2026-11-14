@@ -2,11 +2,14 @@
   import { FitAddon } from "@xterm/addon-fit";
   import { Terminal } from "@xterm/xterm";
   import { onMount } from "svelte";
+  import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
   import {
     openSession,
     type ConnectTarget,
+    type HostKeyDecision,
+    type HostKeyQuestion,
     type LoginPrompt,
     type Session,
     type SessionState,
@@ -38,6 +41,14 @@
   /** The server's login questions waiting for answers, with a new key each. */
   let prompt = $state<{ prompt: LoginPrompt; key: number } | null>(null);
   let prompts = 0;
+  /** The host key waiting for a decision, with a new key each. */
+  let hostKey = $state<{ question: HostKeyQuestion; key: number } | null>(null);
+
+  function decideHostKey(decision: HostKeyDecision) {
+    session?.decideHostKey(decision);
+    hostKey = null;
+    xterm?.focus();
+  }
 
   function answer(answers: string[]) {
     session?.answer(answers);
@@ -94,9 +105,13 @@
       (bytes, consumed) => terminal.write(bytes, consumed),
       (state) => {
         status = state;
-        if (state.state !== "connecting") prompt = null;
+        if (state.state !== "connecting") {
+          prompt = null;
+          hostKey = null;
+        }
       },
       (asked) => (prompt = { prompt: asked, key: ++prompts }),
+      (question) => (hostKey = { question, key: ++prompts }),
     ).then(
       (opened) => {
         if (disposed) {
@@ -151,6 +166,15 @@
   </header>
   <div class="body">
     <div class="terminal" bind:this={container}></div>
+    {#if hostKey}
+      {#key hostKey.key}
+        <HostKeyCheck
+          question={hostKey.question}
+          ready={session !== null}
+          ondecide={decideHostKey}
+        />
+      {/key}
+    {/if}
     {#if prompt}
       {#key prompt.key}
         <LoginQuestions
