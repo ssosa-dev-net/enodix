@@ -10,3 +10,11 @@ rust-version = "1.90"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "io-util"] }
+
+# Argon2 unoptimised takes many seconds per vault unlock; tests and dev
+# builds use it optimised.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

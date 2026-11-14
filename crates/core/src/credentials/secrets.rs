@@ -31,6 +31,11 @@ impl SecretValue {
     pub fn expose(&self) -> &str {
         &self.0
     }
+
+    /// Overwrites the value in memory (a vault does it on drop).
+    pub(crate) fn wipe(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
 }
 
 impl fmt::Debug for SecretValue {

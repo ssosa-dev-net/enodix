@@ -8,8 +8,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
 use netterm_core::credentials::{
-    prepare_workspace, CredentialStore, HostLogin, KeychainStore, MemoryStore, ProfileDraft,
-    ProfileError, ProfileSummary, Profiles, Secrets,
+    prepare_workspace, vault_file, ActiveStore, CredentialStore, HostLogin, KeychainStore,
+    MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles, Secrets, VaultError,
+    VaultStatus,
 };
 use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
 use netterm_core::import::csv::{
@@ -71,7 +72,9 @@ struct Shell {
     app_state: Mutex<()>,
     /// Where session logs go: per user, outside every workspace.
     logs: LogFolder,
-    credentials: Box<dyn CredentialStore>,
+    /// The keychain, or the vault once its file exists (locked until the
+    /// interface's unlock screen unlocks it).
+    credentials: ActiveStore,
     workspace: Mutex<Option<Workspace>>,
     /// Reports changes to the open workspace's files; replaced with it.
     watcher: Mutex<Option<WorkspaceWatcher>>,
@@ -90,7 +93,7 @@ impl Shell {
         // Its profiles are kept under its own identifier (written to the
         // folder if it has none yet). Without one they stay under its path;
         // the interface shows why with the files that could not be loaded.
-        let unprepared = prepare_workspace(self.credentials.as_ref(), &mut workspace).err();
+        let unprepared = prepare_workspace(&self.credentials, &mut workspace).err();
         let root = workspace.root().to_path_buf();
         *self.workspace() = Some(workspace);
         let app = app.clone();
@@ -119,6 +122,15 @@ impl Shell {
             });
         }
         view
+    }
+
+    /// Refuses to open a workspace while the vault is locked: its profiles
+    /// could not be prepared. The interface unlocks first.
+    fn refuse_if_locked(&self) -> Result<(), String> {
+        if self.credentials.status() == VaultStatus::Locked {
+            return Err(VaultError::Locked.to_string());
+        }
+        Ok(())
     }
 
     /// Changes the app state kept in the data folder.
@@ -354,6 +366,7 @@ fn workspace_open(
     shell: State<'_, Shell>,
     path: PathBuf,
 ) -> Result<WorkspaceView, String> {
+    shell.refuse_if_locked()?;
     // One root for the interface however the path was typed.
     let workspace = Workspace::open(resolved_path(&path)).map_err(|error| error.to_string())?;
     shell.open_and_remember(&app, workspace)
@@ -366,6 +379,7 @@ fn workspace_create(
     shell: State<'_, Shell>,
     path: PathBuf,
 ) -> Result<WorkspaceView, String> {
+    shell.refuse_if_locked()?;
     let created = Workspace::create(&path).map_err(|error| error.to_string())?;
     // One root for the interface however the path was typed (it can only
     // be resolved now that the folder is there).
@@ -398,6 +412,7 @@ fn workspace_restore(
     app: AppHandle,
     shell: State<'_, Shell>,
 ) -> Result<Option<WorkspaceView>, String> {
+    shell.refuse_if_locked()?;
     let Some(path) = AppState::load(&shell.data_folder).last_workspace else {
         return Ok(None);
     };
@@ -567,8 +582,8 @@ fn with_profiles<E: std::fmt::Display>(
 ) -> Result<ProfilesView, String> {
     let guard = shell.workspace();
     let workspace = guard.as_ref().ok_or("no workspace is open")?;
-    let profiles = Profiles::new(shell.credentials.as_ref(), workspace);
-    let secrets = Secrets::new(shell.credentials.as_ref(), workspace);
+    let profiles = Profiles::new(&shell.credentials, workspace);
+    let secrets = Secrets::new(&shell.credentials, workspace);
     action(&profiles, &secrets).map_err(|error| error.to_string())?;
     let text = |error: ProfileError| error.to_string();
     Ok(ProfilesView {
@@ -576,6 +591,60 @@ fn with_profiles<E: std::fmt::Display>(
         missing: profiles.missing().map_err(text)?,
         secrets: secrets.list().map_err(|error| error.to_string())?,
     })
+}
+
+/// Why the vault did not unlock or turn on, for the interface: `kind` tells
+/// a wrong password from a damaged file.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultFailure {
+    kind: &'static str,
+    message: String,
+}
+
+impl From<VaultError> for VaultFailure {
+    fn from(error: VaultError) -> Self {
+        let kind = match error {
+            VaultError::WrongPassword => "wrongPassword",
+            VaultError::Damaged(_) => "damaged",
+            VaultError::Invalid(_) => "invalid",
+            _ => "failed",
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+}
+
+#[tauri::command]
+fn vault_status(shell: State<'_, Shell>) -> VaultStatus {
+    shell.credentials.status()
+}
+
+/// Unlocks the vault for as long as the app runs. The password is used for
+/// this call only.
+#[tauri::command]
+fn vault_unlock(shell: State<'_, Shell>, password: String) -> Result<(), VaultFailure> {
+    Ok(shell.credentials.unlock(&password)?)
+}
+
+/// Turns the vault on, moving every workspace's profiles and secrets out of
+/// the keychain into it.
+#[tauri::command]
+fn vault_turn_on(
+    shell: State<'_, Shell>,
+    password: String,
+    repeated: String,
+) -> Result<VaultStatus, VaultFailure> {
+    shell.credentials.turn_on(&password, &repeated)?;
+    Ok(shell.credentials.status())
+}
+
+/// Quits the app (the unlock screen's Quit).
+#[tauri::command]
+fn app_quit(app: AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -677,7 +746,7 @@ fn with_open_profiles<T>(
 ) -> Result<T, String> {
     let guard = shell.workspace();
     let workspace = guard.as_ref().ok_or("no workspace is open")?;
-    query(&Profiles::new(shell.credentials.as_ref(), workspace)).map_err(|error| error.to_string())
+    query(&Profiles::new(&shell.credentials, workspace)).map_err(|error| error.to_string())
 }
 
 /// The hosts of the open workspace matching `query` (the Ctrl+K palette).
@@ -1788,13 +1857,16 @@ pub fn run() {
                 // Logs stay on this computer (local, not roaming, app data).
                 None => (app.path().app_data_dir()?, app.path().app_log_dir()?),
             };
-            let credentials: Box<dyn CredentialStore> =
+            let keychain: Box<dyn CredentialStore> =
                 match std::env::var(CREDENTIAL_STORE_VARIABLE).as_deref() {
                     Ok("memory") => Box::new(MemoryStore::new()),
                     // Entries are named after the app's identifier, which
                     // stays put if the product is renamed.
                     _ => Box::new(KeychainStore::new(app.config().identifier.clone())),
                 };
+            // The vault, if its file is in the data folder, replaces the
+            // keychain (layered the same way over the smoke's memory store).
+            let credentials = ActiveStore::new(keychain, vault_file(&data_folder));
             // Trusted host keys are per user, beside the app state.
             app.manage(SessionManager::new(KnownHosts::in_data_folder(
                 &data_folder,
@@ -1841,6 +1913,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_name,
+            app_quit,
+            vault_status,
+            vault_unlock,
+            vault_turn_on,
             workspace_open,
             workspace_create,
             workspaces_list,

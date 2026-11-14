@@ -7,6 +7,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# The vault: its key from the master password (Argon2id), its body sealed
+# with XChaCha20-Poly1305, a checksum to tell damage from a wrong password,
+# and its key and contents wiped from memory when dropped.
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
+sha2 = "0.11"
+zeroize = "1"
 # Local time, for naming session logs after when they started.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # File system notifications, for reloading on external changes (git pull).

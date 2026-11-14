@@ -94,6 +94,7 @@ dependencies = [
  "blake2",
  "cpufeatures 0.3.1",
  "password-hash",
+ "zeroize",
 ]
 
 [[package]]
@@ -604,6 +605,19 @@ dependencies = [
  "cipher",
  "cpufeatures 0.3.1",
  "rand_core",
+ "zeroize",
+]
+
+[[package]]
+name = "chacha20poly1305"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher",
+ "poly1305",
  "zeroize",
 ]
 
@@ -2871,6 +2885,8 @@ dependencies = [
 name = "netterm-core"
 version = "0.1.2"
 dependencies = [
+ "argon2",
+ "chacha20poly1305",
  "chrono",
  "futures",
  "notify",
@@ -2891,6 +2907,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

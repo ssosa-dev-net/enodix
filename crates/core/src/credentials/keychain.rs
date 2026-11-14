@@ -11,7 +11,10 @@
 //! as JSON. Other systems have no keychain support yet: every call fails
 //! with a [`StoreError`].
 
-use super::{CredentialProfile, CredentialStore, SecretValue, StoreError};
+use super::{
+    CredentialProfile, CredentialStore, ScopedProfile, ScopedSecret, SecretValue, StoreContents,
+    StoreError,
+};
 
 /// Profiles in the OS keychain, under names starting with a prefix.
 #[derive(Debug, Clone)]
@@ -149,6 +152,39 @@ impl CredentialStore for KeychainStore {
     fn delete_secret(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
         os::delete(&self.secret_target(scope, name))
     }
+
+    /// Fails on an entry under the prefix that cannot be read, so that a
+    /// move never leaves one behind unnoticed.
+    fn contents(&self) -> Result<StoreContents, StoreError> {
+        let profiles = os::list(&format!("{}:*", self.prefix))?
+            .iter()
+            .map(|blob| {
+                serde_json::from_slice::<Entry>(blob).map(|entry| ScopedProfile {
+                    scope: entry.scope,
+                    profile: entry.profile,
+                })
+            })
+            .collect::<Result<_, _>>()
+            .map_err(|_| unreadable("profile"))?;
+        let secrets = os::list(&format!("{}.secret:*", self.prefix))?
+            .iter()
+            .map(|blob| {
+                serde_json::from_slice::<SecretEntry>(blob).map(|entry| ScopedSecret {
+                    scope: entry.scope,
+                    name: entry.name,
+                    value: entry.value,
+                })
+            })
+            .collect::<Result<_, _>>()
+            .map_err(|_| unreadable("secret"))?;
+        Ok(StoreContents { profiles, secrets })
+    }
+}
+
+fn unreadable(what: &str) -> StoreError {
+    StoreError(format!(
+        "a {what} in the keychain cannot be read (written by something else?)"
+    ))
 }
 
 #[cfg(windows)]
