@@ -29,8 +29,10 @@ use crate::session::{JumpHost, SerialTarget, SshAgent, SshAuth, SshTarget, Telne
 use crate::workspace::{Folder, HostId, JumpChainError, Protocol, ResolvedHost, Workspace};
 
 mod keychain;
+mod secrets;
 
 pub use keychain::KeychainStore;
+pub use secrets::{SecretError, SecretValue, Secrets, MAX_SECRET_NAME};
 
 /// The longest profile name accepted, in characters.
 pub const MAX_PROFILE_NAME: usize = 100;
@@ -112,8 +114,9 @@ impl fmt::Debug for ProfileAuth {
     }
 }
 
-/// Where profiles are kept: per scope (one per workspace), by name,
-/// ignoring case.
+/// Where profiles and named secrets are kept: per scope (one per
+/// workspace), by name, ignoring case. Profiles and secrets are kept apart:
+/// one of each can have the same name.
 pub trait CredentialStore: Send + Sync {
     /// Every profile kept for `scope`, in no particular order.
     fn list(&self, scope: &str) -> Result<Vec<CredentialProfile>, StoreError>;
@@ -124,6 +127,18 @@ pub trait CredentialStore: Send + Sync {
     /// Removes the profile called `name` (ignoring case); `false` if there
     /// was none.
     fn delete(&self, scope: &str, name: &str) -> Result<bool, StoreError>;
+
+    /// The names of every secret kept for `scope`, as written, in no
+    /// particular order.
+    fn secret_names(&self, scope: &str) -> Result<Vec<String>, StoreError>;
+    /// The value of the secret called `name` (ignoring case), if any.
+    fn get_secret(&self, scope: &str, name: &str) -> Result<Option<SecretValue>, StoreError>;
+    /// Keeps the secret `name`, replacing the one of the same name
+    /// (ignoring case), its spelling included.
+    fn put_secret(&self, scope: &str, name: &str, value: &SecretValue) -> Result<(), StoreError>;
+    /// Removes the secret called `name` (ignoring case); `false` if there
+    /// was none.
+    fn delete_secret(&self, scope: &str, name: &str) -> Result<bool, StoreError>;
 }
 
 /// The store could not be read or written. The message never holds a
@@ -132,11 +147,14 @@ pub trait CredentialStore: Send + Sync {
 #[error("{0}")]
 pub struct StoreError(pub String);
 
-/// A store that keeps profiles in memory until it is dropped.
+/// A store that keeps profiles and secrets in memory until it is dropped.
 #[derive(Default)]
 pub struct MemoryStore {
     /// By scope, then by lower-case name.
     profiles: Mutex<BTreeMap<(String, String), CredentialProfile>>,
+    /// By scope, then by lower-case name: the name as written and the
+    /// value.
+    secrets: Mutex<BTreeMap<(String, String), (String, SecretValue)>>,
 }
 
 impl MemoryStore {
@@ -146,6 +164,12 @@ impl MemoryStore {
 
     fn profiles(&self) -> std::sync::MutexGuard<'_, BTreeMap<(String, String), CredentialProfile>> {
         self.profiles.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn secrets(
+        &self,
+    ) -> std::sync::MutexGuard<'_, BTreeMap<(String, String), (String, SecretValue)>> {
+        self.secrets.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -175,6 +199,32 @@ impl CredentialStore for MemoryStore {
 
     fn delete(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
         Ok(self.profiles().remove(&key(scope, name)).is_some())
+    }
+
+    fn secret_names(&self, scope: &str) -> Result<Vec<String>, StoreError> {
+        Ok(self
+            .secrets()
+            .iter()
+            .filter(|((s, _), _)| s == scope)
+            .map(|(_, (name, _))| name.clone())
+            .collect())
+    }
+
+    fn get_secret(&self, scope: &str, name: &str) -> Result<Option<SecretValue>, StoreError> {
+        Ok(self
+            .secrets()
+            .get(&key(scope, name))
+            .map(|(_, value)| value.clone()))
+    }
+
+    fn put_secret(&self, scope: &str, name: &str, value: &SecretValue) -> Result<(), StoreError> {
+        self.secrets()
+            .insert(key(scope, name), (name.to_owned(), value.clone()));
+        Ok(())
+    }
+
+    fn delete_secret(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
+        Ok(self.secrets().remove(&key(scope, name)).is_some())
     }
 }
 
@@ -550,9 +600,10 @@ impl<'a> Profiles<'a> {
 
 /// Makes `workspace` ready to keep its own profiles in `store`: gives it an
 /// identifier if it has none ([`Workspace::ensure_id`]), then moves the
-/// profiles earlier versions kept under its folder path to it. A profile
-/// the workspace already has under its identifier is not replaced; the old
-/// one is left where it was. Run it when the app opens a workspace.
+/// profiles (and named secrets) earlier versions kept under its folder path
+/// to it. A profile or secret the workspace already has under its
+/// identifier is not replaced; the old one is left where it was. Run it
+/// when the app opens a workspace.
 pub fn prepare_workspace(
     store: &dyn CredentialStore,
     workspace: &mut Workspace,
@@ -571,6 +622,14 @@ pub fn prepare_workspace(
         if store.get(&scope, &profile.name)?.is_none() {
             store.put(&scope, &profile)?;
             store.delete(&by_path, &profile.name)?;
+        }
+    }
+    for name in store.secret_names(&by_path)? {
+        if store.get_secret(&scope, &name)?.is_none() {
+            if let Some(value) = store.get_secret(&by_path, &name)? {
+                store.put_secret(&scope, &name, &value)?;
+            }
+            store.delete_secret(&by_path, &name)?;
         }
     }
     Ok(())

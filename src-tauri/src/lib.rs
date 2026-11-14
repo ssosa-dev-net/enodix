@@ -9,7 +9,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
 use netterm_core::credentials::{
     prepare_workspace, CredentialStore, HostLogin, KeychainStore, MemoryStore, ProfileDraft,
-    ProfileError, ProfileSummary, Profiles,
+    ProfileError, ProfileSummary, Profiles, Secrets,
 };
 use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
 use netterm_core::import::csv::{
@@ -548,37 +548,39 @@ fn settings_resolve(shell: State<'_, Shell>, item: Item) -> Result<EffectiveSett
     }
 }
 
-/// The credential profiles of the open workspace, as the interface shows
-/// them: without secrets.
+/// The credential profiles and named secrets of the open workspace, as the
+/// interface shows them: without secrets or values.
 #[derive(Serialize)]
 struct ProfilesView {
     profiles: Vec<ProfileSummary>,
     /// Profile names the workspace uses that are not set up here.
     missing: Vec<String>,
+    /// The names of the workspace's named secrets (never their values).
+    secrets: Vec<String>,
 }
 
-/// Runs `action` on the open workspace's credential profiles and returns
-/// them afterwards.
-fn with_profiles(
+/// Runs `action` on the open workspace's credential profiles and secrets
+/// and returns them afterwards.
+fn with_profiles<E: std::fmt::Display>(
     shell: &Shell,
-    action: impl FnOnce(&Profiles<'_>) -> Result<(), ProfileError>,
+    action: impl FnOnce(&Profiles<'_>, &Secrets<'_>) -> Result<(), E>,
 ) -> Result<ProfilesView, String> {
     let guard = shell.workspace();
     let workspace = guard.as_ref().ok_or("no workspace is open")?;
     let profiles = Profiles::new(shell.credentials.as_ref(), workspace);
-    let view = || {
-        action(&profiles)?;
-        Ok(ProfilesView {
-            profiles: profiles.list()?,
-            missing: profiles.missing()?,
-        })
-    };
-    view().map_err(|error: ProfileError| error.to_string())
+    let secrets = Secrets::new(shell.credentials.as_ref(), workspace);
+    action(&profiles, &secrets).map_err(|error| error.to_string())?;
+    let text = |error: ProfileError| error.to_string();
+    Ok(ProfilesView {
+        profiles: profiles.list().map_err(text)?,
+        missing: profiles.missing().map_err(text)?,
+        secrets: secrets.list().map_err(|error| error.to_string())?,
+    })
 }
 
 #[tauri::command]
 fn profiles_list(shell: State<'_, Shell>) -> Result<ProfilesView, String> {
-    with_profiles(&shell, |_| Ok(()))
+    with_profiles(&shell, |_, _| Ok::<_, ProfileError>(()))
 }
 
 /// Creates a profile (no `previous`) or changes the one called `previous`.
@@ -588,14 +590,37 @@ fn profile_save(
     previous: Option<String>,
     draft: ProfileDraft,
 ) -> Result<ProfilesView, String> {
-    with_profiles(&shell, |profiles| {
+    with_profiles(&shell, |profiles, _| {
         profiles.save(previous.as_deref(), &draft).map(drop)
     })
 }
 
 #[tauri::command]
 fn profile_delete(shell: State<'_, Shell>, name: String) -> Result<ProfilesView, String> {
-    with_profiles(&shell, |profiles| profiles.delete(&name))
+    with_profiles(&shell, |profiles, _| profiles.delete(&name))
+}
+
+/// Adds a named secret (`replace` false) or replaces the value of the one
+/// called `name`. The value is never sent back.
+#[tauri::command]
+fn secret_save(
+    shell: State<'_, Shell>,
+    name: String,
+    value: String,
+    replace: bool,
+) -> Result<ProfilesView, String> {
+    with_profiles(&shell, |_, secrets| {
+        if replace {
+            secrets.replace(&name, &value)
+        } else {
+            secrets.add(&name, &value).map(drop)
+        }
+    })
+}
+
+#[tauri::command]
+fn secret_delete(shell: State<'_, Shell>, name: String) -> Result<ProfilesView, String> {
+    with_profiles(&shell, |_, secrets| secrets.delete(&name))
 }
 
 /// How a host logs in, as the interface needs to know it.
@@ -1855,6 +1880,8 @@ pub fn run() {
             profiles_list,
             profile_save,
             profile_delete,
+            secret_save,
+            secret_delete,
             host_login,
             session_open,
             session_write,

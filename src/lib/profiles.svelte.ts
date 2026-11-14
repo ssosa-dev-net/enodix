@@ -1,12 +1,13 @@
-// The open workspace's credential profiles as the interface shows them,
-// and whether the profiles dialog is open. Fetched again whenever the
-// workspace changes, since the profiles it names may change with it.
+// The open workspace's credential profiles and the names of its secrets,
+// as the interface shows them, and whether the profiles dialog is open.
+// Fetched again whenever the workspace changes, since the profiles it
+// names may change with it.
 
 import * as api from "./credentials";
 import type { ProfileDraft, ProfilesView } from "./credentials";
 
 export const profiles = $state({
-  view: { profiles: [], missing: [] } as ProfilesView,
+  view: { profiles: [], missing: [], secrets: [] } as ProfilesView,
   /** Why the profiles could not be read, if they could not. */
   error: null as string | null,
   /** Whether the profiles dialog is open. */
@@ -43,6 +44,16 @@ export function saveProfile(previous: string | null, draft: ProfileDraft) {
 /** Resolves to an error to show, or null once deleted. */
 export function deleteProfile(name: string) {
   return adopt(api.deleteProfile(name));
+}
+
+/** Resolves to an error to show, or null once saved. */
+export function saveSecret(name: string, value: string, replace: boolean) {
+  return adopt(api.saveSecret(name, value, replace));
+}
+
+/** Resolves to an error to show, or null once deleted. */
+export function deleteSecret(name: string) {
+  return adopt(api.deleteSecret(name));
 }
 
 /** Every profile name worth offering: the stored ones and the missing. */
