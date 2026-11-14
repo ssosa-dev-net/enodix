@@ -1,0 +1,7 @@
+description: Madrid DC
+jump_host: bastion.yaml
+port: 2222
+platform: eos
+environment: production
+tags:
+- madrid

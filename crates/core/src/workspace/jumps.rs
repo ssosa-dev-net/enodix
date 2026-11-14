@@ -66,7 +66,7 @@ impl Workspace {
     }
 
     /// The id of the host `reference` names: exactly, else ignoring case.
-    fn find_host_id(&self, reference: &str) -> Option<HostId> {
+    pub(crate) fn find_host_id(&self, reference: &str) -> Option<HostId> {
         let exact = HostId::new(reference);
         if self.host(&exact).is_some() {
             return Some(exact);

@@ -414,7 +414,7 @@ impl ResolvedHost {
     }
 
     /// The resolved port, or `default` (the protocol's) if nothing sets one.
-    fn port_or(&self, default: u16) -> u16 {
+    pub(crate) fn port_or(&self, default: u16) -> u16 {
         self.settings
             .port
             .as_ref()

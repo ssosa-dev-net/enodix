@@ -43,6 +43,8 @@ const PUBLIC_KEY_FILE = join(ROOT, "src-tauri", "updater-key.pub");
 const PORTABLE_MARKER = "portable.txt";
 /** The updater's name for 64-bit Windows in `latest.json`. */
 const PLATFORM = "windows-x86_64";
+/** The headless binary, shipped beside the app (`crates/cli`). */
+const CLI_EXE = "netterm-cli.exe";
 
 function fail(message) {
   console.error(`release: ${message}`);
@@ -211,6 +213,9 @@ writeFileSync(
         active: true,
         targets: ["nsis"],
         createUpdaterArtifacts: true,
+        // The headless binary (built by `beforeBuildCommand`), installed
+        // beside the app.
+        resources: { [`../target/release/${CLI_EXE}`]: CLI_EXE },
         windows: { nsis: { installMode: "currentUser" } },
       },
       plugins: {
@@ -261,14 +266,15 @@ mkdirSync(dist, { recursive: true });
 copyFileSync(installer, join(dist, installerName));
 copyFileSync(`${installer}.sig`, join(dist, `${installerName}.sig`));
 
-// The portable zip: the program, the marker that makes it portable (it only
-// announces updates) and the README.
+// The portable zip: the program, the headless binary, the marker that makes
+// it portable (it only announces updates) and the README.
 const exeName = `${tauriConfig.mainBinaryName ?? "netterm"}.exe`;
 const portableName = `${productName}_${version}_x64-portable`;
 const stage = join(ROOT, "target", "dist", "stage", portableName);
 rmSync(dirname(stage), { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 copyFileSync(join(ROOT, "target", "release", exeName), join(stage, exeName));
+copyFileSync(join(ROOT, "target", "release", CLI_EXE), join(stage, CLI_EXE));
 writeFileSync(
   join(stage, PORTABLE_MARKER),
   `This file makes this copy of ${productName} portable: it tells you when a new\r\n` +

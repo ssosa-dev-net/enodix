@@ -2882,6 +2882,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "netterm-cli"
+version = "0.1.2"
+dependencies = [
+ "netterm-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "netterm-core"
 version = "0.1.2"
 dependencies = [

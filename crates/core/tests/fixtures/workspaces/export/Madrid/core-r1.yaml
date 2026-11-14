@@ -1,0 +1,13 @@
+name: CORE-R1
+address: 10.1.0.1
+vendor: arista
+model: 7280R
+role: router
+credential_profile: madrid-ops
+tags:
+- core
+- edge
+custom:
+  owner: noc
+  snmp_community: s3cr3t-community
+  circuit: CID-1

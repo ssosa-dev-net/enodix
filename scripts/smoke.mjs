@@ -123,6 +123,33 @@ function createWorkspace() {
   );
 }
 
+/** The headless binary the app build puts beside the app prints the smoke
+ * workspace's inventory, its problem reported but not fatal. */
+function headlessInventory() {
+  const result = spawnSync(
+    "target/release/netterm-cli.exe",
+    ["inventory", workspace, "--folder", "Lab"],
+    { encoding: "utf8" },
+  );
+  if (result.error) fail(`netterm-cli did not start: ${result.error.message}`);
+  if (result.status !== 0) {
+    fail(`netterm-cli exited with ${result.status}: ${result.stderr}`);
+  }
+  const inventory = JSON.parse(result.stdout);
+  const ids = inventory.hosts.map((host) => host.id).join(", ");
+  if (ids !== "Lab/smoke-r1.yaml") fail(`netterm-cli exported ${ids}`);
+  if (inventory.hosts[0].settings.port !== SSH_PORT) {
+    fail(`netterm-cli gave port ${inventory.hosts[0].settings.port}`);
+  }
+  if (!inventory.problems.some((problem) => problem.file === "broken.yaml")) {
+    fail("netterm-cli did not report broken.yaml");
+  }
+  if (!result.stderr.includes("warning: broken.yaml")) {
+    fail(`netterm-cli did not warn about broken.yaml: ${result.stderr}`);
+  }
+  console.log("ok - the headless binary exports the inventory");
+}
+
 /** OpenSSH's SHA-256 fingerprint of a public key line. */
 function fingerprint(keyLine) {
   const blob = Buffer.from(keyLine.split(/\s+/)[1], "base64");
@@ -403,6 +430,7 @@ async function connectDevTools() {
 
 async function main() {
   createWorkspace();
+  headlessInventory();
   rmSync(PORTABLE_MARKER, { force: true });
   writeFileSync(INSTALLED_MARKER, "");
   await startReleaseServer();

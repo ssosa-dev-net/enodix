@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod diff;
 pub mod highlight;
 pub mod import;
+pub mod inventory;
 pub mod job;
 pub mod known_hosts;
 pub mod layout;
