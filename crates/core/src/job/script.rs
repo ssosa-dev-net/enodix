@@ -120,12 +120,6 @@ impl ScriptTargets {
     }
 }
 
-/// What a reader thread passes on: more of a pipe's output, or its end.
-enum Piece {
-    Bytes(Vec<u8>),
-    End,
-}
-
 /// How the process ended.
 enum Ended {
     Exited(ExitStatus),
@@ -295,12 +289,11 @@ impl Runner {
         self.state(HostState::Running);
 
         let (sender, pieces) = std_mpsc::channel();
-        let mut open = 1;
         read_pipe(output, sender);
 
         loop {
             match pieces.recv_timeout(Duration::from_millis(50)) {
-                Ok(piece) => self.take(piece, &mut open),
+                Ok(bytes) => self.take(&bytes),
                 Err(std_mpsc::RecvTimeoutError::Timeout) => {}
                 // The pipe closed; the process may still run.
                 Err(std_mpsc::RecvTimeoutError::Disconnected) => {
@@ -309,14 +302,14 @@ impl Runner {
             }
             if *cancel.borrow() {
                 stop(&mut child);
-                self.drain(&pieces, &mut open, Duration::from_millis(200));
+                self.drain(&pieces, Duration::from_millis(200));
                 return Ok(Ended::Cancelled);
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
                     // What is still in the pipes, for a moment (a process
                     // it left behind may hold them open).
-                    self.drain(&pieces, &mut open, Duration::from_millis(500));
+                    self.drain(&pieces, Duration::from_millis(500));
                     return Ok(Ended::Exited(status));
                 }
                 Ok(None) => {}
@@ -328,29 +321,21 @@ impl Runner {
         }
     }
 
-    /// Takes what is left in the pipe until it has ended or `wait`
-    /// has passed.
-    fn drain(&mut self, pieces: &std_mpsc::Receiver<Piece>, open: &mut usize, wait: Duration) {
+    /// Takes what is left in the pipe until it has ended (its reader
+    /// gone) or `wait` has passed.
+    fn drain(&mut self, pieces: &std_mpsc::Receiver<Vec<u8>>, wait: Duration) {
         let until = Instant::now() + wait;
-        while *open > 0 {
-            let Some(left) = until.checked_duration_since(Instant::now()) else {
-                break;
-            };
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
             match pieces.recv_timeout(left) {
-                Ok(piece) => self.take(piece, open),
+                Ok(bytes) => self.take(&bytes),
                 Err(_) => break,
             }
         }
     }
 
-    fn take(&mut self, piece: Piece, open: &mut usize) {
-        match piece {
-            Piece::Bytes(bytes) => {
-                let lines = self.text.push(&bytes);
-                self.add_output(lines);
-            }
-            Piece::End => *open = open.saturating_sub(1),
-        }
+    fn take(&mut self, bytes: &[u8]) {
+        let lines = self.text.push(bytes);
+        self.add_output(lines);
     }
 
     fn add_output(&mut self, text: String) {
@@ -385,19 +370,14 @@ fn exited(status: ExitStatus) -> HostState {
     }
 }
 
-fn read_pipe(mut stream: impl Read + Send + 'static, sender: std_mpsc::Sender<Piece>) {
+fn read_pipe(mut stream: impl Read + Send + 'static, sender: std_mpsc::Sender<Vec<u8>>) {
     thread::spawn(move || {
         let mut buffer = vec![0; 8192];
-        loop {
-            match stream.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => {
-                    if sender.send(Piece::Bytes(buffer[..read].to_vec())).is_err() {
-                        return;
-                    }
-                }
+        // Returning drops the sender: the receiver then sees the end.
+        while let Ok(read @ 1..) = stream.read(&mut buffer) {
+            if sender.send(buffer[..read].to_vec()).is_err() {
+                return;
             }
         }
-        let _ = sender.send(Piece::End);
     });
 }
