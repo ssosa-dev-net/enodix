@@ -13,8 +13,9 @@ use netterm_core::credentials::{
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::{
-    HostKeyDecision, HostKeyQuestion, LoginPrompt, SessionEvent, SessionId, SessionManager,
-    SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
+    AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
+    NegotiatedAlgorithms, SessionEvent, SessionId, SessionManager, SessionState, SessionTarget,
+    SshAuth, SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{
     EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem, Role,
@@ -186,7 +187,27 @@ enum StateMessage {
         /// Logging in with a password might get past the failure (the SSH
         /// agent did not work).
         offers_password_login: bool,
+        /// The algorithm negotiation failed: what the device offered.
+        negotiation: Option<NegotiationMessage>,
     },
+}
+
+/// A failed algorithm negotiation as the interface shows it.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NegotiationMessage {
+    /// The jump host that failed; `None` for the device.
+    jump_host: Option<String>,
+    /// The first kind of algorithm nothing was in common for.
+    kind: AlgorithmKind,
+    /// What the device (or jump host) offered.
+    offered: AlgorithmLists,
+    /// Whether the session had the legacy-crypto switch on.
+    legacy_crypto: bool,
+    /// Turning the switch on would let the session agree with it.
+    legacy_crypto_would_help: bool,
+    /// The kind nothing would be in common for even with the switch on.
+    unsupported: Option<AlgorithmKind>,
 }
 
 impl From<SessionState> for StateMessage {
@@ -196,6 +217,16 @@ impl From<SessionState> for StateMessage {
             SessionState::Connected => Self::Connected,
             SessionState::Closed(reason) => Self::Closed {
                 offers_password_login: reason.offers_password_login(),
+                negotiation: reason.negotiation_failure().map(|(jump_host, failure)| {
+                    NegotiationMessage {
+                        jump_host: jump_host.map(str::to_owned),
+                        kind: failure.kind,
+                        offered: failure.offered.clone(),
+                        legacy_crypto: failure.legacy_crypto,
+                        legacy_crypto_would_help: failure.legacy_crypto_would_help(),
+                        unsupported: failure.unsupported_even_with_legacy_crypto(),
+                    }
+                }),
                 reason: reason.to_string(),
             },
         }
@@ -549,9 +580,10 @@ fn host_save(shell: State<'_, Shell>, host: Host) -> Result<Edited<()>, String> 
 /// Opens a session. Output arrives on `on_output` as raw bytes, already
 /// batched by the core, state changes on `on_state`, questions the server
 /// asks while logging in on `on_prompt` (answered with `session_answer`),
-/// and host keys to decide on on `on_host_key` (decided with
-/// `session_decide_host_key`); terminal data never goes through the event
-/// system.
+/// host keys to decide on on `on_host_key` (decided with
+/// `session_decide_host_key`), and the algorithms each connection agreed on
+/// (just before `connected`) on `on_algorithms`; terminal data never goes
+/// through the event system.
 /// The interface acknowledges output with `session_acknowledge`.
 // One argument per channel is how Tauri commands receive them.
 #[allow(clippy::too_many_arguments)]
@@ -565,6 +597,7 @@ async fn session_open(
     on_state: Channel<StateMessage>,
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
+    on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
 ) -> Result<u64, String> {
     let target = SessionTarget::Ssh(match target {
         ConnectTarget::Quick {
@@ -578,6 +611,8 @@ async fn session_open(
             username,
             auth: SshAuth::Password(password),
             jump_hosts: Vec::new(),
+            // Quick connections have no settings to switch it on.
+            legacy_crypto: false,
         },
         ConnectTarget::Host {
             id,
@@ -608,6 +643,7 @@ async fn session_open(
                 SessionEvent::State(state) => on_state.send(state.into()),
                 SessionEvent::Prompt(prompt) => on_prompt.send(prompt),
                 SessionEvent::HostKey(question) => on_host_key.send(question),
+                SessionEvent::Algorithms(algorithms) => on_algorithms.send(algorithms),
             };
             // The webview is gone; dropping the events closes the session.
             if delivered.is_err() {

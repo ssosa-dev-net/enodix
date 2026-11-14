@@ -2,7 +2,7 @@
 //! tried by hand without a real device:
 //!
 //! ```text
-//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>]
+//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>]
 //! ```
 //!
 //! Then quick-connect to 127.0.0.1 on that port with the printed login.
@@ -10,14 +10,17 @@
 //! code (keyboard-interactive). With `--agent`, an SSH agent holding a key
 //! the server accepts also listens at the given named pipe (Windows) or
 //! Unix socket: point `SSH_AUTH_SOCK` at it to log in with an agent
-//! profile. The shell behind it is scripted; see `tests/support/mod.rs`
-//! for its commands.
+//! profile. With `--old-device`, a second server with the same login
+//! listens on the given port, restricted to an old device's algorithms
+//! (`support::algorithms::old_device`): it is reached only with the
+//! legacy-crypto switch on. The shell behind it is scripted; see
+//! `tests/support/mod.rs` for its commands.
 
 #[path = "../tests/support/mod.rs"]
 mod support;
 
 fn usage() -> ! {
-    eprintln!("usage: test_ssh_server [port] [--agent <pipe or socket>]");
+    eprintln!("usage: test_ssh_server [port] [--agent <pipe or socket>] [--old-device <port>]");
     std::process::exit(2);
 }
 
@@ -25,15 +28,29 @@ fn usage() -> ! {
 async fn main() {
     let mut port = 2222;
     let mut agent_path = None;
+    let mut old_device_port = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--agent" {
             agent_path = Some(args.next().unwrap_or_else(|| usage()));
+        } else if arg == "--old-device" {
+            let port = args.next().unwrap_or_else(|| usage());
+            old_device_port = Some(port.parse().unwrap_or_else(|_| usage()));
         } else {
             port = arg.parse().unwrap_or_else(|_| usage());
         }
     }
     let server = support::TestSshServer::start_on(port).await;
+    let old_device = match old_device_port {
+        Some(port) => Some(
+            support::TestSshServer::start_on_with_algorithms(
+                port,
+                support::algorithms::old_device(),
+            )
+            .await,
+        ),
+        None => None,
+    };
     let _agent = match agent_path {
         Some(path) => {
             let agent = support::agent::TestAgent::start_at(
@@ -57,5 +74,11 @@ async fn main() {
         support::PASSWORD,
         support::ONE_TIME_CODE,
     );
+    if let Some(old_device) = &old_device {
+        println!(
+            "old device (legacy algorithms only) listening on 127.0.0.1:{}",
+            old_device.port()
+        );
+    }
     std::future::pending::<()>().await;
 }

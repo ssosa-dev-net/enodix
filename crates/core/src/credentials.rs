@@ -473,6 +473,7 @@ impl<'a> Profiles<'a> {
                     port: target.port,
                     username: target.username,
                     auth: target.auth,
+                    legacy_crypto: target.legacy_crypto,
                 })
             })
             .collect()

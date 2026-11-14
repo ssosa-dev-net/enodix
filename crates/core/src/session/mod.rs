@@ -7,7 +7,9 @@
 //! output pipeline: batching and flow control (see [`OutputOptions`]).
 
 mod agent;
+mod algorithms;
 mod output;
+mod recording;
 mod ssh;
 
 use std::collections::HashMap;
@@ -19,6 +21,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::mpsc;
 
 use crate::known_hosts::{HostKey, KnownHosts};
+pub use algorithms::{
+    is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
+    NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
+};
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
 
@@ -54,6 +60,9 @@ pub struct SshTarget {
     /// it (a `direct-tcpip` channel), and the target through the last.
     /// Empty: the target is reached directly.
     pub jump_hosts: Vec<JumpHost>,
+    /// Also offer the outdated algorithms old equipment needs
+    /// ([`LEGACY_ALGORITHMS`]) to the target; jump hosts have their own.
+    pub legacy_crypto: bool,
 }
 
 /// An SSH host a session tunnels through, with its own login. Its host
@@ -66,6 +75,9 @@ pub struct JumpHost {
     pub port: u16,
     pub username: String,
     pub auth: SshAuth,
+    /// Also offer the outdated algorithms ([`LEGACY_ALGORITHMS`]) to this
+    /// jump host.
+    pub legacy_crypto: bool,
 }
 
 /// How an SSH session proves who the user is. `Debug` leaves the secrets
@@ -136,6 +148,11 @@ pub enum SessionEvent {
     /// trusted for it: the first connection, or a changed key. Nothing goes
     /// on until [`SessionManager::decide_host_key`] (or closing) decides.
     HostKey(HostKeyQuestion),
+    /// The algorithms each connection of the session agreed on, in connect
+    /// order (jump hosts first, the device last). Sent once, just before
+    /// [`SessionState::Connected`]; a session using any of the outdated
+    /// [`LEGACY_ALGORITHMS`] says so in [`NegotiatedAlgorithms::legacy`].
+    Algorithms(Vec<NegotiatedAlgorithms>),
 }
 
 /// Whether to trust a host key the server presented.
@@ -253,6 +270,10 @@ pub enum OpenError {
     /// The device was reached but the session could not be set up.
     #[error("could not open the session: {0}")]
     Protocol(String),
+    /// The device and the session had no algorithm in common for some
+    /// kind (an old device, say): says what the device offered.
+    #[error("{0}")]
+    Negotiation(NegotiationFailure),
     /// A jump host on the way failed: `error` says how (unreachable,
     /// login refused, host key not trusted, ...). A device a jump host
     /// cannot reach is a [`OpenError::Connect`] of the device instead.
@@ -287,6 +308,20 @@ impl CloseReason {
     /// server accepts.
     pub fn offers_password_login(&self) -> bool {
         matches!(self, Self::Failed(OpenError::Agent(_)))
+    }
+
+    /// The failed algorithm negotiation that ended the session, with the
+    /// device's or the jump host's name: `None` for the device, else the
+    /// [`JumpHost::name`].
+    pub fn negotiation_failure(&self) -> Option<(Option<&str>, &NegotiationFailure)> {
+        match self {
+            Self::Failed(OpenError::Negotiation(failure)) => Some((None, failure)),
+            Self::Failed(OpenError::JumpHost { name, error }) => match error.as_ref() {
+                OpenError::Negotiation(failure) => Some((Some(name), failure)),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 }
 
@@ -538,6 +573,10 @@ impl Link {
     fn output(&mut self, bytes: Vec<u8>) -> bool {
         self.flow.read(bytes.len());
         self.events.send(SessionEvent::Output(bytes)).is_ok()
+    }
+
+    fn algorithms(&mut self, algorithms: Vec<NegotiatedAlgorithms>) {
+        let _ = self.events.send(SessionEvent::Algorithms(algorithms));
     }
 
     fn state(&mut self, state: SessionState) {
