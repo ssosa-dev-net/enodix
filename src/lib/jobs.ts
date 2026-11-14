@@ -70,9 +70,18 @@ export function planJob(target: JobTarget, step: JobStep) {
   return invoke<JobPlan>("job_plan", { target, step });
 }
 
-/** Starts the job last planned; returns its id. */
-export function startJob(onEvent: (event: JobEvent) => void) {
+/** How many hosts a job runs at once unless the user says otherwise. */
+export const DEFAULT_PARALLEL = 10;
+/** The most hosts a job may run at once. */
+export const MAX_PARALLEL = 50;
+
+/**
+ * Starts the job last planned, at most `parallel` hosts at once (1 to
+ * `MAX_PARALLEL`); returns its id.
+ */
+export function startJob(parallel: number, onEvent: (event: JobEvent) => void) {
   return invoke<number>("job_start", {
+    parallel,
     onEvent: new Channel<JobEvent>(onEvent),
   });
 }

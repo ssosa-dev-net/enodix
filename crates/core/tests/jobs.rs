@@ -41,10 +41,16 @@ fn workspace(files: &[(&str, String)]) -> (TempDir, Workspace) {
     (temp, workspace)
 }
 
-/// A host file for a device-mode server on the loopback address.
+/// A host file for a device-mode server on the loopback address, driven
+/// by the frr definition.
 fn device(server: &TestSshServer, extra: &str) -> String {
+    device_on(server, "frr", extra)
+}
+
+/// A host file for a device-mode server, driven by `platform`.
+fn device_on(server: &TestSshServer, platform: &str, extra: &str) -> String {
     format!(
-        "address: 127.0.0.1\nport: {}\nplatform: frr\n{extra}",
+        "address: 127.0.0.1\nport: {}\nplatform: {platform}\n{extra}",
         server.port()
     )
 }
@@ -195,7 +201,7 @@ async fn a_snippet_runs_on_every_host_of_a_folder_with_its_own_values() {
         assert_eq!(
             host.output,
             format!(
-                "{name}# echo host {name} vlan {vlan}\nhost {name} vlan {vlan}\n{name}# colors\ndown up\n{name}#\n"
+                "{name}# terminal length 0\n{name}# echo host {name} vlan {vlan}\nhost {name} vlan {vlan}\n{name}# colors\ndown up\n{name}#\n"
             )
         );
         assert_eq!(
@@ -517,23 +523,37 @@ async fn an_unreachable_host_fails_and_the_others_run() {
     );
 }
 
-/// Cancelling closes the job's sessions: a host still waiting for its
-/// prompt ends cancelled, keeping the output it had.
+/// Cancelling closes every session of the run: a host still waiting for
+/// its prompt and a host still waiting for room end cancelled, the one
+/// waiting for its prompt keeping the output it had; a host that finished
+/// first stays done.
 #[tokio::test]
 async fn a_cancelled_job_keeps_the_output_collected() {
     let r1 = TestSshServer::start_device("r1").await;
+    let r2 = TestSshServer::start_device("r2").await;
+    let r3 = TestSshServer::start_device("r3").await;
     let (_temp, workspace) = workspace(&[
-        ("r1.yaml", device(&r1, "credential_profile: lab\n")),
-        ("_snippets.yaml", "Flood: flood\n".into()),
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("r1.yaml", device(&r1, "custom:\n  command: echo hi\n")),
+        ("r2.yaml", device(&r2, "custom:\n  command: flood\n")),
+        ("r3.yaml", device(&r3, "custom:\n  command: echo hi\n")),
+        ("_snippets.yaml", "Run: \"{{command}}\"\n".into()),
     ]);
     let store = store(&workspace, &[profile("lab", USERNAME)]);
-    let planned = plan(&workspace, &store, &folder(""), &snippet("Flood", &[]));
+    let planned = plan(&workspace, &store, &folder(""), &snippet("Run", &[]));
+    assert_eq!(ids(&planned), ["r1.yaml", "r2.yaml", "r3.yaml"]);
 
-    let mut job = job::start(&support::manager(), planned, JobOptions::default()).unwrap();
+    let options = JobOptions {
+        parallel: 1,
+        ..JobOptions::default()
+    };
+    let mut job = job::start(&support::manager(), planned, options).unwrap();
+    let mut states: BTreeMap<HostId, Vec<HostState>> = BTreeMap::new();
     let report = tokio::time::timeout(WAIT, async {
         loop {
             match job.next().await.expect("the job ended without a report") {
                 JobEvent::Output { text, .. } if text.contains("flood flood") => job.cancel(),
+                JobEvent::State { host, state } => states.entry(host).or_default().push(state),
                 JobEvent::Finished(report) => return report,
                 _ => {}
             }
@@ -541,11 +561,304 @@ async fn a_cancelled_job_keeps_the_output_collected() {
     })
     .await
     .expect("the cancelled job did not finish");
-    let host = result(&report, "r1.yaml");
-    assert_eq!(host.state, HostState::Cancelled);
+
+    let done = result(&report, "r1.yaml");
+    assert_eq!(done.state, HostState::Done);
+    assert!(done.output.contains("\nhi\n"), "{}", done.output);
+    let flooding = result(&report, "r2.yaml");
+    assert_eq!(flooding.state, HostState::Cancelled);
     assert!(
-        host.output.starts_with("r1# flood\nflood flood"),
+        flooding
+            .output
+            .starts_with("r2# terminal length 0\nr2# flood\nflood flood"),
         "{}",
-        &host.output[..80]
+        &flooding.output[..80]
     );
+    let waiting = result(&report, "r3.yaml");
+    assert_eq!(waiting.state, HostState::Cancelled);
+    assert_eq!(waiting.output, "");
+    assert_eq!(
+        states[&HostId::new("r3.yaml")],
+        [HostState::Waiting, HostState::Cancelled]
+    );
+    assert_eq!(r3.connections(), 0, "a waiting host never connects");
+    for server in [&r1, &r2] {
+        closes(server).await;
+    }
+}
+
+/// Waits until `server` has no connection open.
+async fn closes(server: &TestSshServer) {
+    tokio::time::timeout(WAIT, async {
+        while server.connections_open() > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("a job session stayed open");
+}
+
+/// Runs `plan` with `options` to the end; its report.
+async fn run_with(manager: &SessionManager, plan: JobPlan, options: JobOptions) -> JobReport {
+    let mut job = job::start(manager, plan, options).unwrap();
+    tokio::time::timeout(WAIT * 3, async {
+        loop {
+            if let JobEvent::Finished(report) =
+                job.next().await.expect("the job ended without a report")
+            {
+                return report;
+            }
+        }
+    })
+    .await
+    .expect("the job did not finish in time")
+}
+
+/// The EOS definition has a privilege command and password question: the
+/// job enters privileged mode with the profile's enable secret, and fails
+/// a host whose profile has none, or one the device refuses (asking again,
+/// or at once back at the unprivileged prompt). A device already
+/// privileged is not asked.
+#[tokio::test]
+async fn privileged_mode_is_entered_with_the_enable_secret() {
+    let r1 = TestSshServer::start_unprivileged_device("r1").await;
+    let r2 = TestSshServer::start_unprivileged_device("r2").await;
+    let r3 = TestSshServer::start_unprivileged_device("r3").await;
+    let r4 = TestSshServer::start_device("r4").await;
+    let r5 = TestSshServer::start_unprivileged_device("r5").await;
+    let (_temp, workspace) = workspace(&[
+        (
+            "r1.yaml",
+            device_on(&r1, "eos", "credential_profile: enable\n"),
+        ),
+        (
+            "r2.yaml",
+            device_on(&r2, "eos", "credential_profile: plain\n"),
+        ),
+        (
+            "r3.yaml",
+            device_on(&r3, "eos", "credential_profile: wrong\n"),
+        ),
+        (
+            "r4.yaml",
+            device_on(&r4, "eos", "credential_profile: plain\n"),
+        ),
+        (
+            "r5.yaml",
+            device_on(&r5, "eos", "credential_profile: denied\n"),
+        ),
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+    ]);
+    let with_secret = |name: &str, secret: &str| CredentialProfile {
+        enable_secret: Some(secret.into()),
+        ..profile(name, USERNAME)
+    };
+    let store = store(
+        &workspace,
+        &[
+            with_secret("enable", support::ENABLE_SECRET),
+            profile("plain", USERNAME),
+            with_secret("wrong", "open sesame"),
+            with_secret("denied", support::DENIED_SECRET),
+        ],
+    );
+    let planned = plan(&workspace, &store, &folder(""), &snippet("Show", &[]));
+    assert!(planned.hosts.iter().all(|host| host.platform == "eos"));
+    assert!(!format!("{planned:?}").contains(support::ENABLE_SECRET));
+
+    let report = run_with(&support::manager(), planned, JobOptions::default()).await;
+    let r1 = result(&report, "r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    assert_eq!(
+        r1.output,
+        "r1> enable\nPassword:\nr1# terminal length 0\nr1# show hostname\nr1\nr1#\n"
+    );
+    let reason = failure(&report, "r2.yaml");
+    assert!(
+        reason.contains("\"enable\" asked for a password")
+            && reason.contains("profile plain has no enable secret"),
+        "{reason}"
+    );
+    let reason = failure(&report, "r3.yaml");
+    assert!(
+        reason.contains("refused the enable secret of the credential profile wrong"),
+        "{reason}"
+    );
+    assert!(!result(&report, "r3.yaml").output.contains("open sesame"));
+    let r4 = result(&report, "r4.yaml");
+    assert_eq!(r4.state, HostState::Done, "{}", r4.output);
+    assert!(r4.output.starts_with("r4# enable\nr4# terminal length 0\n"));
+    let reason = failure(&report, "r5.yaml");
+    assert!(
+        reason.contains("refused the enable secret of the credential profile denied"),
+        "{reason}"
+    );
+    assert!(result(&report, "r5.yaml")
+        .output
+        .contains(support::ACCESS_DENIED));
+}
+
+/// A snippet line that makes the device ask for a password fails the host
+/// at the question; the next line is never typed into it.
+#[tokio::test]
+async fn a_snippet_line_asking_for_a_password_fails_its_host() {
+    let r1 = TestSshServer::start_device("r1").await;
+    let (_temp, workspace) = workspace(&[
+        (
+            "r1.yaml",
+            device_on(&r1, "eos", "credential_profile: lab\n"),
+        ),
+        (
+            "_snippets.yaml",
+            "Down: \"disable\\nenable\\nshow hostname\"\n".into(),
+        ),
+    ]);
+    let store = store(&workspace, &[profile("lab", USERNAME)]);
+    let planned = plan(&workspace, &store, &folder(""), &snippet("Down", &[]));
+    let report = run_with(&support::manager(), planned, JobOptions::default()).await;
+    let reason = failure(&report, "r1.yaml");
+    assert!(
+        reason.starts_with("\"enable\" asked for a password"),
+        "{reason}"
+    );
+    assert!(!result(&report, "r1.yaml").output.contains("show hostname"));
+}
+
+/// Output the device pages is captured whole once the definition's
+/// disable-paging command has turned paging off; without that command the
+/// device stops at `--More--`, and the host fails after the command
+/// timeout.
+#[tokio::test]
+async fn paged_output_is_captured_whole_after_paging_is_turned_off() {
+    let r1 = TestSshServer::start_device("r1").await;
+    let r2 = TestSshServer::start_device("r2").await;
+    let (_temp, workspace) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("r1.yaml", device(&r1, "")),
+        ("r2.yaml", device_on(&r2, "pager", "")),
+        (
+            "_platforms.yaml",
+            "pager:\n  prompt: '[\\w.\\-]+#'\n".into(),
+        ),
+        ("_snippets.yaml", "Long: lines 60\n".into()),
+    ]);
+    let store = store(&workspace, &[profile("lab", USERNAME)]);
+    let planned = plan(&workspace, &store, &folder(""), &snippet("Long", &[]));
+    assert_eq!(planned.hosts.len(), 2);
+
+    let options = JobOptions {
+        command_timeout: std::time::Duration::from_secs(1),
+        ..JobOptions::default()
+    };
+    let report = run_with(&support::manager(), planned, options).await;
+    let r1 = result(&report, "r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    let all: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    assert_eq!(
+        r1.output,
+        format!("r1# terminal length 0\nr1# lines 60\n{all}r1#\n")
+    );
+    let reason = failure(&report, "r2.yaml");
+    assert_eq!(reason, "no prompt within 1 s after \"lines 60\"");
+    let r2 = result(&report, "r2.yaml");
+    assert!(r2.output.contains("line 24\n"), "{}", r2.output);
+    assert!(!r2.output.contains("line 25\n"), "{}", r2.output);
+    assert!(r2.output.contains(support::MORE.trim()), "{}", r2.output);
+}
+
+/// A command that never gives the prompt back fails its host after the
+/// command timeout, closing its session; the other host is done.
+#[tokio::test]
+async fn a_command_that_never_returns_fails_only_its_host() {
+    let r1 = TestSshServer::start_device("r1").await;
+    let r2 = TestSshServer::start_device("r2").await;
+    let (_temp, workspace) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("r1.yaml", device(&r1, "custom:\n  command: hang\n")),
+        (
+            "r2.yaml",
+            device(&r2, "custom:\n  command: show hostname\n"),
+        ),
+        (
+            "_snippets.yaml",
+            "Run: \"{{command}}\\necho after\"\n".into(),
+        ),
+    ]);
+    let store = store(&workspace, &[profile("lab", USERNAME)]);
+    let planned = plan(&workspace, &store, &folder(""), &snippet("Run", &[]));
+    assert_eq!(
+        JobOptions::default().command_timeout,
+        std::time::Duration::from_secs(60)
+    );
+
+    let options = JobOptions {
+        command_timeout: std::time::Duration::from_secs(1),
+        ..JobOptions::default()
+    };
+    let report = run_with(&support::manager(), planned, options).await;
+    assert_eq!(
+        failure(&report, "r1.yaml"),
+        "no prompt within 1 s after \"hang\""
+    );
+    assert!(!result(&report, "r1.yaml").output.contains("after"));
+    let r2 = result(&report, "r2.yaml");
+    assert_eq!(r2.state, HostState::Done, "{}", r2.output);
+    assert!(r2.output.contains("\nafter\n"), "{}", r2.output);
+    closes(&r1).await;
+}
+
+/// Hosts that all lead to one server: the server never has more
+/// connections open at once than the job's parallel limit, 10 unless the
+/// run says otherwise.
+#[tokio::test]
+async fn no_more_hosts_than_the_parallel_limit_connect_at_once() {
+    for (parallel, hosts) in [(Some(2), 5), (None, 12)] {
+        let server = TestSshServer::start_device("r").await;
+        let mut files = vec![
+            ("_folder.yaml", "credential_profile: lab\n".to_string()),
+            ("_snippets.yaml", "Slow: pause 300\n".to_string()),
+        ];
+        let names: Vec<String> = (1..=hosts).map(|n| format!("r{n:02}.yaml")).collect();
+        for name in &names {
+            files.push((name.as_str(), device(&server, "")));
+        }
+        let (_temp, workspace) = workspace(&files);
+        let store = store(&workspace, &[profile("lab", USERNAME)]);
+        let planned = plan(&workspace, &store, &folder(""), &snippet("Slow", &[]));
+        assert_eq!(planned.hosts.len(), hosts);
+        for refused in [0, job::MAX_PARALLEL + 1] {
+            let options = JobOptions {
+                parallel: refused,
+                ..JobOptions::default()
+            };
+            assert!(matches!(
+                job::start(&support::manager(), planned.clone(), options),
+                Err(StartError::Parallel(n)) if n == refused
+            ));
+        }
+
+        let options = match parallel {
+            Some(parallel) => JobOptions {
+                parallel,
+                ..JobOptions::default()
+            },
+            None => JobOptions::default(),
+        };
+        let report = run_with(&support::manager(), planned, options).await;
+        assert!(
+            report
+                .hosts
+                .iter()
+                .all(|host| host.state == HostState::Done),
+            "{report:?}"
+        );
+        assert_eq!(server.connections(), hosts);
+        assert_eq!(
+            server.most_connections_open(),
+            parallel.unwrap_or(job::DEFAULT_PARALLEL)
+        );
+        closes(&server).await;
+    }
+    assert_eq!(job::DEFAULT_PARALLEL, 10);
+    assert_eq!(job::MAX_PARALLEL, 50);
 }

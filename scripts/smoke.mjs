@@ -2639,7 +2639,9 @@ async function nornirImport({ evaluate, fillForm, text, screenshot, step }) {
  * skipped hosts with their reasons and asks once for the production host;
  * an untrusted host key fails the host (a job never trusts a key); once the
  * key is trusted in a terminal, the job runs and shows the device's plain
- * output. The second run starts from the host's side panel.
+ * output. The second run starts from the host's side panel, one host at a
+ * time (#43: the frr definition turns paging off first). A third run of a
+ * command that never returns is cancelled, keeping its output.
  */
 async function jobs({
   evaluate,
@@ -2711,7 +2713,7 @@ async function jobs({
   );
   writeFileSync(
     snippetsFile,
-    `${savedSnippets ?? ""}Job check: "show hostname\\necho site {{site}}\\n"\n`,
+    `${savedSnippets ?? ""}Job check: "show hostname\\necho site {{site}}\\n"\nJob hang: hang\n`,
   );
   const folderRow = 'nav button[data-item=folder][data-path="Jobs"]';
   await until("the Jobs folder in the tree", () => exists(folderRow));
@@ -2727,13 +2729,22 @@ async function jobs({
     await clickOn(".side [data-folder-run-snippet]");
     await until("the run-snippet dialog", () => atStep("snippet"));
   };
-  /** Picks the snippet, answers the variable, and checks pre-flight. */
-  const preflight = async (expectSkipped) => {
-    await evaluate(`(() => {
+  const pickSnippet = (name) =>
+    evaluate(`(() => {
       const select = document.querySelector("${dialog} [name=job-snippet]");
-      select.value = "Job check";
+      select.value = ${json(name)};
       select.dispatchEvent(new Event("change", { bubbles: true }));
     })()`);
+  /** Sets how many hosts run at once. */
+  const setParallel = (value) =>
+    evaluate(`(() => {
+      const input = document.querySelector("${dialog} [name=job-parallel]");
+      input.value = ${json(String(value))};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+  /** Picks the snippet, answers the variable, and checks pre-flight. */
+  const preflight = async (expectSkipped) => {
+    await pickSnippet("Job check");
     await until("the snippet's text shown", async () =>
       (await text(`${dialog} [data-job-snippet-text]`)).includes(
         "echo site {{site}}",
@@ -2766,6 +2777,10 @@ async function jobs({
     if (plan.production !== "jobs-r1" || !plan.startDisabled) {
       fail(`the production host must be confirmed first: ${json(plan)}`);
     }
+    const parallel = await evaluate(
+      `document.querySelector("${dialog} [name=job-parallel]").value`,
+    );
+    if (parallel !== "10") fail(`hosts at once starts at ${parallel}, not 10`);
     await clickOn(`${dialog} [name=job-confirm-production]`);
     await until("the start button enabled", () =>
       evaluate(
@@ -2773,6 +2788,8 @@ async function jobs({
       ),
     );
   };
+  const startDisabled = () =>
+    evaluate(`document.querySelector("${dialog} [data-job=start]").disabled`);
   const finished = async () => {
     await until("the job finished", () =>
       exists(`${dialog} [data-job-progress][data-finished]`),
@@ -2836,9 +2853,20 @@ async function jobs({
     await clickOn(".side [data-host-run-snippet]");
     await until("the run-snippet dialog for the host", () => atStep("snippet"));
     await preflight({});
+    // Hosts at once: 1 to 50.
+    for (const refused of ["0", "51"]) {
+      await setParallel(refused);
+      await until(`${refused} hosts at once refused`, startDisabled);
+    }
+    await setParallel(1);
+    await until(
+      "one host at once accepted",
+      async () => !(await startDisabled()),
+    );
     await clickOn(`${dialog} [data-job=start]`);
     const ran = await finished();
     const expected = [
+      "lab-r1# terminal length 0",
       "lab-r1# show hostname",
       "lab-r1",
       "lab-r1# echo site lab-site",
@@ -2850,7 +2878,40 @@ async function jobs({
     }
     if (ran.output.includes("\u001b")) fail("the job's output has escapes");
     await screenshot("job-done");
-    step("the job logged in by itself and showed the device's plain output");
+    step(
+      "the job turned paging off, logged in by itself and showed the device's plain output",
+    );
+    await clickOn(`${dialog} [data-job=close]`);
+    await until("the job dialog closed", async () => !(await exists(dialog)));
+
+    // A command that never returns: cancelled, its output kept.
+    await clickOn(".side [data-host-run-snippet]");
+    await until("the run-snippet dialog again", () => atStep("snippet"));
+    await pickSnippet("Job hang");
+    await until("the hang snippet shown", async () =>
+      (await text(`${dialog} [data-job-snippet-text]`)).includes("hang"),
+    );
+    await clickOn(`${dialog} [data-job=plan]`);
+    await until("the pre-flight list", () => atStep("preflight"));
+    await clickOn(`${dialog} [name=job-confirm-production]`);
+    await until(
+      "the start button enabled",
+      async () => !(await startDisabled()),
+    );
+    await clickOn(`${dialog} [data-job=start]`);
+    const hostOutput = `${dialog} [data-job-output="Jobs/jobs-r1.yaml"]`;
+    await until("the hang command sent", async () =>
+      (await text(hostOutput)).includes("lab-r1# hang"),
+    );
+    await clickOn(`${dialog} [data-job=cancel]`);
+    const cancelled = await finished();
+    if (
+      cancelled.state !== "cancelled" ||
+      !cancelled.output.includes("lab-r1# hang")
+    ) {
+      fail(`the cancelled job's result: ${json(cancelled)}`);
+    }
+    step("a cancelled job marked its host cancelled and kept its output");
     await clickOn(`${dialog} [data-job=close]`);
     await until("the job dialog closed", async () => !(await exists(dialog)));
   } finally {

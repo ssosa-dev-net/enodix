@@ -1209,22 +1209,27 @@ fn job_plan(
 }
 
 /// Starts the job last planned, with its own sessions (never logged, never
-/// a terminal's). Its progress arrives on `on_event` until `finished`;
-/// returns its id, for `job_cancel`.
+/// a terminal's), at most `parallel` hosts at once (default 10). Its
+/// progress arrives on `on_event` until `finished`; returns its id, for
+/// `job_cancel`.
 #[tauri::command]
 async fn job_start(
     manager: State<'_, SessionManager>,
     plans: State<'_, JobPlans>,
     jobs: State<'_, Arc<RunningJobs>>,
+    parallel: Option<usize>,
     on_event: Channel<JobEvent>,
 ) -> Result<u64, String> {
-    let plan = plans
-        .0
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take()
-        .ok_or("no job has been planned")?;
-    let mut job = job::start(&manager, plan, JobOptions::default()).map_err(|e| e.to_string())?;
+    let mut plans = plans.0.lock().unwrap_or_else(PoisonError::into_inner);
+    let plan = plans.as_ref().ok_or("no job has been planned")?.clone();
+    let options = JobOptions {
+        parallel: parallel.unwrap_or(job::DEFAULT_PARALLEL),
+        ..JobOptions::default()
+    };
+    let mut job = job::start(&manager, plan, options).map_err(|e| e.to_string())?;
+    // Started: the plan is used up (a refused start keeps it).
+    plans.take();
+    drop(plans);
     let id = jobs.next.fetch_add(1, Ordering::Relaxed);
     jobs.cancellers().insert(id, job.canceller());
     let jobs = Arc::clone(&jobs);
