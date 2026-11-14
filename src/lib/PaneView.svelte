@@ -13,6 +13,8 @@
     /** The host's environment, which colours the tab; null: none. */
     environment: Environment | null;
     state: "connecting" | "connected" | "disconnected";
+    /** Whether the tab is in the multi-send group. */
+    member: boolean;
   }
 
   export interface PaneHandlers {
@@ -134,7 +136,12 @@
               data-tab={tab}
               data-tab-state={info.state}
               data-environment={info.environment}
-              title={`${info.title} (${STATE_TEXT[info.state]}${info.environment ? `, ${ENVIRONMENT_NAMES[info.environment]}` : ""})`}
+              data-multi-send={info.member
+                ? info.state === "connected"
+                  ? "receiving"
+                  : "not-receiving"
+                : undefined}
+              title={`${info.title} (${STATE_TEXT[info.state]}${info.environment ? `, ${ENVIRONMENT_NAMES[info.environment]}` : ""}${info.member ? ", in the multi-send group" : ""})`}
               style:--role-color={info.role?.color}
               {@attach (element) => {
                 // The shown tab stays in sight when the tabs overflow.
@@ -167,6 +174,9 @@
                 <span class="role"><RoleIcon role={info.role} /></span>
               {/if}
               <span class="name" data-tab-name>{info.name}</span>
+              {#if info.member}
+                <span class="member" data-tab-multi-send>MULTI</span>
+              {/if}
               {#if info.environment === "production"}
                 <span class="production" data-tab-production>PROD</span>
               {/if}
@@ -353,6 +363,27 @@
     font-size: 0.65rem;
     font-weight: 700;
     letter-spacing: 0.04em;
+  }
+
+  .member {
+    flex: 0 0 auto;
+    padding: 0 0.3rem;
+    border: 1px solid var(--multi-send);
+    border-radius: 3px;
+    color: var(--multi-send);
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .tab[data-multi-send] {
+    outline: 1px dashed var(--multi-send);
+    outline-offset: -2px;
+  }
+
+  .tab[data-multi-send="not-receiving"] .member {
+    border-style: dashed;
+    opacity: 0.7;
   }
 
   .tab.dragging {

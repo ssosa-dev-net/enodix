@@ -9,10 +9,19 @@
 //!
 //! Every change raises [`Layout::revision`]; an edit naming a tab or pane that
 //! does not exist is refused and changes nothing.
+//!
+//! The layout also holds the window's one multi-send group (#35): the tabs
+//! whose typing reaches every member. Closing a tab takes it out; moving it
+//! keeps it; new tabs start outside. To route input, each tab can be told
+//! the session it shows ([`Layout::attach_session`]); see
+//! [`Layout::input_targets`].
 
+use std::collections::HashMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+
+use crate::session::SessionId;
 
 /// A tab, unique for the life of its [`Layout`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -89,9 +98,14 @@ pub enum LayoutError {
 pub struct Layout {
     root: Node,
     active_pane: PaneId,
+    /// The multi-send group's tabs, in the order they joined.
+    group: Vec<TabId>,
     revision: u64,
     #[serde(skip)]
     next_id: u64,
+    /// The session each tab shows, once known.
+    #[serde(skip)]
+    sessions: HashMap<TabId, SessionId>,
 }
 
 impl Default for Layout {
@@ -107,8 +121,10 @@ impl Layout {
         Self {
             root: Node::Pane(empty_pane(pane)),
             active_pane: pane,
+            group: Vec::new(),
             revision: 0,
             next_id: 2,
+            sessions: HashMap::new(),
         }
     }
 
@@ -236,6 +252,7 @@ impl Layout {
         if pane.tabs.is_empty() {
             self.remove_pane_if_not_last(pane_id);
         }
+        self.forget(tab);
         self.changed();
         Ok(())
     }
@@ -248,6 +265,7 @@ impl Layout {
         take_tab(pane, tab);
         pane.active = None;
         self.active_pane = pane_id;
+        self.forget(tab);
         self.changed();
         Ok(())
     }
@@ -331,6 +349,78 @@ impl Layout {
         }
         self.changed();
         Ok(())
+    }
+
+    /// The multi-send group's tabs, in the order they joined.
+    pub fn group(&self) -> &[TabId] {
+        &self.group
+    }
+
+    /// Whether `tab` is in the multi-send group.
+    pub fn in_group(&self, tab: TabId) -> bool {
+        self.group.contains(&tab)
+    }
+
+    /// Adds `tab` to the multi-send group (nothing changes if it is in it).
+    pub fn join_group(&mut self, tab: TabId) -> Result<(), LayoutError> {
+        self.find_tab(tab)?;
+        if !self.in_group(tab) {
+            self.group.push(tab);
+            self.changed();
+        }
+        Ok(())
+    }
+
+    /// Takes `tab` out of the multi-send group (nothing changes if it is
+    /// not in it).
+    pub fn leave_group(&mut self, tab: TabId) -> Result<(), LayoutError> {
+        self.find_tab(tab)?;
+        if self.in_group(tab) {
+            self.group.retain(|&member| member != tab);
+            self.changed();
+        }
+        Ok(())
+    }
+
+    /// Ends the multi-send group: no tab is in it any more.
+    pub fn end_group(&mut self) {
+        if !self.group.is_empty() {
+            self.group.clear();
+            self.changed();
+        }
+    }
+
+    /// Records that `tab` shows `session` (a reconnect keeps the same
+    /// session). Not part of what the interface is sent, so the revision
+    /// stays.
+    pub fn attach_session(&mut self, tab: TabId, session: SessionId) -> Result<(), LayoutError> {
+        self.find_tab(tab)?;
+        self.sessions.insert(tab, session);
+        Ok(())
+    }
+
+    /// The sessions that input typed or pasted in `session` goes to: every
+    /// member's session (in the order they joined) if its tab is in the
+    /// multi-send group, else only `session` itself. Members whose session
+    /// is not known yet are left out.
+    pub fn input_targets(&self, session: SessionId) -> Vec<SessionId> {
+        let member = self
+            .group
+            .iter()
+            .any(|tab| self.sessions.get(tab) == Some(&session));
+        if !member {
+            return vec![session];
+        }
+        self.group
+            .iter()
+            .filter_map(|tab| self.sessions.get(tab).copied())
+            .collect()
+    }
+
+    /// Drops what the layout knew about a tab that is gone.
+    fn forget(&mut self, tab: TabId) {
+        self.group.retain(|&member| member != tab);
+        self.sessions.remove(&tab);
     }
 
     fn step(&mut self, by: isize) {

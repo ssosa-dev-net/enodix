@@ -28,6 +28,11 @@ export type LayoutNode = PaneNode | SplitNode;
 export interface Layout {
   root: LayoutNode;
   activePane: PaneId;
+  /**
+   * The multi-send group's tabs, in the order they joined: what is typed
+   * or pasted in one of them reaches them all (the shell routes it).
+   */
+  group: TabId[];
   /** Raised by every change: an older layout is out of date. */
   revision: number;
 }
@@ -46,7 +51,10 @@ export type LayoutEdit =
   /** `index` counts the target pane's other tabs. */
   | { kind: "moveTab"; tab: TabId; pane: PaneId; index: number }
   | { kind: "split"; pane: PaneId; direction: SplitDirection }
-  | { kind: "closePane"; pane: PaneId };
+  | { kind: "closePane"; pane: PaneId }
+  | { kind: "joinGroup"; tab: TabId }
+  | { kind: "leaveGroup"; tab: TabId }
+  | { kind: "endGroup" };
 
 export interface LayoutChanged {
   layout: Layout;

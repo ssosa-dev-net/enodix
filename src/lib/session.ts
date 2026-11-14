@@ -3,6 +3,7 @@
 // shell, which forwards to the core.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { TabId } from "./layout";
 import type { FlowControl, Parity } from "./workspace";
 
 export interface QuickConnectTarget {
@@ -151,6 +152,13 @@ export interface Session {
   /** Whether its traffic is encrypted on the network (telnet's is not). */
   readonly encrypted: boolean;
   readonly transport: Transport;
+  /**
+   * What the user typed or pasted: the shell sends it to every member of
+   * the multi-send group if this session's tab is in it, else to this
+   * session only.
+   */
+  input(data: Uint8Array): void;
+  /** Input for this session alone (the terminal's replies, mouse reports). */
   write(data: Uint8Array): void;
   /** Sends a break on the line (serial sessions only). */
   sendBreak(): void;
@@ -258,9 +266,13 @@ interface Opened {
   transport: Transport;
 }
 
-/** Opens a session, to a target or as a copy of another session. */
+/**
+ * Opens a session, to a target or as a copy of another session, for the
+ * layout's tab `tab` (so the shell knows where its input goes).
+ */
 export async function openSession(
   source: SessionSource,
+  tab: TabId,
   size: TerminalSize,
   handlers: SessionHandlers,
 ): Promise<Session> {
@@ -269,11 +281,13 @@ export async function openSession(
     source.kind === "target"
       ? await invoke<Opened>("session_open", {
           target: source.target,
+          tab,
           size,
           ...events,
         })
       : await invoke<Opened>("session_duplicate", {
           id: source.of,
+          tab,
           size,
           ...events,
         });
@@ -283,6 +297,7 @@ export async function openSession(
     id,
     encrypted,
     transport,
+    input: (data) => send(id, "session_input", { data: Array.from(data) }),
     write: (data) => send(id, "session_write", { data: Array.from(data) }),
     sendBreak: () => send(id, "session_break", {}),
     answer: (answers) => send(id, "session_answer", { answers }),

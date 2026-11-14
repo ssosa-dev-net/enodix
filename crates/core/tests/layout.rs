@@ -2,6 +2,7 @@
 //! one above the other.
 
 use netterm_core::layout::{Layout, LayoutError, Node, PaneId, Split, TabId};
+use netterm_core::session::SessionId;
 use serde_json::json;
 
 /// The tabs of `pane`, in order.
@@ -539,7 +540,195 @@ fn the_layout_reaches_the_interface_as_a_tree() {
                 ],
             },
             "activePane": right.0,
+            "group": [],
             "revision": layout.revision(),
         })
     );
+}
+
+// The multi-send group (#35).
+
+#[test]
+fn tabs_join_and_leave_the_multi_send_group() {
+    let mut layout = Layout::new();
+    let [a, b, c] = open(&mut layout, 3)[..] else {
+        unreachable!()
+    };
+
+    layout.join_group(a).unwrap();
+    layout.join_group(c).unwrap();
+    assert_eq!(layout.group(), &[a, c]);
+    assert!(layout.in_group(a));
+    assert!(!layout.in_group(b));
+
+    layout.leave_group(a).unwrap();
+    assert_eq!(layout.group(), &[c]);
+}
+
+#[test]
+fn joining_twice_or_leaving_when_not_a_member_changes_nothing() {
+    let mut layout = Layout::new();
+    let [a, b] = open(&mut layout, 2)[..] else {
+        unreachable!()
+    };
+    layout.join_group(a).unwrap();
+    let revision = layout.revision();
+
+    layout.join_group(a).unwrap();
+    layout.leave_group(b).unwrap();
+
+    assert_eq!(layout.group(), &[a]);
+    assert_eq!(layout.revision(), revision);
+}
+
+#[test]
+fn ending_the_group_removes_every_member() {
+    let mut layout = Layout::new();
+    let [a, b] = open(&mut layout, 2)[..] else {
+        unreachable!()
+    };
+    layout.join_group(a).unwrap();
+    layout.join_group(b).unwrap();
+    let revision = layout.revision();
+
+    layout.end_group();
+
+    assert_eq!(layout.group(), &[] as &[TabId]);
+    assert!(layout.revision() > revision);
+}
+
+#[test]
+fn group_edits_raise_the_revision_and_refused_ones_change_nothing() {
+    let mut layout = Layout::new();
+    let a = layout.open_tab();
+    let mut revision = layout.revision();
+
+    layout.join_group(a).unwrap();
+    assert!(layout.revision() > revision);
+    revision = layout.revision();
+    layout.leave_group(a).unwrap();
+    assert!(layout.revision() > revision);
+    revision = layout.revision();
+
+    let gone = TabId(999);
+    assert_eq!(layout.join_group(gone), Err(LayoutError::NoSuchTab(gone)));
+    assert_eq!(layout.leave_group(gone), Err(LayoutError::NoSuchTab(gone)));
+    assert_eq!(
+        layout.attach_session(gone, SessionId(1)),
+        Err(LayoutError::NoSuchTab(gone))
+    );
+    assert_eq!(layout.revision(), revision);
+    assert_eq!(layout.group(), &[] as &[TabId]);
+}
+
+#[test]
+fn closing_or_dismissing_a_member_tab_removes_it_from_the_group() {
+    let mut layout = Layout::new();
+    let [a, b, c] = open(&mut layout, 3)[..] else {
+        unreachable!()
+    };
+    for tab in [a, b, c] {
+        layout.join_group(tab).unwrap();
+    }
+
+    layout.close_tab(a).unwrap();
+    layout.dismiss_tab(b).unwrap();
+
+    assert_eq!(layout.group(), &[c]);
+}
+
+#[test]
+fn moving_a_member_tab_keeps_it_in_the_group() {
+    let mut layout = Layout::new();
+    let left = layout.active_pane();
+    let [a, b, c] = open(&mut layout, 3)[..] else {
+        unreachable!()
+    };
+    layout.join_group(a).unwrap();
+    layout.join_group(c).unwrap();
+
+    layout.move_tab_by(a, 1).unwrap();
+    let right = layout.split(left, Split::Right).unwrap();
+    layout.move_tab(a, right, 0).unwrap();
+    layout.close_pane(right).unwrap();
+
+    assert_eq!(layout.group(), &[a, c]);
+    assert!(layout.pane_of(b).is_some());
+}
+
+#[test]
+fn new_and_duplicated_tabs_start_outside_the_group() {
+    let mut layout = Layout::new();
+    let a = layout.open_tab();
+    layout.join_group(a).unwrap();
+
+    let new = layout.open_tab();
+    let copy = layout.open_tab_beside(a).unwrap();
+
+    assert_eq!(layout.group(), &[a]);
+    assert!(!layout.in_group(new));
+    assert!(!layout.in_group(copy));
+}
+
+#[test]
+fn input_in_a_member_goes_to_every_member_and_elsewhere_only_to_its_own_session() {
+    let mut layout = Layout::new();
+    let [a, b, c] = open(&mut layout, 3)[..] else {
+        unreachable!()
+    };
+    for (tab, session) in [(a, 10), (b, 11), (c, 12)] {
+        layout.attach_session(tab, SessionId(session)).unwrap();
+    }
+    layout.join_group(a).unwrap();
+    layout.join_group(c).unwrap();
+
+    assert_eq!(
+        layout.input_targets(SessionId(12)),
+        vec![SessionId(10), SessionId(12)]
+    );
+    assert_eq!(layout.input_targets(SessionId(11)), vec![SessionId(11)]);
+    // A session the layout does not know (no tab yet) gets its own input.
+    assert_eq!(layout.input_targets(SessionId(77)), vec![SessionId(77)]);
+}
+
+#[test]
+fn a_member_without_a_session_yet_is_left_out_of_the_targets() {
+    let mut layout = Layout::new();
+    let [a, b] = open(&mut layout, 2)[..] else {
+        unreachable!()
+    };
+    layout.attach_session(a, SessionId(1)).unwrap();
+    layout.join_group(a).unwrap();
+    layout.join_group(b).unwrap();
+
+    assert_eq!(layout.input_targets(SessionId(1)), vec![SessionId(1)]);
+}
+
+#[test]
+fn a_closed_member_tab_no_longer_receives_the_groups_input() {
+    let mut layout = Layout::new();
+    let [a, b] = open(&mut layout, 2)[..] else {
+        unreachable!()
+    };
+    layout.attach_session(a, SessionId(1)).unwrap();
+    layout.attach_session(b, SessionId(2)).unwrap();
+    layout.join_group(a).unwrap();
+    layout.join_group(b).unwrap();
+
+    layout.close_tab(b).unwrap();
+
+    assert_eq!(layout.input_targets(SessionId(1)), vec![SessionId(1)]);
+    assert_eq!(layout.input_targets(SessionId(2)), vec![SessionId(2)]);
+}
+
+#[test]
+fn the_interface_sees_the_group_members() {
+    let mut layout = Layout::new();
+    let [a, _b] = open(&mut layout, 2)[..] else {
+        unreachable!()
+    };
+    layout.join_group(a).unwrap();
+
+    let view = serde_json::to_value(&layout).unwrap();
+    assert_eq!(view["group"], json!([a.0]));
 }
