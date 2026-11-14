@@ -17,8 +17,9 @@ use netterm_core::session::{
 };
 use netterm_core::workspace::{HostId, JumpChainError, Workspace};
 use support::{
-    next_host_key_question, next_prompt, next_state, output_ending_with, TestSshServer, CODE_NAME,
-    CODE_QUESTION, ONE_TIME_CODE, OTP_USERNAME, PASSWORD, PROMPT, USERNAME,
+    closed_port, next_host_key_question, next_prompt, next_state, output_ending_with,
+    TestSshServer, CODE_NAME, CODE_QUESTION, ONE_TIME_CODE, OTP_USERNAME, PASSWORD, PROMPT,
+    USERNAME,
 };
 use tempfile::TempDir;
 
@@ -332,12 +333,6 @@ fn router_behind_bastion(bastion_port: u16, router_port: u16) -> (TempDir, Works
     ])
 }
 
-/// A port nothing listens on.
-async fn closed_port() -> u16 {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    listener.local_addr().unwrap().port()
-}
-
 #[tokio::test]
 async fn an_unreachable_jump_host_is_named() {
     let router = TestSshServer::start().await;
@@ -360,13 +355,16 @@ async fn an_unreachable_jump_host_is_named() {
     match &error {
         OpenError::JumpHost { name, error } => {
             assert_eq!(name, "Site/bastion.yaml");
-            assert!(matches!(**error, OpenError::Connect(_)), "{error:?}");
+            assert!(
+                matches!(**error, OpenError::ConnectionRefused { .. }),
+                "{error:?}"
+            );
         }
         other => panic!("expected a jump host failure, got {other:?}"),
     }
     let message = error.to_string();
     assert!(message.contains("Site/bastion.yaml"), "{message}");
-    assert!(message.contains("could not connect"), "{message}");
+    assert!(message.contains("refused the connection"), "{message}");
 }
 
 #[tokio::test]

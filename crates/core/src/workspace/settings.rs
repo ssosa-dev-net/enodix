@@ -25,6 +25,7 @@ pub(super) const PORT: &str = "port";
 pub(super) const CREDENTIAL_PROFILE: &str = "credential_profile";
 pub(super) const JUMP_HOST: &str = "jump_host";
 pub(super) const LEGACY_CRYPTO: &str = "legacy_crypto";
+pub(super) const CONNECT_TIMEOUT: &str = "connect_timeout";
 pub(super) const LOGGING: &str = "logging";
 pub(super) const ENVIRONMENT: &str = "environment";
 pub(super) const SERIAL: &str = "serial";
@@ -42,6 +43,12 @@ pub const DEFAULT_BAUD_RATE: u32 = 9600;
 pub const DEFAULT_DATA_BITS: u8 = 8;
 pub const DEFAULT_STOP_BITS: u8 = 1;
 
+/// The connect timeout, in seconds, when nothing sets it (the session's
+/// default), and the longest one allowed.
+pub const DEFAULT_CONNECT_TIMEOUT_SECONDS: u32 =
+    crate::session::DEFAULT_CONNECT_TIMEOUT.as_secs() as u32;
+pub const MAX_CONNECT_TIMEOUT_SECONDS: u32 = 3600;
+
 /// The settings one host file or folder settings file sets itself. `None`
 /// (or an empty list) means it does not set it, so it inherits.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +63,9 @@ pub struct Settings {
     /// The id of another host of the workspace to connect through.
     pub jump_host: Option<String>,
     pub legacy_crypto: Option<bool>,
+    /// How long, in seconds, opening a session may wait on the device (1
+    /// to [`MAX_CONNECT_TIMEOUT_SECONDS`]).
+    pub connect_timeout: Option<u32>,
     pub logging: Option<bool>,
     pub environment: Option<Environment>,
     /// Links set here, in file order; names are unique.
@@ -191,6 +201,8 @@ pub struct EffectiveSettings {
     pub credential_profile: Option<Effective<String>>,
     pub jump_host: Option<Effective<String>>,
     pub legacy_crypto: Effective<bool>,
+    /// In seconds.
+    pub connect_timeout: Effective<u32>,
     pub logging: Effective<bool>,
     pub environment: Option<Effective<Environment>>,
     /// Merged by name: the order a name first appears, from the root down.
@@ -268,6 +280,10 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
         credential_profile: nearest(levels, |s| s.credential_profile.clone()),
         jump_host: nearest(levels, |s| s.jump_host.clone()),
         legacy_crypto: or_default(nearest(levels, |s| s.legacy_crypto), false),
+        connect_timeout: or_default(
+            nearest(levels, |s| s.connect_timeout),
+            DEFAULT_CONNECT_TIMEOUT_SECONDS,
+        ),
         logging: or_default(nearest(levels, |s| s.logging), true),
         environment: nearest(levels, |s| s.environment),
         web_links,
@@ -300,6 +316,7 @@ pub(super) fn settings_from_document(document: &Mapping) -> Result<Settings, Str
         credential_profile: optional_text(document, CREDENTIAL_PROFILE)?,
         jump_host: optional_text(document, JUMP_HOST)?,
         legacy_crypto: read_flag(document, LEGACY_CRYPTO)?,
+        connect_timeout: read_connect_timeout(document)?,
         logging: read_flag(document, LOGGING)?,
         environment: read_choice(
             document,
@@ -324,6 +341,23 @@ pub(super) fn read_port(document: &Mapping) -> Result<Option<u16>, String> {
             .ok_or_else(error),
         Some(_) => Err(error()),
     }
+}
+
+fn read_connect_timeout(document: &Mapping) -> Result<Option<u32>, String> {
+    let error = || connect_timeout_error(&format!("`{CONNECT_TIMEOUT}`"));
+    match document.get(CONNECT_TIMEOUT) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .filter(|seconds| (1..=u64::from(MAX_CONNECT_TIMEOUT_SECONDS)).contains(seconds))
+            .map(|seconds| Some(seconds as u32))
+            .ok_or_else(error),
+        Some(_) => Err(error()),
+    }
+}
+
+fn connect_timeout_error(what: &str) -> String {
+    format!("{what} must be a number of seconds from 1 to {MAX_CONNECT_TIMEOUT_SECONDS}")
 }
 
 fn serial_from_mapping(serial: &Mapping) -> Result<SerialSettings, String> {
@@ -421,6 +455,14 @@ fn checked(edit: &Settings) -> Result<Settings, EditError> {
     if edit.port == Some(0) {
         return invalid("the port must be a number from 1 to 65535");
     }
+    if edit
+        .connect_timeout
+        .is_some_and(|seconds| !(1..=MAX_CONNECT_TIMEOUT_SECONDS).contains(&seconds))
+    {
+        return Err(EditError::Invalid(connect_timeout_error(
+            "the connect timeout",
+        )));
+    }
     let serial = &edit.serial;
     if serial.baud_rate == Some(0) {
         return invalid("the baud rate must be a positive whole number");
@@ -497,6 +539,11 @@ pub(super) fn apply_settings(
         PORT,
         current.port.map(Value::from),
         edit.port.map(Value::from),
+    );
+    update(
+        CONNECT_TIMEOUT,
+        current.connect_timeout.map(Value::from),
+        edit.connect_timeout.map(Value::from),
     );
     for (key, old, new) in [
         (

@@ -5,8 +5,10 @@
 mod support;
 
 use std::fs;
+use std::time::Duration;
 
-use netterm_core::session::{SessionState, SessionTarget, TerminalSize};
+use netterm_core::credentials::{MemoryStore, Profiles};
+use netterm_core::session::{SessionState, SessionTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT};
 use netterm_core::workspace::{
     EditError, Effective, EffectiveSettings, Environment, FlowControl, HostId, Origin, Parity,
     Protocol, ResolvedHost, Settings, WebLink, Workspace,
@@ -260,6 +262,55 @@ async fn connecting_uses_a_port_set_on_the_folder() {
 }
 
 #[test]
+fn the_connect_timeout_inherits_and_reaches_the_target_and_each_jump_host() {
+    let temp = TempDir::new().unwrap();
+    let write = |file: &str, text: &str| {
+        let path = temp.path().join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    write("Far/_folder.yaml", "connect_timeout: 40\n");
+    write(
+        "Far/slow-r1.yaml",
+        "address: 10.9.0.1\njump_host: bastion.yaml\n",
+    );
+    write(
+        "Far/slower-r2.yaml",
+        "address: 10.9.0.2\nconnect_timeout: 90\n",
+    );
+    write("bastion.yaml", "address: 10.0.0.1\nconnect_timeout: 5\n");
+    write("near-r3.yaml", "address: 10.0.0.3\n");
+    let workspace = Workspace::open(temp.path()).unwrap();
+    assert!(
+        workspace.problems().is_empty(),
+        "{:?}",
+        workspace.problems()
+    );
+
+    let timeout = |id: &str| resolved(&workspace, id).settings.connect_timeout;
+    assert_eq!(timeout("Far/slow-r1.yaml"), from(40, folder("Far")));
+    assert_eq!(timeout("Far/slower-r2.yaml"), from(90, Origin::Host));
+    assert_eq!(timeout("near-r3.yaml"), from(15, Origin::Default));
+
+    let store = MemoryStore::new();
+    let target = Profiles::new(&store, &workspace)
+        .prompted_target(
+            &HostId::new("Far/slow-r1.yaml"),
+            USERNAME.into(),
+            PASSWORD.into(),
+        )
+        .unwrap();
+    assert_eq!(target.connect_timeout, Duration::from_secs(40));
+    assert_eq!(target.jump_hosts[0].connect_timeout, Duration::from_secs(5));
+    assert_eq!(
+        resolved(&workspace, "near-r3.yaml")
+            .ssh_target(USERNAME.into(), PASSWORD.into())
+            .connect_timeout,
+        DEFAULT_CONNECT_TIMEOUT
+    );
+}
+
+#[test]
 fn settings_set_on_a_folder_are_written_to_its_settings_file() {
     let (_temp, root) = fixture_copy("edit");
     let mut workspace = Workspace::open(&root).unwrap();
@@ -270,6 +321,7 @@ fn settings_set_on_a_folder_are_written_to_its_settings_file() {
     settings.credential_profile = Some("  noc-ro ".into());
     settings.jump_host = Some("Core/core-r1.yaml".into());
     settings.legacy_crypto = Some(true);
+    settings.connect_timeout = Some(30);
     settings.logging = Some(false);
     settings.environment = Some(Environment::Staging);
     settings.web_links = vec![WebLink::new("NMS", "https://nms.example.net/{name}")];
@@ -287,6 +339,7 @@ port: 2222
 credential_profile: noc-ro
 jump_host: Core/core-r1.yaml
 legacy_crypto: true
+connect_timeout: 30
 logging: false
 environment: staging
 serial:
@@ -457,8 +510,10 @@ fn invalid_settings_are_refused_and_the_file_is_untouched() {
         change(&mut settings);
         settings
     };
-    let cases: [(Change, &str); 7] = [
+    let cases: [(Change, &str); 9] = [
         (|s| s.port = Some(0), "port"),
+        (|s| s.connect_timeout = Some(0), "connect timeout"),
+        (|s| s.connect_timeout = Some(3601), "connect timeout"),
         (|s| s.serial.baud_rate = Some(0), "baud"),
         (|s| s.serial.data_bits = Some(9), "data bits"),
         (|s| s.serial.stop_bits = Some(3), "stop bits"),
@@ -506,6 +561,7 @@ fn malformed_settings_are_reported_for_that_file() {
     write("d.yaml", "address: 1.1.1.4\nweb_links: [https://x/]\n");
     write("e.yaml", "address: 1.1.1.5\nserial:\n  parity: sometimes\n");
     write("f.yaml", "address: 1.1.1.6\nserial:\n  data_bits: 4\n");
+    write("g.yaml", "address: 1.1.1.8\nconnect_timeout: 0\n");
     write("Site/_folder.yaml", "port: twenty-two\n");
     write("Site/r1.yaml", "address: 1.1.1.7\n");
 
@@ -522,6 +578,7 @@ fn malformed_settings_are_reported_for_that_file() {
             "d.yaml: `web_links` must map link names to URLs",
             "e.yaml: `serial.parity` must be one of none, odd, even, mark, space",
             "f.yaml: `serial.data_bits` must be a number from 5 to 8",
+            "g.yaml: `connect_timeout` must be a number of seconds from 1 to 3600",
         ]
     );
     // The host under the bad folder file still loads, without its settings.

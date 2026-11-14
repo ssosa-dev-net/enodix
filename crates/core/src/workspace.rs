@@ -33,6 +33,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_norway::{Mapping, Value};
@@ -52,13 +53,14 @@ pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
 use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
-    apply_settings, settings_from_document, Level, CREDENTIAL_PROFILE, ENVIRONMENT, JUMP_HOST,
-    LEGACY_CRYPTO, LOGGING, PORT, PROTOCOL, SERIAL, WEB_LINKS,
+    apply_settings, settings_from_document, Level, CONNECT_TIMEOUT, CREDENTIAL_PROFILE,
+    ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PORT, PROTOCOL, SERIAL, WEB_LINKS,
 };
 pub use settings::{
     Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, Origin, Parity,
-    Protocol, SerialSettings, Settings, WebLink, DEFAULT_BAUD_RATE, DEFAULT_DATA_BITS,
-    DEFAULT_STOP_BITS,
+    Protocol, SerialSettings, Settings, WebLink, DEFAULT_BAUD_RATE,
+    DEFAULT_CONNECT_TIMEOUT_SECONDS, DEFAULT_DATA_BITS, DEFAULT_STOP_BITS,
+    MAX_CONNECT_TIMEOUT_SECONDS,
 };
 pub use watch::{Changes, WatchError, WatchOptions, WorkspaceWatcher};
 
@@ -86,7 +88,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 24] = [
+pub const HOST_KEY_ORDER: [&str; 25] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -94,6 +96,7 @@ pub const HOST_KEY_ORDER: [&str; 24] = [
     CREDENTIAL_PROFILE,
     JUMP_HOST,
     LEGACY_CRYPTO,
+    CONNECT_TIMEOUT,
     LOGGING,
     ENVIRONMENT,
     SERIAL,
@@ -114,7 +117,7 @@ pub const HOST_KEY_ORDER: [&str; 24] = [
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 11] = [
+pub const FOLDER_KEY_ORDER: [&str; 12] = [
     DESCRIPTION,
     TAGS,
     PROTOCOL,
@@ -122,6 +125,7 @@ pub const FOLDER_KEY_ORDER: [&str; 11] = [
     CREDENTIAL_PROFILE,
     JUMP_HOST,
     LEGACY_CRYPTO,
+    CONNECT_TIMEOUT,
     LOGGING,
     ENVIRONMENT,
     SERIAL,
@@ -283,7 +287,7 @@ pub struct ResolvedHost {
 impl ResolvedHost {
     /// The SSH target for this host with a password login (as prompted
     /// for), on the resolved port, or SSH's default port when nothing sets
-    /// one, with its legacy-crypto switch. The host alone: its jump hosts
+    /// one, with its legacy-crypto switch and connect timeout. The host alone: its jump hosts
     /// are left out (connect through [`crate::credentials::Profiles`],
     /// which adds them).
     pub fn ssh_target(&self, username: String, password: String) -> SshTarget {
@@ -303,6 +307,7 @@ impl ResolvedHost {
             auth,
             jump_hosts: Vec::new(),
             legacy_crypto: self.settings.legacy_crypto.value,
+            connect_timeout: Duration::from_secs(self.settings.connect_timeout.value.into()),
         }
     }
 }

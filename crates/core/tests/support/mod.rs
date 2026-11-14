@@ -17,6 +17,7 @@
 //! | `flood`      | prints [`FLOOD_LINE`] without end until Ctrl+C    |
 //! | `exit [n]`   | ends the shell with exit status `n` (default 0)   |
 //! | `drop`       | drops the connection without ending the shell     |
+//! | `freeze`     | the connection stops answering anything (silent)  |
 //!
 //! Every server also forwards `direct-tcpip` channels to the address asked
 //! for, so it can be a jump host; [`TestSshServer::forwarded`] counts them.
@@ -50,7 +51,7 @@ use std::sync::OnceLock;
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, OutputOptions, SessionEvent, SessionEvents,
-    SessionManager, SessionState, SshAuth, SshTarget,
+    SessionManager, SessionState, SshAuth, SshTarget, DEFAULT_CONNECT_TIMEOUT,
 };
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{
@@ -68,6 +69,9 @@ pub const PASSWORD: &str = "correct horse";
 /// asks [`CODE_QUESTION`]. Keyboard-interactive on its own asks
 /// [`PASSWORD_QUESTION`] first, then [`CODE_QUESTION`]: two rounds.
 pub const OTP_USERNAME: &str = "engineer-otp";
+/// A user whose login the server never answers, like a device whose
+/// authentication backend hangs.
+pub const STALLING_USERNAME: &str = "engineer-stalled";
 pub const ONE_TIME_CODE: &str = "424242";
 pub const PASSWORD_QUESTION: &str = "Password: ";
 pub const CODE_QUESTION: &str = "Verification code: ";
@@ -276,6 +280,11 @@ impl TestSshServer {
         self.port
     }
 
+    /// How many connections clients have made to this server.
+    pub fn connections(&self) -> usize {
+        self.received.lock().unwrap().len()
+    }
+
     /// How many connections clients have opened through this server, as
     /// through a jump host (`direct-tcpip` channels it forwarded).
     pub fn forwarded(&self) -> usize {
@@ -284,20 +293,65 @@ impl TestSshServer {
 
     /// A target that logs in to this server successfully.
     pub fn target(&self) -> SshTarget {
-        SshTarget {
-            host: "127.0.0.1".into(),
-            port: self.port,
-            username: USERNAME.into(),
-            auth: SshAuth::Password(PASSWORD.into()),
-            jump_hosts: Vec::new(),
-            legacy_crypto: false,
-        }
+        target_at("127.0.0.1", self.port)
     }
 }
 
 impl Drop for TestSshServer {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+/// A loopback port where connections are accepted and then left without a
+/// word, like a device whose SSH server hangs. Stops listening when dropped.
+pub struct SilentServer {
+    port: u16,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl SilentServer {
+    pub async fn start() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        Self { port, task }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for SilentServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// A loopback port nothing listens on.
+pub async fn closed_port() -> u16 {
+    // Bind a free port, then stop listening on it.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+/// A target that logs in as [`USERNAME`] with [`PASSWORD`] at `host:port`,
+/// with the default connect timeout.
+pub fn target_at(host: &str, port: u16) -> SshTarget {
+    SshTarget {
+        host: host.into(),
+        port,
+        username: USERNAME.into(),
+        auth: SshAuth::Password(PASSWORD.into()),
+        jump_hosts: Vec::new(),
+        legacy_crypto: false,
+        connect_timeout: DEFAULT_CONNECT_TIMEOUT,
     }
 }
 
@@ -417,6 +471,9 @@ impl Handler for ScriptedShell {
     type Error = russh::Error;
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+        if user == STALLING_USERNAME {
+            return std::future::pending().await;
+        }
         if user == USERNAME && password == PASSWORD {
             Ok(Auth::Accept)
         } else if user == OTP_USERNAME && password == PASSWORD {
@@ -580,6 +637,10 @@ impl Handler for ScriptedShell {
                 .is_some_and(|s| s.flood.is_some())
             {
                 // Input typed during a flood is not echoed, like a busy device.
+            } else if byte == b'\r' && self.channels[&channel].line == b"freeze" {
+                // The whole connection stops answering, keepalives
+                // included, like a link that went silent.
+                return std::future::pending().await;
             } else if byte == b'\r' {
                 session.data(channel, &b"\r\n"[..])?;
                 self.run_line(channel, session)?;

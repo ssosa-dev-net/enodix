@@ -62,14 +62,7 @@ fn target(port: u16, legacy_crypto: bool) -> SshTarget {
 }
 
 fn support_target() -> SshTarget {
-    SshTarget {
-        host: "127.0.0.1".into(),
-        port: 0,
-        username: USERNAME.into(),
-        auth: netterm_core::session::SshAuth::Password(PASSWORD.into()),
-        jump_hosts: Vec::new(),
-        legacy_crypto: false,
-    }
+    support::target_at("127.0.0.1", 0)
 }
 
 /// Connects, and gives the algorithms of the device's connection.

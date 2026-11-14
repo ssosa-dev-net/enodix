@@ -343,38 +343,6 @@ async fn a_key_the_server_does_not_know_fails_authentication() {
 }
 
 #[tokio::test]
-async fn a_port_nobody_listens_on_fails_the_session() {
-    // Bind a free port, then stop listening on it.
-    let closed_port = {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        listener.local_addr().unwrap().port()
-    };
-    let manager = support::manager();
-    let target = SshTarget {
-        host: "127.0.0.1".into(),
-        port: closed_port,
-        username: "engineer".into(),
-        auth: SshAuth::Password("irrelevant".into()),
-        jump_hosts: Vec::new(),
-        legacy_crypto: false,
-    };
-
-    let (_id, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);
-
-    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
-    let state = next_state(&mut events).await;
-    assert!(
-        matches!(
-            state,
-            SessionState::Closed(CloseReason::Failed(OpenError::Connect(_)))
-        ),
-        "expected a connect failure, got {state:?}"
-    );
-}
-
-#[tokio::test]
 async fn two_sessions_are_independent() {
     let server = TestSshServer::start().await;
     let manager = support::manager();

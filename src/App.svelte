@@ -18,7 +18,11 @@
   } from "./lib/inventory.svelte";
   import { hostLogin } from "./lib/credentials";
   import { profiles, refreshProfiles } from "./lib/profiles.svelte";
-  import { appName, type ConnectTarget } from "./lib/session";
+  import {
+    appName,
+    type ConnectTarget,
+    type SessionSource,
+  } from "./lib/session";
   import {
     openWorkspace,
     pickWorkspaceFolder,
@@ -27,7 +31,7 @@
     type Host,
   } from "./lib/workspace";
 
-  /** What the centre of the window shows. */
+  /** What the centre of the window shows when no session is shown. */
   type View =
     | { kind: "quick" }
     | {
@@ -36,20 +40,30 @@
         missingProfile: string | null;
         /** Why the host's profile could not log in, and its username. */
         fallback?: { reason: string; username: string };
-      }
-    | {
-        kind: "session";
-        target: ConnectTarget;
-        title: string;
-        key: number;
-        /** The host and username, when logging in with a profile. */
-        profileLogin?: { host: Host; username: string };
       };
+
+  /** A session with its terminal, shown or kept running out of sight. */
+  interface OpenSession {
+    /** New per session, so that each gets its own terminal. */
+    key: number;
+    source: SessionSource;
+    title: string;
+    /** The inventory host it connects to, if any (for its role). */
+    hostId: string | null;
+    /** The host and username, when logging in with a profile. */
+    profileLogin?: { host: Host; username: string };
+  }
 
   let name = $state("");
   let view = $state<View>({ kind: "quick" });
-  // A new key per session, so that connecting again replaces the terminal.
-  let sessions = 0;
+  /**
+   * The open sessions. A new connection replaces the shown session; a
+   * duplicate opens beside it (until sessions get tabs).
+   */
+  let sessions = $state<OpenSession[]>([]);
+  /** The key of the session on screen; null shows `view`. */
+  let shown = $state<number | null>(null);
+  let nextKey = 0;
 
   const host = $derived(selectedHost());
   const folder = $derived(selectedFolder());
@@ -78,12 +92,48 @@
     }
   }
 
+  /** Closes the session on screen, if one is: something else replaces it. */
+  function leaveShown() {
+    if (shown === null) return;
+    const leaving = shown;
+    sessions = sessions.filter((session) => session.key !== leaving);
+    shown = null;
+  }
+
   function connect(
     target: ConnectTarget,
     title: string,
     profileLogin?: { host: Host; username: string },
   ) {
-    view = { kind: "session", target, title, key: ++sessions, profileLogin };
+    leaveShown();
+    const key = ++nextKey;
+    sessions.push({
+      key,
+      source: { kind: "target", target },
+      title,
+      hostId: target.kind === "host" ? target.id : null,
+      profileLogin,
+    });
+    shown = key;
+  }
+
+  /** Opens a second session like `original` (core session `id`). */
+  function duplicate(original: OpenSession, id: number) {
+    const key = ++nextKey;
+    const at = sessions.findIndex((session) => session.key === original.key);
+    sessions.splice(at + 1, 0, {
+      ...original,
+      key,
+      source: { kind: "duplicate", of: id },
+    });
+    shown = key;
+  }
+
+  /** Closes the session and shows the quick-connect form. */
+  function dismiss(key: number) {
+    sessions = sessions.filter((session) => session.key !== key);
+    if (shown === key) shown = null;
+    view = { kind: "quick" };
   }
 
   // The profiles a workspace names change with its files, and each
@@ -115,6 +165,7 @@
       );
     } else {
       const missingProfile = login.kind === "notSetUp" ? login.profile : null;
+      leaveShown();
       view = { kind: "prompt", host, missingProfile };
     }
   }
@@ -123,10 +174,11 @@
    * For a session logging in with a profile: asks for a password instead,
    * after the profile (its SSH agent) could not log in.
    */
-  function passwordLogin(session: View & { kind: "session" }) {
+  function passwordLogin(session: OpenSession) {
     const login = session.profileLogin;
     if (!login) return undefined;
     return (reason: string) => {
+      dismiss(session.key);
       view = {
         kind: "prompt",
         host: login.host,
@@ -159,43 +211,65 @@
 <div class="layout" class:with-details={host || folder}>
   <WorkspacePanel onopen={open} onconnect={prompt} />
 
-  <section class="centre">
-    {#if view.kind === "session"}
-      {#key view.key}
-        <TerminalSession
-          target={view.target}
-          title={view.title}
-          role={view.target.kind === "host" ? hostRole(view.target.id) : null}
-          ondismiss={() => (view = { kind: "quick" })}
-          onpasswordlogin={passwordLogin(view)}
-        />
-      {/key}
-    {:else if view.kind === "prompt"}
-      {@const host = view.host}
-      {#key host.id}
-        <CredentialsPrompt
-          {host}
-          missingProfile={view.missingProfile}
-          fallback={view.fallback}
-          oncancel={() => (view = { kind: "quick" })}
-          onconnect={(credentials) =>
-            connect(
-              { kind: "host", id: host.id, credentials },
-              `${credentials.username}@${host.name}`,
-            )}
-          onprofile={() => prompt(host)}
-        />
-      {/key}
-    {:else}
-      <QuickConnect
-        {name}
-        onconnect={(target) =>
-          connect(
-            { kind: "quick", ...target },
-            `${target.username}@${target.host}:${target.port}`,
-          )}
-      />
+  <section
+    class="centre"
+    class:with-switcher={sessions.length > 1 ||
+      (sessions.length > 0 && shown === null)}
+  >
+    {#if sessions.length > 1 || (sessions.length > 0 && shown === null)}
+      <div class="switcher" role="group" aria-label="Open sessions">
+        {#each sessions as session (session.key)}
+          <button
+            data-session-switch={session.key}
+            aria-pressed={session.key === shown}
+            onclick={() => (shown = session.key)}>{session.title}</button
+          >
+        {/each}
+      </div>
     {/if}
+    <div class="views">
+      {#each sessions as session (session.key)}
+        <div class="slot" hidden={session.key !== shown}>
+          <TerminalSession
+            source={session.source}
+            title={session.title}
+            role={session.hostId ? hostRole(session.hostId) : null}
+            shown={session.key === shown}
+            ondismiss={() => dismiss(session.key)}
+            onduplicate={(id) => duplicate(session, id)}
+            onpasswordlogin={passwordLogin(session)}
+          />
+        </div>
+      {/each}
+      {#if shown === null}
+        {#if view.kind === "prompt"}
+          {@const host = view.host}
+          {#key host.id}
+            <CredentialsPrompt
+              {host}
+              missingProfile={view.missingProfile}
+              fallback={view.fallback}
+              oncancel={() => (view = { kind: "quick" })}
+              onconnect={(credentials) =>
+                connect(
+                  { kind: "host", id: host.id, credentials },
+                  `${credentials.username}@${host.name}`,
+                )}
+              onprofile={() => prompt(host)}
+            />
+          {/key}
+        {:else}
+          <QuickConnect
+            {name}
+            onconnect={(target) =>
+              connect(
+                { kind: "quick", ...target },
+                `${target.username}@${target.host}:${target.port}`,
+              )}
+          />
+        {/if}
+      {/if}
+    </div>
   </section>
 
   {#if host}
@@ -243,6 +317,39 @@
   .centre {
     min-width: 0;
     min-height: 0;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .centre.with-switcher {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .switcher {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    padding: 0.3rem 0.4rem;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .switcher button {
+    padding: 0.15rem 0.6rem;
+    font-size: 0.8rem;
+  }
+
+  .switcher button[aria-pressed="true"] {
+    border-color: var(--accent, var(--border));
+    font-weight: 600;
+  }
+
+  .views,
+  .slot {
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
     overflow: hidden;
   }
 

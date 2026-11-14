@@ -474,6 +474,7 @@ impl<'a> Profiles<'a> {
                     username: target.username,
                     auth: target.auth,
                     legacy_crypto: target.legacy_crypto,
+                    connect_timeout: target.connect_timeout,
                 })
             })
             .collect()
