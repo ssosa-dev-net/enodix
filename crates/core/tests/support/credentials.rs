@@ -1,0 +1,110 @@
+//! A credential store that stands in for a keychain that fails: an
+//! in-memory store whose listing, or whose deletes after a number of them,
+//! fail as a real keychain can.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+use netterm_core::credentials::{
+    CredentialProfile, CredentialStore, MemoryStore, SecretValue, StoreContents, StoreError,
+};
+
+/// How a [`FailingStore`] fails.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Failures {
+    /// Listing everything ([`CredentialStore::contents`]) fails.
+    pub contents: bool,
+    /// Deletes (profiles and secrets alike) succeed this many times, then
+    /// every one fails.
+    pub deletes_after: Option<usize>,
+    /// Puts succeed this many times, then every one fails.
+    pub puts_after: Option<usize>,
+}
+
+/// Clones share one store, so a test keeps a handle to look inside after
+/// giving one away.
+#[derive(Clone)]
+pub struct FailingStore {
+    inner: Arc<MemoryStore>,
+    failures: Failures,
+    deletes: Arc<AtomicUsize>,
+    puts: Arc<AtomicUsize>,
+}
+
+impl FailingStore {
+    pub fn new(failures: Failures) -> Self {
+        Self {
+            inner: Arc::default(),
+            failures,
+            deletes: Arc::default(),
+            puts: Arc::default(),
+        }
+    }
+
+    /// What it holds, read past the failures.
+    pub fn held(&self) -> StoreContents {
+        self.inner.contents().unwrap().sorted()
+    }
+
+    fn deleting(&self) -> Result<(), StoreError> {
+        counted(&self.deletes, self.failures.deletes_after)
+    }
+
+    fn putting(&self) -> Result<(), StoreError> {
+        counted(&self.puts, self.failures.puts_after)
+    }
+}
+
+/// Counts one more call; fails once `limit` calls were made.
+fn counted(calls: &AtomicUsize, limit: Option<usize>) -> Result<(), StoreError> {
+    let done = calls.fetch_add(1, Ordering::SeqCst);
+    match limit {
+        Some(limit) if done >= limit => Err(StoreError("the keychain refused".into())),
+        _ => Ok(()),
+    }
+}
+
+impl CredentialStore for FailingStore {
+    fn list(&self, scope: &str) -> Result<Vec<CredentialProfile>, StoreError> {
+        self.inner.list(scope)
+    }
+
+    fn get(&self, scope: &str, name: &str) -> Result<Option<CredentialProfile>, StoreError> {
+        self.inner.get(scope, name)
+    }
+
+    fn put(&self, scope: &str, profile: &CredentialProfile) -> Result<(), StoreError> {
+        self.putting()?;
+        self.inner.put(scope, profile)
+    }
+
+    fn delete(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
+        self.deleting()?;
+        self.inner.delete(scope, name)
+    }
+
+    fn secret_names(&self, scope: &str) -> Result<Vec<String>, StoreError> {
+        self.inner.secret_names(scope)
+    }
+
+    fn get_secret(&self, scope: &str, name: &str) -> Result<Option<SecretValue>, StoreError> {
+        self.inner.get_secret(scope, name)
+    }
+
+    fn put_secret(&self, scope: &str, name: &str, value: &SecretValue) -> Result<(), StoreError> {
+        self.putting()?;
+        self.inner.put_secret(scope, name, value)
+    }
+
+    fn delete_secret(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
+        self.deleting()?;
+        self.inner.delete_secret(scope, name)
+    }
+
+    fn contents(&self) -> Result<StoreContents, StoreError> {
+        if self.failures.contents {
+            return Err(StoreError("the keychain cannot be listed".into()));
+        }
+        self.inner.contents()
+    }
+}

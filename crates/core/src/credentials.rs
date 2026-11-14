@@ -9,8 +9,10 @@
 //! profiles per workspace ([`Workspace::credential_scope`], its stable
 //! identifier; see [`prepare_workspace`]) and matches
 //! names ignoring case. [`KeychainStore`] is the operating system's
-//! keychain (Windows Credential Manager); [`MemoryStore`] keeps them in
-//! memory, for tests.
+//! keychain (Windows Credential Manager); [`Vault`] is the app's own
+//! encrypted file behind a master password; [`MemoryStore`] keeps them in
+//! memory, for tests. [`ActiveStore`] is the one the app uses: the keychain,
+//! or the vault when its file exists.
 //!
 //! [`Profiles`] is what the app works with: it lists, saves and deletes
 //! the profiles of one workspace, and tells how a host logs in
@@ -30,9 +32,11 @@ use crate::workspace::{Folder, HostId, JumpChainError, Protocol, ResolvedHost, W
 
 mod keychain;
 mod secrets;
+mod vault;
 
 pub use keychain::KeychainStore;
 pub use secrets::{SecretError, SecretValue, Secrets, MAX_SECRET_NAME};
+pub use vault::{vault_file, ActiveStore, KdfParams, Vault, VaultError, VaultStatus, VAULT_FILE};
 
 /// The longest profile name accepted, in characters.
 pub const MAX_PROFILE_NAME: usize = 100;
@@ -78,6 +82,19 @@ impl ProfileAuth {
             },
             Self::Agent => SshAuth::Agent(SshAgent::System),
         }
+    }
+}
+
+impl CredentialProfile {
+    /// Overwrites the secrets in memory (a vault does it on drop).
+    pub(crate) fn wipe(&mut self) {
+        use zeroize::Zeroize;
+        match &mut self.auth {
+            ProfileAuth::Password { password } => password.zeroize(),
+            ProfileAuth::PrivateKey { passphrase, .. } => passphrase.zeroize(),
+            ProfileAuth::Agent => {}
+        }
+        self.enable_secret.zeroize();
     }
 }
 
@@ -139,6 +156,52 @@ pub trait CredentialStore: Send + Sync {
     /// Removes the secret called `name` (ignoring case); `false` if there
     /// was none.
     fn delete_secret(&self, scope: &str, name: &str) -> Result<bool, StoreError>;
+
+    /// Everything kept, of every scope: what moving to another store
+    /// copies.
+    fn contents(&self) -> Result<StoreContents, StoreError>;
+}
+
+/// Everything a store keeps, across scopes, in no particular order.
+/// `Debug` hides the secrets.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreContents {
+    pub profiles: Vec<ScopedProfile>,
+    pub secrets: Vec<ScopedSecret>,
+}
+
+/// A profile and the scope it is kept under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedProfile {
+    pub scope: String,
+    pub profile: CredentialProfile,
+}
+
+/// A named secret and the scope it is kept under.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedSecret {
+    pub scope: String,
+    /// As written.
+    pub name: String,
+    pub value: SecretValue,
+}
+
+impl StoreContents {
+    /// Nothing kept at all.
+    pub fn is_empty(&self) -> bool {
+        self.profiles.is_empty() && self.secrets.is_empty()
+    }
+
+    /// The same contents in a fixed order (by scope, then name ignoring
+    /// case), so that two listings compare equal whatever order the stores
+    /// gave them in.
+    pub fn sorted(mut self) -> Self {
+        self.profiles
+            .sort_by_cached_key(|p| (p.scope.clone(), p.profile.name.to_lowercase()));
+        self.secrets
+            .sort_by_cached_key(|s| (s.scope.clone(), s.name.to_lowercase()));
+        self
+    }
 }
 
 /// The store could not be read or written. The message never holds a
@@ -225,6 +288,28 @@ impl CredentialStore for MemoryStore {
 
     fn delete_secret(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
         Ok(self.secrets().remove(&key(scope, name)).is_some())
+    }
+
+    fn contents(&self) -> Result<StoreContents, StoreError> {
+        Ok(StoreContents {
+            profiles: self
+                .profiles()
+                .iter()
+                .map(|((scope, _), profile)| ScopedProfile {
+                    scope: scope.clone(),
+                    profile: profile.clone(),
+                })
+                .collect(),
+            secrets: self
+                .secrets()
+                .iter()
+                .map(|((scope, _), (name, value))| ScopedSecret {
+                    scope: scope.clone(),
+                    name: name.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+        })
     }
 }
 

@@ -274,3 +274,37 @@ fn a_workspace_keeps_its_secrets_in_the_keychain_and_leaves_nothing_behind() {
     assert!(store.secret_names(&scope).unwrap().is_empty());
     assert!(store.list(&scope).unwrap().is_empty());
 }
+
+#[test]
+fn everything_is_listed_across_scopes_and_only_under_the_prefix() {
+    let keychain = TestKeychain::new();
+    let other = TestKeychain::new();
+    let store = &keychain.store;
+    store
+        .put(SCOPE_A, &password_profile("core", "pw-a"))
+        .unwrap();
+    store
+        .put(SCOPE_B, &password_profile("core", "pw-b"))
+        .unwrap();
+    store
+        .put_secret(SCOPE_B, "Token", &SecretValue::new("t0ken"))
+        .unwrap();
+    other
+        .store
+        .put(SCOPE_A, &password_profile("elsewhere", "x"))
+        .unwrap();
+
+    let everything = store.contents().unwrap().sorted();
+    let profiles: Vec<_> = everything
+        .profiles
+        .iter()
+        .map(|p| (p.scope.as_str(), p.profile.name.as_str()))
+        .collect();
+    assert_eq!(profiles, [(SCOPE_A, "core"), (SCOPE_B, "core")]);
+    let secrets: Vec<_> = everything
+        .secrets
+        .iter()
+        .map(|s| (s.scope.as_str(), s.name.as_str(), s.value.expose()))
+        .collect();
+    assert_eq!(secrets, [(SCOPE_B, "Token", "t0ken")]);
+}

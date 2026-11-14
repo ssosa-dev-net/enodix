@@ -44,6 +44,7 @@
 
 pub mod agent;
 pub mod algorithms;
+pub mod credentials;
 pub mod http;
 pub mod serial;
 pub mod telnet;

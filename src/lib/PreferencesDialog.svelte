@@ -9,6 +9,7 @@
   } from "./preferences.svelte";
   import { highlighting } from "./highlight.svelte";
   import { checkNow, describeStatus, updates } from "./updates.svelte";
+  import VaultSection from "./VaultSection.svelte";
 
   interface Props {
     onclose: () => void;
@@ -215,6 +216,8 @@
     {#if preferences.error}
       <p class="error" role="alert">{preferences.error}</p>
     {/if}
+
+    <VaultSection />
 
     <dl>
       {#each SHORTCUTS as [what, keys] (what)}

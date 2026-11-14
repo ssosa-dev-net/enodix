@@ -22,8 +22,10 @@
   import SnippetDialog from "./lib/SnippetDialog.svelte";
   import SnippetVariables from "./lib/SnippetVariables.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
+  import UnlockVault from "./lib/UnlockVault.svelte";
   import UpdateNotice from "./lib/UpdateNotice.svelte";
   import { startUpdates } from "./lib/updates.svelte";
+  import { vaultStatus } from "./lib/vault";
   import WorkspacePanel from "./lib/WorkspacePanel.svelte";
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
   import CsvImportDialog from "./lib/CsvImportDialog.svelte";
@@ -579,9 +581,22 @@
   // window lives as long as the app, so the listener is never removed.
   void onWorkspaceChanged(workspaceChanged);
 
-  restoreWorkspace().then(setWorkspace, (error) => {
-    inventory.openError = `Could not reopen the last workspace: ${error}`;
-  });
+  /** With a vault, it is unlocked before the workspace opens. */
+  let vaultLocked = $state(false);
+
+  function reopenWorkspace() {
+    restoreWorkspace().then(setWorkspace, (error) => {
+      inventory.openError = `Could not reopen the last workspace: ${error}`;
+    });
+  }
+
+  vaultStatus().then(
+    (status) => {
+      if (status === "locked") vaultLocked = true;
+      else reopenWorkspace();
+    },
+    () => reopenWorkspace(),
+  );
 
   /**
    * Switches to the workspace `open` opens. If sessions to hosts of the
@@ -893,6 +908,8 @@
   // Shortcuts work from anywhere, the terminal included, so they are caught
   // before the focused element sees them.
   function onkeydowncapture(event: KeyboardEvent) {
+    // The unlock screen takes every key.
+    if (vaultLocked) return;
     const busy =
       inventory.dialog ||
       profiles.dialog ||
@@ -1172,6 +1189,16 @@
     oncancel={() => {
       closing = null;
       focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if vaultLocked}
+  <UnlockVault
+    {name}
+    onunlocked={() => {
+      vaultLocked = false;
+      reopenWorkspace();
     }}
   />
 {/if}

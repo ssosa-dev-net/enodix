@@ -1139,7 +1139,7 @@ async function main() {
     app.exitCode === null ? app.once("exit", resolve) : resolve(),
   );
   await sleep(1500);
-  startApp();
+  const restartedApp = startApp();
   const restarted = await connectDevTools();
   const evaluateAgain = async (expression) => {
     const { result, exceptionDetails } = await restarted.send(
@@ -1231,7 +1231,212 @@ async function main() {
     requestsBeforeRestart,
     step,
   });
-  restarted.close();
+
+  const last = await vault({
+    app: restartedApp,
+    devtools: restarted,
+    evaluate: evaluateAgain,
+    step,
+  });
+  last.close();
+}
+
+/** Runs `expression` in the page `devtools` is connected to. */
+function evaluateIn(devtools) {
+  return async (expression) => {
+    const { result, exceptionDetails } = await devtools.send(
+      "Runtime.evaluate",
+      { expression, returnByValue: true },
+    );
+    if (exceptionDetails) {
+      const detail = exceptionDetails.exception?.description ?? "";
+      fail(`page error: ${exceptionDetails.text} ${detail}`);
+    }
+    return result.value;
+  };
+}
+
+/** Ends `app` and starts it again; resolves to the new one and its page. */
+async function restartApp(app, devtools) {
+  devtools.close();
+  app.kill();
+  await new Promise((resolve) =>
+    app.exitCode === null ? app.once("exit", resolve) : resolve(),
+  );
+  await sleep(1500);
+  const next = startApp();
+  const page = await connectDevTools();
+  return { app: next, devtools: page, evaluate: evaluateIn(page) };
+}
+
+const MASTER_PASSWORD = "smoke master passw0rd";
+
+/**
+ * The vault: a profile is created, the vault turned on in Preferences
+ * (the password twice, the no-recovery warning), the app restarted. The
+ * unlock screen comes before the workspace, refuses a wrong password, then
+ * unlocks, and the profile (now only in the vault: the smoke's keychain is
+ * in memory and gone with the restart) logs in. Resolves to the last page.
+ */
+async function vault({ app, devtools, evaluate, step }) {
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const click = (label) =>
+    evaluate(
+      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && b.checkVisibility()).click()`,
+    );
+  const fillForm = (fields, form) =>
+    evaluate(`(() => {
+      const fields = ${JSON.stringify(fields)};
+      const form = document.querySelector(${JSON.stringify(form)});
+      for (const [name, value] of Object.entries(fields)) {
+        const input = form.querySelector("[name=" + name + "]");
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      form.requestSubmit();
+    })()`);
+  const vaultFile = join(appData, "credentials.vault");
+  const hostRow = 'nav [data-host="vault-r1.yaml"]';
+  const profilesDialog = "[data-dialog=profiles]";
+
+  // A host that names a profile, and the profile.
+  writeFileSync(
+    join(workspace, "vault-r1.yaml"),
+    `name: vault-r1\naddress: 127.0.0.1\nport: ${SSH_PORT}\ncredential_profile: vault-login\n`,
+  );
+  // The workspace switcher is still open from the restart checks.
+  await evaluate(
+    `window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`,
+  );
+  await until(
+    "the switcher closed",
+    async () => !(await exists("[data-dialog=workspaces]")),
+  );
+  await until("the new host in the tree", () => exists(hostRow));
+  // Labelled "Profiles (!)" while the host's profile is missing.
+  await clickOn('button[title="Credential profiles"]');
+  await until("the profiles dialog", () => exists(profilesDialog));
+  await click("New profile…");
+  await until("the profile form", () =>
+    exists(`${profilesDialog} [name=profile-name]`),
+  );
+  await fillForm(
+    {
+      "profile-name": "vault-login",
+      "profile-username": USERNAME,
+      "profile-password": PASSWORD,
+    },
+    `${profilesDialog} form`,
+  );
+  await until("the profile listed", () =>
+    exists(`${profilesDialog} [data-profile="vault-login"]`),
+  );
+  await click("Close");
+
+  // Turning the vault on asks for the password twice, with the warning.
+  await clickOn("[data-open-preferences]");
+  await until("the keychain in use", () => exists("[data-vault-status=off]"));
+  await clickOn("[data-vault=turn-on]");
+  const warning = await until("the no-recovery warning", () =>
+    evaluate(
+      `document.querySelector("[data-vault-warning]")?.textContent ?? ""`,
+    ),
+  );
+  if (!/forget/.test(warning) || !/recover/.test(warning)) {
+    fail(`the vault warning: ${warning}`);
+  }
+  await evaluate(`(() => {
+    const form = document.querySelector("[data-vault-form]");
+    for (const [name, value] of [["vault-password", "one"], ["vault-repeat", "two"]]) {
+      const input = form.querySelector("[name=" + name + "]");
+      input.value = value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  })()`);
+  await until("different passwords refused", () =>
+    evaluate(
+      `!!document.querySelector("[data-vault-differ]") && document.querySelector("[data-vault=confirm]").disabled`,
+    ),
+  );
+  await fillForm(
+    { "vault-password": MASTER_PASSWORD, "vault-repeat": MASTER_PASSWORD },
+    "[data-vault-form]",
+  );
+  await until("the vault in use", () => exists("[data-vault-status=unlocked]"));
+  if (!existsSync(vaultFile)) fail("turning the vault on wrote no file");
+  const everyFile = readdirSync(appData, {
+    recursive: true,
+    withFileTypes: true,
+  })
+    .filter((entry) => entry.isFile())
+    .map((entry) => readFileSync(join(entry.parentPath, entry.name)))
+    .map((bytes) => bytes.toString("latin1"))
+    .join("\n");
+  for (const secret of [MASTER_PASSWORD, PASSWORD]) {
+    if (everyFile.includes(secret)) fail("a secret is in the data folder");
+  }
+  await click("Close");
+  step(
+    "the vault was turned on: password twice, warned, nothing plain on disk",
+  );
+
+  // After a restart, the unlock screen comes first and refuses a wrong
+  // password.
+  const next = await restartApp(app, devtools);
+  const again = next.evaluate;
+  const shown = (selector) =>
+    again(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const unlock = (password) =>
+    again(`(() => {
+      const form = document.querySelector("[data-unlock-screen] form");
+      const input = form.querySelector("[name=vault-unlock-password]");
+      input.value = ${JSON.stringify(password)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      form.requestSubmit();
+    })()`);
+  await until("the unlock screen", () => shown("[data-unlock-screen]"));
+  if (!(await shown("[data-unlock=quit]")))
+    fail("the unlock screen has no Quit");
+  if (await shown("nav [data-host]")) {
+    fail("the workspace opened before unlocking");
+  }
+  await unlock("not the master password");
+  await until("the wrong password reported", () =>
+    shown("[data-unlock-error=wrongPassword]"),
+  );
+  if (await shown("nav [data-host]")) {
+    fail("a wrong password opened the workspace");
+  }
+  step(
+    "after a restart the unlock screen came first and refused a wrong password",
+  );
+
+  // Unlocked, the workspace opens and the profile logs in from the vault.
+  await unlock(MASTER_PASSWORD);
+  await until(
+    "the unlock screen gone",
+    async () => !(await shown("[data-unlock-screen]")),
+  );
+  await until("the workspace after unlocking", () => shown(hostRow));
+  await again(
+    `document.querySelector(${JSON.stringify(hostRow)}).dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`,
+  );
+  await until(
+    "the Connected status",
+    async () =>
+      (await again(
+        `document.querySelector("${SHOWN_SESSION} [role=status]")?.textContent ?? ""`,
+      )) === "Connected",
+  );
+  await until("the shell prompt", async () =>
+    (await screenOf(again, SHOWN_SESSION)).includes("test-ssh$"),
+  );
+  if (await shown("input[name=password]")) fail("a password was asked for");
+  step("unlocked, the workspace opened and the vault's profile logged in");
+  return next.devtools;
 }
 
 /**
