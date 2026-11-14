@@ -44,6 +44,9 @@
 //! [`TestSshServer::connections_open`] and
 //! [`TestSshServer::most_connections_open`] count the connections that
 //! opened a session channel, while they last.
+//! [`TestSshServer::logins`] counts accepted logins, and
+//! [`TestSshServer::refuse_second_channel`] makes the server refuse every
+//! session channel after a connection's first.
 //!
 //! Every server also forwards `direct-tcpip` channels to the address asked
 //! for, so it can be a jump host; [`TestSshServer::forwarded`] counts them.
@@ -226,6 +229,9 @@ pub struct TestSshServer {
     /// How a device-mode shell starts.
     device: Option<Device>,
     open: Arc<OpenConnections>,
+    /// How many logins it accepted, and whether it refuses second channels.
+    logins: Arc<AtomicUsize>,
+    one_channel: Arc<AtomicBool>,
 }
 
 /// How a device-mode shell starts.
@@ -403,11 +409,15 @@ impl TestSshServer {
         let counter = forwarded.clone();
         let connections = received.clone();
         let open = Arc::<OpenConnections>::default();
+        let logins = Arc::<AtomicUsize>::default();
+        let one_channel = Arc::<AtomicBool>::default();
         let mut server = ScriptedServer {
             authorized_keys,
             forwarded: counter,
             device: device.clone(),
             open: open.clone(),
+            logins: logins.clone(),
+            one_channel: one_channel.clone(),
         };
         let task = tokio::spawn(async move {
             // `run_on_socket`, but keeping what each client sends first.
@@ -434,7 +444,21 @@ impl TestSshServer {
             received,
             device,
             open,
+            logins,
+            one_channel,
         }
+    }
+
+    /// How many logins this server has accepted (each connection logs in
+    /// at most once).
+    pub fn logins(&self) -> usize {
+        self.logins.load(Ordering::SeqCst)
+    }
+
+    /// From now on, refuses every session channel after a connection's
+    /// first (as devices that allow one shell per connection do).
+    pub fn refuse_second_channel(&self) {
+        self.one_channel.store(true, Ordering::SeqCst);
     }
 
     /// The prompt its shell starts with: [`PROMPT`], or a device's.
@@ -552,6 +576,8 @@ struct ScriptedServer {
     forwarded: Arc<AtomicUsize>,
     device: Option<Device>,
     open: Arc<OpenConnections>,
+    logins: Arc<AtomicUsize>,
+    one_channel: Arc<AtomicBool>,
 }
 
 impl Server for ScriptedServer {
@@ -566,6 +592,9 @@ impl Server for ScriptedServer {
             device: self.device.clone(),
             open: self.open.clone(),
             counted: false,
+            logins: self.logins.clone(),
+            one_channel: self.one_channel.clone(),
+            session_channels: 0,
         }
     }
 }
@@ -610,6 +639,12 @@ struct ScriptedShell {
     open: Arc<OpenConnections>,
     /// Whether this connection is in `open`.
     counted: bool,
+    /// The server's count of accepted logins.
+    logins: Arc<AtomicUsize>,
+    /// Whether the server refuses a connection's second session channel.
+    one_channel: Arc<AtomicBool>,
+    /// How many session channels this connection has opened.
+    session_channels: usize,
 }
 
 impl Drop for ScriptedShell {
@@ -907,6 +942,11 @@ fn unknown(line: &str) -> Vec<u8> {
 impl Handler for ScriptedShell {
     type Error = russh::Error;
 
+    async fn auth_succeeded(&mut self, _session: &mut Session) -> Result<(), Self::Error> {
+        self.logins.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         if user == STALLING_USERNAME {
             return std::future::pending().await;
@@ -972,6 +1012,13 @@ impl Handler for ScriptedShell {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.session_channels += 1;
+        if self.session_channels > 1 && self.one_channel.load(Ordering::SeqCst) {
+            reply
+                .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
         let privileged = self.device.as_ref().is_none_or(|d| d.privileged);
         self.channels.insert(
             channel.id(),
@@ -1138,6 +1185,9 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
                 Some(SessionEvent::Algorithms(_)) => {}
                 Some(SessionEvent::LogFailed(failure)) => {
                     panic!("expected a state change, got the log failure {failure:?}")
+                }
+                Some(SessionEvent::Backup(outcome)) => {
+                    panic!("expected a state change, got the backup outcome {outcome:?}")
                 }
                 None => panic!("session events ended while waiting for a state change"),
             }

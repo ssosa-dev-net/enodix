@@ -25,6 +25,7 @@
     type HostKeyDecision,
     type HostKeyQuestion,
     type LoginPrompt,
+    type LoginBackupOutcome,
     type NegotiatedAlgorithms,
     type Session,
     type SessionSource,
@@ -116,6 +117,10 @@
   let algorithms = $state<NegotiatedAlgorithms[]>([]);
   /** Why the session's log could not be written; null: logging works. */
   let logFailure = $state<string | null>(null);
+  /** How this connection's backup on login ended; null: none (yet). */
+  let backup = $state<LoginBackupOutcome | null>(null);
+  /** Whether the failed backup's notice was dismissed. */
+  let backupNoticeDismissed = $state(false);
   /** A paste waiting for the user to confirm it; see `pasteText`. */
   let pasteQuestion = $state<{
     text: string;
@@ -191,6 +196,8 @@
     hostKey = null;
     algorithms = [];
     logFailure = null;
+    backup = null;
+    backupNoticeDismissed = false;
     markReconnect();
     reconnecting.reconnect(currentSize()).catch(
       (error) =>
@@ -661,6 +668,10 @@
         onHostKey: (question) => (hostKey = { question, key: ++prompts }),
         onAlgorithms: (agreed) => (algorithms = agreed),
         onLogFailure: (reason) => (logFailure = reason),
+        onBackup: (outcome) => {
+          backup = outcome;
+          backupNoticeDismissed = false;
+        },
       },
     ).then(
       (opened) => {
@@ -768,6 +779,20 @@
         title="Everything this session sends, passwords included, crosses the network unencrypted (telnet)"
       >
         Unencrypted
+      </span>
+    {/if}
+    {#if backup}
+      <span
+        class="backup {backup.kind}"
+        data-login-backup={backup.kind}
+        data-version={backup.kind === "failed" ? undefined : backup.version}
+        title={backup.kind === "saved"
+          ? `Backed up on login: the configuration was saved as ${backup.version}`
+          : backup.kind === "unchanged"
+            ? `Backed up on login: the configuration is unchanged since ${backup.version}`
+            : `The backup on login failed: ${backup.reason}`}
+      >
+        {backup.kind === "failed" ? "Not backed up" : "Backed up"}
       </span>
     {/if}
     {#if status.state === "connected" && legacy.length > 0}
@@ -914,6 +939,20 @@
           data-log-failed-dismiss
           onclick={() => {
             logFailure = null;
+            xterm?.focus();
+          }}
+        >
+          Dismiss
+        </button>
+      </div>
+    {/if}
+    {#if backup?.kind === "failed" && !backupNoticeDismissed}
+      <div class="backup-failed" role="status" data-login-backup-failed>
+        <span class="reason">The backup on login failed: {backup.reason}.</span>
+        <button
+          data-login-backup-dismiss
+          onclick={() => {
+            backupNoticeDismissed = true;
             xterm?.focus();
           }}
         >
@@ -1138,6 +1177,34 @@
     font-size: 0.75rem;
     white-space: nowrap;
     cursor: help;
+  }
+
+  .backup {
+    color: var(--muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    cursor: help;
+  }
+
+  .backup.failed {
+    color: var(--warning);
+  }
+
+  .backup-failed {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.2rem 0.6rem;
+    padding: 0.25rem 0.6rem;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .backup-failed .reason {
+    flex: 1 1 14rem;
+    overflow-wrap: anywhere;
   }
 
   .legacy {

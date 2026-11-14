@@ -103,7 +103,7 @@ pub(super) async fn run(target: TelnetTarget, link: &mut Link) -> CloseReason {
                 }
                 // Nothing asks for these over telnet; the manager sends
                 // breaks to serial sessions only.
-                Command::Answer(_) | Command::HostKey(_) | Command::Break => {}
+                Command::Answer(_) | Command::HostKey(_) | Command::Break | Command::OpenChannel { .. } => {}
                 Command::Close => break CloseReason::ClosedLocally,
             },
             // Output is read only while the consumer is less than a window

@@ -13,8 +13,8 @@ use super::{BackupWork, JobPlan, JobStep, PlannedHost};
 use crate::configs::{ConfigStore, SaveOutcome};
 use crate::logging::PlainText;
 use crate::session::{
-    CloseReason, HostKeyDecision, HostKeyQuestion, LoginPrompt, SessionEvent, SessionEvents,
-    SessionId, SessionManager, SessionState, SessionTarget, TerminalSize,
+    CloseReason, HostKeyDecision, HostKeyQuestion, LoginPrompt, OpenError, SessionEvent,
+    SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
 };
 use crate::workspace::HostId;
 
@@ -230,16 +230,13 @@ pub fn start(
         .into_iter()
         .map(|host| {
             let named = (host.id.clone(), host.name.clone());
-            let runner = HostRunner {
-                manager: manager.clone(),
-                events: events_tx.clone(),
-                id: host.id.clone(),
-                options: options.clone(),
-                configs: configs.clone(),
-                text: PlainText::new(),
-                output: String::new(),
-                backup: None,
-            };
+            let runner = HostRunner::new(
+                manager,
+                events_tx.clone(),
+                &host.id,
+                options.clone(),
+                configs.clone(),
+            );
             (
                 named,
                 tokio::spawn(runner.run(host, room.clone(), cancel.clone())),
@@ -292,6 +289,17 @@ struct HostRunner {
 /// The host's session, once opened.
 type Opened = Option<(SessionId, SessionEvents)>;
 
+/// How a host's session is opened.
+#[derive(Clone, Copy)]
+enum Open {
+    /// A connection of its own, to the host's profile target.
+    Connect,
+    /// A second channel on the connection of the session `of`; if the
+    /// device refuses it, a connection of its own if the host has a
+    /// target.
+    Channel { of: SessionId },
+}
+
 /// How waiting for a prompt ended, if not with the prompt.
 enum NoPrompt {
     TimedOut,
@@ -318,7 +326,51 @@ enum Shown {
 /// How long a closed session may take to say so before it is let go.
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
+/// Backs `host` up over a second channel on the connected session `of`
+/// (or, if the device refuses one and the host has a target, a second
+/// connection); keeps the configuration in `configs`' store under its
+/// workspace id. Asks nothing, as a job; reports no events.
+pub(super) async fn back_up_on_login(
+    manager: &SessionManager,
+    host: PlannedHost,
+    of: SessionId,
+    configs: (ConfigStore, String),
+    command_timeout: Duration,
+) -> HostResult {
+    let options = JobOptions {
+        command_timeout,
+        ..JobOptions::default()
+    };
+    // Nobody follows its events: the outcome is the result.
+    let (events, _) = mpsc::unbounded_channel();
+    let mut runner = HostRunner::new(manager, events, &host.id, options, Some(configs));
+    let mut session = None;
+    let state = runner
+        .drive(&host, &mut session, Open::Channel { of })
+        .await;
+    runner.finish(host, session, state).await
+}
+
 impl HostRunner {
+    fn new(
+        manager: &SessionManager,
+        events: mpsc::UnboundedSender<JobEvent>,
+        id: &HostId,
+        options: JobOptions,
+        configs: Option<(ConfigStore, String)>,
+    ) -> Self {
+        Self {
+            manager: manager.clone(),
+            events,
+            id: id.clone(),
+            options,
+            configs,
+            text: PlainText::new(),
+            output: String::new(),
+            backup: None,
+        }
+    }
+
     async fn run(
         mut self,
         host: PlannedHost,
@@ -341,14 +393,25 @@ impl HostRunner {
                     Ok(room) => permit = Some(room),
                     Err(_) => return HostState::Cancelled,
                 }
-                self.drive(&host, &mut session).await
+                self.drive(&host, &mut session, Open::Connect).await
             } => state,
             () = cancelled => HostState::Cancelled,
         };
+        let result = self.finish(host, session, state).await;
+        drop(permit);
+        result
+    }
+
+    /// Closes the host's session, if it has one, and gives the result.
+    async fn finish(
+        mut self,
+        host: PlannedHost,
+        mut session: Opened,
+        state: HostState,
+    ) -> HostResult {
         if let Some((id, events)) = session.take() {
             self.close(id, events).await;
         }
-        drop(permit);
         let rest = self.text.finish();
         self.add_output(rest);
         self.state(state.clone());
@@ -381,21 +444,20 @@ impl HostRunner {
 
     /// Connects, gets ready (privileged mode, no paging) and sends every
     /// line; the host's final state.
-    async fn drive(&mut self, host: &PlannedHost, session: &mut Opened) -> HostState {
+    async fn drive(&mut self, host: &PlannedHost, session: &mut Opened, open: Open) -> HostState {
         let work = &host.work;
         let patterns = match self.patterns(host) {
             Ok(patterns) => patterns,
             Err(reason) => return failed(reason),
         };
         self.state(HostState::Connecting);
-        let (id, events) = session.insert(
-            self.manager
-                .open(SessionTarget::Ssh(work.target.clone()), JOB_TERMINAL_SIZE),
-        );
-        let id = *id;
-        if let Err(reason) = self.connect(id, events).await {
+        if let Err(reason) = self.open(host, session, open).await {
             return failed(reason);
         }
+        let Some((id, events)) = session.as_mut() else {
+            unreachable!("opened")
+        };
+        let id = *id;
         self.state(HostState::Running);
 
         if let Err(error) = self.wait_for(events, &patterns, false).await {
@@ -536,16 +598,20 @@ impl HostRunner {
             Err(error) => return Err(self.no_prompt_after(&quoted(command), error)),
         }
         let Some(secret) = &work.enable_secret else {
-            return Err(format!(
-                "{command:?} asked for a password, and the credential profile {} has no enable secret stored",
-                work.profile
-            ));
+            return Err(match &work.profile {
+                Some(profile) => format!(
+                    "{command:?} asked for a password, and the credential profile {profile} has no enable secret stored"
+                ),
+                None => format!(
+                    "{command:?} asked for a password, and no credential profile applies to give an enable secret"
+                ),
+            });
         };
-        let refused = || {
-            format!(
-                "the device refused the enable secret of the credential profile {}",
-                work.profile
-            )
+        let refused = || match &work.profile {
+            Some(profile) => {
+                format!("the device refused the enable secret of the credential profile {profile}")
+            }
+            None => "the device refused the enable secret".to_string(),
         };
         let shown = if self
             .manager
@@ -596,6 +662,67 @@ impl HostRunner {
         }
     }
 
+    /// Opens the host's session into `session` and follows it until it is
+    /// connected; why not, if it does not get there.
+    async fn open(
+        &mut self,
+        host: &PlannedHost,
+        session: &mut Opened,
+        open: Open,
+    ) -> Result<(), String> {
+        let connect = |runner: &Self, target: &SshTarget| {
+            runner
+                .manager
+                .open(SessionTarget::Ssh(target.clone()), JOB_TERMINAL_SIZE)
+        };
+        let Open::Channel { of } = open else {
+            let Some(target) = &host.work.target else {
+                return Err("there is nothing to connect it with".into());
+            };
+            let (id, events) = session.insert(connect(self, target));
+            return self.connect(*id, events).await;
+        };
+        let (id, mut events) = self
+            .manager
+            .open_channel(of, JOB_TERMINAL_SIZE)
+            .map_err(|error| format!("no second channel could be opened: {error}"))?;
+        let refused = match self.channel_ready(&mut events).await {
+            Ok(()) => {
+                *session = Some((id, events));
+                return Ok(());
+            }
+            Err(CloseReason::Failed(OpenError::ChannelRefused { reason })) => reason,
+            Err(reason) => {
+                self.manager.discard(id);
+                return Err(format!("the second channel closed: {reason}"));
+            }
+        };
+        self.manager.discard(id);
+        let Some(target) = &host.work.target else {
+            return Err(format!(
+                "the device refused a second channel ({refused}), and the login was typed or asked for, so a second connection would have to ask for it again"
+            ));
+        };
+        let (id, events) = session.insert(connect(self, target));
+        self.connect(*id, events)
+            .await
+            .map_err(|reason| format!("the device refused a second channel ({refused}), and a second connection failed: {reason}"))
+    }
+
+    /// Follows a second channel until it is connected; why not, if it
+    /// closes instead.
+    async fn channel_ready(&mut self, events: &mut SessionEvents) -> Result<(), CloseReason> {
+        loop {
+            match events.next().await {
+                Some(SessionEvent::Output(bytes)) => self.take(events, &bytes),
+                Some(SessionEvent::State(SessionState::Connected)) => return Ok(()),
+                Some(SessionEvent::State(SessionState::Closed(reason))) => return Err(reason),
+                Some(_) => {}
+                None => return Err(CloseReason::ClosedLocally),
+            }
+        }
+    }
+
     /// Follows the session `id` until it is connected; why not, if it does
     /// not get there. Host keys that are not trusted are refused and login
     /// questions are not answered: the host fails, naming what was asked.
@@ -617,7 +744,11 @@ impl HostRunner {
                     refused = Some(login_question_refused(&prompt));
                     let _ = self.manager.close(id);
                 }
-                Some(SessionEvent::Algorithms(_) | SessionEvent::LogFailed(_)) => {}
+                Some(
+                    SessionEvent::Algorithms(_)
+                    | SessionEvent::LogFailed(_)
+                    | SessionEvent::Backup(_),
+                ) => {}
                 None => return Err(refused.unwrap_or_else(|| "the session went away".into())),
             }
         }

@@ -229,6 +229,11 @@ pub enum SessionEvent {
     /// The session's log could not be written (a full disk, a folder that
     /// cannot be created, ...). The session goes on, no longer logged.
     LogFailed(LogFailure),
+    /// How the backup the session started once connected ended (see
+    /// [`crate::job::LoginBackup`]): sent once per connection, after
+    /// [`SessionState::Connected`], whenever the backup ends; the session
+    /// itself is never held up by it.
+    Backup(crate::job::LoginBackupOutcome),
 }
 
 /// Whether to trust a host key the server presented.
@@ -370,6 +375,10 @@ pub enum OpenError {
     /// The device was reached but the session could not be set up.
     #[error("could not open the session: {0}")]
     Protocol(String),
+    /// A second channel ([`SessionManager::open_channel`]): the device
+    /// refused to open another shell on the connection.
+    #[error("the device refused a second channel on the connection ({reason})")]
+    ChannelRefused { reason: String },
     /// The device and the session had no algorithm in common for some
     /// kind (an old device, say): says what the device offered.
     #[error("{0}")]
@@ -438,6 +447,57 @@ pub enum SessionError {
     /// Only serial sessions can send a break.
     #[error("only serial sessions can send a break")]
     BreakUnsupported,
+    /// Only SSH sessions carry more than one channel.
+    #[error("only SSH sessions can open a second channel")]
+    ChannelsUnsupported,
+    /// The session is not connected (yet, or any more).
+    #[error("the session is not connected")]
+    NotConnected,
+}
+
+/// How [`SessionManager::open_with`] opens a session, beyond its target.
+#[derive(Clone, Default)]
+pub struct OpenOptions {
+    /// Where the session is logged; `None`: not logged.
+    pub log: Option<SessionLog>,
+    /// Called each time the session connects: on opening, and again on
+    /// every [`SessionManager::reconnect`] (a [`SessionManager::duplicate`]
+    /// keeps it too).
+    pub when_connected: Option<Arc<dyn WhenConnected>>,
+}
+
+/// Something done each time a session connects, beside it.
+pub trait WhenConnected: Send + Sync {
+    /// The session `session` has just connected. Must return at once
+    /// (spawn the work), as the session waits for it.
+    fn connected(&self, session: ConnectedSession);
+}
+
+/// A session that has just connected, as [`WhenConnected`] sees it.
+pub struct ConnectedSession {
+    manager: SessionManager,
+    id: SessionId,
+    /// That connection's events; once it has ended, reports go nowhere.
+    events: mpsc::WeakUnboundedSender<SessionEvent>,
+}
+
+impl ConnectedSession {
+    /// The manager the session belongs to.
+    pub fn manager(&self) -> &SessionManager {
+        &self.manager
+    }
+
+    pub fn id(&self) -> SessionId {
+        self.id
+    }
+
+    /// Tells the session's owner how its backup ended
+    /// ([`SessionEvent::Backup`]), unless that connection has ended.
+    pub fn report_backup(&self, outcome: crate::job::LoginBackupOutcome) {
+        if let Some(events) = self.events.upgrade() {
+            let _ = events.send(SessionEvent::Backup(outcome));
+        }
+    }
 }
 
 /// Opens, tracks and closes sessions.
@@ -464,8 +524,10 @@ struct Inner {
 /// reconnected or duplicated, and how to reach it while it is open.
 struct Entry {
     target: SessionTarget,
-    /// Where each connection is logged; `None`: not logged.
-    log: Option<SessionLog>,
+    /// The log, and what is done once connected.
+    options: OpenOptions,
+    /// For a second channel: the session whose connection carries it.
+    channel_of: Option<SessionId>,
     /// `None` once the session has closed.
     open: Option<SessionHandle>,
 }
@@ -561,14 +623,83 @@ impl SessionManager {
         size: TerminalSize,
         log: Option<SessionLog>,
     ) -> (SessionId, SessionEvents) {
+        let options = OpenOptions {
+            log,
+            ..OpenOptions::default()
+        };
+        self.open_with(target, size, options)
+    }
+
+    /// Like [`Self::open`], with a log and something to do each time the
+    /// session connects (see [`OpenOptions`]).
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn open_with(
+        &self,
+        target: SessionTarget,
+        size: TerminalSize,
+        options: OpenOptions,
+    ) -> (SessionId, SessionEvents) {
+        self.add(target, options, None, size)
+    }
+
+    /// Opens another shell, with its own terminal of `size`, on the SSH
+    /// connection of the connected session `of`: no second login, and
+    /// nothing of it shows in `of`. It is a session of its own (written
+    /// to, acknowledged and closed by its id; never logged), which connects
+    /// once the device has started the shell, or closes with
+    /// [`OpenError::ChannelRefused`] if the device refuses one; it ends
+    /// when the connection does. Closing it leaves `of` open.
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn open_channel(
+        &self,
+        of: SessionId,
+        size: TerminalSize,
+    ) -> Result<(SessionId, SessionEvents), SessionError> {
+        let (target, of) = {
+            let sessions = self.inner.sessions();
+            let entry = sessions.get(&of).ok_or(SessionError::NotFound)?;
+            if entry.target.transport() != Transport::Ssh {
+                return Err(SessionError::ChannelsUnsupported);
+            }
+            // A channel's connection is the session's it is on.
+            let of = entry.channel_of.unwrap_or(of);
+            let open = open_session(&sessions, of)?;
+            if !open.connected.load(Ordering::Acquire) {
+                return Err(SessionError::NotConnected);
+            }
+            (entry.target.clone(), of)
+        };
+        Ok(self.add(target, OpenOptions::default(), Some(of), size))
+    }
+
+    /// Adds a session and starts it.
+    fn add(
+        &self,
+        target: SessionTarget,
+        options: OpenOptions,
+        channel_of: Option<SessionId>,
+        size: TerminalSize,
+    ) -> (SessionId, SessionEvents) {
         let id = SessionId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let mut sessions = self.inner.sessions();
-        let entry = sessions.entry(id).or_insert(Entry {
-            target,
-            log,
-            open: None,
+        let parent = channel_of.and_then(|of| {
+            open_session(&sessions, of)
+                .ok()
+                .map(|parent| parent.commands.clone())
         });
-        let events = self.start(id, entry, size);
+        sessions.insert(
+            id,
+            Entry {
+                target,
+                options,
+                channel_of,
+                open: None,
+            },
+        );
+        let entry = sessions.get_mut(&id).expect("just added");
+        let events = self.start(id, entry, size, parent);
         (id, events)
     }
 
@@ -585,16 +716,18 @@ impl SessionManager {
         size: TerminalSize,
     ) -> Result<SessionEvents, SessionError> {
         let mut sessions = self.inner.sessions();
-        let entry = sessions.get_mut(&id).ok_or(SessionError::NotFound)?;
+        let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
         if entry.open.is_some() {
             return Err(SessionError::StillOpen);
         }
-        Ok(self.start(id, entry, size))
+        let parent = parent_commands(&sessions, entry.channel_of);
+        let entry = sessions.get_mut(&id).expect("just found");
+        Ok(self.start(id, entry, size, parent))
     }
 
     /// Opens a new session to the same target as the session `id` (open
     /// or closed), with the same settings and login, logged in the same
-    /// place.
+    /// place (a second channel: another channel on the same connection).
     ///
     /// Must be called from within a Tokio runtime.
     pub fn duplicate(
@@ -602,12 +735,16 @@ impl SessionManager {
         id: SessionId,
         size: TerminalSize,
     ) -> Result<(SessionId, SessionEvents), SessionError> {
-        let (target, log) = {
+        let (target, options, channel_of) = {
             let sessions = self.inner.sessions();
             let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
-            (entry.target.clone(), entry.log.clone())
+            (
+                entry.target.clone(),
+                entry.options.clone(),
+                entry.channel_of,
+            )
         };
-        Ok(self.open_logged(target, size, log))
+        Ok(self.add(target, options, channel_of, size))
     }
 
     /// Forgets the session, closing it first if it is open: it can no
@@ -620,8 +757,16 @@ impl SessionManager {
         }
     }
 
-    /// Starts the transport of the session `id` described by `entry`.
-    fn start(&self, id: SessionId, entry: &mut Entry, size: TerminalSize) -> SessionEvents {
+    /// Starts the transport of the session `id` described by `entry`; a
+    /// second channel asks for its shell through `parent`, the commands of
+    /// the session it is on (`None`: that one is not open).
+    fn start(
+        &self,
+        id: SessionId,
+        entry: &mut Entry,
+        size: TerminalSize,
+        parent: Option<mpsc::UnboundedSender<Command>>,
+    ) -> SessionEvents {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         // Unbounded, so the transport never waits on the consumer and keeps
         // taking commands; flow control bounds the output queued here.
@@ -641,7 +786,20 @@ impl SessionManager {
         let known_hosts = self.inner.known_hosts.clone();
         let serial_ports = self.inner.serial_ports.clone();
         let target = entry.target.clone();
-        let log = entry.log.clone();
+        let log = entry.options.log.clone();
+        let channel = entry.channel_of.is_some();
+        let when_connected = entry.options.when_connected.clone().map(|hook| {
+            let manager = manager.clone();
+            Box::new(move |events: &mpsc::UnboundedSender<SessionEvent>| {
+                if let Some(inner) = manager.upgrade() {
+                    hook.connected(ConnectedSession {
+                        manager: SessionManager { inner },
+                        id,
+                        events: events.downgrade(),
+                    });
+                }
+            }) as OnConnected
+        });
         tokio::spawn(async move {
             let mut link = Link {
                 commands: command_rx,
@@ -651,9 +809,11 @@ impl SessionManager {
                 log,
                 logger: None,
                 connected,
+                when_connected,
             };
             link.state(SessionState::Connecting);
             let reason = match target {
+                SessionTarget::Ssh(_) if channel => ssh::run_channel(parent, &mut link).await,
                 SessionTarget::Ssh(target) => ssh::run(target, known_hosts, &mut link).await,
                 SessionTarget::Telnet(target) => telnet::run(target, &mut link).await,
                 SessionTarget::Serial(target) => serial::run(target, serial_ports, &mut link).await,
@@ -794,6 +954,15 @@ fn open_session(
         .ok_or(SessionError::NotFound)
 }
 
+/// The commands of the open session a second channel is on.
+fn parent_commands(
+    sessions: &HashMap<SessionId, Entry>,
+    channel_of: Option<SessionId>,
+) -> Option<mpsc::UnboundedSender<Command>> {
+    let session = open_session(sessions, channel_of?).ok()?;
+    Some(session.commands.clone())
+}
+
 /// What a session's owner asks of its transport.
 enum Command {
     Write(Vec<u8>),
@@ -804,8 +973,18 @@ enum Command {
     HostKey(HostKeyDecision),
     /// A break on a serial line.
     Break,
+    /// Another shell on this session's SSH connection, for a second
+    /// channel; transports without channels drop the reply.
+    OpenChannel {
+        size: TerminalSize,
+        reply: tokio::sync::oneshot::Sender<Result<ssh::OpenedChannel, OpenError>>,
+    },
     Close,
 }
+
+/// What a session does each time it connects, given that connection's
+/// events.
+type OnConnected = Box<dyn Fn(&mpsc::UnboundedSender<SessionEvent>) + Send>;
 
 /// A transport's side of the session interface: where it takes commands from
 /// and reports output and state to. Each transport is a function that drives
@@ -825,6 +1004,8 @@ struct Link {
     logger: Option<Logger>,
     /// Shared with the manager's handle: set once connected.
     connected: Arc<AtomicBool>,
+    /// Called on every [`SessionState::Connected`].
+    when_connected: Option<OnConnected>,
 }
 
 impl Link {
@@ -847,7 +1028,8 @@ impl Link {
                 Command::HostKey(decision) => {
                     let _ = replies.decisions.send(decision);
                 }
-                Command::Write(_) | Command::Break => {}
+                // Not connected: a second channel cannot open yet.
+                Command::Write(_) | Command::Break | Command::OpenChannel { .. } => {}
             }
         }
     }
@@ -935,6 +1117,9 @@ impl Link {
         let _ = self.events.send(SessionEvent::State(state));
         if connected {
             self.start_log();
+            if let Some(when_connected) = &self.when_connected {
+                when_connected(&self.events);
+            }
         }
     }
 }

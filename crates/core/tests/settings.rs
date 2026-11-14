@@ -767,3 +767,38 @@ fn platforms_written_as_before_still_load_and_are_not_rewritten() {
         assert_eq!(read(temp.path(), id), before);
     }
 }
+
+#[test]
+fn backup_on_login_is_off_by_default_and_inherits_with_its_origin() {
+    let (_temp, root) = fixture_copy("edit");
+    let mut workspace = Workspace::open(&root).unwrap();
+    let backup = |workspace: &Workspace| {
+        resolved(workspace, "Core/core-r1.yaml")
+            .settings
+            .backup_on_login
+    };
+    assert_eq!(backup(&workspace), from(false, Origin::Default));
+
+    let mut settings = workspace.folder("Core").unwrap().settings.clone();
+    settings.backup_on_login = Some(true);
+    workspace.write_folder_settings("Core", &settings).unwrap();
+    assert_eq!(
+        read(&root, "Core/_folder.yaml"),
+        "description: Core layer\nbackup_on_login: true\n"
+    );
+    assert_eq!(backup(&workspace), from(true, folder("Core")));
+    assert_eq!(
+        workspace.resolve_folder("Core").unwrap().backup_on_login,
+        from(true, folder("Core"))
+    );
+
+    // A host turns it off for itself (after `port`, its nearest predecessor).
+    let mut core = workspace
+        .host(&HostId::new("Core/core-r1.yaml"))
+        .unwrap()
+        .clone();
+    core.settings.backup_on_login = Some(false);
+    workspace.write_host(&core).unwrap();
+    assert!(read(&root, "Core/core-r1.yaml").ends_with("port: 22\nbackup_on_login: false\n"));
+    assert_eq!(backup(&workspace), from(false, Origin::Host));
+}

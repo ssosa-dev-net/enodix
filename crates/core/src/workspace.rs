@@ -69,9 +69,9 @@ pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
 use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
-    apply_settings, settings_from_document, Level, CONNECT_TIMEOUT, CREDENTIAL_PROFILE,
-    ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PASTE_LINE_DELAY, PLATFORM, PORT, PROTOCOL,
-    SERIAL, WEB_LINKS,
+    apply_settings, settings_from_document, Level, BACKUP_ON_LOGIN, CONNECT_TIMEOUT,
+    CREDENTIAL_PROFILE, ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PASTE_LINE_DELAY, PLATFORM,
+    PORT, PROTOCOL, SERIAL, WEB_LINKS,
 };
 pub use settings::{
     Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, Origin, Parity,
@@ -106,7 +106,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 26] = [
+pub const HOST_KEY_ORDER: [&str; 27] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -116,6 +116,7 @@ pub const HOST_KEY_ORDER: [&str; 26] = [
     LEGACY_CRYPTO,
     CONNECT_TIMEOUT,
     LOGGING,
+    BACKUP_ON_LOGIN,
     ENVIRONMENT,
     PASTE_LINE_DELAY,
     SERIAL,
@@ -136,7 +137,7 @@ pub const HOST_KEY_ORDER: [&str; 26] = [
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 14] = [
+pub const FOLDER_KEY_ORDER: [&str; 15] = [
     DESCRIPTION,
     TAGS,
     PLATFORM,
@@ -147,6 +148,7 @@ pub const FOLDER_KEY_ORDER: [&str; 14] = [
     LEGACY_CRYPTO,
     CONNECT_TIMEOUT,
     LOGGING,
+    BACKUP_ON_LOGIN,
     ENVIRONMENT,
     PASTE_LINE_DELAY,
     SERIAL,

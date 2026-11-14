@@ -22,7 +22,10 @@ use netterm_core::import::csv::{
 use netterm_core::import::nornir::{NornirImport, NornirInventory, NornirPreview};
 use netterm_core::import::ImportReport;
 use netterm_core::job::results::{OutputRef, RunList, RunStore, SearchHit, StoredRun};
-use netterm_core::job::{self, JobCanceller, JobEvent, JobOptions, JobPlan, JobStep, JobTarget};
+use netterm_core::job::{
+    self, JobCanceller, JobEvent, JobOptions, JobPlan, JobStep, JobTarget, LoginBackup,
+    LoginBackupOutcome, SessionLogin,
+};
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
 use netterm_core::logging::{LogFolder, SessionLog};
@@ -33,9 +36,9 @@ use netterm_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use netterm_core::preferences::{FontZoom, Preferences, Theme};
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
-    NegotiatedAlgorithms, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent,
-    SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth, SshTarget,
-    TerminalSize, Transport, DEFAULT_CONNECT_TIMEOUT,
+    NegotiatedAlgorithms, OpenOptions, SerialParameters, SerialPortInfo, SerialTarget,
+    SessionEvent, SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth,
+    SshTarget, TerminalSize, Transport, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
 };
 use netterm_core::template::Variables;
 use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
@@ -1544,6 +1547,7 @@ fn config_export(
 async fn session_open(
     manager: State<'_, SessionManager>,
     shell: State<'_, Shell>,
+    configs: State<'_, Configs>,
     tabs: State<'_, Tabs>,
     target: ConnectTarget,
     tab: TabId,
@@ -1554,8 +1558,11 @@ async fn session_open(
     on_host_key: Channel<HostKeyQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
+    on_backup: Channel<LoginBackupOutcome>,
 ) -> Result<Opened, String> {
     let log = session_log(&shell, &target)?;
+    let when_connected = login_backup(&shell, &configs, &target)
+        .map(|backup| Arc::new(backup) as Arc<dyn WhenConnected>);
     let target = match target {
         ConnectTarget::Serial { id } => {
             SessionTarget::Serial(with_open_profiles(&shell, |profiles| {
@@ -1600,7 +1607,14 @@ async fn session_open(
     };
     let encrypted = target.encrypted();
     let transport = target.transport();
-    let (id, events) = manager.open_logged(target, size.into(), log);
+    let (id, events) = manager.open_with(
+        target,
+        size.into(),
+        OpenOptions {
+            log,
+            when_connected,
+        },
+    );
     tabs.attach(tab, id);
     forward(
         events,
@@ -1611,6 +1625,7 @@ async fn session_open(
             host_key: on_host_key,
             algorithms: on_algorithms,
             log_failure: on_log_failure,
+            backup: on_backup,
         },
     );
     Ok(Opened {
@@ -1618,6 +1633,22 @@ async fn session_open(
         encrypted,
         transport,
     })
+}
+
+/// The backup an SSH session to a workspace host makes once connected, as
+/// its `backup_on_login` setting says (the core decides when it applies).
+fn login_backup(shell: &Shell, configs: &Configs, target: &ConnectTarget) -> Option<LoginBackup> {
+    let ConnectTarget::Host { id, credentials } = target else {
+        return None;
+    };
+    let login = match credentials {
+        Some(_) => SessionLogin::Typed,
+        None => SessionLogin::Profile,
+    };
+    let guard = shell.workspace();
+    let workspace = guard.as_ref()?;
+    let profiles = Profiles::new(&shell.credentials, workspace);
+    LoginBackup::plan(workspace, &profiles, id, login, configs.0.clone())
 }
 
 /// Where a session to `target` is logged: a workspace host as its
@@ -1716,6 +1747,8 @@ struct Channels {
     algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     /// Why the session's log could not be written.
     log_failure: Channel<String>,
+    /// How its backup on login ended.
+    backup: Channel<LoginBackupOutcome>,
 }
 
 /// Passes the session's events on to the interface until they end.
@@ -1729,6 +1762,7 @@ fn forward(mut events: SessionEvents, channels: Channels) {
                 SessionEvent::HostKey(question) => channels.host_key.send(question),
                 SessionEvent::Algorithms(algorithms) => channels.algorithms.send(algorithms),
                 SessionEvent::LogFailed(failure) => channels.log_failure.send(failure.to_string()),
+                SessionEvent::Backup(outcome) => channels.backup.send(outcome),
             };
             // The webview is gone; dropping the events closes the session.
             if delivered.is_err() {
@@ -1753,6 +1787,7 @@ async fn session_reconnect(
     on_host_key: Channel<HostKeyQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
+    on_backup: Channel<LoginBackupOutcome>,
 ) -> Result<(), String> {
     let events = manager
         .reconnect(SessionId(id), size.into())
@@ -1766,6 +1801,7 @@ async fn session_reconnect(
             host_key: on_host_key,
             algorithms: on_algorithms,
             log_failure: on_log_failure,
+            backup: on_backup,
         },
     );
     Ok(())
@@ -1788,6 +1824,7 @@ async fn session_duplicate(
     on_host_key: Channel<HostKeyQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
+    on_backup: Channel<LoginBackupOutcome>,
 ) -> Result<Opened, String> {
     let (copy, events) = manager
         .duplicate(SessionId(id), size.into())
@@ -1802,6 +1839,7 @@ async fn session_duplicate(
             host_key: on_host_key,
             algorithms: on_algorithms,
             log_failure: on_log_failure,
+            backup: on_backup,
         },
     );
     let encrypted = manager.encrypted(copy).map_err(|error| error.to_string())?;

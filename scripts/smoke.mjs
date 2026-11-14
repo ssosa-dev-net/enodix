@@ -1123,6 +1123,7 @@ async function main() {
     status,
     screen,
     text,
+    type,
     screenshot,
     step,
   });
@@ -2651,6 +2652,7 @@ async function jobs({
   status,
   screen,
   text,
+  type,
   screenshot,
   step,
 }) {
@@ -3224,6 +3226,73 @@ async function jobs({
     await until(
       "the config history closed",
       async () => !(await exists(history)),
+    );
+
+    // Back up on login: on for the host, each connection checks the
+    // configuration over a second channel, showing nothing in the terminal.
+    await evaluate(`(() => {
+      const select = document.querySelector(".side [name=setting-backup_on_login]");
+      select.value = "on";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await until("backup on login set on the host", () =>
+      readFileSync(backupHostFile, "utf8").includes("backup_on_login: true"),
+    );
+    if (!(await exists('.side [data-setting-note="backup_on_login"]'))) {
+      fail("the setting does not say where it does not apply");
+    }
+    const loginBackup = `${SHOWN_SESSION} [data-login-backup]`;
+    const backupMarker = () =>
+      evaluate(`(() => {
+        const marker = document.querySelector(${json(loginBackup)});
+        return marker
+          ? { kind: marker.dataset.loginBackup, version: marker.dataset.version ?? null, title: marker.title }
+          : null;
+      })()`);
+    await doubleClick(backupRow);
+    await until("jobs-b1's prompt in a terminal", async () =>
+      (await screen()).includes("lab-r1#"),
+    );
+    await until(
+      "the backup on login",
+      async () => (await backupMarker()) !== null,
+    );
+    const unchanged = await backupMarker();
+    if (unchanged.kind !== "unchanged" || unchanged.version !== third.version) {
+      fail(`the backup on login of an unchanged device: ${json(unchanged)}`);
+    }
+    if ((await screen()).includes("running-config")) {
+      fail("the backup on login showed in the terminal");
+    }
+    // Changed in the terminal; the next connection keeps a new version.
+    await type("configure interface Loopback10\r");
+    await until("the configure line answered", async () =>
+      (await screen()).match(/Loopback10\s+lab-r1#/),
+    );
+    await type("exit\r");
+    await until("the session ended", () =>
+      exists(`${SHOWN_SESSION} [data-session-ended]`),
+    );
+    await type("\r");
+    await until("a new backup on login after reconnecting", async () => {
+      const marker = await backupMarker();
+      return marker?.kind === "saved" && marker.version !== third.version;
+    });
+    if (kept().length !== 3) fail(`versions on disk: ${json(kept())}`);
+    if ((await screen()).includes("running-config")) {
+      fail("the backup on login showed in the terminal");
+    }
+    if (await exists(`${SHOWN_SESSION} [data-login-backup-failed]`)) {
+      fail("a successful backup on login showed a failure notice");
+    }
+    await screenshot("backup-on-login");
+    step(
+      "back up on login: unchanged on connecting, a new version after a change and a reconnect, nothing in the terminal",
+    );
+    await click("Disconnect");
+    await until(
+      "the backed-up session closed",
+      async () => (await status()) !== "Connected",
     );
   } finally {
     rmSync(backupHostFile, { force: true });
