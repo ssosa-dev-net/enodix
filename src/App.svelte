@@ -31,6 +31,7 @@
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
   import CsvImportDialog from "./lib/CsvImportDialog.svelte";
   import NornirImportDialog from "./lib/NornirImportDialog.svelte";
+  import JobDialog from "./lib/JobDialog.svelte";
   import {
     hostRole,
     hostSafety,
@@ -1145,6 +1146,17 @@
     folder={inventory.nornirImport}
     onclose={() => {
       inventory.nornirImport = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if inventory.job !== null && inventory.workspace}
+  <JobDialog
+    target={inventory.job.target}
+    label={inventory.job.label}
+    onclose={() => {
+      inventory.job = null;
       focusRequest += 1;
     }}
   />

@@ -4,7 +4,8 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
 use netterm_core::credentials::{
@@ -18,6 +19,7 @@ use netterm_core::import::csv::{
 };
 use netterm_core::import::nornir::{NornirImport, NornirInventory, NornirPreview};
 use netterm_core::import::ImportReport;
+use netterm_core::job::{self, JobCanceller, JobEvent, JobOptions, JobPlan, JobStep, JobTarget};
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
 use netterm_core::logging::{LogFolder, SessionLog};
@@ -1161,6 +1163,90 @@ fn nornir_import_run(
     })
 }
 
+/// The job plan last shown in pre-flight: starting runs exactly what the
+/// user saw and confirmed, even if the workspace changes meanwhile.
+struct JobPlans(Mutex<Option<JobPlan>>);
+
+/// Running jobs, by the id `job_start` gave them, until they finish.
+#[derive(Default)]
+struct RunningJobs {
+    next: AtomicU64,
+    cancellers: Mutex<BTreeMap<u64, JobCanceller>>,
+}
+
+impl RunningJobs {
+    fn cancellers(&self) -> MutexGuard<'_, BTreeMap<u64, JobCanceller>> {
+        self.cancellers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The pre-flight list of running `step` on `target` in the open
+/// workspace: who runs, who is skipped and why, the production hosts, and
+/// the snippet variables still to ask for. Connects to nothing; kept for
+/// `job_start`.
+#[tauri::command]
+fn job_plan(
+    shell: State<'_, Shell>,
+    plans: State<'_, JobPlans>,
+    target: JobTarget,
+    step: JobStep,
+) -> Result<JobPlan, String> {
+    let plan = {
+        let guard = shell.workspace();
+        let workspace = guard.as_ref().ok_or("no workspace is open")?;
+        job::plan(
+            workspace,
+            &Profiles::new(&shell.credentials, workspace),
+            &target,
+            &step,
+        )
+        .map_err(|error| error.to_string())?
+    };
+    *plans.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(plan.clone());
+    Ok(plan)
+}
+
+/// Starts the job last planned, with its own sessions (never logged, never
+/// a terminal's). Its progress arrives on `on_event` until `finished`;
+/// returns its id, for `job_cancel`.
+#[tauri::command]
+async fn job_start(
+    manager: State<'_, SessionManager>,
+    plans: State<'_, JobPlans>,
+    jobs: State<'_, Arc<RunningJobs>>,
+    on_event: Channel<JobEvent>,
+) -> Result<u64, String> {
+    let plan = plans
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .ok_or("no job has been planned")?;
+    let mut job = job::start(&manager, plan, JobOptions::default()).map_err(|e| e.to_string())?;
+    let id = jobs.next.fetch_add(1, Ordering::Relaxed);
+    jobs.cancellers().insert(id, job.canceller());
+    let jobs = Arc::clone(&jobs);
+    tauri::async_runtime::spawn(async move {
+        // The job keeps running if the interface stops listening.
+        while let Some(event) = job.next().await {
+            let _ = on_event.send(event);
+        }
+        jobs.cancellers().remove(&id);
+    });
+    Ok(id)
+}
+
+/// Cancels the running job `id`: its sessions close, unfinished hosts end
+/// cancelled with the output they had. Nothing happens if it has ended.
+#[tauri::command]
+fn job_cancel(jobs: State<'_, Arc<RunningJobs>>, id: u64) {
+    if let Some(canceller) = jobs.cancellers().get(&id) {
+        canceller.cancel();
+    }
+}
+
 /// Opens a session. Output arrives on `on_output` as raw bytes, already
 /// batched by the core, state changes on `on_state`, questions the server
 /// asks while logging in on `on_prompt` (answered with `session_answer`),
@@ -1930,6 +2016,8 @@ pub fn run() {
             app.manage(Tabs(Mutex::new(Layout::new())));
             app.manage(CsvFile(Mutex::new(None)));
             app.manage(NornirFiles(Mutex::new(None)));
+            app.manage(JobPlans(Mutex::new(None)));
+            app.manage(Arc::new(RunningJobs::default()));
             let preferences = Preferences::load(&data_folder);
             let theme = window_theme(preferences.theme);
             app.manage(UserPreferences(Mutex::new(preferences)));
@@ -2004,6 +2092,9 @@ pub fn run() {
             snippet_delete,
             snippet_expand,
             snippet_expand_group,
+            job_plan,
+            job_start,
+            job_cancel,
             host_create,
             host_rename,
             host_move,

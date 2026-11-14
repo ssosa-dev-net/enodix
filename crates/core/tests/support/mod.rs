@@ -20,6 +20,12 @@
 //! | `drop`       | drops the connection without ending the shell     |
 //! | `freeze`     | the connection stops answering anything (silent)  |
 //!
+//! A server started with [`TestSshServer::start_device`] runs the shell in
+//! device mode, like a network device's CLI: its prompt is `<hostname># `
+//! ([`device_prompt`]) instead of [`PROMPT`], and besides the lines above it
+//! understands `show hostname` (prints the hostname) and `echo <text>`
+//! (prints the text); any other line prints [`UNKNOWN_COMMAND`] and the line.
+//!
 //! Every server also forwards `direct-tcpip` channels to the address asked
 //! for, so it can be a jump host; [`TestSshServer::forwarded`] counts them.
 //!
@@ -103,6 +109,14 @@ pub const FULLSCREEN_OUTPUT: &[u8] =
 /// One line of `flood` output.
 pub const FLOOD_LINE: &[u8] = b"flood flood flood flood flood flood flood\r\n";
 
+/// What a device-mode shell prints before a line it does not know.
+pub const UNKNOWN_COMMAND: &str = "% Unknown command: ";
+
+/// The prompt of a device-mode shell called `hostname`.
+pub fn device_prompt(hostname: &str) -> Vec<u8> {
+    format!("{hostname}# ").into_bytes()
+}
+
 /// What Ctrl+C prints before the next prompt.
 pub const INTERRUPTED: &[u8] = b"^C\r\n";
 
@@ -148,6 +162,8 @@ pub struct TestSshServer {
     forwarded: Arc<AtomicUsize>,
     /// The first bytes each client sent, one entry per connection.
     received: Received,
+    /// The hostname of a device-mode shell.
+    device: Option<String>,
 }
 
 impl TestSshServer {
@@ -156,22 +172,39 @@ impl TestSshServer {
         Self::start_on(0).await
     }
 
+    /// Starts a server on a free loopback port whose shell runs in device
+    /// mode as `hostname` (see the module documentation).
+    pub async fn start_device(hostname: &str) -> Self {
+        Self::start_device_on(0, hostname).await
+    }
+
+    /// [`Self::start_device`] on the given loopback port.
+    pub async fn start_device_on(port: u16, hostname: &str) -> Self {
+        Self::start_with(port, None, Preferred::default(), Some(hostname.into())).await
+    }
+
     /// Starts a server on a free loopback port that offers only `methods`
     /// at first (as a device that only takes keyboard-interactive does).
     pub async fn start_offering(methods: &[MethodKind]) -> Self {
-        Self::start_with(0, Some(MethodSet::from(methods)), Preferred::default()).await
+        Self::start_with(
+            0,
+            Some(MethodSet::from(methods)),
+            Preferred::default(),
+            None,
+        )
+        .await
     }
 
     /// Starts a server on a free loopback port that offers only the
     /// algorithms in `preferred`, as an old device does. Its host key has
     /// the type of `preferred.key`'s first entry (Ed25519, RSA or DSA).
     pub async fn start_with_algorithms(preferred: Preferred) -> Self {
-        Self::start_with(0, None, preferred).await
+        Self::start_with(0, None, preferred, None).await
     }
 
     /// [`Self::start_with_algorithms`] on the given loopback port.
     pub async fn start_on_with_algorithms(port: u16, preferred: Preferred) -> Self {
-        Self::start_with(port, None, preferred).await
+        Self::start_with(port, None, preferred, None).await
     }
 
     /// What the last client to connect offered in its key-exchange init.
@@ -208,20 +241,27 @@ impl TestSshServer {
     }
 
     /// Stops this server and starts another on the same port, with a new
-    /// host key (and new client keys), as when a device is replaced.
+    /// host key (and new client keys), as when a device is replaced. The
+    /// shell keeps its mode.
     pub async fn replace_with_new_host_key(&mut self) {
         self.task.abort();
         // The listener is closed once the task has ended.
         let _ = (&mut self.task).await;
-        *self = Self::start_on(self.port).await;
+        let device = self.device.clone();
+        *self = Self::start_with(self.port, None, Preferred::default(), device).await;
     }
 
     /// Starts a server on the given loopback port (0 picks a free one).
     pub async fn start_on(port: u16) -> Self {
-        Self::start_with(port, None, Preferred::default()).await
+        Self::start_with(port, None, Preferred::default(), None).await
     }
 
-    async fn start_with(port: u16, methods: Option<MethodSet>, preferred: Preferred) -> Self {
+    async fn start_with(
+        port: u16,
+        methods: Option<MethodSet>,
+        preferred: Preferred,
+        device: Option<String>,
+    ) -> Self {
         let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let rsa_key = russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap();
         let authorized_keys = Arc::new(vec![
@@ -255,10 +295,17 @@ impl TestSshServer {
         let received = Received::default();
         let counter = forwarded.clone();
         let connections = received.clone();
+        let prompt: Arc<[u8]> = match &device {
+            Some(hostname) => device_prompt(hostname).into(),
+            None => PROMPT.into(),
+        };
+        let hostname = device.clone();
         let task = tokio::spawn(async move {
             let mut server = ScriptedServer {
                 authorized_keys,
                 forwarded: counter,
+                prompt,
+                device: hostname,
             };
             // `run_on_socket`, but keeping what each client sends first.
             while let Ok((socket, address)) = listener.accept().await {
@@ -282,6 +329,15 @@ impl TestSshServer {
             client_key,
             forwarded,
             received,
+            device,
+        }
+    }
+
+    /// The prompt its shell prints: [`PROMPT`], or a device's.
+    pub fn prompt(&self) -> Vec<u8> {
+        match &self.device {
+            Some(hostname) => device_prompt(hostname),
+            None => PROMPT.to_vec(),
         }
     }
 
@@ -367,6 +423,8 @@ pub fn target_at(host: &str, port: u16) -> SshTarget {
 struct ScriptedServer {
     authorized_keys: Arc<Vec<PublicKey>>,
     forwarded: Arc<AtomicUsize>,
+    prompt: Arc<[u8]>,
+    device: Option<String>,
 }
 
 impl Server for ScriptedServer {
@@ -378,6 +436,8 @@ impl Server for ScriptedServer {
             forwarded: self.forwarded.clone(),
             channels: HashMap::new(),
             interactive: Interactive::Start,
+            prompt: self.prompt.clone(),
+            device: self.device.clone(),
         }
     }
 }
@@ -391,6 +451,10 @@ struct ScriptedShell {
     channels: HashMap<ChannelId, ShellState>,
     /// Where [`OTP_USERNAME`]'s login has got to.
     interactive: Interactive,
+    /// What the shell prints when it waits for a line.
+    prompt: Arc<[u8]>,
+    /// The hostname, in device mode.
+    device: Option<String>,
 }
 
 /// The login of [`OTP_USERNAME`].
@@ -425,7 +489,7 @@ struct ShellState {
 }
 
 /// Sends [`FLOOD_LINE`] until `stop` is set, then the interrupt and a prompt.
-fn start_flood(channel: ChannelId, session: &Session) -> Arc<AtomicBool> {
+fn start_flood(channel: ChannelId, session: &Session, prompt: Arc<[u8]>) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
     let handle = session.handle();
     let flooding = stop.clone();
@@ -436,7 +500,7 @@ fn start_flood(channel: ChannelId, session: &Session) -> Arc<AtomicBool> {
                 return;
             }
         }
-        let _ = handle.data(channel, [INTERRUPTED, PROMPT].concat()).await;
+        let _ = handle.data(channel, [INTERRUPTED, &prompt].concat()).await;
     });
     stop
 }
@@ -473,7 +537,7 @@ impl ScriptedShell {
                 session.data(channel, numbered_lines(count))?;
             }
             Some("flood") => {
-                state.flood = Some(start_flood(channel, session));
+                state.flood = Some(start_flood(channel, session, self.prompt.clone()));
                 return Ok(());
             }
             Some("exit") => {
@@ -493,9 +557,21 @@ impl ScriptedShell {
                 });
             }
             Some("drop") => return Err(russh::Error::Disconnect),
+            Some("show") if self.device.is_some() && words.next() == Some("hostname") => {
+                let hostname = self.device.clone().unwrap_or_default();
+                session.data(channel, format!("{hostname}\r\n").into_bytes())?;
+            }
+            Some("echo") if self.device.is_some() => {
+                let text = line.trim_start().strip_prefix("echo").unwrap_or("").trim();
+                session.data(channel, format!("{text}\r\n").into_bytes())?;
+            }
+            Some(_) if self.device.is_some() => {
+                let text = format!("{UNKNOWN_COMMAND}{}\r\n", line.trim());
+                session.data(channel, text.into_bytes())?;
+            }
             _ => {}
         }
-        session.data(channel, PROMPT)?;
+        session.data(channel, self.prompt.to_vec())?;
         Ok(())
     }
 }
@@ -641,7 +717,7 @@ impl Handler for ScriptedShell {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
-        session.data(channel, PROMPT)
+        session.data(channel, self.prompt.to_vec())
     }
 
     async fn data(
@@ -662,7 +738,7 @@ impl Handler for ScriptedShell {
                 match state.flood.take() {
                     // The flood prints the interrupt and prompt as it stops.
                     Some(stop) => stop.store(true, Ordering::Relaxed),
-                    None => session.data(channel, [INTERRUPTED, PROMPT].concat())?,
+                    None => session.data(channel, [INTERRUPTED, &self.prompt].concat())?,
                 }
             } else if self
                 .channels

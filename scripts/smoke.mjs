@@ -27,6 +27,8 @@ const SSH_PORT = 22722;
 const OLD_DEVICE_PORT = 22723;
 // The test telnet device (same username and password, asked in the terminal).
 const TELNET_PORT = 22724;
+// The device-mode SSH server (prompt `lab-r1# `), for jobs.
+const DEVICE_PORT = 22725;
 const DEVTOOLS_PORT = 9333;
 const USERNAME = "engineer";
 const PASSWORD = "correct horse";
@@ -334,6 +336,8 @@ function startServer() {
       String(OLD_DEVICE_PORT),
       "--telnet",
       String(TELNET_PORT),
+      "--device",
+      String(DEVICE_PORT),
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
@@ -1110,6 +1114,18 @@ async function main() {
   await csvImport({ evaluate, fillForm, text, screenshot, step });
 
   await nornirImport({ evaluate, fillForm, text, screenshot, step });
+
+  await jobs({
+    evaluate,
+    click,
+    fillForm,
+    doubleClick,
+    status,
+    screen,
+    text,
+    screenshot,
+    step,
+  });
 
   await workspaces({
     evaluate,
@@ -2615,6 +2631,232 @@ async function nornirImport({ evaluate, fillForm, text, screenshot, step }) {
     fail("nr-2.yaml was overwritten");
   await close();
   step("a Nornir re-import overwrites no existing host without confirmation");
+}
+
+/**
+ * Jobs (#42): a snippet run on a folder whose platform is set there,
+ * against the example server's device-mode shell. Pre-flight lists the
+ * skipped hosts with their reasons and asks once for the production host;
+ * an untrusted host key fails the host (a job never trusts a key); once the
+ * key is trusted in a terminal, the job runs and shows the device's plain
+ * output. The second run starts from the host's side panel.
+ */
+async function jobs({
+  evaluate,
+  click,
+  fillForm,
+  doubleClick,
+  status,
+  screen,
+  text,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const dialog = "[data-dialog=job]";
+  const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
+  const profilesDialog = "[data-dialog=profiles]";
+  const folder = join(workspace, "Jobs");
+  const snippetsFile = join(workspace, "_snippets.yaml");
+  const savedSnippets = existsSync(snippetsFile)
+    ? readFileSync(snippetsFile, "utf8")
+    : null;
+
+  // A profile for the job's hosts.
+  await click("Profiles");
+  await until("the profiles dialog", () => exists(profilesDialog));
+  await click("New profile…");
+  await until("the profile form", () =>
+    exists(`${profilesDialog} [name=profile-name]`),
+  );
+  await fillForm(
+    {
+      "profile-name": "jobs-login",
+      "profile-username": USERNAME,
+      "profile-password": PASSWORD,
+    },
+    `${profilesDialog} form`,
+  );
+  await until("the jobs profile listed", () =>
+    exists(`${profilesDialog} [data-profile="jobs-login"]`),
+  );
+  await click("Close");
+  await until(
+    "the profiles dialog closed",
+    async () => !(await exists(profilesDialog)),
+  );
+
+  // The folder sets the platform (frr: its prompt matches `lab-r1#`), the
+  // profile and the device's port for its hosts.
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(
+    join(folder, "_folder.yaml"),
+    `platform: frr\ncredential_profile: jobs-login\nport: ${DEVICE_PORT}\n`,
+  );
+  writeFileSync(
+    join(folder, "jobs-r1.yaml"),
+    "address: 127.0.0.1\nenvironment: production\n",
+  );
+  writeFileSync(
+    join(folder, "jobs-telnet.yaml"),
+    "address: 127.0.0.1\nprotocol: telnet\n",
+  );
+  writeFileSync(
+    join(folder, "jobs-odd.yaml"),
+    "address: 127.0.0.1\nplatform: toaster\n",
+  );
+  writeFileSync(
+    snippetsFile,
+    `${savedSnippets ?? ""}Job check: "show hostname\\necho site {{site}}\\n"\n`,
+  );
+  const folderRow = 'nav button[data-item=folder][data-path="Jobs"]';
+  await until("the Jobs folder in the tree", () => exists(folderRow));
+  await until("the job snippet loaded", () =>
+    exists('[data-snippet="Job check"]'),
+  );
+
+  const runFromFolder = async () => {
+    await clickOn(folderRow);
+    await until("the Jobs folder's side panel", () =>
+      exists(".side [data-folder-run-snippet]"),
+    );
+    await clickOn(".side [data-folder-run-snippet]");
+    await until("the run-snippet dialog", () => atStep("snippet"));
+  };
+  /** Picks the snippet, answers the variable, and checks pre-flight. */
+  const preflight = async (expectSkipped) => {
+    await evaluate(`(() => {
+      const select = document.querySelector("${dialog} [name=job-snippet]");
+      select.value = "Job check";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await until("the snippet's text shown", async () =>
+      (await text(`${dialog} [data-job-snippet-text]`)).includes(
+        "echo site {{site}}",
+      ),
+    );
+    await clickOn(`${dialog} [data-job=plan]`);
+    await until("the variables step", () => atStep("variables"));
+    const asked = await evaluate(
+      `[...document.querySelectorAll("${dialog} [data-variable]")].map((i) => i.dataset.variable).join(",")`,
+    );
+    if (asked !== "site") fail(`the job asked for ${asked}, not site`);
+    await fillForm({ "job-variable-0": "lab-site" }, `${dialog} form`);
+    await until("the pre-flight list", () => atStep("preflight"));
+    const plan = await evaluate(`(() => {
+      const d = document.querySelector("${dialog}");
+      return {
+        runs: [...d.querySelectorAll("[data-job-host]")].map((r) => r.dataset.jobHost),
+        skipped: Object.fromEntries([...d.querySelectorAll("[data-job-skipped]")].map(
+          (r) => [r.dataset.jobSkipped, r.dataset.skipReason])),
+        production: d.querySelector("[data-job-production-names]")?.textContent ?? "",
+        startDisabled: d.querySelector("[data-job=start]").disabled,
+      };
+    })()`);
+    if (json(plan.runs) !== json(["Jobs/jobs-r1.yaml"])) {
+      fail(`the job would run on ${json(plan.runs)}`);
+    }
+    if (json(plan.skipped) !== json(expectSkipped)) {
+      fail(`the job skips ${json(plan.skipped)}`);
+    }
+    if (plan.production !== "jobs-r1" || !plan.startDisabled) {
+      fail(`the production host must be confirmed first: ${json(plan)}`);
+    }
+    await clickOn(`${dialog} [name=job-confirm-production]`);
+    await until("the start button enabled", () =>
+      evaluate(
+        `!document.querySelector("${dialog} [data-job=start]").disabled`,
+      ),
+    );
+  };
+  const finished = async () => {
+    await until("the job finished", () =>
+      exists(`${dialog} [data-job-progress][data-finished]`),
+    );
+    return evaluate(`(() => {
+      const row = document.querySelector('${dialog} [data-job-result="Jobs/jobs-r1.yaml"]');
+      return {
+        state: row.dataset.hostState,
+        reason: row.querySelector("[data-job-reason]")?.textContent ?? "",
+        output: row.querySelector("[data-job-output]").textContent,
+      };
+    })()`);
+  };
+
+  try {
+    await runFromFolder();
+    await preflight({
+      "Jobs/jobs-odd.yaml": "noPlatform",
+      "Jobs/jobs-telnet.yaml": "notSsh",
+    });
+    await screenshot("job-preflight");
+    step(
+      "pre-flight lists the host that runs, the skipped ones with their reasons, and asks for production",
+    );
+
+    // Its host key was never trusted: the job refuses it.
+    await clickOn(`${dialog} [data-job=start]`);
+    const refused = await finished();
+    if (refused.state !== "failed" || !refused.reason.includes("not trusted")) {
+      fail(`an untrusted key did not fail the host: ${json(refused)}`);
+    }
+    step("a host whose key is not trusted yet fails the job, naming the key");
+    await clickOn(`${dialog} [data-job=close]`);
+    await until("the job dialog closed", async () => !(await exists(dialog)));
+
+    // Trusted once in a terminal, the key lets the job in.
+    await evaluate(`(() => {
+      const row = document.querySelector(${json(folderRow)});
+      if (row.getAttribute("aria-expanded") !== "true") row.click();
+    })()`);
+    const hostRow = 'nav [data-host="Jobs/jobs-r1.yaml"]';
+    await until("jobs-r1 in the tree", () => exists(hostRow));
+    await doubleClick(hostRow);
+    await until("the device's host-key question", () =>
+      exists("[data-host-key=first-use] [data-decision=trustAndRemember]"),
+    );
+    await clickOn("[data-decision=trustAndRemember]");
+    await until("the device's prompt", async () =>
+      (await screen()).includes("lab-r1#"),
+    );
+    await click("Disconnect");
+    await until(
+      "the device session closed",
+      async () => (await status()) !== "Connected",
+    );
+
+    await clickOn(hostRow);
+    await until("jobs-r1's side panel", () =>
+      exists(".side [data-host-run-snippet]"),
+    );
+    await clickOn(".side [data-host-run-snippet]");
+    await until("the run-snippet dialog for the host", () => atStep("snippet"));
+    await preflight({});
+    await clickOn(`${dialog} [data-job=start]`);
+    const ran = await finished();
+    const expected = [
+      "lab-r1# show hostname",
+      "lab-r1",
+      "lab-r1# echo site lab-site",
+      "site lab-site",
+      "lab-r1#",
+    ].join("\n");
+    if (ran.state !== "done" || !ran.output.includes(expected)) {
+      fail(`the job's result: ${json(ran)}`);
+    }
+    if (ran.output.includes("\u001b")) fail("the job's output has escapes");
+    await screenshot("job-done");
+    step("the job logged in by itself and showed the device's plain output");
+    await clickOn(`${dialog} [data-job=close]`);
+    await until("the job dialog closed", async () => !(await exists(dialog)));
+  } finally {
+    if (savedSnippets === null) rmSync(snippetsFile, { force: true });
+    else writeFileSync(snippetsFile, savedSnippets);
+  }
 }
 
 async function workspaces({

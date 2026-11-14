@@ -10,6 +10,7 @@
     newFolder,
     newHost,
     openCsvImport,
+    openJob,
     openNornirImport,
     remove,
     removeFilter,
@@ -21,7 +22,7 @@
   } from "./inventory.svelte";
   import { preferences } from "./preferences.svelte";
   import { profiles } from "./profiles.svelte";
-  import { findHost, type Host } from "./workspace";
+  import { allHosts, findHost, type Host } from "./workspace";
 
   interface Props {
     /** Opens the workspace switcher. */
@@ -133,11 +134,33 @@
     if (host) onconnect(host);
   }
 
+  /** The name the run-snippet dialog gives a folder. */
+  function folderLabel(path: string): string {
+    if (path === "") return workspace?.tree.name ?? "the workspace";
+    return path.split("/").pop() ?? path;
+  }
+
+  /** Runs a snippet on the hosts the active filter shows, in tree order. */
+  function runOnFilter(name: string) {
+    const shown = inventory.filterView?.hosts;
+    if (!workspace || !shown) return;
+    const ids = allHosts(workspace.tree)
+      .map((host) => host.id)
+      .filter((id) => shown.has(id));
+    openJob({ kind: "hosts", ids }, `the hosts of ${name}`);
+  }
+
   /** The menu's entries for an item. */
   function entries(item: Item): [string, () => void][] {
     if (item.kind === "host") {
+      const host = workspace ? findHost(workspace.tree, item.id) : null;
       return [
         ["Connect", () => connect(item)],
+        [
+          "Run snippet…",
+          () =>
+            openJob({ kind: "hosts", ids: [item.id] }, host?.name ?? item.id),
+        ],
         ["Rename…", () => rename(item)],
         ["Move to…", () => move(item)],
         ["Delete…", () => remove(item)],
@@ -148,6 +171,11 @@
       ["New host…", () => newHost(item.path)],
       ["Import CSV…", () => openCsvImport(item.path)],
       ["Import Nornir inventory…", () => openNornirImport(item.path)],
+      [
+        "Run snippet…",
+        () =>
+          openJob({ kind: "folder", path: item.path }, folderLabel(item.path)),
+      ],
     ];
     if (item.path === "") return creating;
     return [
@@ -260,6 +288,12 @@
               : `${inventory.filterView.hosts.size} hosts`
             : ""}
         </span>
+        <button
+          data-filter-run-snippet
+          title="Run a saved snippet on the hosts this filter shows, as a job"
+          disabled={!inventory.filterView?.hosts.size}
+          onclick={() => runOnFilter(name)}>Run snippet…</button
+        >
         <button
           title="Delete this saved filter"
           onclick={() => removeFilter(name)}>Delete filter</button
