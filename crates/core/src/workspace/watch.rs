@@ -184,13 +184,40 @@ fn relevant_files(event: &notify::Event, prefixes: &[PathBuf]) -> Option<Vec<Str
         event.kind,
         EventKind::Modify(kind) if !matches!(kind, notify::event::ModifyKind::Name(_))
     );
-    let files: Vec<String> = event
+    let mut files: Vec<String> = event
         .paths
         .iter()
         .filter(|path| !(folder_touched && path.is_dir()))
         .filter_map(|path| relative(path, prefixes))
         .collect();
+    // Some systems (Linux) start watching a new folder only once they
+    // report it, missing what was put in it before (a pull that adds a
+    // folder of hosts): what it holds counts as changed too.
+    if matches!(event.kind, EventKind::Create(_)) {
+        for path in &event.paths {
+            add_contents(path, prefixes, &mut files);
+        }
+    }
     (!files.is_empty()).then_some(files)
+}
+
+/// Adds everything in the folder `path` (not hidden, symlinked folders not
+/// followed, as the workspace reads it) to `files`; nothing if `path` is
+/// not a folder.
+fn add_contents(path: &Path, prefixes: &[PathBuf], files: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file) = relative(&path, prefixes) else {
+            continue;
+        };
+        files.push(file);
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            add_contents(&path, prefixes, files);
+        }
+    }
 }
 
 /// `path` relative to the root, `/`-separated; `None` for the root itself

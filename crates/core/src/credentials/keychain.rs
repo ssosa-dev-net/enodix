@@ -51,6 +51,7 @@ impl KeychainStore {
 
 /// What kind of entry is written: its comment in Credential Manager and
 /// what an error calls it.
+#[cfg_attr(not(windows), allow(dead_code))]
 struct EntryKind {
     comment: &'static str,
     noun: &'static str,

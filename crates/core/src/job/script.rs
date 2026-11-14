@@ -8,12 +8,13 @@
 //! inventory and its Nornir plugin) then shows the script only those hosts
 //! and hands over only their logins. [`WORKSPACE_VARIABLE`] names the
 //! workspace folder (the plugin's default) and [`CLI_VARIABLE`] the
-//! headless binary. Its output (stdout and stderr, as plain text, line by
-//! line as it comes) is one stream, reported under the host id
+//! headless binary. Its output (stdout and stderr share one pipe, so their
+//! lines keep the order they were written in; as plain text, line by line
+//! as it comes) is one stream, reported under the host id
 //! [`SCRIPT_OUTPUT`]; the exit status decides how it ends: 0 is
 //! [`HostState::Done`], anything else [`HostState::Failed`]. Cancelling
-//! ends the process (and on Windows the processes it started), keeping the
-//! output so far. The targets file is removed when the script has ended.
+//! ends the process and the processes it started, keeping the output so
+//! far. The targets file is removed when the script has ended.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -32,7 +33,7 @@ use super::run::{HostResult, HostState, JobEvent, JobReport};
 use super::{JobPlan, JobStep, PlannedScript, ScriptRun};
 use crate::enrich::{CollectedFacts, ENRICH_TITLE, FACTS_VARIABLE};
 use crate::logging::PlainText;
-use crate::python::{quiet_command, stop};
+use crate::python::{quiet_command, spawn as start_process, stop};
 use crate::workspace::HostId;
 
 /// The host id a script job reports its output and state under (in
@@ -121,7 +122,7 @@ impl ScriptTargets {
 
 /// What a reader thread passes on: more of a pipe's output, or its end.
 enum Piece {
-    Bytes(usize, Vec<u8>),
+    Bytes(Vec<u8>),
     End,
 }
 
@@ -151,7 +152,7 @@ pub(super) fn spawn(
             std::env::temp_dir().join(format!("netterm-facts-{}.json", uuid::Uuid::new_v4()))
         }),
         events,
-        texts: [PlainText::new(), PlainText::new()],
+        text: PlainText::new(),
         output: String::new(),
     };
     let targets = ScriptTargets {
@@ -187,8 +188,9 @@ struct Runner {
     /// to.
     facts: Option<PathBuf>,
     events: mpsc::UnboundedSender<JobEvent>,
-    /// stdout's and stderr's text, apart, so that their lines do not mix.
-    texts: [PlainText; 2],
+    /// The text of stdout and stderr, which share one pipe, so their
+    /// lines come in the order the script wrote them (as in a terminal).
+    text: PlainText,
     output: String,
 }
 
@@ -207,10 +209,8 @@ impl Runner {
             Err(reason) => (HostState::Failed { reason }, None),
         };
         let _ = fs::remove_file(&file);
-        for pipe in 0..2 {
-            let rest = self.texts[pipe].finish();
-            self.add_output(rest);
-        }
+        let rest = self.text.finish();
+        self.add_output(rest);
         let facts = self.facts.take().map(|path| {
             let missing = match &state {
                 HostState::Cancelled => "the job was cancelled before the script reported it",
@@ -276,31 +276,33 @@ impl Runner {
         for (name, value) in &options.environment {
             command.env(name, value);
         }
-        let mut child = command.spawn().map_err(|error| {
+        let not_started = |error: io::Error| {
             format!(
                 "the script could not be started with {}: {error}",
                 options.interpreter.display()
             )
-        })?;
+        };
+        let (output, writer) = io::pipe().map_err(not_started)?;
+        command
+            .stdout(writer.try_clone().map_err(not_started)?)
+            .stderr(writer);
+        let started = start_process(&mut command);
+        // The command holds this process's copies of the pipe's writing
+        // end: gone, the pipe ends once the script (and what it started)
+        // closed theirs.
+        drop(command);
+        let mut child = started.map_err(not_started)?;
         self.state(HostState::Running);
 
         let (sender, pieces) = std_mpsc::channel();
-        let mut open = 0;
-        if let Some(out) = child.stdout.take() {
-            read_pipe(0, out, sender.clone());
-            open += 1;
-        }
-        if let Some(err) = child.stderr.take() {
-            read_pipe(1, err, sender.clone());
-            open += 1;
-        }
-        drop(sender);
+        let mut open = 1;
+        read_pipe(output, sender);
 
         loop {
             match pieces.recv_timeout(Duration::from_millis(50)) {
                 Ok(piece) => self.take(piece, &mut open),
                 Err(std_mpsc::RecvTimeoutError::Timeout) => {}
-                // Both pipes closed; the process may still run.
+                // The pipe closed; the process may still run.
                 Err(std_mpsc::RecvTimeoutError::Disconnected) => {
                     thread::sleep(Duration::from_millis(50));
                 }
@@ -326,7 +328,7 @@ impl Runner {
         }
     }
 
-    /// Takes what is left in the pipes until both have ended or `wait`
+    /// Takes what is left in the pipe until it has ended or `wait`
     /// has passed.
     fn drain(&mut self, pieces: &std_mpsc::Receiver<Piece>, open: &mut usize, wait: Duration) {
         let until = Instant::now() + wait;
@@ -343,8 +345,8 @@ impl Runner {
 
     fn take(&mut self, piece: Piece, open: &mut usize) {
         match piece {
-            Piece::Bytes(pipe, bytes) => {
-                let lines = self.texts[pipe].push(&bytes);
+            Piece::Bytes(bytes) => {
+                let lines = self.text.push(&bytes);
                 self.add_output(lines);
             }
             Piece::End => *open = open.saturating_sub(1),
@@ -383,17 +385,14 @@ fn exited(status: ExitStatus) -> HostState {
     }
 }
 
-fn read_pipe(pipe: usize, mut stream: impl Read + Send + 'static, sender: std_mpsc::Sender<Piece>) {
+fn read_pipe(mut stream: impl Read + Send + 'static, sender: std_mpsc::Sender<Piece>) {
     thread::spawn(move || {
         let mut buffer = vec![0; 8192];
         loop {
             match stream.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
-                    if sender
-                        .send(Piece::Bytes(pipe, buffer[..read].to_vec()))
-                        .is_err()
-                    {
+                    if sender.send(Piece::Bytes(buffer[..read].to_vec())).is_err() {
                         return;
                     }
                 }
