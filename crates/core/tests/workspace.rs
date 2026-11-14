@@ -5,38 +5,12 @@ mod support;
 
 use std::fmt::Write as _;
 use std::fs;
-use std::path::{Path, PathBuf};
 
 use netterm_core::session::{SessionManager, SessionState, SessionTarget, TerminalSize};
 use netterm_core::workspace::{Folder, HostId, Workspace};
+use support::workspaces::{fixture, fixture_copy};
 use support::{next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT, USERNAME};
 use tempfile::TempDir;
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/workspaces")
-        .join(name)
-}
-
-/// A writable copy of a fixture workspace.
-fn fixture_copy(name: &str) -> (TempDir, PathBuf) {
-    fn copy(from: &Path, to: &Path) {
-        fs::create_dir_all(to).unwrap();
-        for entry in fs::read_dir(from).unwrap() {
-            let entry = entry.unwrap();
-            let target = to.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                copy(&entry.path(), &target);
-            } else {
-                fs::copy(entry.path(), target).unwrap();
-            }
-        }
-    }
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().join(name);
-    copy(&fixture(name), &root);
-    (temp, root)
-}
 
 /// The tree as an indented outline: folders end in `/`, hosts show their
 /// management address and port (`-` when the file sets none).
@@ -144,7 +118,7 @@ fn a_missing_workspace_folder_cannot_be_opened() {
 #[test]
 fn rewriting_a_host_file_keeps_the_keys_it_does_not_know() {
     let (_temp, root) = fixture_copy("rewrite");
-    let workspace = Workspace::open(&root).unwrap();
+    let mut workspace = Workspace::open(&root).unwrap();
     let id = HostId::new("Edge/edge-r1.yaml");
     let mut host = workspace.host(&id).unwrap().clone();
 
@@ -222,7 +196,7 @@ async fn connecting_to_a_host_from_the_tree_opens_an_ssh_session() {
 #[test]
 fn a_host_named_by_its_file_stays_that_way_when_rewritten() {
     let (_temp, root) = fixture_copy("rewrite");
-    let workspace = Workspace::open(&root).unwrap();
+    let mut workspace = Workspace::open(&root).unwrap();
     let mut host = workspace
         .host(&HostId::new("Edge/edge-r2.yaml"))
         .unwrap()
@@ -241,7 +215,7 @@ fn a_host_named_by_its_file_stays_that_way_when_rewritten() {
 #[test]
 fn only_hosts_of_the_workspace_can_be_written() {
     let (_temp, root) = fixture_copy("rewrite");
-    let workspace = Workspace::open(&root).unwrap();
+    let mut workspace = Workspace::open(&root).unwrap();
     let mut host = workspace
         .host(&HostId::new("Edge/edge-r1.yaml"))
         .unwrap()

@@ -1,0 +1,12 @@
+name: core-r1
+address: 10.0.0.1
+vendor: Arista
+role: core
+rack_unit: 12
+tags:
+- core
+- dc1
+custom:
+  contract: ACME-1234
+  owner: noc
+port: 22

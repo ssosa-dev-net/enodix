@@ -9,7 +9,9 @@ use netterm_core::app_state::AppState;
 use netterm_core::session::{
     SessionEvent, SessionId, SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
 };
-use netterm_core::workspace::{Folder, HostId, Problem, Workspace};
+use netterm_core::workspace::{
+    EditError, Folder, FolderDeletion, Host, HostId, Problem, Workspace,
+};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -146,6 +148,143 @@ fn workspace_restore(shell: State<'_, Shell>) -> Result<Option<WorkspaceView>, S
     Ok(Some(view))
 }
 
+/// The workspace after an edit, and what the edit returned (a new path or
+/// host id).
+#[derive(Serialize)]
+struct Edited<T> {
+    workspace: WorkspaceView,
+    result: T,
+}
+
+/// What deleting a folder did.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum FolderDeleted {
+    Deleted {
+        workspace: WorkspaceView,
+    },
+    /// Nothing was deleted: the folder holds hosts and the user must confirm.
+    NeedsConfirmation {
+        hosts: usize,
+    },
+}
+
+/// Applies an edit to the open workspace.
+fn edit<T>(
+    shell: &Shell,
+    change: impl FnOnce(&mut Workspace) -> Result<T, EditError>,
+) -> Result<Edited<T>, String> {
+    let mut guard = shell.workspace();
+    let workspace = guard.as_mut().ok_or("no workspace is open")?;
+    let result = change(workspace).map_err(|error| error.to_string())?;
+    Ok(Edited {
+        workspace: WorkspaceView::from(&*workspace),
+        result,
+    })
+}
+
+#[tauri::command]
+fn folder_create(
+    shell: State<'_, Shell>,
+    parent: String,
+    name: String,
+) -> Result<Edited<String>, String> {
+    edit(&shell, |workspace| workspace.create_folder(&parent, &name))
+}
+
+#[tauri::command]
+fn folder_rename(
+    shell: State<'_, Shell>,
+    path: String,
+    name: String,
+) -> Result<Edited<String>, String> {
+    edit(&shell, |workspace| workspace.rename_folder(&path, &name))
+}
+
+#[tauri::command]
+fn folder_move(
+    shell: State<'_, Shell>,
+    path: String,
+    parent: String,
+) -> Result<Edited<String>, String> {
+    edit(&shell, |workspace| workspace.move_folder(&path, &parent))
+}
+
+#[tauri::command]
+fn folder_delete(
+    shell: State<'_, Shell>,
+    path: String,
+    deletion: FolderDeletion,
+) -> Result<FolderDeleted, String> {
+    match edit(&shell, |workspace| {
+        match workspace.delete_folder(&path, deletion) {
+            Err(EditError::FolderHasHosts { hosts, .. }) => Ok(Some(hosts)),
+            other => other.map(|()| None),
+        }
+    })? {
+        Edited {
+            result: Some(hosts),
+            ..
+        } => Ok(FolderDeleted::NeedsConfirmation { hosts }),
+        Edited {
+            workspace,
+            result: None,
+        } => Ok(FolderDeleted::Deleted { workspace }),
+    }
+}
+
+#[tauri::command]
+fn folder_set_description(
+    shell: State<'_, Shell>,
+    path: String,
+    description: Option<String>,
+) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| {
+        workspace.set_folder_description(&path, description.as_deref())
+    })
+}
+
+#[tauri::command]
+fn host_create(
+    shell: State<'_, Shell>,
+    folder: String,
+    name: String,
+    address: String,
+) -> Result<Edited<HostId>, String> {
+    edit(&shell, |workspace| {
+        workspace.create_host(&folder, &name, &address)
+    })
+}
+
+#[tauri::command]
+fn host_rename(
+    shell: State<'_, Shell>,
+    id: HostId,
+    name: String,
+) -> Result<Edited<HostId>, String> {
+    edit(&shell, |workspace| workspace.rename_host(&id, &name))
+}
+
+#[tauri::command]
+fn host_move(
+    shell: State<'_, Shell>,
+    id: HostId,
+    folder: String,
+) -> Result<Edited<HostId>, String> {
+    edit(&shell, |workspace| workspace.move_host(&id, &folder))
+}
+
+#[tauri::command]
+fn host_delete(shell: State<'_, Shell>, id: HostId) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| workspace.delete_host(&id))
+}
+
+/// Saves a host's fields, as edited in the side panel.
+#[tauri::command]
+fn host_save(shell: State<'_, Shell>, host: Host) -> Result<Edited<()>, String> {
+    edit(&shell, |workspace| workspace.write_host(&host))
+}
+
 /// Opens a session. Output arrives on `on_output` as raw bytes, already
 /// batched by the core, and state changes on `on_state`; terminal data never
 /// goes through the event system. The interface acknowledges output with
@@ -257,6 +396,16 @@ pub fn run() {
             app_name,
             workspace_open,
             workspace_restore,
+            folder_create,
+            folder_rename,
+            folder_move,
+            folder_delete,
+            folder_set_description,
+            host_create,
+            host_rename,
+            host_move,
+            host_delete,
+            host_save,
             session_open,
             session_write,
             session_acknowledge,

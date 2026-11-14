@@ -59,3 +59,23 @@ button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+input,
+textarea,
+select {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  min-width: 0;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
