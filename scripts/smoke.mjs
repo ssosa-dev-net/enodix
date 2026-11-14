@@ -17,6 +17,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -50,6 +51,45 @@ const workspace = join(userData, "smoke-workspace");
 // Where the app writes the web links it would open in the browser (the
 // smoke test never starts a browser).
 const openedLinks = join(userData, "opened-links.txt");
+// Beside the built program, the first makes the app an installed copy (the
+// installer writes its uninstaller there; the smoke's is an empty file,
+// never run), the second a portable one (the release script puts it in the
+// portable zip). The first launch is "installed", the restart "portable".
+const INSTALLED_MARKER = "target/release/uninstall.exe";
+const PORTABLE_MARKER = "target/release/portable.txt";
+// The release the smoke's own release server announces.
+const NEWER_VERSION = "99.0.0";
+const RELEASE_PAGE = `https://example.invalid/netterm/releases/tag/v${NEWER_VERSION}`;
+/** The local release server (the app is pointed at it through
+ * NETTERM_UPDATE_ENDPOINT): no real server is ever asked. */
+const releaseServer = { url: "", requests: 0, close: () => {} };
+
+function startReleaseServer() {
+  const manifest = JSON.stringify({
+    version: NEWER_VERSION,
+    notes: "Smoke release.",
+    pub_date: "2026-11-01T10:00:00Z",
+    page: RELEASE_PAGE,
+    platforms: {
+      "windows-x86_64": {
+        signature: "bm90IGEgc2lnbmF0dXJl",
+        url: "https://example.invalid/netterm-setup.exe",
+      },
+    },
+  });
+  const server = createServer((request, response) => {
+    releaseServer.requests += 1;
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(manifest);
+  });
+  return new Promise((resolve) =>
+    server.listen(0, "127.0.0.1", () => {
+      releaseServer.url = `http://127.0.0.1:${server.address().port}/latest.json`;
+      releaseServer.close = () => server.close();
+      resolve();
+    }),
+  );
+}
 
 /** A workspace with one host (the test server, whose port its folder
  * sets, with a role of the workspace's own), a host whose role is not
@@ -170,6 +210,8 @@ function startApp() {
       NETTERM_WEB_LINKS_TO: openedLinks,
       // Agent profiles use the test server's agent.
       SSH_AUTH_SOCK: AGENT_PIPE,
+      // The update check asks the smoke's own release server.
+      NETTERM_UPDATE_ENDPOINT: releaseServer.url,
     },
   });
   children.push(app);
@@ -208,6 +250,9 @@ async function connectDevTools() {
 
 async function main() {
   createWorkspace();
+  rmSync(PORTABLE_MARKER, { force: true });
+  writeFileSync(INSTALLED_MARKER, "");
+  await startReleaseServer();
   await startServer();
   const app = startApp();
   const devtools = await connectDevTools();
@@ -353,6 +398,8 @@ async function main() {
     (await text("details")).includes("broken.yaml"),
   );
   step("the last workspace reopened, with the malformed file reported");
+
+  await updateCheck({ evaluate, text, screenshot, step });
 
   // The first connection asks about the host key, showing its type and
   // fingerprint; trusting it once connects.
@@ -916,6 +963,11 @@ async function main() {
 
   devtools.close();
 
+  // The restarted app is a portable copy, with the update check off.
+  const requestsBeforeRestart = releaseServer.requests;
+  rmSync(INSTALLED_MARKER, { force: true });
+  writeFileSync(PORTABLE_MARKER, "smoke test\n");
+
   // Preferences survive a restart: the app comes back light, with the
   // font size and scrollback chosen.
   app.kill();
@@ -994,7 +1046,143 @@ async function main() {
     fail(`the switcher lists after a restart: ${JSON.stringify(listed)}`);
   }
   step("the known workspaces were kept across a restart");
+
+  await portableUpdateCheck({
+    evaluate: evaluateAgain,
+    requestsBeforeRestart,
+    step,
+  });
   restarted.close();
+}
+
+/**
+ * The update check at start: the installed build (an uninstaller beside it) finds
+ * the newer release and offers it, installs nothing until asked (and this
+ * build, not made by the release script, refuses to), and the check is then
+ * turned off in the preferences.
+ */
+async function updateCheck({ evaluate, text, screenshot, step }) {
+  const notice = await until("the update notice", () =>
+    evaluate(`(() => {
+      const notice = document.querySelector("[data-update]");
+      return notice && {
+        action: notice.dataset.update,
+        version: notice.dataset.updateVersion,
+        install: !!notice.querySelector("[data-update-install]"),
+      };
+    })()`),
+  );
+  if (
+    notice.action !== "install" ||
+    notice.version !== NEWER_VERSION ||
+    !notice.install
+  ) {
+    fail(`the update notice: ${JSON.stringify(notice)}`);
+  }
+  if (releaseServer.requests !== 1) {
+    fail(`the release server was asked ${releaseServer.requests} times`);
+  }
+  await screenshot("update-offered");
+  step(`at start, the installed build offered version ${NEWER_VERSION}`);
+
+  await evaluate(`document.querySelector("[data-update-install]").click()`);
+  const refused = await until("the install refused", () =>
+    text("[data-update-error]"),
+  );
+  if (!/cannot install updates/.test(refused)) {
+    fail(`installing in a development build: ${refused}`);
+  }
+  step("installing waits for a click, and a non-release build refuses it");
+
+  await evaluate(`document.querySelector("[data-update-later]").click()`);
+  await until("the notice closed", () =>
+    evaluate(`!document.querySelector("[data-update]")`),
+  );
+
+  await evaluate(`document.querySelector("[data-open-preferences]").click()`);
+  const before = await until("the update preference", () =>
+    evaluate(`(() => {
+      const box = document.querySelector("[name=preference-check-for-updates]");
+      const status = document.querySelector("[data-update-status]");
+      return box && { checked: box.checked, status: status.dataset.updateStatus };
+    })()`),
+  );
+  if (!before.checked || before.status !== "available") {
+    fail(`the update preference at first: ${JSON.stringify(before)}`);
+  }
+  await evaluate(
+    `document.querySelector("[name=preference-check-for-updates]").click()`,
+  );
+  await until("the update check saved as off", () =>
+    readFileSync(join(appData, "preferences.yaml"), "utf8").includes(
+      "check_for_updates: false",
+    ),
+  );
+  await evaluate(
+    `document.querySelector("[data-dialog=preferences] .actions button").click()`,
+  );
+  await until("the preferences closed", () =>
+    evaluate(`!document.querySelector("[data-dialog=preferences]")`),
+  );
+  step("the update check was turned off in the preferences");
+}
+
+/**
+ * After the restart, as a portable copy with the check off: no request at
+ * start; "Check now" asks once and only announces the release, with its
+ * download page (recorded, never opened in a browser) and no install.
+ */
+async function portableUpdateCheck({ evaluate, requestsBeforeRestart, step }) {
+  await evaluate(`(() => {
+    if (!document.querySelector("[data-dialog=preferences]"))
+      document.querySelector("[data-open-preferences]").click();
+  })()`);
+  const status = await until("the update status after a restart", () =>
+    evaluate(`(() => {
+      const status = document.querySelector("[data-update-status]");
+      return status?.dataset.updateStatus && {
+        kind: status.dataset.updateStatus,
+        text: status.textContent,
+      };
+    })()`),
+  );
+  if (status.kind !== "disabled" || !/portable/.test(status.text)) {
+    fail(`the update status after a restart: ${JSON.stringify(status)}`);
+  }
+  // Give a stray request time to arrive.
+  await sleep(1500);
+  if (releaseServer.requests !== requestsBeforeRestart) {
+    fail("the app asked the release server on its own with the check off");
+  }
+  step("with the check off, the app made no request at start");
+
+  await evaluate(`document.querySelector("[data-update-check-now]").click()`);
+  const notice = await until("the portable copy's notice", () =>
+    evaluate(`(() => {
+      const notice = document.querySelector("[data-update]");
+      return notice && {
+        action: notice.dataset.update,
+        install: !!notice.querySelector("[data-update-install]"),
+        page: !!notice.querySelector("[data-update-page]"),
+      };
+    })()`),
+  );
+  if (notice.action !== "notify" || notice.install || !notice.page) {
+    fail(`the portable copy's notice: ${JSON.stringify(notice)}`);
+  }
+  if (releaseServer.requests !== requestsBeforeRestart + 1) {
+    fail(
+      `"Check now" asked ${releaseServer.requests - requestsBeforeRestart} times`,
+    );
+  }
+  await evaluate(`document.querySelector("[data-update-page]").click()`);
+  await until(
+    "the download page opened",
+    () =>
+      existsSync(openedLinks) &&
+      readFileSync(openedLinks, "utf8").includes(RELEASE_PAGE),
+  );
+  step("the portable copy only announced the release, with its download page");
 }
 
 /**
@@ -4120,6 +4308,9 @@ try {
   exitCode = 1;
 } finally {
   for (const child of children) child.kill();
+  releaseServer.close();
+  rmSync(INSTALLED_MARKER, { force: true });
+  rmSync(PORTABLE_MARKER, { force: true });
   await sleep(500);
   try {
     rmSync(userData, { recursive: true, force: true });

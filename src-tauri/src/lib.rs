@@ -29,6 +29,7 @@ use netterm_core::session::{
     TerminalSize, Transport, DEFAULT_CONNECT_TIMEOUT,
 };
 use netterm_core::template::Variables;
+use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
 use netterm_core::workspace::{
     EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion, Host, HostId,
     HostWebLink, Problem, Protocol, ResolvedHost, Role, SavedFilter, SearchResults, Settings,
@@ -51,6 +52,10 @@ const CREDENTIAL_STORE_VARIABLE: &str = "NETTERM_CREDENTIAL_STORE";
 /// instead of opened in the browser (the smoke test uses it, so that it
 /// never starts a browser).
 const WEB_LINKS_TO_VARIABLE: &str = "NETTERM_WEB_LINKS_TO";
+
+/// Overrides the release manifest's address (the smoke test points it at a
+/// local server). A release build has its own, from the release script.
+const UPDATE_ENDPOINT_VARIABLE: &str = "NETTERM_UPDATE_ENDPOINT";
 
 /// The event that brings the interface the workspace after changes made
 /// outside the app.
@@ -1113,6 +1118,13 @@ fn web_link_open(
     let url = resolved_host(&shell, &id)?
         .web_link_url(&name)
         .map_err(|error| format!("{name} was not opened: {error}"))?;
+    open_in_browser(&app, &url)?;
+    Ok(url)
+}
+
+/// Opens `url` (already checked by the core) in the default browser, or
+/// records it in the `NETTERM_WEB_LINKS_TO` file.
+fn open_in_browser(app: &AppHandle, url: &str) -> Result<(), String> {
     match std::env::var_os(WEB_LINKS_TO_VARIABLE) {
         Some(file) => {
             use std::io::Write;
@@ -1125,10 +1137,10 @@ fn web_link_open(
         }
         None => app
             .opener()
-            .open_url(&url, None::<&str>)
+            .open_url(url, None::<&str>)
             .map_err(|error| format!("cannot open {url} in the browser: {error}"))?,
     }
-    Ok(url)
+    Ok(())
 }
 
 /// A session just opened, as the interface receives it.
@@ -1499,6 +1511,103 @@ fn paste_plan(
     plan_paste(&text, &safety, confirm)
 }
 
+/// The update check (`netterm_core::update`) and, in a release build, the
+/// Tauri updater that installs what the user agreed to.
+struct Updates {
+    checker: UpdateChecker,
+    /// The updater plugin is registered (only in builds made by the release
+    /// script, which gives it the release key and the server's address).
+    updater_plugin: bool,
+}
+
+/// How this copy was deployed and whether it can check at all.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateBuild {
+    version: String,
+    kind: InstallKind,
+    /// The build knows a release server.
+    configured: bool,
+}
+
+#[tauri::command]
+fn update_build(updates: State<'_, Updates>) -> UpdateBuild {
+    UpdateBuild {
+        version: updates.checker.current_version(),
+        kind: updates.checker.kind(),
+        configured: updates.checker.source().is_some(),
+    }
+}
+
+/// The check the app makes on its own, once at start: nothing (and no
+/// connection) when the user turned it off.
+#[tauri::command]
+async fn update_check_automatic(
+    preferred: State<'_, UserPreferences>,
+    updates: State<'_, Updates>,
+) -> Result<UpdateStatus, String> {
+    let preferences = preferred.lock().clone();
+    Ok(updates.checker.automatic(&preferences).await)
+}
+
+/// A check the user asked for.
+#[tauri::command]
+async fn update_check_now(updates: State<'_, Updates>) -> Result<UpdateStatus, String> {
+    Ok(updates.checker.check_now().await)
+}
+
+/// Installs the release last offered, after the user agreed, if the core
+/// allows it (an installed copy with the updater), and only the version
+/// offered. The updater asks the same release server, checks the
+/// download's signature against the release key, starts the installer and
+/// ends the app.
+#[tauri::command]
+async fn update_install(app: AppHandle, updates: State<'_, Updates>) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let offer = updates
+        .checker
+        .installable(updates.updater_plugin)
+        .map_err(|refused| refused.to_string())?;
+    let source = updates
+        .checker
+        .source()
+        .ok_or("this build has no release server")?;
+    let endpoint = source.url().parse().map_err(|error| format!("{error}"))?;
+    let update = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .and_then(|builder| builder.build())
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| format!("the update could not be fetched: {error}"))?
+        .ok_or("the release server no longer offers a newer version")?;
+    if !offer.is_version(&update.version) {
+        return Err(format!(
+            "the release server now offers {} instead of {}; check again",
+            update.version, offer.version
+        ));
+    }
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|error| format!("the update could not be installed: {error}"))?;
+    // On Windows the installer has taken over and the app has ended.
+    app.restart();
+}
+
+/// Opens the offered release's web page in the default browser.
+#[tauri::command]
+fn update_open_page(app: AppHandle, updates: State<'_, Updates>) -> Result<String, String> {
+    let page = updates
+        .checker
+        .offer()
+        .and_then(|offer| offer.page)
+        .ok_or("the release has no web page")?;
+    open_in_browser(&app, &page)?;
+    Ok(page)
+}
+
 #[tauri::command]
 fn session_close(manager: State<'_, SessionManager>, id: u64) -> Result<(), String> {
     manager
@@ -1507,10 +1616,18 @@ fn session_close(manager: State<'_, SessionManager>, id: u64) -> Result<(), Stri
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let context = tauri::generate_context!();
+    // Only a release build (`scripts/release.mjs`) configures the updater:
+    // its public key and the release server's address.
+    let updater_config = context.config().plugins.0.get("updater").cloned();
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .plugin(tauri_plugin_opener::init());
+    if updater_config.is_some() {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    builder
+        .setup(move |app| {
             let (data_folder, log_folder) = match std::env::var_os(DATA_DIR_VARIABLE) {
                 Some(folder) => {
                     let folder = PathBuf::from(folder);
@@ -1537,6 +1654,23 @@ pub fn run() {
             let preferences = Preferences::load(&data_folder);
             let theme = window_theme(preferences.theme);
             app.manage(UserPreferences(Mutex::new(preferences)));
+            let program_folder = std::env::current_exe()?
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let override_address = std::env::var(UPDATE_ENDPOINT_VARIABLE).ok();
+            let built_in = updater_config
+                .as_ref()
+                .and_then(|config| config.get("endpoints")?.get(0)?.as_str());
+            let checker = UpdateChecker::new(
+                UpdateSource::choose(override_address.as_deref(), built_in),
+                &app.package_info().version.to_string(),
+                InstallKind::detect(&program_folder),
+            )?;
+            app.manage(Updates {
+                checker,
+                updater_plugin: updater_config.is_some(),
+            });
             app.manage(Shell {
                 data_folder,
                 app_state: Mutex::new(()),
@@ -1615,8 +1749,13 @@ pub fn run() {
             preferences_get,
             preferences_save,
             preferences_zoom,
-            paste_plan
+            paste_plan,
+            update_build,
+            update_check_automatic,
+            update_check_now,
+            update_install,
+            update_open_page
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("failed to start the app");
 }

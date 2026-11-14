@@ -13,10 +13,17 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 notify = "8"
 # Highlight rules' patterns.
 regex = "1"
+# The update check's one request (the release manifest). The same reqwest and
+# rustls (`ring` provider, the system's certificate store, the system proxy)
+# as tauri-plugin-updater, so there is one TLS stack and no extra build tools.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
 # Pinned exactly: the russh API changes roughly monthly (see docs/spec-v1.md).
 # `ring` backend (no extra native build tooling on Windows); `des` and `dsa`
 # compile in the legacy algorithms, `rsa` the RSA host/user keys.
 russh = { version = "=0.65.1", default-features = false, features = ["ring", "rsa", "des", "dsa", "flate2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Comparing the running version with the latest release's.
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 # Credential profiles as stored in the keychain.
 serde_json = "1"

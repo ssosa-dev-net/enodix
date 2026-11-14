@@ -36,6 +36,7 @@ fn preferences_are_remembered_across_restarts() {
         right_click_paste: true,
         highlighting: false,
         confirm_multi_line_paste: false,
+        check_for_updates: false,
     };
 
     chosen.save(data.path()).unwrap();

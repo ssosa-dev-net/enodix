@@ -1,5 +1,5 @@
 // The user's preferences (theme, terminal font, scrollback, copy and
-// paste), as the core keeps them in the data folder, and whether the
+// paste, the update check), as the core keeps them in the data folder, and whether the
 // preferences dialog is open. The interface applies them: the theme to the
 // whole page, the rest to every terminal.
 
@@ -20,6 +20,8 @@ export interface Preferences {
   highlighting: boolean;
   /** A multi-line paste asks first (production hosts always ask). */
   confirmMultiLinePaste: boolean;
+  /** Look for a newer version at start (off: no connection on its own). */
+  checkForUpdates: boolean;
 }
 
 /** The core's limits (`netterm_core::preferences`), for the form. */
@@ -52,6 +54,7 @@ export const preferences = $state({
     rightClickPaste: false,
     highlighting: true,
     confirmMultiLinePaste: true,
+    checkForUpdates: true,
   } as Preferences,
   /** Whether the operating system is set to dark. */
   systemDark: systemDark.matches,

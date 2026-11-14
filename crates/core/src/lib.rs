@@ -16,4 +16,5 @@ pub mod paste;
 pub mod preferences;
 pub mod session;
 pub mod template;
+pub mod update;
 pub mod workspace;

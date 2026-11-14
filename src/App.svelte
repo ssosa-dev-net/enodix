@@ -19,6 +19,8 @@
   import SnippetDialog from "./lib/SnippetDialog.svelte";
   import SnippetVariables from "./lib/SnippetVariables.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
+  import UpdateNotice from "./lib/UpdateNotice.svelte";
+  import { startUpdates } from "./lib/updates.svelte";
   import WorkspacePanel from "./lib/WorkspacePanel.svelte";
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
   import CsvImportDialog from "./lib/CsvImportDialog.svelte";
@@ -328,6 +330,14 @@
 
   void loadPreferences();
   trackHighlightRules();
+  void startUpdates();
+
+  /** Sessions that installing an update would end. */
+  const liveSessions = $derived(
+    Object.values(states).filter(
+      (state) => state === "connecting" || state === "connected",
+    ).length,
+  );
 
   // Ctrl+scroll sizes the terminal font (TerminalSession), never the page.
   // (Svelte's own wheel listeners are passive, so this one is added here.)
@@ -748,6 +758,8 @@
     </aside>
   {/if}
 </div>
+
+<UpdateNotice live={liveSessions} />
 
 {#if inventory.palette}
   <CommandPalette

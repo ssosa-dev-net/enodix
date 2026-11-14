@@ -8,6 +8,7 @@
     type Theme,
   } from "./preferences.svelte";
   import { highlighting } from "./highlight.svelte";
+  import { checkNow, describeStatus, updates } from "./updates.svelte";
 
   interface Props {
     onclose: () => void;
@@ -175,6 +176,40 @@
           }}>Rules…</button
         >
       </span>
+
+      <span></span>
+      <span class="check updates">
+        <label
+          class="check"
+          title="Off, the app connects nowhere unless you ask it to"
+        >
+          <input
+            type="checkbox"
+            name="preference-check-for-updates"
+            checked={current.checkForUpdates}
+            onchange={(event) =>
+              changePreferences({
+                checkForUpdates: event.currentTarget.checked,
+              })}
+          />
+          Check for a new version at start
+        </label>
+        <button
+          type="button"
+          data-update-check-now
+          disabled={updates.busy || updates.build?.configured === false}
+          onclick={() => void checkNow()}>Check now</button
+        >
+      </span>
+      <span></span>
+      <p class="status" data-update-status={updates.status?.kind}>
+        {#if updates.build}
+          Version {updates.build.version}{updates.build.kind === "portable"
+            ? " (portable: new versions are announced, never installed)"
+            : ""}.
+        {/if}
+        {updates.busy ? "Checking…" : describeStatus(updates.status)}
+      </p>
     </div>
 
     {#if preferences.error}
@@ -237,6 +272,13 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+  }
+
+  .status {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
   }
 
   .error {
