@@ -223,6 +223,11 @@
         onclick={() => openNornirImport(targetFolder())}>Nornir…</button
       >
       <button
+        data-open-platforms
+        title="Platform definitions: how jobs drive each kind of device"
+        onclick={() => (inventory.platforms = true)}>Platforms</button
+      >
+      <button
         title="Credential profiles"
         onclick={() => (profiles.dialog = true)}
         >Profiles{profiles.view.missing.length > 0 ? " (!)" : ""}</button

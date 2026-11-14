@@ -1,0 +1,22 @@
+# Platform definitions of this workspace, besides the built-in ones.
+# A built-in name changes only the keys it gives.
+eos:
+  disable_paging: terminal pager 0
+  other_names: [arista_eos, ceos, arista-ceos]
+mikrotik:
+  prompt: '\[\S+@\S+\] >'
+  other_names: routeros
+  show_config: /export
+# An invalid pattern: listed with its error, not used.
+broken:
+  prompt: '(unclosed'
+  show_config: show run
+junos:
+  ignored_lines: '[bad'
+# Structurally bad entries: problems, left out.
+no-prompt:
+  show_config: show run
+not-a-mapping: just text
+odd-key:
+  prompt: '#'
+  colour: red

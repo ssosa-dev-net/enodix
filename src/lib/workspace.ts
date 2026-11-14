@@ -282,6 +282,32 @@ export interface HighlightSpan {
 }
 
 /**
+ * How the app drives a kind of device. Patterns (`prompt`,
+ * `privilege_prompt`, `ignored_lines`) are regular expressions of the
+ * core's syntax; null values are not set.
+ */
+export interface PlatformDefinition {
+  name: string;
+  /** Other names a host's platform may give for it (e.g. `arista_eos`). */
+  otherNames: string[];
+  prompt: string;
+  disablePaging: string | null;
+  privilegeCommand: string | null;
+  privilegePrompt: string | null;
+  showConfig: string | null;
+  ignoredLines: string | null;
+}
+
+/** A platform definition as the workspace lists it. */
+export interface ListedPlatform {
+  definition: PlatformDefinition;
+  /** `changed`: a built-in definition the workspace changes. */
+  source: "builtIn" | "changed" | "workspace";
+  /** Why a pattern cannot be used; such a definition is not used. */
+  error: string | null;
+}
+
+/**
  * A named piece of text to send to a session. Its text is a template:
  * `{{address}}`, `{{name}}`, `{{custom.<key>}}` and the host's other fields
  * are filled in; the user is asked for any other `{{variable}}`.
@@ -312,6 +338,13 @@ export interface WorkspaceView {
   filters: SavedFilter[];
   /** The highlight rules: the workspace's own first, then the built-in. */
   highlight_rules: ListedRule[];
+  /** The platform definitions: the built-in ones first. */
+  platforms: ListedPlatform[];
+  /**
+   * Each usable definition's name and other names (trimmed, lower case)
+   * with the name of the definition it finds.
+   */
+  platform_names: Record<string, { definition: string; usable: boolean }>;
   /** The snippets, in file order. */
   snippets: Snippet[];
   problems: Problem[];
@@ -716,6 +749,19 @@ export function saveHighlightRule(
 /** Deletes a workspace rule, or a built-in rule's changes. */
 export function deleteHighlightRule(name: string) {
   return invoke<Edited<null>>("highlight_rule_delete", { name });
+}
+
+/** Saves a platform definition in place of `previous`, or as a new one. */
+export function savePlatform(
+  previous: string | null,
+  definition: PlatformDefinition,
+) {
+  return invoke<Edited<null>>("platform_save", { previous, definition });
+}
+
+/** Deletes a workspace platform definition, or resets a built-in one. */
+export function deletePlatform(name: string) {
+  return invoke<Edited<null>>("platform_delete", { name });
 }
 
 /** The snippets with every word of `query` in their name, group or text. */

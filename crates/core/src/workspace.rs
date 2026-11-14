@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_norway::{Mapping, Value};
 
 use crate::highlight::{HighlightRule, HighlightSource, Highlighter, ListedRule};
+use crate::platform::{ListedPlatform, PlatformDefinition, PlatformName, PlatformSource};
 use crate::session::{
     SerialParameters, SerialTarget, SshAuth, SshTarget, TelnetTarget, DEFAULT_SSH_PORT,
     DEFAULT_TELNET_PORT,
@@ -50,6 +51,7 @@ mod highlights;
 mod identity;
 pub(crate) mod import;
 mod jumps;
+mod platforms;
 mod roles;
 mod search;
 mod settings;
@@ -62,6 +64,7 @@ pub use filters::{Condition, SavedFilter, FILTERS_FILE};
 pub use highlights::HIGHLIGHTS_FILE;
 pub use identity::WORKSPACE_FILE;
 pub use jumps::JumpChainError;
+pub use platforms::PLATFORMS_FILE;
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
 use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
@@ -168,6 +171,8 @@ pub struct Workspace {
     highlights: Vec<ListedRule>,
     /// `highlights` compiled.
     highlighter: Highlighter,
+    /// The built-in platform definitions, then the workspace's own.
+    platforms: Vec<ListedPlatform>,
     /// The snippets, in file order.
     snippets: Vec<Snippet>,
     index: SearchIndex,
@@ -511,6 +516,7 @@ impl Workspace {
         let filters = load_filters(&root, &mut problems);
         let highlights = load_highlights(&root, &mut problems);
         let highlighter = compile_highlights(&highlights);
+        let platforms = load_platforms(&root, &mut problems);
         let snippets = load_snippets(&root, &mut problems);
         let index = SearchIndex::build(&tree, |id| roles::find(&roles, id).map(|r| r.name.clone()));
         problems.sort_by(|a, b| a.file.cmp(&b.file));
@@ -522,6 +528,7 @@ impl Workspace {
             filters,
             highlights,
             highlighter,
+            platforms,
             snippets,
             index,
             problems,
@@ -755,6 +762,124 @@ impl Workspace {
         self.highlights
             .iter()
             .find(|listed| highlights::same(&listed.rule.name, name))
+    }
+
+    /// The platform definitions: the built-in ones (as the workspace changes
+    /// them), then the workspace's own (file order). Definitions with a
+    /// pattern that cannot be used are listed with why; they are not used.
+    pub fn platforms(&self) -> &[ListedPlatform] {
+        &self.platforms
+    }
+
+    /// The definition a platform setting of `text` names: by name, else by
+    /// other name, ignoring case (and surrounding blanks). `None` when no
+    /// definition answers to it, or the one that does cannot be used.
+    pub fn platform(&self, text: &str) -> Option<&PlatformDefinition> {
+        crate::platform::find(&self.platforms, text)
+    }
+
+    /// The definition the platform that applies to host `id` (its own or
+    /// inherited) names, if any (see [`Self::platform`]).
+    pub fn host_platform(&self, id: &HostId) -> Option<&PlatformDefinition> {
+        let resolved = self.resolve_host(id)?;
+        self.platform(&resolved.settings.platform?.value)
+    }
+
+    /// Every name and other name of a definition, trimmed and in lower
+    /// case, with the definition it finds (as [`Self::platform`] does, but
+    /// also one that cannot be used), for the interface.
+    pub fn platform_names(&self) -> BTreeMap<String, PlatformName> {
+        self.platforms
+            .iter()
+            .flat_map(|listed| {
+                std::iter::once(&listed.definition.name).chain(&listed.definition.other_names)
+            })
+            .filter_map(|text| {
+                let found = crate::platform::find_listed(&self.platforms, text)?;
+                let name = PlatformName {
+                    definition: found.definition.name.clone(),
+                    usable: found.error.is_none(),
+                };
+                Some((text.trim().to_lowercase(), name))
+            })
+            .collect()
+    }
+
+    /// Saves `definition` to the platforms file, in place of the definition
+    /// called `previous` (ignoring case), or as a new one after the others
+    /// when `previous` is `None`. A built-in definition keeps its name, and
+    /// only what differs from the built-in one is written (nothing, when
+    /// nothing does). Refused: no name or prompt, a pattern that cannot be
+    /// used, a name or other name another definition has, a new definition
+    /// with a built-in name.
+    pub fn save_platform(
+        &mut self,
+        previous: Option<&str>,
+        definition: &PlatformDefinition,
+    ) -> Result<(), EditError> {
+        let definition = platforms::clean(definition).map_err(EditError::Invalid)?;
+        let replaced = match previous {
+            Some(previous) => Some(
+                self.listed_platform(previous)
+                    .ok_or_else(|| EditError::NotFound(format!("platform {}", previous.trim())))?,
+            ),
+            None => None,
+        };
+        if let Some(old) = replaced {
+            if old.source != PlatformSource::Workspace && !old.definition.is_named(&definition.name)
+            {
+                return Err(EditError::Invalid(format!(
+                    "the built-in platform {} cannot be renamed",
+                    old.definition.name
+                )));
+            }
+        }
+        let others = self.platforms.iter().filter(|listed| {
+            replaced.is_none_or(|old| !old.definition.is_named(&listed.definition.name))
+        });
+        for other in others {
+            let taken = std::iter::once(&definition.name)
+                .chain(&definition.other_names)
+                .find(|name| other.definition.is_named(name) || other.definition.answers_to(name));
+            if let Some(name) = taken {
+                return Err(EditError::AlreadyExists(format!(
+                    "the name {name} (platform {})",
+                    other.definition.name
+                )));
+            }
+        }
+        let previous = replaced.map_or(definition.name.clone(), |old| old.definition.name.clone());
+        self.edit_file(PLATFORMS_FILE.into(), |document| {
+            platforms::write(document, &previous, &definition);
+            Ok(())
+        })
+    }
+
+    /// Deletes the workspace's platform definition called `name` (ignoring
+    /// case), or for a built-in definition the workspace changes, its
+    /// changes (a reset). A built-in definition as built in cannot be
+    /// deleted.
+    pub fn delete_platform(&mut self, name: &str) -> Result<(), EditError> {
+        let listed = self
+            .listed_platform(name)
+            .ok_or_else(|| EditError::NotFound(format!("platform {}", name.trim())))?;
+        if listed.source == PlatformSource::BuiltIn {
+            return Err(EditError::Invalid(format!(
+                "the platform {} is built in and unchanged",
+                listed.definition.name
+            )));
+        }
+        let name = listed.definition.name.clone();
+        self.edit_file(PLATFORMS_FILE.into(), |document| {
+            platforms::remove(document, &name);
+            Ok(())
+        })
+    }
+
+    fn listed_platform(&self, name: &str) -> Option<&ListedPlatform> {
+        self.platforms
+            .iter()
+            .find(|listed| listed.definition.is_named(name))
     }
 
     /// The snippets, in the order of the snippets file.
@@ -1204,6 +1329,7 @@ impl Workspace {
             || fresh.roles != self.roles
             || fresh.filters != self.filters
             || fresh.highlights != self.highlights
+            || fresh.platforms != self.platforms
             || fresh.snippets != self.snippets
             || fresh.problems != self.problems;
         if changed {
@@ -1605,6 +1731,31 @@ fn load_highlights(root: &Path, problems: &mut Vec<Problem>) -> Vec<ListedRule> 
         Err(message) => {
             problems.push(problem(message));
             crate::highlight::built_in_rules()
+        }
+    }
+}
+
+/// The built-in platform definitions with those of the workspace's
+/// platforms file, if it has one. A bad file or definition becomes a
+/// problem; the rest load.
+fn load_platforms(root: &Path, problems: &mut Vec<Problem>) -> Vec<ListedPlatform> {
+    let path = root.join(PLATFORMS_FILE);
+    if !path.is_file() {
+        return crate::platform::built_in_platforms();
+    }
+    let problem = |message| Problem {
+        file: PLATFORMS_FILE.into(),
+        message,
+    };
+    match read_mapping(&path) {
+        Ok(document) => {
+            let (platforms, errors) = platforms::load(&document);
+            problems.extend(errors.into_iter().map(problem));
+            platforms
+        }
+        Err(message) => {
+            problems.push(problem(message));
+            crate::platform::built_in_platforms()
         }
     }
 }
