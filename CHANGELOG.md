@@ -5,7 +5,12 @@ in the project's tracker.
 
 ## Unreleased
 
-Everything below is on the main branch and not in a release yet.
+Nothing yet.
+
+## 0.2.0
+
+A pre-release, like the ones before it: not code-signed, and without
+automatic updates (install the next version over it by hand).
 
 ### Multi-send
 
