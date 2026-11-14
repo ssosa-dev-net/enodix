@@ -98,6 +98,7 @@ Let existing automation use the inventory.
 - **Environment:** the app offers to create its own venv in the data folder and install the package plus chosen libraries, after an explicit confirmation listing what will be installed. The user can point it at their own interpreter instead. Nothing is installed without the confirmation, and the feature is off until one of the two is set.
 - **Credentials:** handed over a local pipe on request, never written to disk and never put in environment variables. With the vault on, the running app acts as an agent, as `ssh-agent` does; with no app running, the binary asks for the master password on the terminal. Unattended scheduled runs against a vault are deliberately not possible.
 - Scripts read named secrets the same way, by name.
+- **Jump hosts:** scripts reach hosts behind jump hosts through loopback tunnels the binary opens with the app's own jump chains (stored-profile or agent logins, trusted host keys, legacy crypto, timeouts). One tunnel process serves a script's hosts, shares a jump connection between hosts behind the same bastion and ends with the script. Libraries check the device's key against the keys the app trusts; a device the app has never trusted is refused until it is connected to once. Telnet hosts behind jump hosts stay unreachable for scripts.
 - **Script jobs:** "run this script against the selected hosts" is a second job type, with output streamed into the results view. Config-mode pushes that need Netmiko's or scrapli's platform handling belong here.
 - Saved jobs (name, snippet or script, target folder or saved filter) arrive with this release.
 - Licensing: netterm is GPLv3; these libraries are MIT or Apache-2.0, installed by the user and run in a separate process.
@@ -106,6 +107,7 @@ Let existing automation use the inventory.
 
 - A bundled NAPALM script, run through the bridge, fills in vendor, model, serial number and OS for hosts already in the inventory.
 - It fills empty fields and never overwrites typed values without asking.
+- Hosts behind jump hosts are asked through the bridge's tunnels.
 - It assumes the engineer already uses Python automation; everyone else has manual entry and the CSV and Nornir imports.
 - No subnet scanning.
 

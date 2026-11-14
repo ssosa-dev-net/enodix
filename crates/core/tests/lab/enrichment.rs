@@ -6,17 +6,17 @@
 //! with NAPALM installed (the package `netterm` comes from this repository's
 //! `python/` folder, through `PYTHONPATH`); without it the check prints why
 //! it is NOT CHECKED. The headless binary is `NETTERM_CLI`, else the debug
-//! build (`npm run test:lab` builds it). NAPALM makes its own connections
-//! and cannot go through jump hosts, so with a jump host in the lab file the
-//! check opens the system's `ssh -L` tunnels through it (a key file or the
-//! agent; a password jump host is NOT CHECKED) and the hosts point at them.
+//! build (`npm run test:lab` builds it). With a jump host in the
+//! lab file, the hosts are behind it in the check's workspace and the script
+//! reaches them through the headless binary's loopback tunnels
+//! (`netterm-cli tunnel`, opened by the package); the keys of the jump host
+//! and the devices are trusted first by a terminal session through the
+//! chain, into the check's own data folder, as the app would have.
 
 use std::fs;
-use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use netterm_core::credentials::{
     AgentEndpoint, AgentServer, CredentialProfile, CredentialStore, MemoryStore, ProfileAuth,
@@ -29,7 +29,11 @@ use netterm_core::session::SessionManager;
 use netterm_core::workspace::{HostId, Workspace};
 use tempfile::TempDir;
 
-use super::{Device, Lab, LabJumpHost};
+use super::{Conversation, Device, Lab};
+
+/// The jump host's file and credential profile in the check's workspace.
+const JUMP_FILE: &str = "jump.yaml";
+const JUMP_PROFILE: &str = "jump";
 
 /// Names the Python interpreter (with NAPALM) the check runs the script
 /// with.
@@ -42,85 +46,6 @@ pub struct Checked {
     pub failures: Vec<String>,
     /// How many devices had their facts filled in.
     pub filled: usize,
-}
-
-/// Tunnels opened with the system's `ssh`, closed when dropped.
-struct Tunnels(Vec<Child>);
-
-impl Drop for Tunnels {
-    fn drop(&mut self) {
-        for child in &mut self.0 {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-/// A tunnel from a local port to `address:port` through the jump host.
-/// The jump host's key is trusted on first use into `known_hosts`, a
-/// file of the check's own (never the user's).
-fn tunnel(
-    jump: &LabJumpHost,
-    known_hosts: &Path,
-    address: &str,
-    port: u16,
-) -> Result<(u16, Child), String> {
-    let local = free_port();
-    let mut command = Command::new("ssh");
-    command
-        .arg("-o")
-        .arg(format!("UserKnownHostsFile={}", known_hosts.display()));
-    command.args([
-        "-N",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ExitOnForwardFailure=yes",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-p",
-        &jump.port.to_string(),
-        "-L",
-        &format!("127.0.0.1:{local}:{address}:{port}"),
-    ]);
-    match &jump.auth {
-        ProfileAuth::PrivateKey { key_file, .. } => {
-            command.arg("-i").arg(key_file);
-        }
-        ProfileAuth::Agent => {}
-        ProfileAuth::Password { .. } => {
-            return Err(
-                "the jump host logs in with a password, which ssh -L cannot be given".into(),
-            )
-        }
-    }
-    command.arg(format!("{}@{}", jump.username, jump.address));
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("ssh could not be started: {error}"))?;
-    let until = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < until {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!("ssh -L to {address}:{port} ended: {status}"));
-        }
-        if TcpStream::connect(("127.0.0.1", local)).is_ok() {
-            return Ok((local, child));
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    let _ = child.kill();
-    Err(format!("ssh -L to {address}:{port} did not open"))
 }
 
 fn cli() -> Result<PathBuf, String> {
@@ -179,21 +104,28 @@ pub async fn check(lab: &Lab) -> Result<Checked, String> {
         return Err("no device of the lab has a platform NAPALM has a driver for".into());
     }
 
-    let known_hosts = temp.path().join("known_hosts");
-    let mut tunnels = Tunnels(Vec::new());
+    if let Some(jump) = &lab.jump_host {
+        fs::write(
+            root.join("_folder.yaml"),
+            format!("jump_host: {JUMP_FILE}\n"),
+        )
+        .map_err(|e| e.to_string())?;
+        fs::write(
+            root.join(JUMP_FILE),
+            format!(
+                "address: {}\nport: {}\ncredential_profile: {JUMP_PROFILE}\n",
+                jump.address, jump.port
+            ),
+        )
+        .map_err(|e| e.to_string())?;
+    }
     for (device, driver) in &supported {
-        let (address, port) = match &lab.jump_host {
-            Some(jump) => {
-                let (port, child) = tunnel(jump, &known_hosts, &device.address, device.port)?;
-                tunnels.0.push(child);
-                ("127.0.0.1".to_string(), port)
-            }
-            None => (device.address.clone(), device.port),
-        };
         fs::write(
             root.join(format!("{}.yaml", device.name)),
             format!(
-                "address: {address}\nport: {port}\nplatform: {}\ncredential_profile: {}\nconnect_timeout: {}\n",
+                "address: {}\nport: {}\nplatform: {}\ncredential_profile: {}\nconnect_timeout: {}\n",
+                device.address,
+                device.port,
                 device.definition.as_deref().unwrap_or_default(),
                 device.name,
                 lab.timeout.as_secs().max(30),
@@ -225,8 +157,36 @@ pub async fn check(lab: &Lab) -> Result<Checked, String> {
             )
             .map_err(|error| error.0)?;
     }
+    if let Some(jump) = &lab.jump_host {
+        store
+            .put(
+                &workspace.credential_scope(),
+                &CredentialProfile {
+                    name: JUMP_PROFILE.into(),
+                    username: jump.username.clone(),
+                    auth: jump.auth.clone(),
+                    enable_secret: None,
+                },
+            )
+            .map_err(|error| error.0)?;
+    }
     let _agent = AgentServer::start(AgentEndpoint::for_data_folder(&data), store.clone())
         .map_err(|e| format!("the credential agent: {e}"))?;
+    // The tunnels refuse keys the app has not trusted: trust them as a
+    // terminal session would, in the data folder the binary reads.
+    if lab.jump_host.is_some() {
+        let trusting = SessionManager::new(KnownHosts::in_data_folder(&data));
+        let profiles = Profiles::new(store.as_ref(), &workspace);
+        for (device, _) in &supported {
+            let target = profiles
+                .profile_target(&device.host_id())
+                .map_err(|e| e.to_string())?;
+            let mut session = Conversation::open_ssh(&trusting, target, None, lab.timeout)
+                .await
+                .map_err(|e| format!("{}: trusting its keys: {e}", device.name))?;
+            session.close().await?;
+        }
+    }
 
     let plan = job::plan(
         &workspace,
@@ -267,7 +227,6 @@ pub async fn check(lab: &Lab) -> Result<Checked, String> {
             break report;
         }
     };
-    drop(tunnels);
     let result = &report.hosts[0];
     for line in result.output.lines() {
         checked.notes.push(format!("script: {line}"));

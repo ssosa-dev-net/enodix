@@ -212,6 +212,87 @@ fn pre_flight_lists_the_targets_and_skips_only_what_the_inventory_cannot_hand_ov
     assert!(plan.ready());
 }
 
+/// Hosts behind jump hosts run (the plugin tunnels to them), unless their
+/// chain cannot be tunnelled: broken, a jump host with no stored profile,
+/// or telnet.
+#[test]
+fn pre_flight_skips_hosts_behind_jump_hosts_that_cannot_be_tunnelled() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let root = workspace.root().to_path_buf();
+    let files = [
+        (
+            "bastion.yaml",
+            "address: 10.9.0.1\ncredential_profile: lab\n",
+        ),
+        ("open.yaml", "address: 10.9.0.2\n"),
+        (
+            "Behind/ok.yaml",
+            "address: 10.2.0.1\njump_host: bastion.yaml\n",
+        ),
+        (
+            "Behind/no-login.yaml",
+            "address: 10.2.0.2\njump_host: open.yaml\n",
+        ),
+        (
+            "Behind/broken.yaml",
+            "address: 10.2.0.3\njump_host: gone.yaml\n",
+        ),
+        (
+            "Behind/telnet.yaml",
+            "address: 10.2.0.4\nprotocol: telnet\njump_host: bastion.yaml\n",
+        ),
+        (
+            "Behind/serial.yaml",
+            "address: x\nprotocol: serial\njump_host: bastion.yaml\n",
+        ),
+    ];
+    for (path, text) in files {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+    let workspace = Workspace::open(&root).unwrap();
+    let store = store(&workspace);
+    let plan = job::plan(
+        &workspace,
+        &Profiles::new(&store, &workspace),
+        &JobTarget::Folder {
+            path: "Behind".into(),
+        },
+        &script("scripts/show.py"),
+    )
+    .unwrap();
+    assert_eq!(ids(&plan), ["Behind/ok.yaml", "Behind/serial.yaml"]);
+    let skipped: Vec<(&str, &SkipReason)> = plan
+        .skipped
+        .iter()
+        .map(|host| (host.id.as_str(), &host.reason))
+        .collect();
+    assert_eq!(skipped.len(), 3, "{skipped:?}");
+    assert_eq!(skipped[0].0, "Behind/broken.yaml");
+    assert!(matches!(skipped[0].1, SkipReason::JumpChain { .. }));
+    assert_eq!(
+        skipped[1],
+        (
+            "Behind/no-login.yaml",
+            &SkipReason::BehindJumpHost {
+                jump_host: "open.yaml".into()
+            }
+        )
+    );
+    assert_eq!(
+        skipped[2],
+        (
+            "Behind/telnet.yaml",
+            &SkipReason::TelnetBehindJumpHost {
+                jump_host: "bastion.yaml".into()
+            }
+        )
+    );
+    assert!(plan.skipped[2].message.contains("only over SSH"));
+}
+
 #[test]
 fn a_script_the_workspace_does_not_have_cannot_be_planned() {
     let temp = TempDir::new().unwrap();

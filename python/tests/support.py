@@ -17,6 +17,7 @@ Every test runs with its own ``NETTERM_DATA_DIR`` and a
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import os
 import re
@@ -31,6 +32,8 @@ from typing import Any, Dict, Optional
 FIXTURE = Path(__file__).parent / "fixtures" / "workspace"
 #: The fixture's workspace id: the scope the agent serves profiles for.
 SCOPE = "python-bridge-test"
+#: Seconds after which a test counts as hung.
+HANG_AFTER = 180
 #: The device-mode server's hostname (the example's `--device`).
 DEVICE_HOSTNAME = "lab-r1"
 
@@ -99,13 +102,17 @@ class Server:
         self.port: Optional[int] = None
         self.device_port: Optional[int] = None
         self.agent: Dict[str, Any] = {}
+        #: The device-mode server's host key (``<type> <base64>``).
+        self.device_key: Optional[str] = None
         assert self.process.stdout is not None
-        while self.port is None or self.device_port is None or not self.agent:
+        while self.port is None or self.device_port is None or not self.agent or not self.device_key:
             line = self.process.stdout.readline()
             if not line:
                 self.close()
                 raise RuntimeError(f"the test server stopped: {self.process.stderr.read()}")
-            if line.startswith("credential agent: "):
+            if line.startswith("device host key: "):
+                self.device_key = key_text(line.removeprefix("device host key: "))
+            elif line.startswith("credential agent: "):
                 self.agent = json.loads(line.removeprefix("credential agent: "))
             elif match := re.match(r"test SSH server listening on 127\.0\.0\.1:(\d+)", line):
                 self.port = int(match[1])
@@ -123,12 +130,52 @@ class Server:
                 stream.close()
 
 
+def key_text(openssh: str) -> str:
+    """``<type> <base64>`` of an OpenSSH public key line (no comment)."""
+    return " ".join(openssh.split()[:2])
+
+
+class JumpServer:
+    """Another example server: a plain SSH server, as a jump host (it
+    forwards connections), with the same login as the device's."""
+
+    def __init__(self) -> None:
+        self.process = subprocess.Popen(
+            [required("NETTERM_TEST_SSH_SERVER"), "0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+        )
+        self.port: Optional[int] = None
+        self.key: Optional[str] = None
+        assert self.process.stdout is not None
+        while self.port is None or self.key is None:
+            line = self.process.stdout.readline()
+            if not line:
+                raise RuntimeError("the jump server stopped")
+            if line.startswith("host key: "):
+                self.key = key_text(line.removeprefix("host key: "))
+            elif match := re.match(r"test SSH server listening on 127\.0\.0\.1:(\d+)", line):
+                self.port = int(match[1])
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            self.process.kill()
+        self.process.wait()
+        if self.process.stdout:
+            self.process.stdout.close()
+
+
 class BridgeTest(unittest.TestCase):
     """A fixture copy and its server for each test; ``devices/`` reaches
     the device-mode server and uses the ``lab`` profile."""
 
     def setUp(self) -> None:
         required("NETTERM_CLI")
+        # A test that hangs ends the run with every thread's traceback.
+        faulthandler.dump_traceback_later(HANG_AFTER, exit=True)
+        self.addCleanup(faulthandler.cancel_dump_traceback_later)
         self.workspace = Workspace()
         self.addCleanup(self.workspace.close)
         self.server = Server(self.workspace)

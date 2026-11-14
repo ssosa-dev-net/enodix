@@ -31,12 +31,14 @@ use tempfile::TempDir;
 /// `Site` holds hosts of every kind (by name: f1 frr, n1 nxos, r1 eos with
 /// nothing filled in, r2 arista_eos with typed values (production), r3
 /// cisco_ios with what its device reports, t1 telnet, x1 no platform), all
-/// with the folder's profile `lab`; `Other` a host with no profile and one
-/// behind a jump host.
+/// with the folder's profile `lab`; `Other` a host with no profile, one
+/// behind a jump host (tunnelled), one behind a jump host with no profile
+/// and one behind a jump host the workspace lacks.
 fn workspace(temp: &TempDir) -> Workspace {
     let root = temp.path().join("workspace");
     let files = [
         ("bastion.yaml", "address: 10.9.9.9\ncredential_profile: lab\n"),
+        ("open-bastion.yaml", "address: 10.9.9.8\n"),
         ("Site/_folder.yaml", "credential_profile: lab\n"),
         ("Site/f1.yaml", "address: 10.0.0.6\nplatform: frr\n"),
         ("Site/n1.yaml", "address: 10.0.0.7\nplatform: nxos\n"),
@@ -58,6 +60,14 @@ fn workspace(temp: &TempDir) -> Workspace {
         (
             "Other/j1.yaml",
             "address: 10.1.0.2\nplatform: eos\ncredential_profile: lab\njump_host: bastion.yaml\n",
+        ),
+        (
+            "Other/j2.yaml",
+            "address: 10.1.0.3\nplatform: eos\ncredential_profile: lab\njump_host: open-bastion.yaml\n",
+        ),
+        (
+            "Other/j3.yaml",
+            "address: 10.1.0.4\nplatform: eos\ncredential_profile: lab\njump_host: gone.yaml\n",
         ),
     ];
     for (path, text) in files {
@@ -253,24 +263,32 @@ fn pre_flight_keeps_the_hosts_napalm_can_reach_with_their_own_profile() {
             path: "Other".into(),
         },
     );
-    assert!(other.hosts.is_empty());
+    // Behind a jump host with a stored profile: the script's tunnel
+    // reaches it.
+    let ran: Vec<&str> = other.hosts.iter().map(|host| host.id.as_str()).collect();
+    assert_eq!(ran, ["Other/j1.yaml"]);
     let reasons: Vec<(&str, &SkipReason)> = other
         .skipped
         .iter()
         .map(|host| (host.id.as_str(), &host.reason))
         .collect();
+    assert_eq!(reasons.len(), 3, "{reasons:?}");
     assert_eq!(
-        reasons,
-        [
-            (
-                "Other/j1.yaml",
-                &SkipReason::BehindJumpHost {
-                    jump_host: "bastion.yaml".into()
-                }
-            ),
-            ("Other/np.yaml", &SkipReason::NoProfile),
-        ]
+        reasons[0],
+        (
+            "Other/j2.yaml",
+            &SkipReason::BehindJumpHost {
+                jump_host: "open-bastion.yaml".into()
+            }
+        )
     );
+    assert!(other.skipped[0].message.contains("cannot log in to it"));
+    assert_eq!(reasons[1].0, "Other/j3.yaml");
+    assert!(
+        matches!(reasons[1].1, SkipReason::JumpChain { error } if error.contains("gone.yaml")),
+        "{reasons:?}"
+    );
+    assert_eq!(reasons[2], ("Other/np.yaml", &SkipReason::NoProfile));
 }
 
 #[test]

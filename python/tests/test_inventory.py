@@ -142,8 +142,12 @@ class Inventories(BridgeTest):
         self.assertTrue(lab["behind_jump_host"])
         for direct in ("bastion.yaml", "devices/r-pass.yaml"):
             self.assertFalse(inventory.hosts[direct]["netterm"]["behind_jump_host"])
+            self.assertIsNone(inventory.hosts[direct]["netterm"]["tunnel_error"])
+        # Without credentials no tunnel is opened (test_tunnels.py has them).
+        self.assertIsNone(core["tunnel"])
+        self.assertIn("tunnels off", core["tunnel_error"])
         warning = "\n".join(logged.output)
-        self.assertIn("jump hosts", warning)
+        self.assertIn("could not be tunnelled", warning)
         self.assertIn("Madrid/core-r1.yaml", warning)
         self.assertIn("Madrid/Lab/lab-sw1.yaml", warning)
         self.assertNotIn("bastion.yaml,", warning)

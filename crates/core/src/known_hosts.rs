@@ -131,6 +131,27 @@ impl KnownHosts {
         })
     }
 
+    /// The keys trusted for `host` at `port`, in file order: none if the
+    /// host is unknown. A damaged entry for them is an error, as in
+    /// [`Self::check`].
+    pub fn trusted(&self, host: &str, port: u16) -> Result<Vec<PublicKey>, KnownHostsError> {
+        let store = self.lock();
+        let lines = store.load()?;
+        let pattern = pattern(host, port);
+        let mut trusted = Vec::new();
+        for line in &lines {
+            if let Line::Entry { patterns, key, .. } = line {
+                if matches_exactly(patterns, &pattern) {
+                    let key = key.as_ref().ok_or_else(|| {
+                        store.read_error(format!("the key stored for {pattern} cannot be read"))
+                    })?;
+                    trusted.push(key.clone());
+                }
+            }
+        }
+        Ok(trusted)
+    }
+
     /// Trusts `key` for `host` at `port` from now on, replacing any key
     /// stored for them.
     pub fn remember(&self, host: &str, port: u16, key: &PublicKey) -> Result<(), KnownHostsError> {

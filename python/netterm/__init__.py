@@ -6,6 +6,9 @@ credential profile, and named secrets. Credentials travel only over the
 binary's output pipe to this process; nothing is written to disk or put in
 the environment.
 
+Hosts behind the app's jump hosts are reached through loopback tunnels the
+binary opens (:func:`tunnels`); the Nornir plugin opens them itself.
+
 The Nornir inventory plugin is :class:`netterm.nornir.NettermInventory`
 (registered as ``NettermInventory``); it needs Nornir, which this package
 does not install.
@@ -19,9 +22,10 @@ from __future__ import annotations
 
 import os
 from os import PathLike, fspath
-from typing import Any, Dict, Iterable, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 from ._cli import CliFailed, CliNotFound, NettermError, default_location, find_cli, run
+from ._tunnel import Tunnels
 
 try:
     from ._build import VERSION as __version__
@@ -32,12 +36,14 @@ __all__ = [
     "CliFailed",
     "CliNotFound",
     "NettermError",
+    "Tunnels",
     "credentials",
     "default_location",
     "job_workspace",
     "find_cli",
     "inventory",
     "secret",
+    "tunnels",
 ]
 
 Folder = Union[str, "PathLike[str]"]
@@ -78,7 +84,12 @@ def inventory(
     of the saved filter ``filter``, or the host ids in ``hosts``. In a
     script job, only the job's hosts are ever given, and ``workspace``
     defaults to the job's."""
-    args = ["inventory", _workspace(workspace)]
+    return run(["inventory", _workspace(workspace), *_limit(folder, filter, hosts)])
+
+
+def _limit(folder: Optional[str], filter: Optional[str], hosts: Optional[Iterable[str]]) -> List[str]:
+    """The binary's limit options."""
+    args: List[str] = []
     host_ids = [hosts] if isinstance(hosts, str) else list(hosts or [])
     given = [name for name, value in (("folder", folder), ("filter", filter)) if value is not None]
     if host_ids:
@@ -91,7 +102,25 @@ def inventory(
         args += ["--filter", filter]
     for host in host_ids:
         args += ["--host", host]
-    return run(args)
+    return args
+
+
+def tunnels(
+    workspace: Optional[Folder] = None,
+    *,
+    folder: Optional[str] = None,
+    filter: Optional[str] = None,
+    hosts: Optional[Iterable[str]] = None,
+) -> Tunnels:
+    """Loopback tunnels to the hosts behind jump hosts among those
+    :func:`inventory` gives with the same limit (``netterm-cli tunnel``):
+    each jump chain is connected as the app would, with the jump hosts'
+    stored logins and the host keys the app trusts, and nothing is asked.
+    The result's ``hosts`` maps each such host id to where to connect
+    instead (``address`` ``127.0.0.1``, ``port``) with a ``known_hosts``
+    file of the device's trusted keys, or to an ``error`` saying why it is
+    not tunnelled. They stay open until closed or this process ends."""
+    return Tunnels([_workspace(workspace), *_limit(folder, filter, hosts)])
 
 
 def credentials(workspace: Optional[Folder], host: str) -> Dict[str, Any]:
