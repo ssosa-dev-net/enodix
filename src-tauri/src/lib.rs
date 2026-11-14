@@ -12,20 +12,26 @@ use netterm_core::session::{
 };
 use netterm_core::workspace::{
     EditError, EffectiveSettings, FilterView, Folder, FolderDeletion, Host, HostId, Problem, Role,
-    SavedFilter, SearchResults, Settings, Workspace,
+    SavedFilter, SearchResults, Settings, WatchOptions, Workspace, WorkspaceWatcher,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 /// Overrides the per-user application data folder (the smoke test uses it to
 /// start from a known state).
 const DATA_DIR_VARIABLE: &str = "NETTERM_DATA_DIR";
 
+/// The event that brings the interface the workspace after changes made
+/// outside the app.
+const WORKSPACE_CHANGED_EVENT: &str = "workspace-changed";
+
 /// Where app-level state lives, and the open workspace.
 struct Shell {
     data_folder: PathBuf,
     workspace: Mutex<Option<Workspace>>,
+    /// Reports changes to the open workspace's files; replaced with it.
+    watcher: Mutex<Option<WorkspaceWatcher>>,
 }
 
 impl Shell {
@@ -33,6 +39,54 @@ impl Shell {
         self.workspace
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Makes `workspace` the open one and watches its folder, so that
+    /// changes from outside (a git pull, an editor) reach the interface.
+    fn open(&self, app: &AppHandle, workspace: Workspace) -> WorkspaceView {
+        let root = workspace.root().to_path_buf();
+        *self.workspace() = Some(workspace);
+        let app = app.clone();
+        let watched = root.clone();
+        let watcher = WorkspaceWatcher::start(&root, WatchOptions::default(), move |_| {
+            app.state::<Shell>().reload_from_disk(&app, &watched);
+        });
+        let watcher = watcher
+            .inspect_err(|error| eprintln!("changes from outside will not show: {error}"))
+            .ok();
+        // The previous watcher stops here.
+        *self.watcher.lock().unwrap_or_else(PoisonError::into_inner) = watcher;
+
+        let mut guard = self.workspace();
+        let workspace = guard.as_mut().expect("the workspace was just opened");
+        // What changed between loading and watching would otherwise only
+        // show with the next change.
+        if let Err(error) = workspace.refresh() {
+            eprintln!("cannot reload the workspace: {error}");
+        }
+        WorkspaceView::from(&*workspace)
+    }
+
+    /// Reloads the workspace at `root`, if it is still the open one, and
+    /// sends it to the interface if anything differs. The app's own edits
+    /// are already loaded, so they send nothing.
+    fn reload_from_disk(&self, app: &AppHandle, root: &std::path::Path) {
+        let mut guard = self.workspace();
+        let Some(workspace) = guard.as_mut().filter(|w| w.root() == root) else {
+            return;
+        };
+        match workspace.refresh() {
+            Ok(true) => {
+                let view = WorkspaceView::from(&*workspace);
+                if let Err(error) = app.emit(WORKSPACE_CHANGED_EVENT, view) {
+                    eprintln!("cannot send the reloaded workspace: {error}");
+                }
+            }
+            Ok(false) => {}
+            // Gone or unreadable for now (mid-checkout, say): keep showing
+            // what was loaded; the next change tries again.
+            Err(error) => eprintln!("cannot reload the workspace: {error}"),
+        }
     }
 }
 
@@ -56,8 +110,11 @@ enum ConnectTarget {
 }
 
 /// An open workspace as the interface receives it.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct WorkspaceView {
+    /// `Workspace::revision`: higher is newer; the interface ignores a
+    /// view older than the one it shows.
+    revision: u64,
     root: String,
     tree: Folder,
     /// The roles a host can be given.
@@ -72,6 +129,7 @@ struct WorkspaceView {
 impl From<&Workspace> for WorkspaceView {
     fn from(workspace: &Workspace) -> Self {
         Self {
+            revision: workspace.revision(),
             root: workspace.root().display().to_string(),
             tree: workspace.tree().clone(),
             roles: workspace.roles().to_vec(),
@@ -134,10 +192,13 @@ fn app_name(app: AppHandle) -> String {
 
 /// Opens the workspace folder at `path` and remembers it for the next launch.
 #[tauri::command]
-fn workspace_open(shell: State<'_, Shell>, path: PathBuf) -> Result<WorkspaceView, String> {
+fn workspace_open(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+    path: PathBuf,
+) -> Result<WorkspaceView, String> {
     let workspace = Workspace::open(&path).map_err(|error| error.to_string())?;
-    let view = WorkspaceView::from(&workspace);
-    *shell.workspace() = Some(workspace);
+    let view = shell.open(&app, workspace);
     let state = AppState {
         last_workspace: Some(path),
     };
@@ -149,14 +210,15 @@ fn workspace_open(shell: State<'_, Shell>, path: PathBuf) -> Result<WorkspaceVie
 
 /// Reopens the workspace that was open last, if there was one.
 #[tauri::command]
-fn workspace_restore(shell: State<'_, Shell>) -> Result<Option<WorkspaceView>, String> {
+fn workspace_restore(
+    app: AppHandle,
+    shell: State<'_, Shell>,
+) -> Result<Option<WorkspaceView>, String> {
     let Some(path) = AppState::load(&shell.data_folder).last_workspace else {
         return Ok(None);
     };
     let workspace = Workspace::open(&path).map_err(|error| error.to_string())?;
-    let view = WorkspaceView::from(&workspace);
-    *shell.workspace() = Some(workspace);
-    Ok(Some(view))
+    Ok(Some(shell.open(&app, workspace)))
 }
 
 /// The workspace after an edit, and what the edit returned (a new path or
@@ -474,6 +536,7 @@ pub fn run() {
             app.manage(Shell {
                 data_folder,
                 workspace: Mutex::new(None),
+                watcher: Mutex::new(None),
             });
             let title = product_name(app.handle());
             WebviewWindowBuilder::new(app, "main", WebviewUrl::default())

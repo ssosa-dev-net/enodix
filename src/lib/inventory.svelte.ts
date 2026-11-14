@@ -264,11 +264,46 @@ function itemName(item: Item) {
   return host?.name ?? path.slice(path.lastIndexOf("/") + 1);
 }
 
+/**
+ * Shows `workspace` unless a newer view is already shown (a reload from
+ * disk can overtake an edit's answer, and already includes the edit).
+ * Returns whether it is shown.
+ */
+function adopt(workspace: WorkspaceView): boolean {
+  const shown = inventory.workspace;
+  if (shown?.root === workspace.root && workspace.revision < shown.revision) {
+    return false;
+  }
+  inventory.workspace = workspace;
+  return true;
+}
+
 /** Applies an edit's answer; returns its result. Errors propagate. */
 function apply<T>(edited: Edited<T>): T {
-  inventory.workspace = edited.workspace;
+  adopt(edited.workspace);
   inventory.editError = null;
   return edited.result;
+}
+
+/**
+ * Shows the workspace as reloaded after files changed outside the app.
+ * The selection and expanded folders stay; a selected item that no longer
+ * exists is deselected. Open sessions are not touched.
+ */
+export function workspaceChanged(workspace: WorkspaceView) {
+  // A late notice about a workspace no longer open, or an outdated one.
+  if (inventory.workspace?.root !== workspace.root || !adopt(workspace)) {
+    return;
+  }
+  const selected = inventory.selected;
+  if (
+    selected &&
+    !(selected.kind === "host"
+      ? api.findHost(workspace.tree, selected.id)
+      : api.findFolder(workspace.tree, selected.path))
+  ) {
+    inventory.selected = null;
+  }
 }
 
 /** Runs an edit outside a dialog, showing a failure in the panel. */
