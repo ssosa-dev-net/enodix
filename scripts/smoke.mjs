@@ -2903,16 +2903,167 @@ async function jobs({
     await until("the hang command sent", async () =>
       (await text(hostOutput)).includes("lab-r1# hang"),
     );
-    await clickOn(`${dialog} [data-job=cancel]`);
-    const cancelled = await finished();
-    if (
-      cancelled.state !== "cancelled" ||
-      !cancelled.output.includes("lab-r1# hang")
-    ) {
-      fail(`the cancelled job's result: ${json(cancelled)}`);
-    }
-    step("a cancelled job marked its host cancelled and kept its output");
+    // Hidden, the job goes on; the workspace header shows it running.
     await clickOn(`${dialog} [data-job=close]`);
+    await until("the job dialog hidden", async () => !(await exists(dialog)));
+    await until("the header shows one job running", () =>
+      exists('[data-open-jobs][data-jobs-running="1"]'),
+    );
+    await screenshot("job-running-indicator");
+    step("a hidden job keeps running, with an indicator in the header");
+
+    // The jobs view: every run, newest first, the running one cancelled
+    // there, its output kept.
+    const view = "[data-dialog=jobs]";
+    await clickOn("[data-open-jobs]");
+    await until("the jobs view", () => exists(`${view} [data-runs]`));
+    const listed = () =>
+      evaluate(`[...document.querySelectorAll("${view} [data-run]")].map((r) => ({
+        id: r.dataset.run,
+        state: r.dataset.runState,
+        title: r.querySelector(".title").textContent,
+      }))`);
+    await until("three runs listed", async () => (await listed()).length === 3);
+    const runs = await listed();
+    if (
+      json(runs.map((r) => [r.title, r.state])) !==
+      json([
+        ["Job hang", "running"],
+        ["Job check", "ended"],
+        ["Job check", "ended"],
+      ])
+    ) {
+      fail(`the runs listed: ${json(runs)}`);
+    }
+    const [hangRun, doneRun, refusedRun] = runs.map((r) => r.id);
+    const runRow = (id) => `${view} [data-run="${id}"]`;
+    const hostState = (state) =>
+      `${view} [data-run-host="Jobs/jobs-r1.yaml"][data-host-state=${state}]`;
+    const runOutputText = () => text(`${view} [data-run-output]`);
+    await until("the running run selected", () =>
+      exists(`${view} [data-run-details="${hangRun}"]`),
+    );
+    await clickOn(`${view} [data-run-action=cancel]`);
+    await until("the hang run ended", () =>
+      exists(`${runRow(hangRun)}[data-run-state=ended]`),
+    );
+    await until("the cancelled host", () => exists(hostState("cancelled")));
+    await until("the cancelled host's output kept", async () =>
+      (await runOutputText()).includes("lab-r1# hang"),
+    );
+    await until("the header shows no job running", () =>
+      exists('[data-open-jobs][data-jobs-running="0"]'),
+    );
+    step(
+      "the jobs view lists the runs newest first and cancelled the running one, keeping its output",
+    );
+
+    // The finished run: its output, and search across it.
+    await clickOn(runRow(doneRun));
+    await until("the done run's host", () => exists(hostState("done")));
+    await until("the done run's output", async () =>
+      (await runOutputText()).includes("site lab-site"),
+    );
+    await fillForm({ "run-search": "SITE LAB" }, `${view} [data-run-search]`);
+    await until("the search hit", () =>
+      exists(`${view} [data-search-hit="Jobs/jobs-r1.yaml"][data-count="2"]`),
+    );
+    await fillForm(
+      { "run-search": "nowhere at all" },
+      `${view} [data-run-search]`,
+    );
+    await until("no search hit", () => exists(`${view} [data-search-none]`));
+    await screenshot("job-results");
+    step("a kept run shows each host's output, and search finds the host");
+
+    // The same host in two runs, compared line by line.
+    await evaluate(`(() => {
+      const select = document.querySelector("${view} [name=compare-new]");
+      select.value = ${json(`${refusedRun}|Jobs/jobs-r1.yaml`)};
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await until(
+      "the compare button enabled",
+      async () =>
+        !(await evaluate(
+          `document.querySelector("${view} [data-run-action=compare]").disabled`,
+        )),
+    );
+    await clickOn(`${view} [data-run-action=compare]`);
+    await until("the diff", () => exists(`${view} [data-diff]`));
+    const diff = await evaluate(`(() => {
+      const lines = [...document.querySelectorAll("${view} [data-diff-line]")];
+      return {
+        removed: lines.filter((l) => l.dataset.diffLine === "removed").map((l) => l.querySelector(".text").textContent),
+        added: lines.filter((l) => l.dataset.diffLine === "added").length,
+      };
+    })()`);
+    if (!diff.removed.includes("site lab-site") || diff.added !== 0) {
+      fail(`the diff with the refused run: ${json(diff)}`);
+    }
+    step("one host's output from two runs compared as a line diff");
+
+    // Saved to a folder: the description and one text file per host.
+    const saveTo = mkdtempSync(join(tmpdir(), "netterm-job-export-"));
+    try {
+      await fillForm(
+        { "run-export-folder": saveTo },
+        `${view} [data-run-export]`,
+      );
+      await until("the run saved", () => exists(`${view} [data-run-notice]`));
+      const saved = join(saveTo, doneRun);
+      const hostFile = join(saved, "output", "Jobs", "jobs-r1.txt");
+      if (
+        !existsSync(join(saved, "run.yaml")) ||
+        !existsSync(hostFile) ||
+        !readFileSync(hostFile, "utf8").includes("site lab-site")
+      ) {
+        fail(`the saved run in ${saved} is not complete`);
+      }
+    } finally {
+      rmSync(saveTo, { recursive: true, force: true });
+    }
+    step("Save to… copied the run to the chosen folder");
+
+    // Deleted: gone from the list and from disk.
+    const keptRuns = join(appData, "jobs");
+    const runFolder = (id) =>
+      readdirSync(keptRuns)
+        .map((workspaceId) => join(keptRuns, workspaceId, id))
+        .find((folder) => existsSync(folder));
+    if (!runFolder(refusedRun)) fail("the refused run is not on disk");
+    await clickOn(runRow(refusedRun));
+    await until("the refused run selected", () =>
+      exists(`${view} [data-run-details="${refusedRun}"]`),
+    );
+    await clickOn(`${view} [data-run-action=delete]`);
+    await clickOn(`${view} [data-run-action=confirm-delete]`);
+    await until(
+      "the refused run gone from the list",
+      async () => !(await exists(runRow(refusedRun))),
+    );
+    if (runFolder(refusedRun)) fail("the deleted run is still on disk");
+    step("delete removed the run from the list and from disk");
+
+    // Run again: the same snippet and answers on the same host, planned
+    // anew, at pre-flight.
+    await clickOn(runRow(doneRun));
+    await until("the done run selected", () =>
+      exists(`${view} [data-run-details="${doneRun}"]`),
+    );
+    await clickOn(`${view} [data-run-action=again]`);
+    await until("the run-again pre-flight", () => atStep("preflight"));
+    const again = await evaluate(
+      `[...document.querySelectorAll("${dialog} [data-job-host]")].map((r) => r.dataset.jobHost)`,
+    );
+    if (json(again) !== json(["Jobs/jobs-r1.yaml"])) {
+      fail(`run again would run on ${json(again)}`);
+    }
+    if (!(await exists(`${dialog} [data-job-production]`))) {
+      fail("run again did not ask about the production host");
+    }
+    step("Run again planned the same step and target and showed pre-flight");
+    await clickOn(`${dialog} [data-job=dismiss]`);
     await until("the job dialog closed", async () => !(await exists(dialog)));
   } finally {
     if (savedSnippets === null) rmSync(snippetsFile, { force: true });

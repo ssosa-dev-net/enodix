@@ -5,12 +5,16 @@
     DEFAULT_PARALLEL,
     MAX_PARALLEL,
     planJob,
-    startJob,
     type HostState,
-    type JobEvent,
     type JobPlan,
     type JobTarget,
   } from "./jobs";
+  import {
+    forgetFinished,
+    launchJob,
+    openJobsView,
+    type LiveJob,
+  } from "./jobs.svelte";
   import { inventory } from "./inventory.svelte";
 
   interface Props {
@@ -18,18 +22,37 @@
     target: JobTarget;
     /** What the target is called (a folder, a saved filter, a host). */
     label: string;
+    /**
+     * A plan already made ("Run again" on a kept run): the dialog starts
+     * at its pre-flight (or its missing variables).
+     */
+    planned?: JobPlan | null;
     onclose: () => void;
   }
 
-  let { target, label, onclose }: Props = $props();
+  let { target, label, planned = null, onclose }: Props = $props();
 
   type Step = "snippet" | "variables" | "preflight" | "running";
 
   const snippets = $derived(inventory.workspace?.snippets ?? []);
-  let step = $state<Step>("snippet");
-  let snippet = $state(untrack(() => snippets[0]?.name ?? ""));
-  let answers = $state<Record<string, string>>({});
-  let plan = $state<JobPlan | null>(null);
+  const initial = untrack(() => planned);
+  let step = $state<Step>(
+    initial === null
+      ? "snippet"
+      : initial.missingVariables.length > 0
+        ? "variables"
+        : "preflight",
+  );
+  let snippet = $state(
+    untrack(() => initial?.step.name ?? snippets[0]?.name ?? ""),
+  );
+  let answers = $state<Record<string, string>>({
+    ...(initial?.step.answers ?? {}),
+    ...Object.fromEntries(
+      (initial?.missingVariables ?? []).map((name) => [name, ""]),
+    ),
+  });
+  let plan = $state<JobPlan | null>(initial);
   let productionConfirmed = $state(false);
   /** How many hosts run at once. */
   let parallel = $state<number | null>(DEFAULT_PARALLEL);
@@ -42,11 +65,17 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
 
-  /** The running (or finished) job. */
-  let jobId = $state<number | null>(null);
-  let finished = $state(false);
-  let states = $state<Record<string, HostState>>({});
-  let outputs = $state<Record<string, string>>({});
+  /** The running (or finished) job, kept beyond this dialog. */
+  let live = $state<LiveJob | null>(null);
+  const finished = $derived(live?.finished ?? false);
+  const states = $derived<Record<string, HostState>>(live?.states ?? {});
+  const outputs = $derived<Record<string, string>>(live?.outputs ?? {});
+
+  /** Closes the dialog; a running job goes on (see the jobs view). */
+  function close() {
+    if (finished) forgetFinished();
+    onclose();
+  }
 
   let firstInput = $state<HTMLElement>();
   $effect(() => {
@@ -86,26 +115,10 @@
     });
   }
 
-  function onevent(event: JobEvent) {
-    if (event.kind === "state") {
-      states[event.host] = event.state;
-    } else if (event.kind === "output") {
-      outputs[event.host] = (outputs[event.host] ?? "") + event.text;
-    } else {
-      for (const host of event.hosts) {
-        states[host.id] = host.state;
-        outputs[host.id] = host.output;
-      }
-      finished = true;
-    }
-  }
-
   function start() {
     return attempt(async () => {
-      states = {};
-      outputs = {};
-      finished = false;
-      jobId = await startJob(parallel ?? DEFAULT_PARALLEL, onevent);
+      if (!plan) return;
+      live = await launchJob(plan, target, label, parallel ?? DEFAULT_PARALLEL);
       step = "running";
     });
   }
@@ -149,7 +162,7 @@
   function onkeydown(event: KeyboardEvent) {
     if (event.key === "Escape" && !busy) {
       event.preventDefault();
-      onclose();
+      close();
     }
   }
 </script>
@@ -368,8 +381,8 @@
         {/each}
       </div>
       <div class="actions">
-        {#if !finished && jobId !== null}
-          {@const id = jobId}
+        {#if !finished && live !== null}
+          {@const id = live.id}
           <button
             type="button"
             data-job="cancel"
@@ -377,7 +390,19 @@
             >Cancel job</button
           >
         {/if}
-        <button type="button" class="primary" data-job="close" onclick={onclose}
+        {#if live !== null}
+          {@const run = live.run}
+          <button
+            type="button"
+            data-job="view"
+            title="The kept run, with search, compare and save"
+            onclick={() => {
+              close();
+              openJobsView(run);
+            }}>Open in Jobs</button
+          >
+        {/if}
+        <button type="button" class="primary" data-job="close" onclick={close}
           >{finished ? "Close" : "Hide"}</button
         >
       </div>
@@ -388,11 +413,8 @@
     {/if}
     {#if step !== "running"}
       <footer>
-        <button
-          type="button"
-          data-job="dismiss"
-          disabled={busy}
-          onclick={onclose}>Cancel</button
+        <button type="button" data-job="dismiss" disabled={busy} onclick={close}
+          >Cancel</button
         >
       </footer>
     {/if}
