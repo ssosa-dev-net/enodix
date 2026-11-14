@@ -33,6 +33,8 @@
     effective: (settings: EffectiveSettings) => Effective<unknown> | null;
     /** What applies when nothing sets it and there is no default. */
     unset?: string;
+    /** What the user should know about the setting, shown under it. */
+    note?: string;
   }
 
   const ON_OFF: Options = [
@@ -114,6 +116,10 @@
       own: (s) => flag(s.logging),
       set: (s, v) => ({ ...s, logging: toFlag(v) }),
       effective: (e) => e.logging,
+      note:
+        "Every session is saved as a text file on this computer, outside the workspace. " +
+        "Logs can contain secrets shown on screen, such as passwords, keys or " +
+        "configurations a device prints. Turn logging off for sensitive devices.",
     },
     {
       key: "environment",
@@ -318,6 +324,9 @@
           {row.unset ?? "not set"}
         {/if}
       </span>
+      {#if row.note}
+        <p class="note" data-setting-note={row.key}>{row.note}</p>
+      {/if}
     </div>
   {/each}
 {/snippet}
@@ -465,6 +474,14 @@
     font-size: 0.7rem;
     color: var(--muted);
     overflow-wrap: anywhere;
+  }
+
+  .note {
+    margin: 0.1rem 0 0;
+    padding: 0.3rem 0.45rem;
+    border-left: 2px solid var(--warning);
+    font-size: 0.7rem;
+    color: var(--text);
   }
 
   .link .name {

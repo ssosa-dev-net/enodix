@@ -268,6 +268,14 @@ export function restoreWorkspace(): Promise<WorkspaceView | null> {
   return invoke<WorkspaceView | null>("workspace_restore");
 }
 
+/**
+ * Shows the folder of the host's session logs in the system's file manager
+ * (created first if nothing was logged yet).
+ */
+export function openLogFolder(id: string): Promise<void> {
+  return invoke("logs_open_folder", { id });
+}
+
 /** Returns the new folder's path. */
 export function createFolder(parent: string, name: string) {
   return invoke<Edited<string>>("folder_create", { parent, name });

@@ -691,6 +691,9 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
                 // Announced just before `Connected`; tests about it read it
                 // with `next_algorithms`.
                 Some(SessionEvent::Algorithms(_)) => {}
+                Some(SessionEvent::LogFailed(failure)) => {
+                    panic!("expected a state change, got the log failure {failure:?}")
+                }
                 None => panic!("session events ended while waiting for a state change"),
             }
         }
