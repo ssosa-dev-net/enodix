@@ -2,14 +2,42 @@
 
 A terminal for network engineers: SSH, telnet and serial sessions to the
 devices in an inventory kept as plain YAML files (a folder you can put in
-git), with credential profiles in the Windows Credential Manager, jump
-hosts, session logs, snippets, keyword highlighting and paste safety for
-production devices. Free and open source under the GPL-3.0.
+git). Free and open source under the GPL-3.0.
 
-Windows 10 and 11 (64-bit) for now. The app needs Microsoft Edge WebView2,
+- **Sessions:** tabs and split panes, jump hosts, session logs, keyword
+  highlighting, snippets with variables filled from the host, and paste
+  safety for production devices.
+- **Multi-send:** type into a group of terminals at once; joining a
+  production device asks first.
+- **Credentials:** profiles are kept in the Windows Credential Manager, or
+  in the app's own encrypted vault behind a master password (your choice;
+  on Linux the vault is the only store). Workspace files hold only a
+  profile's name.
+- **Jobs:** run a snippet on a folder, a saved filter or one host, with
+  per-device output you can search, compare and save; nothing is asked
+  mid-run, and a list beforehand shows which hosts will be skipped and why.
+- **Config backup:** as a job or each time you log in, kept as versions
+  with a diff between any two.
+- **Python:** the inventory and logins as a Nornir inventory for your own
+  Netmiko, scrapli and NAPALM scripts, run from the app or from a shell,
+  with hosts behind jump hosts reached through the app's own jump chains.
+  Python is optional; nothing else needs it.
+- **Fill in from devices:** vendor, model, serial number and OS version
+  fetched with NAPALM, reviewed before anything is written.
+
+Releases up to 0.1.2 have the sessions and the inventory only; everything
+else in the list came after it. [CHANGELOG.md](CHANGELOG.md) lists what
+each release added, and [ROADMAP.md](ROADMAP.md) says what is built, what
+is not yet verified and what comes next.
+
+Windows 10 and 11 (64-bit). The app needs Microsoft Edge WebView2,
 which Windows 11 includes; the installer fetches it on older systems if it
 is missing. The portable copy cannot install it: on a computer without
 WebView2 it does not start.
+
+Linux packages (.deb, .rpm, AppImage) are built too, but the app has not
+been checked on a real Linux desktop yet, so Linux is not claimed as
+supported; see [docs/linux.md](docs/linux.md) for how it differs there.
 
 ## Download and install
 
@@ -19,6 +47,9 @@ Each release has these files:
 | ------------------------------------ | --------------------------------------------------------------------------- |
 | `netterm_<version>_x64-setup.exe`    | The installer. Installs for your user only; no administrator rights needed. |
 | `netterm_<version>_x64-portable.zip` | The portable copy: unpack it anywhere (a USB stick) and run `netterm.exe`.  |
+| `netterm_<version>_amd64.deb`        | Debian and Ubuntu package (from the next release; not desktop-checked yet). |
+| `netterm-<version>-1.x86_64.rpm`     | Fedora, RHEL and openSUSE package (the same).                               |
+| `netterm_<version>_amd64.AppImage`   | One Linux file that runs without installing (the same).                     |
 | `SHA256SUMS.txt`                     | The SHA-256 checksum of every file, to check a download.                    |
 | `latest.json`, `*.sig`               | Used by the app's update check; you do not need them.                       |
 
@@ -95,6 +126,26 @@ export. It exits with 1 (and says why) for a missing workspace or an
 unknown folder, filter or host, and with 2 for a command line it does not
 understand. `netterm-cli --help` lists the options.
 
+It also hands out logins and opens tunnels, for scripts:
+
+```powershell
+netterm-cli credentials C:\Work\inventory Europe/Madrid/core-r1.yaml
+netterm-cli secret C:\Work\inventory netbox-token
+netterm-cli tunnel C:\Work\inventory --folder Europe/Madrid
+```
+
+- `credentials` prints the login of the credential profile a host uses, and
+  `secret` a named secret of the workspace, as JSON. They come from the
+  running app when it is open and its vault unlocked; otherwise from the
+  keychain, or from the vault after asking its master password on the
+  terminal. A password is never taken from the command line or the
+  environment, and nothing is written to disk.
+- `tunnel` opens a port on `127.0.0.1` for each host behind jump hosts,
+  through the jump chain the app would use, and serves it until its
+  standard input ends. It asks no host-key or login question: a jump host
+  or device whose key the app has not trusted is refused, with the reason
+  in its output.
+
 ## Python and Nornir
 
 The `python` folder beside `netterm.exe` (and in the portable zip) holds a
@@ -106,10 +157,18 @@ version always matches the app's; install it from that file:
 pip install "$env:LOCALAPPDATA\netterm\python\netterm-<version>-py3-none-any.whl"
 ```
 
-Then use the `NettermInventory` plugin in `InitNornir`. See
+Then use the `NettermInventory` plugin in `InitNornir`. Hosts behind jump
+hosts are reached through tunnels the plugin opens with `netterm-cli`, so
+scripts run unchanged; a device must have been connected to once in the
+app, so that its host key is trusted. See
 [python/README.md](python/README.md) for the options, the mapping and the
-limits (hosts behind jump hosts are marked, but the Python libraries cannot
-reach them yet).
+limits.
+
+The app can also do this for you: **Preferences**, Python sets up an
+environment (after showing what it will install) or uses your own
+interpreter, and then **Run script…** on a folder, filter or host runs a
+`.py` file of the workspace as a job, and **Fill in from devices** asks
+the devices for their vendor, model, serial number and OS version.
 
 ## Tested platforms
 
@@ -134,7 +193,9 @@ whole configuration, backup on login). Cisco NX-OS has not been tested.
 ## Building from source
 
 For the layout and commands (`npm install`, `npm run check`,
-`npm run app:build`), and `docs/releasing.md` for making a release.
+`npm run app:build`; `npm run test:python` for the Python bridge and
+`npm run test:linux` for the Linux checks), `docs/linux.md` for Linux and
+`docs/releasing.md` for making a release.
 
 ## License
 

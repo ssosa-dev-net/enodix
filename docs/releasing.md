@@ -92,7 +92,8 @@ equivalent, or publish the file at a fixed address yourself.
 
 1. Set the version in `Cargo.toml` (`[workspace.package] version`) and
    `package.json` (the script refuses if they differ). Versions are semver;
-   the app offers only a higher version than its own.
+   the app offers only a higher version than its own. In `CHANGELOG.md`,
+   rename "Unreleased" to the version and start a new "Unreleased" above it.
 2. `npm run check`, `npm run test:python` (the Python bridge: needs Python
    3.10+ and, the first time, the network for Nornir), and
    `npm run app:build && npm run smoke`.
@@ -130,8 +131,8 @@ equivalent, or publish the file at a fixed address yourself.
    tools into Tauri's cache.
 
 4. Publish by hand: create the release (tag `v<version>`), upload every file
-   from `target/dist/<version>/`, and paste `SHA256SUMS.txt` into the release
-   notes. Make `latest.json` reachable at `NETTERM_UPDATE_ENDPOINT` **last**,
+   from `target/dist/<version>/`, and paste the version's section of
+   `CHANGELOG.md` and `SHA256SUMS.txt` into the release notes. Make `latest.json` reachable at `NETTERM_UPDATE_ENDPOINT` **last**,
    once the installer can be downloaded.
 
 5. Check: an installed copy of the previous version shows the notice
