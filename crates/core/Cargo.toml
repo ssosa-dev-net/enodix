@@ -48,6 +48,10 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Threading"] }
 
+# Ending a Python process with the processes it started (its process group).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # Streams of connections for the in-process SSH agent (tests/support).
 futures = "0.3"

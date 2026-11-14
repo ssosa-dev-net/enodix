@@ -971,6 +971,11 @@ fn exit_code(status: ExitStatus) -> String {
 
 /// A command with no window of its own (on Windows a console would flash
 /// up for every check), its input closed and its output captured.
+///
+/// Elsewhere it starts in a session of its own, so that it has no
+/// terminal either (as a Windows process without a console: the headless
+/// binary then never waits on a password prompt nobody sees) and
+/// [`stop`] can end the processes it started with it.
 pub(crate) fn quiet_command(program: &OsStr) -> Command {
     let mut command = Command::new(program);
     command
@@ -987,7 +992,41 @@ pub(crate) fn quiet_command(program: &OsStr) -> Command {
         const NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(NO_WINDOW);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: `setsid` is async-signal-safe and touches no memory of
+        // the parent.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+    }
     command
+}
+
+/// Starts `command`. On Unix, a program written a moment ago can be
+/// refused as "text file busy" while another thread of this process is
+/// starting a program of its own (its child briefly holds the file open
+/// for writing, until it runs its own program): that passes in a moment,
+/// so it is tried again for a while.
+pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == io::ErrorKind::ExecutableFileBusy && Instant::now() < until =>
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
 }
 
 enum Ended {
@@ -1005,7 +1044,7 @@ fn run(
     canceller: Option<&SetupCanceller>,
     on_line: &mut dyn FnMut(String),
 ) -> io::Result<Ended> {
-    let mut child = command.spawn()?;
+    let mut child = spawn(&mut command)?;
     let (sender, lines) = mpsc::channel::<String>();
     let readers = [
         child
@@ -1060,14 +1099,24 @@ fn run(
     Ok(ended)
 }
 
-/// Ends `child` and, on Windows, the processes it started (the launcher's
-/// Python, pip's helpers), which `kill` alone would leave running.
+/// Ends `child` and the processes it started (the launcher's Python, pip's
+/// helpers, whatever a script started), which `kill` alone would leave
+/// running: on Windows its process tree, elsewhere its session's process
+/// group (it leads one, see [`quiet_command`]). Call it before `child`
+/// has been waited for: until then its id cannot name anything else.
 pub(crate) fn stop(child: &mut Child) {
     #[cfg(windows)]
     {
         let mut tree = quiet_command(OsStr::new("taskkill"));
         tree.args(["/T", "/F", "/PID", &child.id().to_string()]);
         let _ = tree.output();
+    }
+    #[cfg(unix)]
+    if let Ok(group) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: a plain system call; a negative id names the group.
+        unsafe {
+            libc::kill(-group, libc::SIGKILL);
+        }
     }
     let _ = child.kill();
     let _ = child.wait();

@@ -398,6 +398,46 @@ async fn output_streams_while_the_script_runs_and_cancel_stops_it_keeping_the_ou
 }
 
 #[tokio::test]
+async fn cancelling_also_ends_the_processes_the_script_started() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    // The script leaves a process behind that writes a file two seconds
+    // later, unless it is ended with the script.
+    let marker = temp.path().join("left-behind");
+    let python = FakePython::running(
+        temp.path(),
+        "parent",
+        &format!(
+            "start \"\" /b cmd /c \"ping -n 3 127.0.0.1 > nul & echo late> {}\"\r\n\
+             echo started\r\nping -n 60 127.0.0.1 > nul",
+            marker.display()
+        ),
+        &format!(
+            "(sleep 2; touch '{}') &\necho started\nsleep 60",
+            marker.display()
+        ),
+    );
+    let plan = plan(&workspace, &script("top.py"));
+    let manager = support::manager();
+    let mut job = job::start(&manager, plan, options(&python.path)).unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), job.next())
+            .await
+            .expect("output arrives while it runs")
+            .unwrap();
+        if let JobEvent::Output { .. } = event {
+            break;
+        }
+    }
+    job.cancel();
+    let (_, report) = finish(&mut job).await;
+    assert_eq!(report.hosts[0].state, HostState::Cancelled);
+
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(!marker.exists(), "a process the script started lived on");
+}
+
+#[tokio::test]
 async fn a_script_run_is_kept_with_its_targets_one_output_and_its_exit_status() {
     let temp = TempDir::new().unwrap();
     let workspace = workspace(&temp);
