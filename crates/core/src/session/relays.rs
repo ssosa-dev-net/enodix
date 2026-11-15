@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use super::{
     Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay, Reported, SessionEvent,
-    SessionEvents, SessionId,
+    SessionEvents, SessionId, SessionState,
 };
 use crate::layout::WindowId;
 
@@ -187,6 +187,14 @@ impl SessionRelays {
     /// while it has a relay.
     pub fn reported(&self, session: SessionId) -> Option<Reported> {
         Some(self.relay(session).ok()?.reported())
+    }
+
+    /// Whether `session` is live (#88): it has a relay, and is opening or
+    /// connected (nothing reported yet counts as opening). What closing a
+    /// window or switching workspace asks about.
+    pub fn live(&self, session: SessionId) -> bool {
+        self.reported(session)
+            .is_some_and(|reported| !matches!(reported.state, Some(SessionState::Closed(_))))
     }
 
     fn relay(&self, session: SessionId) -> Result<Relay, HandoverError> {

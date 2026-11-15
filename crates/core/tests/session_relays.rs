@@ -6,14 +6,18 @@
 
 mod support;
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use netterm_core::layout::WindowId;
+use netterm_core::layout::{
+    close_workspace_sessions, live_in_session_windows, WindowId, Windows, WorkspaceClosed,
+};
 use netterm_core::session::{
     Consumer, ConsumerGone, ConsumerKey, OutputOptions, Reported, SessionEvent, SessionEvents,
-    SessionId, SessionManager, SessionRelays, SessionState, SessionTarget, TerminalSize,
+    SessionId, SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState,
+    SessionTarget, TerminalSize,
 };
 use support::{next_state, output_ending_with, TestSshServer, PROMPT, WAIT};
 use tokio::sync::mpsc;
@@ -488,4 +492,196 @@ async fn a_reconnect_reports_afresh() {
     relays.start(id, SESSION_WINDOW, events, consumer);
 
     assert_eq!(relays.reported(id), Some(Reported::default()));
+}
+
+// Whether a session is live, for the closing questions (#88).
+
+#[tokio::test]
+async fn a_session_is_live_while_connecting_or_connected_and_not_once_closed() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let (id, events) = manager.open(SessionTarget::Ssh(server.target()), SIZE);
+    let mut main = show(&relays, id, events);
+    // Nothing reported yet: it is opening.
+    assert!(relays.live(id));
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(SessionEvent::State(SessionState::Connected)) = main.events.recv().await {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the session did not connect");
+    assert!(relays.live(id));
+
+    manager.close(id).unwrap();
+    main.closed().await;
+    assert!(!relays.live(id));
+    assert!(!relays.live(SessionId(999)));
+}
+
+// What closing a window or leaving a workspace counts and closes in the
+// session windows (#88).
+
+/// Opens a connected session, shown through `relays`, recorded as going
+/// to a host of the workspace at `root` (none: a quick connection), and
+/// moves it into the session window `window` of `windows`.
+async fn in_session_window(
+    manager: &SessionManager,
+    server: &TestSshServer,
+    relays: &SessionRelays,
+    records: &SessionRecords,
+    windows: &mut Windows,
+    window: WindowId,
+    root: Option<&str>,
+) -> (SessionId, Window) {
+    let (id, events) = connected(manager, server).await;
+    let shown = show(relays, id, events);
+    let mut record = SessionRecord::new("r", "r");
+    record.workspace = root.map(PathBuf::from);
+    records.record(id, record);
+    let tab = windows.layout_mut(WindowId::MAIN).unwrap().open_tab();
+    windows.attach_session(WindowId::MAIN, tab, id).unwrap();
+    windows.move_session(WindowId::MAIN, tab, window).unwrap();
+    (id, shown)
+}
+
+#[tokio::test]
+async fn the_session_windows_live_sessions_are_counted_all_or_by_workspace() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let records = SessionRecords::new();
+    let mut windows = Windows::new();
+    let first = windows.open_session_window();
+    let second = windows.open_session_window();
+    let (_a, _ka) = in_session_window(
+        &manager,
+        &server,
+        &relays,
+        &records,
+        &mut windows,
+        first,
+        Some("/w/a"),
+    )
+    .await;
+    let (b, mut shown_b) = in_session_window(
+        &manager,
+        &server,
+        &relays,
+        &records,
+        &mut windows,
+        first,
+        Some("/w/a"),
+    )
+    .await;
+    let (_c, _kc) = in_session_window(
+        &manager,
+        &server,
+        &relays,
+        &records,
+        &mut windows,
+        second,
+        None,
+    )
+    .await;
+    // The main window's own are its page's to count.
+    let (main_session, main_events) = connected(&manager, &server).await;
+    let _main = show(&relays, main_session, main_events);
+    let tab = windows.layout_mut(WindowId::MAIN).unwrap().open_tab();
+    windows
+        .attach_session(WindowId::MAIN, tab, main_session)
+        .unwrap();
+
+    assert_eq!(
+        live_in_session_windows(&windows, &relays, &records, None),
+        3
+    );
+    assert_eq!(
+        live_in_session_windows(&windows, &relays, &records, Some(Path::new("/w/a"))),
+        2
+    );
+
+    manager.close(b).unwrap();
+    shown_b.closed().await;
+    assert_eq!(
+        live_in_session_windows(&windows, &relays, &records, None),
+        2
+    );
+    assert_eq!(
+        live_in_session_windows(&windows, &relays, &records, Some(Path::new("/w/a"))),
+        1
+    );
+    assert_eq!(
+        live_in_session_windows(&windows, &relays, &records, Some(Path::new("/w/b"))),
+        0
+    );
+}
+
+#[tokio::test]
+async fn closing_a_workspaces_sessions_ends_them_in_every_session_window() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let records = SessionRecords::new();
+    let mut windows = Windows::new();
+    let first = windows.open_session_window();
+    let second = windows.open_session_window();
+    let (a, _ka) = in_session_window(
+        &manager,
+        &server,
+        &relays,
+        &records,
+        &mut windows,
+        first,
+        Some("/w/a"),
+    )
+    .await;
+    let (kept, _kk) = in_session_window(
+        &manager,
+        &server,
+        &relays,
+        &records,
+        &mut windows,
+        first,
+        None,
+    )
+    .await;
+    let (c, _kc) = in_session_window(
+        &manager,
+        &server,
+        &relays,
+        &records,
+        &mut windows,
+        second,
+        Some("/w/a"),
+    )
+    .await;
+
+    let done =
+        close_workspace_sessions(&mut windows, &manager, &relays, &records, Path::new("/w/a"));
+
+    assert_eq!(
+        done,
+        WorkspaceClosed {
+            closed: vec![second],
+            changed: vec![first],
+        }
+    );
+    assert_eq!(
+        windows
+            .session_window_sessions()
+            .into_iter()
+            .map(|(_, session)| session)
+            .collect::<Vec<_>>(),
+        vec![kept]
+    );
+    for gone in [a, c] {
+        closes(&manager, gone).await;
+        assert_eq!(relays.shown_in(gone), None);
+        assert_eq!(records.get(gone), None);
+    }
+    assert!(relays.live(kept));
 }

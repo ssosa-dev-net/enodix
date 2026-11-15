@@ -88,6 +88,12 @@ impl SessionRecord {
         })
     }
 
+    /// Whether it goes to a host of the workspace at `root` (#88: what
+    /// leaving that workspace asks about).
+    pub fn of_workspace(&self, root: &std::path::Path) -> bool {
+        self.workspace.as_deref() == Some(root)
+    }
+
     /// The session's host, if `workspace` is the one it came from and the
     /// host is still in it: what its snippets are filled from (#86).
     pub fn host_in(&self, workspace: &Workspace) -> Option<&HostId> {

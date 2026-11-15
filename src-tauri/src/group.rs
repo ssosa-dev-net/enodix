@@ -31,7 +31,7 @@ use tauri::{AppHandle, Emitter, State};
 use super::{calling_window, session_windows, Shell, Tabs};
 
 /// A window is told its layout: the multi-send group changed elsewhere.
-const LAYOUT_CHANGED_EVENT: &str = "layout-changed";
+pub(super) const LAYOUT_CHANGED_EVENT: &str = "layout-changed";
 /// A window is sent a member's lines of a confirmed group paste.
 const GROUP_PASTE_LINES_EVENT: &str = "group-paste-lines";
 

@@ -59,10 +59,20 @@
     target: string | null;
     /** The actions it lists after the hosts. */
     actions: readonly PaletteAction[];
+    /** Whether Shift+Enter shows the host in the Hosts view; without one
+     * (a session window, #88) it connects. */
+    reveals?: boolean;
     onclose: () => void;
   }
 
-  let { onconnect, onsnippet, target, actions, onclose }: Props = $props();
+  let {
+    onconnect,
+    onsnippet,
+    target,
+    actions,
+    reveals = true,
+    onclose,
+  }: Props = $props();
 
   /** A query starting with this searches the snippets instead of hosts. */
   const SNIPPET_PREFIX = ">";
@@ -203,7 +213,7 @@
         run(command);
         return;
       }
-      const reveal = event.shiftKey;
+      const reveal = event.shiftKey && reveals;
       const hit = await chosen();
       if (!hit) {
         // No host matches: the first command, if one does.

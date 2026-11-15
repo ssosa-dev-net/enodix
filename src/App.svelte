@@ -16,6 +16,9 @@
   import ConfirmJoin from "./lib/ConfirmJoin.svelte";
   import PasteConfirm, { type PasteMember } from "./lib/PasteConfirm.svelte";
   import ConfirmSwitch from "./lib/ConfirmSwitch.svelte";
+  import ConfirmQuit from "./lib/ConfirmQuit.svelte";
+  import { addressBesides, hostConnection } from "./lib/hostConnect";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import CredentialsPrompt from "./lib/CredentialsPrompt.svelte";
   import CredentialsView from "./lib/CredentialsView.svelte";
   import Dialog from "./lib/Dialog.svelte";
@@ -37,6 +40,9 @@
   import { openRunTab, setViewOpener, VIEWS } from "./lib/views";
   import {
     closeDetachedWindows,
+    closeMainWindow,
+    closeWorkspaceSessionsElsewhere,
+    liveInSessionWindows,
     onBackUpHost,
     onDockConfigs,
     onDockRun,
@@ -218,6 +224,8 @@
   let switching = $state<{
     from: string;
     live: number;
+    /** How many of them are in session windows (#88). */
+    elsewhere: number;
     decide: (choice: "keep" | "close" | "cancel") => void;
   } | null>(null);
   /** A snippet waiting for the user to give its variables a value. */
@@ -901,6 +909,22 @@
     document.title = value;
   });
 
+  /** Closing the main window while sessions are live (#88), waiting for
+   * the user's answer. */
+  let quitting = $state<{ live: number; elsewhere: number } | null>(null);
+
+  // Closing the main window (its Close button, Alt+F4, the taskbar) closes
+  // every window and every session: asked once if a session is opening or
+  // connected in any window, else at once.
+  void getCurrentWindow().onCloseRequested(async (event) => {
+    event.preventDefault();
+    if (quitting) return;
+    const elsewhere = await liveInSessionWindows();
+    const live = liveSessions + elsewhere;
+    if (live === 0) await closeMainWindow();
+    else quitting = { live, elsewhere };
+  });
+
   // Changes from outside the app (a git pull) show without a restart. The
   // window lives as long as the app, so the listener is never removed.
   void onWorkspaceChanged(workspaceChanged);
@@ -938,10 +962,17 @@
           .filter((tab) => sessions[tab].workspace === current.root)
       : [];
     const live = tabs.filter((tab) => tabState(tab) !== "disconnected");
+    // Those in session windows are asked about alike (#88).
+    const elsewhere = current ? await liveInSessionWindows(current.root) : 0;
     let choice: "keep" | "close" | "cancel" = "keep";
-    if (current && live.length > 0) {
+    if (current && live.length + elsewhere > 0) {
       choice = await new Promise((decide) => {
-        switching = { from: current.tree.name, live: live.length, decide };
+        switching = {
+          from: current.tree.name,
+          live: live.length + elsewhere,
+          elsewhere,
+          decide,
+        };
       });
       switching = null;
       if (choice === "cancel") return null;
@@ -953,8 +984,11 @@
       return String(error);
     }
     // Reopening the same workspace leaves its sessions where they are.
-    if (choice === "close" && next.root !== current?.root) {
+    if (choice === "close" && current && next.root !== current.root) {
       for (const tab of tabs) await edit({ kind: "closeTab", tab });
+      await closeWorkspaceSessionsElsewhere(current.root).catch((error) => {
+        inventory.editError = `Cannot close the sessions in session windows: ${error}`;
+      });
     }
     setWorkspace(next);
     inventory.openError = null;
@@ -999,7 +1033,7 @@
         source: { kind: "target", target, name, title },
         name,
         title,
-        address: host && !title.includes(host.address) ? host.address : null,
+        address: host ? addressBesides(host, title) : null,
         jumpHost: null,
         hostId,
         workspace,
@@ -1132,24 +1166,14 @@
       inventory.editError = `Cannot read the credential profiles: ${error}`;
       login = { kind: "prompt" } as const;
     }
-    if (login.kind === "telnet") {
+    const connection = hostConnection(host, login);
+    if (connection) {
+      const { target, title, username } = connection;
       connect(
-        { kind: "telnet", id: host.id },
+        target,
         host.name,
-        `${host.name} (telnet)`,
-      );
-    } else if (login.kind === "serial") {
-      connect(
-        { kind: "serial", id: host.id },
-        host.name,
-        `${host.name} (serial)`,
-      );
-    } else if (login.kind === "profile") {
-      connect(
-        { kind: "host", id: host.id, credentials: null },
-        host.name,
-        `${login.username}@${host.name}`,
-        { host, username: login.username },
+        title,
+        username === null ? undefined : { host, username },
       );
     } else {
       const missingProfile = login.kind === "notSetUp" ? login.profile : null;
@@ -1216,6 +1240,12 @@
     }
     if (request.kind === "details") {
       showDetails({ kind: "host", id: host.id });
+      return;
+    }
+    // From a session window's palette (#88): a host whose credentials are
+    // asked here.
+    if (request.kind === "connect") {
+      await prompt(host);
       return;
     }
     let username: string | null = null;
@@ -1402,6 +1432,7 @@
       inventory.palette ||
       switcher ||
       switching ||
+      quitting ||
       joining ||
       closing !== null;
     const action = zoomShortcut(event) ?? (busy ? null : shortcut(event));
@@ -1783,11 +1814,26 @@
   />
 {/if}
 
+{#if quitting}
+  {@const { live, elsewhere } = quitting}
+  <ConfirmQuit
+    product={name}
+    {live}
+    {elsewhere}
+    onquit={() => void closeMainWindow()}
+    oncancel={() => {
+      quitting = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
 {#if switching}
-  {@const { from, live, decide } = switching}
+  {@const { from, live, elsewhere, decide } = switching}
   <ConfirmSwitch
     {from}
     {live}
+    {elsewhere}
     onkeep={() => decide("keep")}
     onclosesessions={() => decide("close")}
     oncancel={() => decide("cancel")}
