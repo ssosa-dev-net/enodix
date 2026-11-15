@@ -91,8 +91,6 @@ export const python = $state({
   /** A check is under way. */
   busy: false,
   error: null as string | null,
-  /** The setup dialog is open. */
-  dialog: false,
 });
 
 export function versionText(version: PythonVersion): string {

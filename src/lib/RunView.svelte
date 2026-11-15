@@ -25,6 +25,7 @@
   import { inventory, openJob } from "./inventory.svelte";
   import SaveJobForm from "./SaveJobForm.svelte";
   import { pickWorkspaceFolder } from "./workspace";
+  import { openView } from "./views";
 
   interface Props {
     /** The run's id. */
@@ -318,7 +319,7 @@
             data-run-action="review"
             title="What the devices reported, to fill in"
             onclick={() => {
-              inventory.enrichReview = id;
+              openView("enrich", id);
             }}>Review…</button
           >
         {/if}

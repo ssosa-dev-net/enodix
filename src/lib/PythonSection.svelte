@@ -1,7 +1,7 @@
 <script lang="ts">
   // The Preferences view's Python section: which interpreter the Python
   // features use, and the two ways to choose one (the app's own
-  // environment, set up in its own dialog, or the user's interpreter).
+  // environment, set up in its own tab, or the user's interpreter).
   import {
     pickInterpreter,
     python,
@@ -10,13 +10,7 @@
     useInterpreter,
     versionText,
   } from "./python.svelte";
-
-  interface Props {
-    /** Opens the setup dialog. */
-    onsetup: () => void;
-  }
-
-  let { onsetup }: Props = $props();
+  import { openView } from "./views";
 
   let choosing = $state(false);
   let path = $state("");
@@ -94,7 +88,10 @@
     </form>
   {:else}
     <div class="buttons">
-      <button type="button" data-python="set-up" onclick={onsetup}
+      <button
+        type="button"
+        data-python="set-up"
+        onclick={() => openView("python-setup")}
         >Create the app's environment…</button
       >
       <button type="button" data-python="use-own" onclick={startChoosing}

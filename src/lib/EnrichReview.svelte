@@ -1,4 +1,8 @@
 <script lang="ts">
+  // The review of what a "Fill in from devices" run's devices reported, in
+  // its tab (#73; one per run): what is new, what would replace a typed
+  // value (only on the hosts ticked), then the report. Nothing is written
+  // before "Fill in". Cancel and Close close the tab.
   import { untrack } from "svelte";
   import { applyEnrich, revealHost } from "./inventory.svelte";
   import {
@@ -12,6 +16,7 @@
   interface Props {
     /** The kept "Fill in from devices" run to review. */
     run: string;
+    /** Closes the tab. */
     onclose: () => void;
   }
 
@@ -84,13 +89,6 @@
     for (const host of replaceable) replace[host.id] = ticked;
   }
 
-  function onkeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && !busy) {
-      event.preventDefault();
-      onclose();
-    }
-  }
-
   const REPORT_SECTIONS = [
     ["filled", "Filled in"],
     ["unchanged", "Unchanged"],
@@ -99,17 +97,8 @@
   ] as const;
 </script>
 
-<svelte:window {onkeydown} />
-
-<div class="backdrop">
-  <div
-    class="dialog"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="enrich-title"
-    data-dialog="enrich"
-    data-step={step}
-  >
+<div class="review" data-view="enrich" data-run={run} data-step={step}>
+  <section class="inner" aria-labelledby="enrich-title">
     <h2 id="enrich-title">Fill in from devices</h2>
 
     {#if step === "loading"}
@@ -268,34 +257,26 @@
         </div>
       {/if}
     {/if}
-  </div>
+  </section>
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 22;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    padding: 6vh var(--space-4) var(--space-4);
-    background: var(--backdrop);
+  .review {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg);
+    font-size: var(--text-sm);
   }
 
-  .dialog {
-    width: min(60rem, 100%);
-    max-height: 88vh;
+  .inner {
+    height: 100%;
+    max-width: 70rem;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     padding: var(--space-3);
-    background: var(--dialog);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
-    overflow: hidden;
-    font-size: var(--text-sm);
   }
 
   h2 {

@@ -43,7 +43,9 @@ export type ViewName =
   | "csv-import"
   | "nornir-import"
   | "platforms"
-  | "highlights";
+  | "highlights"
+  | "enrich"
+  | "python-setup";
 
 /** What a tab holds: a session's terminal, or a view. */
 export type TabKind = { kind: "session" } | ({ kind: "view" } & ViewRef);

@@ -22,8 +22,8 @@
   import BackupsView from "./lib/BackupsView.svelte";
   import PreferencesView from "./lib/PreferencesView.svelte";
   import { setViewOpener, VIEWS } from "./lib/views";
-  import PythonSetupDialog from "./lib/PythonSetupDialog.svelte";
-  import { python, refreshPython } from "./lib/python.svelte";
+  import PythonSetup from "./lib/PythonSetup.svelte";
+  import { refreshPython } from "./lib/python.svelte";
   import Platforms from "./lib/Platforms.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
   import SnippetDialog from "./lib/SnippetDialog.svelte";
@@ -640,9 +640,9 @@
     void edit({ kind: "closeTab", tab });
   }
 
-  // Job, run, config history and import tabs belong to the workspace they
-  // were opened in (host ids, run ids and folders mean nothing elsewhere):
-  // switching closes them. Their jobs go on running.
+  // Job, run, config history, import and fill-in review tabs belong to the
+  // workspace they were opened in (host ids, run ids and folders mean
+  // nothing elsewhere): switching closes them. Their jobs go on running.
   let shownRoot: string | null | undefined = undefined;
   $effect(() => {
     const root = inventory.workspace?.root ?? null;
@@ -654,7 +654,8 @@
             item.view === "run" ||
             item.view === "configs" ||
             item.view === "csv-import" ||
-            item.view === "nornir-import"
+            item.view === "nornir-import" ||
+            item.view === "enrich"
           )
             void edit({ kind: "closeTab", tab: item.tab });
         }
@@ -1148,7 +1149,6 @@
     if (vaultLocked) return;
     const busy =
       inventory.dialog ||
-      python.dialog ||
       inventory.palette ||
       switcher ||
       switching ||
@@ -1332,6 +1332,13 @@
               <Platforms onclose={() => closeViewTab(item.tab, true)} />
             {:else if item.view === "highlights"}
               <HighlightRules onclose={() => closeViewTab(item.tab, true)} />
+            {:else if item.view === "enrich" && item.subject && inventory.workspace}
+              <EnrichReview
+                run={item.subject}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
+            {:else if item.view === "python-setup"}
+              <PythonSetup onclose={() => closeViewTab(item.tab, true)} />
             {/if}
           </div>
         {/each}
@@ -1428,16 +1435,6 @@
   />
 {/if}
 
-{#if inventory.enrichReview !== null && inventory.workspace}
-  <EnrichReview
-    run={inventory.enrichReview}
-    onclose={() => {
-      inventory.enrichReview = null;
-      focusRequest += 1;
-    }}
-  />
-{/if}
-
 {#if jobNotice}
   {@const notice = jobNotice}
   <div class="job-notice" role="status" data-job-still-running={notice.run}>
@@ -1515,15 +1512,6 @@
     onstartedover={() => {
       vaultLocked = false;
       reopenWorkspace();
-    }}
-  />
-{/if}
-
-{#if python.dialog}
-  <PythonSetupDialog
-    onclose={() => {
-      python.dialog = false;
-      focusRequest += 1;
     }}
   />
 {/if}

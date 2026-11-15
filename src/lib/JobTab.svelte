@@ -567,8 +567,9 @@
           class="primary"
           data-job="review"
           onclick={() => {
+            // The review takes the job tab's place in its pane.
+            openView("enrich", run);
             close(true);
-            inventory.enrichReview = run;
           }}>Review what the devices reported</button
         >
       {/if}

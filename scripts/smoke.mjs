@@ -48,6 +48,10 @@ const PREFERENCES = "[data-view=preferences]";
 const JOB_TAB = ".slot.view:not([hidden]) [data-view=job]";
 /** The kept run's tab on screen (#69). */
 const RUN_TAB = ".slot.view:not([hidden]) [data-view=run]";
+/** The review of a fill-in run on screen (#73). */
+const ENRICH_TAB = ".slot.view:not([hidden]) [data-view=enrich]";
+/** The Python setup tab on screen (#73). */
+const PYTHON_SETUP_TAB = ".slot.view:not([hidden]) [data-view=python-setup]";
 /** The Jobs side view (#69): running jobs, saved jobs, past runs. */
 const JOBS_SIDE = "[data-side-view=jobs]";
 
@@ -2827,7 +2831,7 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
   const clickOn = (selector) =>
     evaluate(`document.querySelector(${json(selector)}).click()`);
   const dialog = JOB_TAB;
-  const review = "[data-dialog=enrich]";
+  const review = ENRICH_TAB;
   const folder = join(workspace, "Enrich");
   if (!ready) {
     step("enrichment SKIPPED: no Python 3.10 or newer on this machine");
@@ -2897,6 +2901,18 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
       );
       await clickOn(`${dialog} [data-job=review]`);
       await until("the review", () => exists(`${review}[data-step=preview]`));
+      // A tab in the job tab's place (#73), not a dialog.
+      await until(
+        "the job tab replaced by the review",
+        async () => !(await exists(JOB_TAB)),
+      );
+      const tabs = await evaluate(`({
+        enrich: document.querySelectorAll("[data-tab-bar] [data-tab-view=enrich]").length,
+        job: !!document.querySelector(${json(JOB_TAB)}),
+        dialog: !!document.querySelector("[data-dialog=enrich]"),
+      })`);
+      if (tabs.enrich !== 1 || tabs.job || tabs.dialog)
+        fail(`the review's tab: ${json(tabs)}`);
       return plan;
     };
     const rows = () =>
@@ -2915,7 +2931,10 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
       );
     const closeReview = async (button) => {
       await clickOn(`${review} [data-enrich=${button}]`);
-      await until("the review closed", async () => !(await exists(review)));
+      await until(
+        "the review's tab closed",
+        async () => !(await exists("[data-tab-view=enrich]")),
+      );
     };
 
     // Without NAPALM: every host fails, saying so.
@@ -3044,7 +3063,11 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
     const later = await rows();
     if (later["Enrich/enrich-r1.yaml"]?.outcome !== "unchanged")
       fail(`the review from the run tab: ${json(later)}`);
-    step("a kept fill-in run can be reviewed again from its tab");
+    if (!(await exists("[data-tab-bar] [data-tab-view=run]")))
+      fail("the run's tab closed when its review opened");
+    step(
+      "a kept fill-in run can be reviewed again from its tab, in a tab beside it",
+    );
     await closeReview("cancel");
     await closeTabOf(evaluate, ".slot[data-view-slot=run]");
   } finally {
@@ -3102,7 +3125,7 @@ async function pythonSetup({ evaluate, fillForm, screenshot, step }) {
       const status = await shownStatus();
       return status?.kind === kind ? status : null;
     });
-  const dialog = "[data-dialog=python-setup]";
+  const dialog = PYTHON_SETUP_TAB;
   const dialogStep = () =>
     evaluate(`document.querySelector(${json(dialog)})?.dataset.step ?? null`);
   const environment = join(appData, "python");
@@ -3163,6 +3186,25 @@ async function pythonSetup({ evaluate, fillForm, screenshot, step }) {
   // The app's own environment: nothing is installed before "Install".
   await clickOn("[data-python=set-up]");
   await until("the setup offer", async () => (await dialogStep()) === "offer");
+  // A tab (#73): Preferences stays open beside it, and asking again shows
+  // the same tab where it was.
+  if (await evaluate(`!!document.querySelector("[data-dialog=python-setup]")`))
+    fail("the Python setup is still a dialog");
+  await clickOn("[data-tab-bar] [data-tab-view=preferences]");
+  await until("Preferences shown again", async () =>
+    evaluate(
+      `!!document.querySelector(".slot.view:not([hidden]) [data-python=set-up]")`,
+    ),
+  );
+  await clickOn(".slot.view:not([hidden]) [data-python=set-up]");
+  await until("the setup tab shown again", async () => {
+    const tabs = await evaluate(
+      `document.querySelectorAll("[data-tab-bar] [data-tab-view=python-setup]").length`,
+    );
+    if (tabs !== 1) fail(`Python setup tabs: ${tabs}`);
+    return (await dialogStep()) === "offer";
+  });
+  step("the Python setup opens as one tab beside Preferences");
   const offer = await evaluate(`(() => ({
     base: document.querySelector("[data-python-base]").textContent,
     environment: document.querySelector("[data-python-environment]").textContent,
