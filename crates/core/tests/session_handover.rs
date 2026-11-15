@@ -343,6 +343,43 @@ async fn acknowledgements_from_a_window_the_session_left_are_ignored() {
     );
 }
 
+/// A reconnect gives the session new events, and the shell a new relay for
+/// them (#83): its consumer's key is one no earlier relay gave out, so a
+/// late acknowledgement for the old connection cannot make room.
+#[tokio::test]
+async fn a_reconnected_sessions_new_relay_ignores_the_old_relays_key() {
+    let server = TestSshServer::start().await;
+    let window = 64 * 1024;
+    let manager = support::manager_with_output_options(OutputOptions {
+        window,
+        ..OutputOptions::default()
+    });
+    let (id, old_relay, mut old) = connected_shell(&manager, &server).await;
+    manager.close(id).unwrap();
+    assert!(matches!(
+        old.next_state(&old_relay).await,
+        SessionState::Closed(_)
+    ));
+
+    let mut events = manager.reconnect(id, SIZE).unwrap();
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    assert_eq!(next_state(&mut events).await, SessionState::Connected);
+    output_ending_with(&mut events, PROMPT).await;
+    let (relay, mut new) = relay(events);
+    assert_ne!(new.key, old.key);
+
+    manager.write(id, b"lines 200000\r".to_vec()).unwrap();
+    let mut unacknowledged = new.unacknowledged_output(QUIET).await;
+    relay.acknowledge(old.key, 10 * window);
+    unacknowledged.extend(new.unacknowledged_output(QUIET).await);
+
+    assert!(
+        unacknowledged.len() <= window + MAX_MESSAGE,
+        "{} bytes arrived unacknowledged",
+        unacknowledged.len()
+    );
+}
+
 #[tokio::test]
 async fn a_window_found_gone_on_delivery_lets_go_of_the_session_without_closing_it() {
     let server = TestSshServer::start().await;

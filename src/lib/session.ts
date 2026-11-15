@@ -233,15 +233,21 @@ export function appName(): Promise<string> {
 
 /**
  * The channels a session's events arrive on, and how to acknowledge its
- * output. Output can be consumed before the session id is known; it is
- * acknowledged once `ready` gives the id.
+ * output. Output can be consumed before the session id and this window's
+ * consumer key are known; it is acknowledged once `ready` gives them. The
+ * key ties acknowledgements to these channels: once the session has new
+ * ones (a reconnect), the shell ignores acknowledgements for the old.
  */
 function channels(handlers: SessionHandlers) {
-  let id: number | null = null;
+  let known: { id: number; consumer: number } | null = null;
   let consumedEarly = 0;
   const acknowledge = (bytes: number) => {
-    if (id === null) consumedEarly += bytes;
-    else send(id, "session_acknowledge", { bytes });
+    if (known === null) consumedEarly += bytes;
+    else
+      send(known.id, "session_acknowledge", {
+        consumer: known.consumer,
+        bytes,
+      });
   };
   return {
     // Output travels on its own channel as raw bytes, not as JSON.
@@ -256,8 +262,8 @@ function channels(handlers: SessionHandlers) {
     onAlgorithms: new Channel<NegotiatedAlgorithms[]>(handlers.onAlgorithms),
     onLogFailure: new Channel<string>(handlers.onLogFailure),
     onBackup: new Channel<LoginBackupOutcome>(handlers.onBackup),
-    ready(known: number) {
-      id = known;
+    ready(id: number, consumer: number) {
+      known = { id, consumer };
       if (consumedEarly > 0) acknowledge(consumedEarly);
     },
   };
@@ -275,6 +281,8 @@ function send(id: number, command: string, args: Record<string, unknown>) {
 /** A session just opened, as the shell returns it. */
 interface Opened {
   id: number;
+  /** The key this window's acknowledgements name. */
+  consumer: number;
   encrypted: boolean;
   transport: Transport;
 }
@@ -290,7 +298,7 @@ export async function openSession(
   handlers: SessionHandlers,
 ): Promise<Session> {
   const { ready, ...events } = channels(handlers);
-  const { id, encrypted, transport } =
+  const { id, consumer, encrypted, transport } =
     source.kind === "target"
       ? await invoke<Opened>("session_open", {
           target: source.target,
@@ -304,7 +312,7 @@ export async function openSession(
           size,
           ...events,
         });
-  ready(id);
+  ready(id, consumer);
 
   return {
     id,
@@ -321,8 +329,12 @@ export async function openSession(
     async reconnect(size) {
       // New channels: the old ones ended with the old connection.
       const { ready, ...events } = channels(handlers);
-      await invoke("session_reconnect", { id, size, ...events });
-      ready(id);
+      const consumer = await invoke<number>("session_reconnect", {
+        id,
+        size,
+        ...events,
+      });
+      ready(id, consumer);
     },
     discard: () => send(id, "session_discard", {}),
   };

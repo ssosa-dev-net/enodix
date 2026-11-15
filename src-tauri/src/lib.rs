@@ -28,7 +28,9 @@ use netterm_core::job::{
     LoginBackup, LoginBackupOutcome, NewLiveJob, SessionLogin,
 };
 use netterm_core::known_hosts::KnownHosts;
-use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId, View};
+use netterm_core::layout::{
+    LayoutError, PaneId, Split, TabId, View, WindowId, WindowView, Windows,
+};
 use netterm_core::logging::{LogFolder, SessionLog};
 use netterm_core::paste::{
     confirm_joining, plan_group_paste, plan_paste, GroupPastePlan, PastePlan, PasteSafety,
@@ -36,10 +38,11 @@ use netterm_core::paste::{
 use netterm_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use netterm_core::preferences::{FontZoom, Preferences, Theme};
 use netterm_core::session::{
-    AlgorithmKind, AlgorithmLists, HostKeyDecision, HostKeyQuestion, LoginPrompt,
-    NegotiatedAlgorithms, OpenOptions, SerialParameters, SerialPortInfo, SerialTarget,
-    SessionEvent, SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth,
-    SshTarget, TerminalSize, Transport, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
+    AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, HostKeyDecision,
+    HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, OpenOptions, SerialParameters,
+    SerialPortInfo, SerialTarget, SessionEvent, SessionId, SessionManager, SessionRelays,
+    SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize, Transport, WhenConnected,
+    DEFAULT_CONNECT_TIMEOUT,
 };
 use netterm_core::template::Variables;
 use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
@@ -1840,17 +1843,23 @@ fn config_export(
 /// (just before `connected`) on `on_algorithms`, and why its log could not
 /// be written (the session goes on) on `on_log_failure`; terminal data
 /// never goes through the event system.
-/// The interface acknowledges output with `session_acknowledge`.
-/// Returns the session's id and whether it is encrypted (telnet is not).
+/// The events reach the interface through the session's relay (#83), and
+/// the interface acknowledges output with `session_acknowledge`, naming
+/// the consumer key returned here. The session is shown in the window that
+/// opens it, in its tab `tab`.
+/// Returns the session's id, the consumer key and whether the session is
+/// encrypted (telnet is not).
 // One argument per channel is how Tauri commands receive them.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn session_open(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     manager: State<'_, SessionManager>,
     shell: State<'_, Shell>,
     configs: State<'_, Configs>,
     tabs: State<'_, Tabs>,
+    relays: State<'_, SessionRelays>,
     target: ConnectTarget,
     tab: TabId,
     size: Size,
@@ -1862,6 +1871,7 @@ async fn session_open(
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
 ) -> Result<Opened, String> {
+    let window = calling_window(&window)?;
     let log = session_log(&shell, &target)?;
     let when_connected = login_backup(&shell, &configs, &target)
         .map(|backup| Arc::new(backup) as Arc<dyn WhenConnected>);
@@ -1917,8 +1927,10 @@ async fn session_open(
             when_connected,
         },
     );
-    tabs.attach(tab, id);
-    forward(
+    tabs.attach(window, tab, id);
+    let consumer = relays.start(
+        id,
+        window,
         events,
         Channels {
             output: on_output,
@@ -1933,6 +1945,7 @@ async fn session_open(
     );
     Ok(Opened {
         id: id.0,
+        consumer: consumer.get(),
         encrypted,
         transport,
     })
@@ -2035,6 +2048,8 @@ fn open_in_browser(app: &AppHandle, url: &str) -> Result<(), String> {
 #[derive(Serialize)]
 struct Opened {
     id: u64,
+    /// The key that acknowledges its output (`session_acknowledge`).
+    consumer: u64,
     /// Whether its traffic is encrypted on the network; telnet's is not.
     encrypted: bool,
     /// `ssh`, `telnet` or `serial` (serial sessions can send a break).
@@ -2057,38 +2072,48 @@ struct Channels {
     app: AppHandle,
 }
 
-/// Passes the session's events on to the interface until they end.
-fn forward(mut events: SessionEvents, channels: Channels) {
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = events.next().await {
-            let delivered = match event {
-                SessionEvent::Output(bytes) => channels.output.send(InvokeResponseBody::Raw(bytes)),
-                SessionEvent::State(state) => channels.state.send(state.into()),
-                SessionEvent::Prompt(prompt) => channels.prompt.send(prompt),
-                SessionEvent::HostKey(question) => channels.host_key.send(question),
-                SessionEvent::Algorithms(algorithms) => channels.algorithms.send(algorithms),
-                SessionEvent::LogFailed(failure) => channels.log_failure.send(failure.to_string()),
-                SessionEvent::Backup(outcome) => {
-                    let _ = channels.app.emit(CONFIG_SAVED_EVENT, ());
-                    channels.backup.send(outcome)
-                }
-            };
-            // The webview is gone; dropping the events closes the session.
-            if delivered.is_err() {
-                break;
+/// A window's channels, as the consumer of a session's relay
+/// (`SessionRelays`, #83). A failed send means the webview is gone.
+impl Consumer for Channels {
+    fn deliver(&mut self, event: SessionEvent) -> Result<(), ConsumerGone> {
+        let delivered = match event {
+            SessionEvent::Output(bytes) => self.output.send(InvokeResponseBody::Raw(bytes)),
+            SessionEvent::State(state) => self.state.send(state.into()),
+            SessionEvent::Prompt(prompt) => self.prompt.send(prompt),
+            SessionEvent::HostKey(question) => self.host_key.send(question),
+            SessionEvent::Algorithms(algorithms) => self.algorithms.send(algorithms),
+            SessionEvent::LogFailed(failure) => self.log_failure.send(failure.to_string()),
+            SessionEvent::Backup(outcome) => {
+                let _ = self.app.emit(CONFIG_SAVED_EVENT, ());
+                self.backup.send(outcome)
             }
-        }
-    });
+        };
+        delivered.map_err(|_| ConsumerGone)
+    }
+}
+
+/// The window a layout or session command came from, as the core names
+/// it: the window is always the caller, never an argument, so a page
+/// cannot edit another window's layout (#83). Only the main window shows
+/// sessions for now.
+fn calling_window(window: &tauri::WebviewWindow) -> Result<WindowId, String> {
+    match window.label() {
+        MAIN_WINDOW => Ok(WindowId::MAIN),
+        label => Err(format!("the window {label} shows no sessions")),
+    }
 }
 
 /// Opens a session that has closed again, in place: the same target,
-/// settings and login, the same id. Its events arrive on new channels, as
-/// for `session_open`.
+/// settings and login, the same id. Its events arrive on new channels,
+/// through a new relay, as for `session_open`; returns the new consumer
+/// key.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn session_reconnect(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     manager: State<'_, SessionManager>,
+    relays: State<'_, SessionRelays>,
     id: u64,
     size: Size,
     on_output: Channel<InvokeResponseBody>,
@@ -2098,11 +2123,14 @@ async fn session_reconnect(
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
+    let window = calling_window(&window)?;
     let events = manager
         .reconnect(SessionId(id), size.into())
         .map_err(|error| error.to_string())?;
-    forward(
+    let consumer = relays.start(
+        SessionId(id),
+        window,
         events,
         Channels {
             output: on_output,
@@ -2115,7 +2143,7 @@ async fn session_reconnect(
             app,
         },
     );
-    Ok(())
+    Ok(consumer.get())
 }
 
 /// Opens a new session to the same target as the session `id`, with the
@@ -2125,8 +2153,10 @@ async fn session_reconnect(
 #[tauri::command]
 async fn session_duplicate(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
+    relays: State<'_, SessionRelays>,
     id: u64,
     tab: TabId,
     size: Size,
@@ -2138,11 +2168,14 @@ async fn session_duplicate(
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
 ) -> Result<Opened, String> {
+    let window = calling_window(&window)?;
     let (copy, events) = manager
         .duplicate(SessionId(id), size.into())
         .map_err(|error| error.to_string())?;
-    tabs.attach(tab, copy);
-    forward(
+    tabs.attach(window, tab, copy);
+    let consumer = relays.start(
+        copy,
+        window,
         events,
         Channels {
             output: on_output,
@@ -2159,27 +2192,29 @@ async fn session_duplicate(
     let transport = manager.transport(copy).map_err(|error| error.to_string())?;
     Ok(Opened {
         id: copy.0,
+        consumer: consumer.get(),
         encrypted,
         transport,
     })
 }
 
-/// The window's tabs and panes, and its multi-send group.
-struct Tabs(Mutex<Layout>);
+/// Every window's tabs and panes, and the app's multi-send group (#83).
+struct Tabs(Mutex<Windows>);
 
 impl Tabs {
-    fn lock(&self) -> MutexGuard<'_, Layout> {
+    fn lock(&self) -> MutexGuard<'_, Windows> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Records the session `tab` shows. A tab closed while its session
-    /// was opening is gone; the interface discards that session.
-    fn attach(&self, tab: TabId, session: SessionId) {
-        let _ = self.lock().attach_session(tab, session);
+    /// Records the session `window`'s `tab` shows. A tab closed while its
+    /// session was opening is gone; the interface discards that session.
+    fn attach(&self, window: WindowId, tab: TabId, session: SessionId) {
+        let _ = self.lock().attach_session(window, tab, session);
     }
 }
 
-/// A change to the window's tabs and panes, as `Layout`'s methods name them.
+/// A change to the window's tabs and panes, as `Layout`'s methods name
+/// them, or to the multi-send group, as `Windows`' do.
 #[derive(Deserialize)]
 #[serde(
     tag = "kind",
@@ -2244,34 +2279,67 @@ enum LayoutEdit {
 /// The layout after an edit, and the tab or pane the edit created.
 #[derive(Serialize)]
 struct LayoutChanged {
-    layout: Layout,
+    layout: WindowView,
     created: Option<u64>,
 }
 
-/// Starts the window's layout afresh: one empty pane (the interface's
-/// sessions start afresh too when it loads).
+/// Starts the calling window's layout afresh: one empty pane (the
+/// interface's sessions start afresh too when it loads); its tabs leave
+/// the multi-send group.
 #[tauri::command]
-fn layout_reset(tabs: State<'_, Tabs>) -> Layout {
-    let mut layout = tabs.lock();
-    *layout = Layout::new();
-    layout.clone()
+fn layout_reset(window: tauri::WebviewWindow, tabs: State<'_, Tabs>) -> Result<WindowView, String> {
+    let window = calling_window(&window)?;
+    let mut windows = tabs.lock();
+    windows.reset(window).map_err(|error| error.to_string())?;
+    window_view(&windows, window)
 }
 
+/// Edits the calling window's layout, or the app's multi-send group.
 #[tauri::command]
-fn layout_edit(tabs: State<'_, Tabs>, edit: LayoutEdit) -> Result<LayoutChanged, String> {
-    let mut layout = tabs.lock();
-    let created = apply_layout_edit(&mut layout, edit).map_err(|error| error.to_string())?;
+fn layout_edit(
+    window: tauri::WebviewWindow,
+    tabs: State<'_, Tabs>,
+    edit: LayoutEdit,
+) -> Result<LayoutChanged, String> {
+    let window = calling_window(&window)?;
+    let mut windows = tabs.lock();
+    let created =
+        apply_layout_edit(&mut windows, window, edit).map_err(|error| error.to_string())?;
     Ok(LayoutChanged {
-        layout: layout.clone(),
+        layout: window_view(&windows, window)?,
         created,
     })
 }
 
-fn apply_layout_edit(layout: &mut Layout, edit: LayoutEdit) -> Result<Option<u64>, LayoutError> {
+/// What `window`'s interface is sent of its layout.
+fn window_view(windows: &Windows, window: WindowId) -> Result<WindowView, String> {
+    windows
+        .view(window)
+        .ok_or_else(|| LayoutError::NoSuchWindow(window).to_string())
+}
+
+fn apply_layout_edit(
+    windows: &mut Windows,
+    window: WindowId,
+    edit: LayoutEdit,
+) -> Result<Option<u64>, LayoutError> {
+    match edit {
+        LayoutEdit::JoinGroup { tab } => return windows.join_group(window, tab).map(|()| None),
+        LayoutEdit::JoinPane { pane } => return windows.join_pane(window, pane).map(|_| None),
+        LayoutEdit::LeaveGroup { tab } => return windows.leave_group(window, tab).map(|()| None),
+        LayoutEdit::EndGroup => {
+            windows.end_group();
+            return Ok(None);
+        }
+        _ => {}
+    }
+    let mut layout = windows
+        .layout_mut(window)
+        .ok_or(LayoutError::NoSuchWindow(window))?;
     Ok(match edit {
         LayoutEdit::OpenTab => Some(layout.open_tab().0),
         LayoutEdit::OpenView { view, subject } => {
-            Some(layout.open_view(View::new(view, subject)).0)
+            Some(layout.open_view(View::new(view, subject))?.0)
         }
         LayoutEdit::OpenTabBeside { tab } => Some(layout.open_tab_beside(tab).map(|t| t.0)?),
         LayoutEdit::Activate { tab } => layout.activate(tab).map(|()| None)?,
@@ -2293,19 +2361,18 @@ fn apply_layout_edit(layout: &mut Layout, edit: LayoutEdit) -> Result<Option<u64
         }
         LayoutEdit::Split { pane, direction } => Some(layout.split(pane, direction)?.0),
         LayoutEdit::ClosePane { pane } => layout.close_pane(pane).map(|()| None)?,
-        LayoutEdit::JoinGroup { tab } => layout.join_group(tab).map(|()| None)?,
-        LayoutEdit::JoinPane { pane } => layout.join_pane(pane).map(|_| None)?,
-        LayoutEdit::LeaveGroup { tab } => layout.leave_group(tab).map(|()| None)?,
-        LayoutEdit::EndGroup => {
-            layout.end_group();
-            None
-        }
+        LayoutEdit::JoinGroup { .. }
+        | LayoutEdit::JoinPane { .. }
+        | LayoutEdit::LeaveGroup { .. }
+        | LayoutEdit::EndGroup => unreachable!("group edits are applied above"),
     })
 }
 
-/// Forgets the session (closing it if it is open): its terminal is gone.
+/// Forgets the session (closing it if it is open) and its relay: its
+/// terminal is gone.
 #[tauri::command]
-fn session_discard(manager: State<'_, SessionManager>, id: u64) {
+fn session_discard(manager: State<'_, SessionManager>, relays: State<'_, SessionRelays>, id: u64) {
+    relays.forget(SessionId(id));
     manager.discard(SessionId(id));
 }
 
@@ -2334,8 +2401,8 @@ fn session_decide_host_key(
 }
 
 /// What the user typed or pasted in the session `id`: if its tab is in the
-/// multi-send group, it goes to every connected member, otherwise to `id`
-/// only (`Layout::input_targets`).
+/// multi-send group, it goes to every connected member, whichever window
+/// it is in, otherwise to `id` only (`Windows::input_targets`).
 #[tauri::command]
 fn session_input(
     manager: State<'_, SessionManager>,
@@ -2356,17 +2423,15 @@ fn session_write(manager: State<'_, SessionManager>, id: u64, data: Vec<u8>) -> 
         .map_err(|error| error.to_string())
 }
 
-/// The terminal has consumed `bytes` bytes of the session's output. Without
-/// these, the core stops reading from the device (flow control).
+/// The terminal has consumed `bytes` bytes of the session's output, given
+/// to it as the consumer `consumer` (the key `session_open`,
+/// `session_duplicate` or `session_reconnect` returned). Without these, the
+/// core stops reading from the device (flow control). One naming another
+/// consumer (a window the session has left, a connection since
+/// reconnected) is ignored, so it can never make room.
 #[tauri::command]
-fn session_acknowledge(
-    manager: State<'_, SessionManager>,
-    id: u64,
-    bytes: usize,
-) -> Result<(), String> {
-    manager
-        .acknowledge(SessionId(id), bytes)
-        .map_err(|error| error.to_string())
+fn session_acknowledge(relays: State<'_, SessionRelays>, id: u64, consumer: u64, bytes: usize) {
+    relays.acknowledge(SessionId(id), ConsumerKey::from_raw(consumer), bytes);
 }
 
 #[tauri::command]
@@ -2833,7 +2898,8 @@ pub fn run() {
             app.manage(SessionManager::new(KnownHosts::in_data_folder(
                 &data_folder,
             )));
-            app.manage(Tabs(Mutex::new(Layout::new())));
+            app.manage(Tabs(Mutex::new(Windows::new())));
+            app.manage(SessionRelays::new());
             app.manage(CsvFile(Mutex::new(None)));
             app.manage(NornirFiles(Mutex::new(None)));
             app.manage(JobPlans(Mutex::new(None)));
