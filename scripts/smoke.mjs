@@ -212,6 +212,20 @@ async function showSideView(evaluate, view) {
   await until(`the ${view} side view`, () => evaluate(shown));
 }
 
+/** Opens the details sheet on the tree's selection by its row's details
+ * control, unless the sheet is open (it follows the selection). */
+async function showDetails(evaluate) {
+  const open = `!!document.querySelector("[data-side-view=hosts] [data-details-sheet]")`;
+  if (!(await evaluate(open))) {
+    await evaluate(`(() => {
+      const row = document.querySelector(
+        "nav [data-item][aria-pressed=true], nav [data-item].selected");
+      row?.parentElement.querySelector(":scope > [data-row-details]")?.click();
+    })()`);
+  }
+  await until("the details sheet", () => evaluate(open));
+}
+
 /** Opens the jobs view (past runs) from the Jobs side view, then shows the
  * Hosts view again. */
 async function openRuns(evaluate) {
@@ -231,8 +245,10 @@ async function openProfiles(evaluate) {
 // The rail and the side view: each icon shows its view and says so,
 // clicking the open one folds the side view and any icon brings it back;
 // each view has its shortcut. Dragging the side view's edge resizes it
-// (saved when the drag ends), double-clicking resets it, the terminal keeps
-// its room, and the details panel folds away and comes back.
+// (saved when the drag ends), double-clicking resets it and the terminal
+// keeps its room. There is no right column: details open as a sheet over
+// the Hosts view (from the row, the context menu or a key), follow the
+// selection and close back to the tree.
 async function sidePanels({
   evaluate,
   mouse,
@@ -367,9 +383,153 @@ async function sidePanels({
   );
   step("each side view and folding have a shortcut");
 
-  // A host is selected, so the details panel is there too.
+  // A host is selected: no details until asked, and no right column.
+  const sheet = "[data-side-view=hosts] [data-details-sheet]";
+  const sheetName = () =>
+    evaluate(`document.querySelector("${sheet} h2")?.textContent ?? null`);
   await evaluate(`document.querySelector("nav [data-host]").click()`);
-  await until("the details panel", () => exists(".layout > aside.side"));
+  await sleep(300);
+  if (await exists(sheet)) fail("selecting a host opened its details");
+  if (
+    await exists(
+      "[data-panel-resizer=right], [data-reveal-panel], .layout > aside.side",
+    )
+  ) {
+    fail("the right column is still there");
+  }
+  const columnsRoom = await evaluate(`(() => {
+    const rail = document.querySelector(".layout > :first-child").getBoundingClientRect().width;
+    const side = document.querySelector("[data-side-view]").getBoundingClientRect().width;
+    const centre = document.querySelector(".layout > .centre").getBoundingClientRect();
+    return Math.abs(rail + side + centre.width - window.innerWidth) <= 2;
+  })()`);
+  if (!columnsRoom)
+    fail("the terminal area does not take the rest of the window");
+  step(
+    "with a host selected there is no right column; the terminals take the space",
+  );
+
+  // From the row's details control: a sheet over the side view, never over
+  // a terminal.
+  const firstHost = await evaluate(
+    `document.querySelector("nav [data-host]").dataset.label`,
+  );
+  await evaluate(
+    `document.querySelector("nav li:has(> [data-host]) > [data-row-details]").click()`,
+  );
+  await until(
+    "the details sheet from the row",
+    async () => (await sheetName()) === firstHost,
+  );
+  const sheetPlace = await evaluate(`(() => {
+    const sheet = document.querySelector("${sheet}").getBoundingClientRect();
+    const side = document.querySelector("[data-side-view]").getBoundingClientRect();
+    const centre = document.querySelector(".layout > .centre").getBoundingClientRect();
+    const sections = [...document.querySelectorAll("${sheet} [data-details-section]")].map((s) => s.dataset.detailsSection);
+    return { inside: sheet.left >= side.left - 0.5 && sheet.right <= side.right + 0.5,
+      clear: sheet.right <= centre.left + 0.5, tree: !!document.querySelector("[data-side-view=hosts] nav"),
+      ways: !!document.querySelector("${sheet} [data-ways-in] [data-connect=default]"),
+      sections };
+  })()`);
+  if (
+    !sheetPlace.inside ||
+    !sheetPlace.clear ||
+    !sheetPlace.tree ||
+    !sheetPlace.ways
+  ) {
+    fail(`the details sheet's place: ${JSON.stringify(sheetPlace)}`);
+  }
+  if (
+    sheetPlace.sections.join(",") !==
+    "device,connection,tags,custom,description"
+  ) {
+    fail(`the sheet's sections: ${sheetPlace.sections.join(",")}`);
+  }
+  await screenshot("details-sheet");
+  step(
+    "a row's details control opened the sheet over the side view, with the tree above it",
+  );
+
+  // It follows the selection in the tree, folders too (the workspace's
+  // settings control selects the top folder).
+  const firstId = await evaluate(
+    `document.querySelector("nav [data-host]").dataset.host`,
+  );
+  const rootName = await evaluate(
+    `document.querySelector("[data-open-workspaces]").textContent.trim()`,
+  );
+  await evaluate(`document.querySelector("[data-workspace-settings]").click()`);
+  await until(
+    "the sheet following the selection to a folder",
+    async () =>
+      (await exists("[data-details-sheet=folder]")) &&
+      (await sheetName()) === rootName,
+  );
+  await evaluate(
+    `document.querySelector(${JSON.stringify(`nav [data-host="${firstId}"]`)}).click()`,
+  );
+  await until(
+    "the sheet back on the host",
+    async () => (await sheetName()) === firstHost,
+  );
+  step("the open sheet follows the selection in the tree");
+
+  // Back to the tree.
+  await evaluate(
+    `document.querySelector("${sheet} [data-details-close]").click()`,
+  );
+  await until("the sheet closed by Back", async () => !(await exists(sheet)));
+  // By key.
+  await shortcut("D");
+  await until("the sheet opened by Ctrl+Shift+D", () => exists(sheet));
+  await shortcut("D");
+  await until(
+    "the sheet closed by Ctrl+Shift+D",
+    async () => !(await exists(sheet)),
+  );
+  // From the context menu, which holds every action of the details.
+  const row = await centreOf("nav [data-host]");
+  await mouse("mousePressed", row, { button: "right", clickCount: 1 });
+  await mouse("mouseReleased", row, { button: "right", clickCount: 1 });
+  await until("the host's context menu", () =>
+    exists("[role=menu] [data-menu]"),
+  );
+  const menuEntries = await until("the menu's ways in", () =>
+    evaluate(`(() => {
+      const ids = [...document.querySelectorAll("[role=menu] [data-menu]")].map((b) => b.dataset.menu);
+      return ids.filter((id) => id.startsWith("connect-")).length === 2 && ids;
+    })()`),
+  );
+  for (const entry of [
+    "connect",
+    "details",
+    "run-snippet",
+    "run-script",
+    "back-up",
+    "enrich",
+    "config-history",
+    "log-folder",
+    "move",
+    "delete",
+  ]) {
+    if (!menuEntries.includes(entry)) {
+      fail(`the context menu has no ${entry}: ${menuEntries.join(", ")}`);
+    }
+  }
+  await screenshot("host-context-menu");
+  await evaluate(
+    `document.querySelector("[role=menu] [data-menu=details]").click()`,
+  );
+  await until("the sheet opened from the context menu", () => exists(sheet));
+  // Another side view takes its place; Hosts comes back without it.
+  await railClick("snippets");
+  await until("the snippets view", () => exists("[data-side-view=snippets]"));
+  await railClick("hosts");
+  await until("the hosts view", () => exists("[data-side-view=hosts]"));
+  if (await exists(sheet)) fail("the sheet outlived its side view");
+  step(
+    `details open from the context menu (${menuEntries.length} entries) and by Ctrl+Shift+D, and close back to the tree`,
+  );
 
   const before = await width(left);
   await drag("[data-panel-resizer=left]", 150);
@@ -381,23 +541,13 @@ async function sidePanels({
     `dragging the side view's edge widened it (${before} to ${before + 150} px)`,
   );
 
-  const rightBefore = await width(".layout > aside.side");
-  await drag("[data-panel-resizer=right]", -100);
-  await until(
-    "the wider details panel",
-    async () =>
-      Math.abs((await width(".layout > aside.side")) - (rightBefore + 100)) <=
-      2,
-  );
-  step("dragging the details panel's edge widened it");
-
   // As far as it goes: the terminal keeps at least 320 px.
   await drag("[data-panel-resizer=left]", 3000);
   await until(
     "the terminal area keeps its room",
     async () => (await width(".layout > .centre")) >= 318,
   );
-  step("a panel cannot squeeze the terminal below 320 px");
+  step("the side view cannot squeeze the terminal below 320 px");
 
   await evaluate(
     `document.querySelector("[data-panel-resizer=left]").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`,
@@ -416,15 +566,6 @@ async function sidePanels({
   );
   await railClick("hosts");
   await until("the side view back", () => exists(left));
-  await shortcut("D");
-  await until("the details panel hidden by Ctrl+Shift+D", () =>
-    exists("[data-reveal-panel=right]"),
-  );
-  await shortcut("D");
-  await until("the details panel back by Ctrl+Shift+D", () =>
-    exists(".layout > aside.side"),
-  );
-  step("the details panel folds away and comes back by keyboard");
 
   // A width for the restart to find, set by dragging.
   await drag(
@@ -602,13 +743,15 @@ async function main() {
       form.requestSubmit();
     })()`);
   // Types into a side-panel field and commits it, as leaving the field does.
-  const changeField = (selector, value) =>
-    evaluate(`(() => {
+  const changeField = async (selector, value) => {
+    await showDetails(evaluate);
+    await evaluate(`(() => {
       const input = document.querySelector(".side " + ${JSON.stringify(selector)});
       input.value = ${JSON.stringify(value)};
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
     })()`);
+  };
   const quickConnect = async (password) => {
     await until("the quick-connect form", () =>
       evaluate(`!!document.querySelector("input[name=host]")`),
@@ -1113,6 +1256,7 @@ async function main() {
   if (quickLogs.length < 3) {
     fail(`expected a log per quick connection, found ${quickLogs.join(", ")}`);
   }
+  await showDetails(evaluate);
   if (!(await text("[data-setting-note=logging]")).includes("secrets")) {
     fail("the logging setting does not warn that logs can contain secrets");
   }
@@ -2117,6 +2261,7 @@ async function openScriptJob(evaluate) {
   const folderRow = 'nav button[data-item=folder][data-path="Jobs"]';
   await until("the Jobs folder in the tree", () => exists(folderRow));
   await evaluate(`document.querySelector(${json(folderRow)}).click()`);
+  await showDetails(evaluate);
   await until("the Jobs folder's run-script button", () =>
     exists(".side [data-folder-run-script]"),
   );
@@ -2468,6 +2613,7 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
     /** Fill in from the side panel's `button`; resolves at the review. */
     const fillIn = async (row, button, hosts) => {
       await clickOn(row);
+      await showDetails(evaluate);
       await until("the side panel's Fill in button", () =>
         exists(`.side ${button}`),
       );
@@ -3330,6 +3476,7 @@ async function webLinks({ evaluate, text, screenshot, step }) {
   const hostRow = 'nav [data-host="Firewalls/fw-r1.yaml"]';
   await until("fw-r1 in the tree", () => exists(hostRow));
   await clickOn(hostRow);
+  await showDetails(evaluate);
   await until("fw-r1 in the side panel", async () =>
     (await text(".side h2")).includes("fw-r1"),
   );
@@ -3856,6 +4003,7 @@ async function jobs({
 
   const runFromFolder = async () => {
     await clickOn(folderRow);
+    await showDetails(evaluate);
     await until("the Jobs folder's side panel", () =>
       exists(".side [data-folder-run-snippet]"),
     );
@@ -3980,6 +4128,7 @@ async function jobs({
     );
 
     await clickOn(hostRow);
+    await showDetails(evaluate);
     await until("jobs-r1's side panel", () =>
       exists(".side [data-host-run-snippet]"),
     );
@@ -4207,6 +4356,7 @@ async function jobs({
     const backupRow = `nav [data-host="${backupHost}"]`;
     await until("jobs-b1 in the tree", () => exists(backupRow));
     await clickOn(backupRow);
+    await showDetails(evaluate);
     await until("jobs-b1's side panel", () =>
       exists(".side [data-host-back-up]"),
     );
@@ -4476,6 +4626,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
 
     // Saved from pre-flight: a snippet on the Jobs folder.
     await clickOn('nav button[data-item=folder][data-path="Jobs"]');
+    await showDetails(evaluate);
     await until("the Jobs folder's side panel", () =>
       exists(".side [data-folder-run-snippet]"),
     );
@@ -5769,6 +5920,7 @@ async function liveReload({ evaluate, text, screenshot, step }) {
     );
 
   await evaluate(`document.querySelector(${JSON.stringify(odd)}).click()`);
+  await showDetails(evaluate);
   await until("odd.yaml's side panel", async () =>
     (await text(".side h2")).includes("odd"),
   );
@@ -5779,6 +5931,7 @@ async function liveReload({ evaluate, text, screenshot, step }) {
     "address: 192.0.2.9\nrole: mainframe\nvendor: Juniper\n",
   );
   await until("the new host in the tree", () => exists(pulled));
+  await showDetails(evaluate);
   await until("the edited field in the side panel", () =>
     evaluate(
       `document.querySelector(".side [name=vendor]")?.value === "Juniper"`,
@@ -5874,6 +6027,7 @@ async function credentialProfiles({
   // Assigned to a host, the profile logs in without a prompt.
   await until("the host in the tree", () => exists(hostRow));
   await clickOn(hostRow);
+  await showDetails(evaluate);
   await until("the host's side panel", async () =>
     (await text(".side h2")).includes("smoke-r1"),
   );
@@ -6263,6 +6417,7 @@ async function legacyCrypto({
   // Switch on, in the side panel: the session connects, marked.
   await newConnection();
   await evaluate(`document.querySelector(${JSON.stringify(hostRow)}).click()`);
+  await showDetails(evaluate);
   await until("the old device's side panel", async () =>
     (await text(".side h2")).includes("old-switch"),
   );
@@ -6405,10 +6560,25 @@ async function telnet({
     `double-clicking a telnet host logged in in the terminal (${size}), marked unencrypted`,
   );
 
+  // The session's header opens its host's details, bringing back the
+  // Hosts view if another one is shown.
+  await evaluate(`document.querySelector("[data-rail=snippets]").click()`);
+  await until("the snippets view", () => exists("[data-side-view=snippets]"));
+  await evaluate(
+    `document.querySelector("${SHOWN_SESSION} [data-session-details]").click()`,
+  );
+  await until("the telnet host's details from its session", async () =>
+    (
+      await text("[data-side-view=hosts] [data-details-sheet=host] h2")
+    ).includes("console-sw"),
+  );
+  step("a session's Details opened its host's sheet over the Hosts view");
+
   // The side panel offers SSH for the telnet host, and telnet for an SSH one.
   await click("Disconnect");
   await newConnection();
   await evaluate(`document.querySelector(${JSON.stringify(hostRow)}).click()`);
+  await showDetails(evaluate);
   await until("the SSH button for the telnet host", () =>
     exists(sidePanelButton("ssh")),
   );
@@ -6524,6 +6694,7 @@ async function serial({
   );
   await until("the serial host in the tree", () => exists(hostRow));
   await clickOn(hostRow);
+  await showDetails(evaluate);
   await until("its serial port in the side panel", async () =>
     (await text('.side [data-origin="serial.port"]')).includes(
       `${missingPort} · `,
@@ -6572,12 +6743,14 @@ async function editInventory({
   const hostFile =
     "address: 10.9.0.1\nvendor: Arista\nrack_unit: 12\nrole: firewall\n";
   // What the side panel says applies, and where it comes from.
-  const shows = (key, expected) =>
-    until(
+  const shows = async (key, expected) => {
+    await showDetails(evaluate);
+    return until(
       `${key} shown as "${expected}"`,
       async () =>
         (await text(`.side [data-origin="${key}"]`)).trim() === expected,
     );
+  };
 
   // Every control of the Hosts view's header is fully inside the side
   // view, and no toolbar of text buttons is left.
@@ -6640,6 +6813,7 @@ async function editInventory({
   step("a folder and a host were created and written to disk");
 
   // The side panel edits the selected host's file.
+  await showDetails(evaluate);
   await until("the host's side panel", async () =>
     (await text(".side h2")).includes("edge-r1"),
   );
@@ -6722,7 +6896,16 @@ async function editInventory({
   );
   step("renaming a host renamed its file");
 
-  // Dragging the host onto another folder moves its file.
+  // Dragging the host onto another folder moves its file (in the whole
+  // tree: the details sheet closed, back to the tree).
+  if (await evaluate(`!!document.querySelector("[data-details-close]")`)) {
+    await clickOn("[data-details-close]");
+  }
+  await until(
+    "the details sheet closed",
+    async () =>
+      !(await evaluate(`!!document.querySelector("[data-details-sheet]")`)),
+  );
   const from = await centreOf(hostRow("Edge/edge-r2.yaml"));
   const to = await centreOf(folderRow("Lab"));
   await mouse("mousePressed", from, { button: "left", clickCount: 1 });
@@ -6804,6 +6987,7 @@ async function editInventory({
 
   // A folder's description is saved to its settings file.
   await clickOn(folderRow("Edge"));
+  await showDetails(evaluate);
   await until(
     "the folder's side panel",
     async () => (await text(".side h2")) === "Edge",

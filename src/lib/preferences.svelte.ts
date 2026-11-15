@@ -28,12 +28,10 @@ export interface Preferences {
   /** The side view the rail selected; `leftPanelWidth` is its width and
    * `leftPanelHidden` whether it is folded away. */
   sideView: SideView;
-  /** Side panel widths in pixels (`PANEL_WIDTHS`). */
+  /** The side view's width in pixels (`PANEL_WIDTHS`). */
   leftPanelWidth: number;
-  rightPanelWidth: number;
-  /** A side panel folded away, for a wider terminal. */
+  /** The side view folded away, for a wider terminal. */
   leftPanelHidden: boolean;
-  rightPanelHidden: boolean;
 }
 
 /** The core's limits (`netterm_core::preferences`), for the form. */
@@ -43,7 +41,6 @@ export const PANEL_WIDTHS = {
   min: 200,
   max: 800,
   left: 288,
-  right: 304,
 } as const;
 
 /** Offered in the font field; any installed font can be typed. */
@@ -75,9 +72,7 @@ export const preferences = $state({
     checkForUpdates: true,
     sideView: "hosts",
     leftPanelWidth: PANEL_WIDTHS.left,
-    rightPanelWidth: PANEL_WIDTHS.right,
     leftPanelHidden: false,
-    rightPanelHidden: false,
   } as Preferences,
   /** Whether the operating system is set to dark. */
   systemDark: systemDark.matches,

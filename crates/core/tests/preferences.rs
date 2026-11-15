@@ -5,8 +5,7 @@ use std::fs;
 
 use netterm_core::preferences::{
     FontZoom, Preferences, SideView, Theme, DEFAULT_FONT_SIZE, DEFAULT_LEFT_PANEL_WIDTH,
-    DEFAULT_RIGHT_PANEL_WIDTH, MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK, MIN_FONT_SIZE,
-    MIN_PANEL_WIDTH,
+    MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_PANEL_WIDTH,
 };
 use tempfile::TempDir;
 
@@ -208,22 +207,18 @@ fn the_interface_sees_camel_case_names() {
 }
 
 #[test]
-fn side_panels_start_at_their_default_widths_and_shown() {
+fn the_side_view_starts_at_its_default_width_and_shown() {
     let preferences = Preferences::default();
     assert_eq!(preferences.left_panel_width, DEFAULT_LEFT_PANEL_WIDTH);
-    assert_eq!(preferences.right_panel_width, DEFAULT_RIGHT_PANEL_WIDTH);
     assert!(!preferences.left_panel_hidden);
-    assert!(!preferences.right_panel_hidden);
 }
 
 #[test]
-fn side_panel_widths_and_visibility_are_remembered_across_restarts() {
+fn the_side_view_width_and_folding_are_remembered_across_restarts() {
     let data = TempDir::new().unwrap();
     let chosen = Preferences {
         left_panel_width: 420,
-        right_panel_width: 380,
         left_panel_hidden: true,
-        right_panel_hidden: false,
         ..Preferences::default()
     };
 
@@ -233,34 +228,29 @@ fn side_panel_widths_and_visibility_are_remembered_across_restarts() {
 }
 
 #[test]
-fn side_panel_widths_are_kept_within_their_range() {
+fn the_side_view_width_is_kept_within_its_range() {
     let narrow = Preferences {
         left_panel_width: 10,
-        right_panel_width: 0,
         ..Preferences::default()
     }
     .normalized();
     assert_eq!(narrow.left_panel_width, MIN_PANEL_WIDTH);
-    assert_eq!(narrow.right_panel_width, MIN_PANEL_WIDTH);
 
     let wide = Preferences {
         left_panel_width: 5000,
-        right_panel_width: 900,
         ..Preferences::default()
     }
     .normalized();
     assert_eq!(wide.left_panel_width, MAX_PANEL_WIDTH);
-    assert_eq!(wide.right_panel_width, MAX_PANEL_WIDTH);
 
     let data = TempDir::new().unwrap();
     fs::write(
         data.path().join("preferences.yaml"),
-        "left_panel_width: 99999999999\nright_panel_width: wide\nleft_panel_hidden: maybe\n",
+        "left_panel_width: 99999999999\nleft_panel_hidden: maybe\n",
     )
     .unwrap();
     let loaded = Preferences::load(data.path());
     assert_eq!(loaded.left_panel_width, MAX_PANEL_WIDTH);
-    assert_eq!(loaded.right_panel_width, DEFAULT_RIGHT_PANEL_WIDTH);
     assert!(!loaded.left_panel_hidden);
 }
 
@@ -344,4 +334,39 @@ fn the_interface_sees_the_side_view_by_name() {
     .unwrap();
 
     assert_eq!(json["sideView"], "backups");
+}
+
+#[test]
+fn an_old_file_with_right_panel_values_loads_and_ignores_them() {
+    let data = TempDir::new().unwrap();
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "font_size: 17\nleft_panel_width: 345\nright_panel_width: 420\nleft_panel_hidden: false\nright_panel_hidden: true\n",
+    )
+    .unwrap();
+
+    let loaded = Preferences::load(data.path());
+
+    assert_eq!(loaded.font_size, 17);
+    assert_eq!(loaded.left_panel_width, 345);
+    assert!(!loaded.left_panel_hidden);
+    let json = serde_json::to_value(&loaded).unwrap();
+    assert!(json.get("rightPanelWidth").is_none(), "{json}");
+    assert!(json.get("rightPanelHidden").is_none(), "{json}");
+
+    loaded.save(data.path()).unwrap();
+    let text = fs::read_to_string(data.path().join("preferences.yaml")).unwrap();
+    assert!(!text.contains("right_panel"), "{text}");
+    assert_eq!(Preferences::load(data.path()), loaded);
+}
+
+#[test]
+fn the_interface_ignores_right_panel_values_it_sends() {
+    let mut json = serde_json::to_value(Preferences::default()).unwrap();
+    json["rightPanelWidth"] = 500.into();
+    json["rightPanelHidden"] = true.into();
+
+    let back: Preferences = serde_json::from_value(json).unwrap();
+
+    assert_eq!(back, Preferences::default());
 }

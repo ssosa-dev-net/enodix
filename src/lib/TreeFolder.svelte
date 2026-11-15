@@ -1,6 +1,7 @@
 <script lang="ts">
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import PanelBottomOpen from "@lucide/svelte/icons/panel-bottom-open";
   import RoleIcon from "./RoleIcon.svelte";
   import TreeFolder from "./TreeFolder.svelte";
   import {
@@ -9,6 +10,7 @@
     hostSafety,
     hostShown,
     inventory,
+    type Item,
   } from "./inventory.svelte";
   import type { Folder, Host } from "./workspace";
 
@@ -16,9 +18,11 @@
     folder: Folder;
     depth: number;
     onconnect: (host: Host) => void;
+    /** Opens the details sheet on an item (the row's details control). */
+    ondetails: (item: Item) => void;
   }
 
-  let { folder, depth, onconnect }: Props = $props();
+  let { folder, depth, onconnect, ondetails }: Props = $props();
 
   const indent = $derived(`${0.6 + depth * 0.9}rem`);
 
@@ -42,6 +46,20 @@
     }
   }
 </script>
+
+{#snippet detailsControl(item: Item, path: string, name: string)}
+  <!-- Beside the row rather than in it (a button cannot hold a button);
+       shown while the row is hovered, focused or selected. -->
+  <button
+    class="row-details"
+    data-row-details={path}
+    aria-label="Details of {name}"
+    title="Details (Ctrl+Shift+D)"
+    tabindex="-1"
+    onclick={() => ondetails(item)}
+    ><PanelBottomOpen size={14} aria-hidden="true" /></button
+  >
+{/snippet}
 
 <!-- Rows carry data-item (what is dragged or acted on) and data-drop (the
      folder something dropped on them goes into); WorkspacePanel handles
@@ -70,8 +88,13 @@
         >
         <span class="label">{child.name}</span>
       </button>
+      {@render detailsControl(
+        { kind: "folder", path: child.path },
+        child.path,
+        child.name,
+      )}
       {#if inventory.expanded[child.path]}
-        <TreeFolder folder={child} depth={depth + 1} {onconnect} />
+        <TreeFolder folder={child} depth={depth + 1} {onconnect} {ondetails} />
       {/if}
     </li>
   {/each}
@@ -115,6 +138,11 @@
         {/if}
         <span class="address">{host.address}</span>
       </button>
+      {@render detailsControl(
+        { kind: "host", id: host.id },
+        host.id,
+        host.name,
+      )}
     </li>
   {/each}
 </ul>
@@ -128,6 +156,35 @@
 
   ul.top {
     padding: 0 var(--space-1-5);
+  }
+
+  li {
+    position: relative;
+  }
+
+  /* Over the row's right end (its address) while it is hovered. */
+  .row-details {
+    position: absolute;
+    top: 2px;
+    right: var(--space-1);
+    width: 24px;
+    height: 24px;
+    min-height: 0;
+    padding: 0;
+    justify-content: center;
+    background: var(--surface-raised);
+    color: var(--muted);
+    opacity: 0;
+  }
+
+  li:hover > .row-details,
+  li:focus-within > .row-details {
+    opacity: 1;
+  }
+
+  .row-details:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--selected);
   }
 
   button {
