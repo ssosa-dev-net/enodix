@@ -1,12 +1,14 @@
 # Roadmap
 
-What comes after v1. The order and the decisions below were settled in a design session on 2026-11-14; anything listed under "Still open" was not. NETCONF/RESTCONF, the SFTP/SCP browser, the file servers and NetBox sync each get their own design session before work starts. The v1 spec lives in `docs/spec-v1.md`.
+What comes after v1. The order and the decisions below were settled in a design session on 2026-11-14; anything listed under "Still open" was not. The NETCONF and RESTCONF client was dropped afterwards (see "Not planned"). The SFTP/SCP browser, the file servers and NetBox sync each get their own design session before work starts. The v1 spec lives in `docs/spec-v1.md`.
 
 ## Principles
 
 - **Daily use drives the order.** Features are built in the order they are needed in real work, since that is what can be verified without users.
 - **Small releases.** Each numbered item below ships on its own.
 - **Python is optional.** Everything except script jobs and host enrichment works without it.
+- **Local and trusted.** The app holds some of the most sensitive passwords an organisation has, so it stays on the user's computer: no telemetry, no accounts, no cloud. The only connection it makes on its own is the update check, which can be turned off; every other connection is one the user started (a session, a web link, a script, a Python setup they confirmed). Nothing is added that breaks this.
+- **Solid before wide.** Hardening what exists comes before showing it to anyone, and before most new features.
 - **Windows first, then Linux.** The core keeps no Windows-only assumptions. macOS is not planned for now.
 
 ## Order
@@ -19,7 +21,7 @@ What comes after v1. The order and the decisions below were settled in a design 
 6. Host enrichment (built)
 7. Linux release (built; not yet checked on a Linux desktop)
 8. NetBox sync
-9. NETCONF and RESTCONF client
+9. Tunnel ports for scripts
 10. Temporary file servers
 
 ## Status
@@ -30,6 +32,48 @@ As of 2026-11-14, items 1, 2, 3, 5, 6 and 7 are built and released in 0.2.0, an 
 - **NX-OS:** its built-in platform definition has not been run against a device (no image in the lab). The other five are verified in the containerlab suite.
 - **Privilege password:** no lab account asks for an enable password, so that question has only been exercised against the test device.
 - **Host enrichment through tunnels:** checked against the in-process test servers; the lab run through the lab's jump host is still to do.
+
+## Hardening
+
+What has to be true before anyone but the developer uses the app. It runs alongside the remaining features and comes first where the two compete. So far the app has had one user and was tested mostly against test servers and one lab.
+
+**The first five minutes**
+
+- Someone who has never seen the app installs it, brings in their hosts (CSV or Nornir import, or by hand) and is connected to a device, without reading documentation.
+- Walk that path from a clean Windows profile and fix every place it stalls: the empty first window, creating or opening a workspace, the first credential profile, the first host-key question, the first failed login.
+- Error messages on that path say what to do next.
+
+**Design pass**
+
+- The interface was built to work, not to look good, and engineers choose a terminal partly on feel. A deliberate pass over typography, spacing, colour, icons and the empty states, in both themes, so the app looks like something worth trusting with production.
+- The terminal itself first (fonts, cursor, selection, scrollbars, tab bar), then the tree and side panel, then the dialogs.
+- No new features in this pass.
+
+**Edge testing**
+
+Deliberately hostile use, each finding becoming a test where it can:
+
+- **Sessions:** hours-long sessions, very large and very fast output, a link that drops or stalls mid-command, the computer sleeping and waking, a device that closes without warning, twenty or more tabs, odd prompts and banners, wide and combining characters, pasting very large text.
+- **Devices:** old ones needing legacy crypto, slow consoles, a real serial adapter (break, unplugging), jump hosts that drop or go silent.
+- **Inventory:** thousands of hosts, malformed and half-written YAML, a `git pull` or an editor changing files while the app has them open, names with unusual characters, network drives.
+- **Credentials:** a damaged or half-written vault file, power loss during a write, two copies of the app at once, a locked vault met by every feature that needs a login.
+- **Jobs and scripts:** hundreds of hosts, hosts failing in every way at once, cancelling at every stage, a script that hangs, floods output or leaves processes behind.
+- **Windows itself:** display scaling and several monitors, a locked-down corporate laptop (no admin rights, restricted PowerShell, a strict firewall), antivirus holding files open.
+
+**Checks still owed from the work so far**
+
+- A review of everything built after 0.1.2 against its spec; only the script tunnels were reviewed after they were built.
+- The items listed under Status as built but not verified.
+
+**Trust, written down**
+
+- One plain document: where passwords and keys are kept, what is encrypted and what is not (logs, job results and config backups are plain files), and every connection the app can make and why.
+- A test that the app makes no connection on its own with the update check off (the smoke test already checks this at start; extend it over a whole run).
+
+**Going public**
+
+- The source moves to GitHub once the above gives enough confidence, not before.
+- Then, in this order: the updater signing key, a public address for releases, code signing and a `winget` listing.
 
 ## 1. Multi-send
 
@@ -76,7 +120,6 @@ Act on many devices at once, with config backup as the proving use case.
 - During the run, an untrusted or changed host key or an interactive login question fails that host with the reason; the rest continue.
 - 10 hosts in parallel by default, adjustable per run.
 - Results are plain files outside the workspace, beside the session logs and keyed by workspace id. They are kept until deleted, with "delete" and "save to…" on each.
-- Jobs treat CLI snippets and later request types the same way, so NETCONF/RESTCONF requests plug in without a second mechanism.
 
 **Config backup**
 
@@ -135,19 +178,14 @@ Let existing automation use the inventory.
 - The API token is a named secret.
 - Waits for a lab NetBox instance to test against, and gets its own design session.
 
-## 9. NETCONF and RESTCONF client
+## 9. Tunnel ports for scripts
 
-**Goal:** one tool for CLI and model-driven access, with a Postman-like experience that knows the device.
+Let scripts reach more than a host's SSH port through the app's jump hosts.
 
-- Saved request collections stored as YAML in the workspace, shareable through git.
-- Variables filled from the selected host and credentials from its profile.
-- Raw XML and JSON editor with a formatted response view.
-- Device capabilities view for NETCONF.
-- Requests available as job steps across many hosts.
-- Later: a YANG model browser.
-- NETCONF is implemented in the core on the SSH subsystem channel, with both framing styles (1.0 end-of-message and 1.1 chunked), so it reuses jump hosts, host-key checking and the legacy-crypto switch. No mature Rust crate exists for this.
-- Opens from the host side panel alongside SSH, telnet, serial and web links.
-- Gets its own design session.
+- Today a script's tunnel reaches only the host's SSH port. A script can name other ports of the host (830 for NETCONF, 443 for RESTCONF or eAPI), and the tunnel carries them through the same jump chain.
+- This is how model-driven access is served: the engineer's own Python libraries (ncclient, scrapli-netconf, requests) with the app's inventory, credentials and jump hosts. The app has no client of its own for it.
+- A small change to the tunnels that exist; no new subsystem.
+- Open: how a script names the ports, and what a library is given to check an HTTPS certificate by, as there is no host key to hand over.
 
 ## 10. Temporary file servers
 
@@ -162,7 +200,6 @@ Let existing automation use the inventory.
 - Quick tools: ping, traceroute, subnet calculator, MAC vendor lookup
 - A clickable topology map generated from LLDP/CDP neighbour data
 - macOS release
-- `winget` listing and code signing at public launch
 
 ## Not planned
 
@@ -175,13 +212,16 @@ Let existing automation use the inventory.
 - An embedded Python interpreter
 - Locking the app on inactivity or when the computer locks
 - Encrypting session logs, job results or config backups
+- A NETCONF and RESTCONF client (dropped on 2026-11-14). netterm is a CLI tool. NETCONF would have to be written from scratch in the core (no mature Rust crate), with an editor and saved collections on top, to compete with the Python libraries its users already have; RESTCONF adds certificate trust for self-signed devices; and ready-made data pulls would need upkeep per platform and version that belongs in the user's own scripts. Scripts get there through tunnel ports (item 9). Experimental tools like this may be looked at again, but only once the tool is good at what it already does.
 
 ## Still open
 
+- **Design pass:** who sets the visual direction, and against which terminals it is compared.
+- **Edge testing:** which real devices and adapters are available beyond the containerlab images.
+
 - **Linux:** the check on a real desktop (Ubuntu and Fedora, X11 and Wayland), before Linux is claimed as supported.
 - **Script tunnels:** job pre-flight does not know host keys, so a host whose device or jump-host key is not trusted yet is refused only when the job runs.
-
 - **SFTP/SCP browser:** the whole design.
 - **NetBox:** how its hierarchy (region, site, location, rack) maps onto the folder tree, and where local overrides are kept.
-- **NETCONF/RESTCONF:** where collections sit in the workspace and whether they inherit like snippets and web links; how RESTCONF device certificates are trusted, given the self-signed ones common on network devices.
+- **Tunnel ports:** how a script names the ports, and certificate checking for HTTPS through a tunnel.
 - **File servers:** authentication, transfer logging, low ports (TFTP 69, FTP 21), the Windows firewall prompt, and behaviour on locked-down corporate laptops.
