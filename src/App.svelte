@@ -1800,6 +1800,12 @@
     min-height: 10rem;
   }
 
+  /* The problems line would sit wedged between the short tree and the
+     sheet; the rail's Hosts icon marks the problems meanwhile. */
+  .hosts-area.under-sheet :global(footer.problems) {
+    display: none;
+  }
+
   .centre {
     position: relative;
     min-width: 0;

@@ -5,7 +5,12 @@ in the project's tracker.
 
 ## Unreleased
 
-Nothing yet.
+- The details sheet's actions are one row of icons with tooltips, in place
+  of a block of text buttons.
+- With details open, the problems line no longer sits between the tree and
+  the sheet.
+- A tab bar with more tabs than fit has no scrollbar: the mouse wheel moves
+  it, and the shown tab stays in sight.
 
 ## 0.3.0
 

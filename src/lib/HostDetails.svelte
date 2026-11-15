@@ -1,6 +1,14 @@
 <script lang="ts">
   import X from "@lucide/svelte/icons/x";
+  import Archive from "@lucide/svelte/icons/archive";
   import ExternalLink from "@lucide/svelte/icons/external-link";
+  import FileCode from "@lucide/svelte/icons/file-code";
+  import FolderInput from "@lucide/svelte/icons/folder-input";
+  import Logs from "@lucide/svelte/icons/logs";
+  import Play from "@lucide/svelte/icons/play";
+  import RotateCcwClock from "@lucide/svelte/icons/rotate-ccw-clock";
+  import ScanSearch from "@lucide/svelte/icons/scan-search";
+  import Trash from "@lucide/svelte/icons/trash";
   import CopyButton from "./CopyButton.svelte";
   import RoleIcon from "./RoleIcon.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
@@ -225,39 +233,66 @@
         onclick={() =>
           openLogFolder(host.id).catch(
             (error) => (inventory.editError = String(error)),
-          )}>Open log folder</button
+          )}
+        ><Logs size={15} aria-hidden="true" /><span class="visually-hidden"
+          >Open log folder</span
+        ></button
       >
       <button
         data-open-config-history
         title="Earlier versions of this host's configuration, kept by config backups"
-        onclick={() => openConfigHistory(host.id)}>Config history</button
+        onclick={() => openConfigHistory(host.id)}
+        ><RotateCcwClock size={15} aria-hidden="true" /><span
+          class="visually-hidden">Config history</span
+        ></button
       >
       <button
         data-host-back-up
         title="Fetch this host's configuration and keep it in its config history if it changed"
         onclick={() => openBackup({ kind: "hosts", ids: [host.id] }, host.name)}
-        >Back up config</button
+        ><Archive size={15} aria-hidden="true" /><span class="visually-hidden"
+          >Back up config</span
+        ></button
       >
       <button
         data-host-enrich
         title="Ask the device for its vendor, model, serial number and OS version (NAPALM), then review what to fill in"
         onclick={() => openEnrich({ kind: "hosts", ids: [host.id] }, host.name)}
-        >Fill in from device…</button
+        ><ScanSearch size={15} aria-hidden="true" /><span
+          class="visually-hidden">Fill in from device…</span
+        ></button
       >
       <button
         data-host-run-snippet
         title="Run a saved snippet on this host as a job, without a terminal"
         onclick={() => openJob({ kind: "hosts", ids: [host.id] }, host.name)}
-        >Run snippet…</button
+        ><Play size={15} aria-hidden="true" /><span class="visually-hidden"
+          >Run snippet…</span
+        ></button
       >
       <button
         data-host-run-script
         title="Run a Python script of the workspace for this host, as a job"
         onclick={() => openScript({ kind: "hosts", ids: [host.id] }, host.name)}
-        >Run script…</button
+        ><FileCode size={15} aria-hidden="true" /><span class="visually-hidden"
+          >Run script…</span
+        ></button
       >
-      <button onclick={() => move(item)}>Move…</button>
-      <button class="danger" onclick={() => remove(item)}>Delete…</button>
+      <button
+        title="Move this host to another folder"
+        onclick={() => move(item)}
+        ><FolderInput size={15} aria-hidden="true" /><span
+          class="visually-hidden">Move…</span
+        ></button
+      >
+      <button
+        class="danger"
+        title="Delete this host"
+        onclick={() => remove(item)}
+        ><Trash size={15} aria-hidden="true" /><span class="visually-hidden"
+          >Delete…</span
+        ></button
+      >
     </div>
   </header>
 
@@ -531,6 +566,32 @@
 
   .actions.more {
     margin-top: var(--space-2);
+    gap: var(--space-0-5);
+  }
+
+  /* One quiet row of icons: each button keeps its name for screen readers
+     and shows it as its tooltip. */
+  .actions.more button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-color: transparent;
+    background: none;
+    color: var(--muted);
+  }
+
+  .actions.more button:hover,
+  .actions.more button:focus-visible {
+    background: var(--surface-raised);
+    color: var(--text);
+  }
+
+  .actions.more button.danger:hover,
+  .actions.more button.danger:focus-visible {
+    color: var(--danger);
   }
 
   .actions {
