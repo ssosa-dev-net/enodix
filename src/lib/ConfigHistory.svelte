@@ -2,7 +2,7 @@
   // A host's config history, in its tab (#70; one tab per host): the kept
   // versions, the text of one, a diff of any two, copy, save to a folder
   // and back up now. It refetches whenever a backup keeps or checks a
-  // configuration.
+  // configuration. It can open in a window of its own and dock back (#78).
   import { untrack } from "svelte";
   import {
     configVersion,
@@ -16,13 +16,19 @@
   import { liveJobs } from "./jobs.svelte";
   import { inventory, openBackup } from "./inventory.svelte";
   import { findHost, pickWorkspaceFolder } from "./workspace";
+  import { backUpInMainWindow, detachConfigs, dockBack } from "./windows";
 
   interface Props {
     /** The host whose history is shown. */
     host: string;
+    /** Shown in a window of its own (#78): it docks back, and Back up now
+     * opens the backup's tab in the main window. */
+    detached?: boolean;
+    /** Closes its tab (after it opened in a window). */
+    onclose?: () => void;
   }
 
-  let { host }: Props = $props();
+  let { host, detached = false, onclose }: Props = $props();
 
   const name = $derived(
     (inventory.workspace && findHost(inventory.workspace.tree, host)?.name) ??
@@ -143,7 +149,19 @@
   }
 
   function backUp() {
-    openBackup({ kind: "hosts", ids: [host] }, name);
+    if (detached) void attempt(() => backUpInMainWindow());
+    else openBackup({ kind: "hosts", ids: [host] }, name);
+  }
+
+  function detach() {
+    return attempt(async () => {
+      await detachConfigs(host);
+      onclose?.();
+    });
+  }
+
+  function dock() {
+    return attempt(() => dockBack());
   }
 </script>
 
@@ -155,6 +173,25 @@
         <span class="meta"
           >{versions.length}
           {versions.length === 1 ? "version" : "versions"}</span
+        >
+      {/if}
+      <span class="spacer"></span>
+      {#if detached}
+        <button
+          type="button"
+          class="primary"
+          data-config-action="dock"
+          title="Show the history as a tab in the main window; this window closes"
+          disabled={busy}
+          onclick={dock}>Dock back</button
+        >
+      {:else}
+        <button
+          type="button"
+          data-config-action="detach"
+          title="Show the history in a window of its own; this tab closes"
+          disabled={busy}
+          onclick={detach}>Open in window</button
         >
       {/if}
     </header>
@@ -320,6 +357,10 @@
     display: flex;
     gap: var(--space-2);
     align-items: baseline;
+  }
+
+  .spacer {
+    flex: 1;
   }
 
   h2 {

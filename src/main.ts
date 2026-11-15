@@ -5,11 +5,12 @@ import "@xterm/xterm/css/xterm.css";
 import "./app.css";
 import App from "./App.svelte";
 import Detached from "./Detached.svelte";
-import { detachedRun } from "./lib/windows";
+import { detachedView } from "./lib/windows";
 
 const target = document.getElementById("app")!;
-// A detached run window (#77) shows that run alone; the main window, all.
-const run = detachedRun();
-export default run === null
+// A detached window shows one run (#77) or one host's config history
+// (#78) alone; the main window, all.
+const view = detachedView();
+export default view === null
   ? mount(App, { target })
-  : mount(Detached, { target, props: { run } });
+  : mount(Detached, { target, props: { view } });

@@ -91,10 +91,24 @@ const JOB_EVENT: &str = "job-event";
 /// own window (the run id).
 const DOCK_RUN_EVENT: &str = "dock-run";
 
+/// The event that asks the main window to show a host's config history
+/// docked back from its own window (the host id).
+const DOCK_CONFIGS_EVENT: &str = "dock-configs";
+
+/// The event that asks the main window to open a backup of a host (the
+/// host id), from a config history in a window of its own.
+const BACK_UP_HOST_EVENT: &str = "back-up-host";
+
+/// The event that tells every window a backup on login kept or checked a
+/// configuration (a job's backups arrive as `job-event`s).
+const CONFIG_SAVED_EVENT: &str = "config-saved";
+
 /// The main window's label; a detached run window's is this prefix and
-/// the run id.
+/// the run id; a detached config history's is its prefix and the host id
+/// in hex (a label takes no `.`).
 const MAIN_WINDOW: &str = "main";
 const RUN_WINDOW_PREFIX: &str = "run-";
+const CONFIG_WINDOW_PREFIX: &str = "config-";
 
 /// The credential agent, kept for as long as the app runs.
 struct CredentialAgent(#[allow(dead_code)] Option<AgentServer>);
@@ -1832,6 +1846,7 @@ fn config_export(
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn session_open(
+    app: AppHandle,
     manager: State<'_, SessionManager>,
     shell: State<'_, Shell>,
     configs: State<'_, Configs>,
@@ -1913,6 +1928,7 @@ async fn session_open(
             algorithms: on_algorithms,
             log_failure: on_log_failure,
             backup: on_backup,
+            app,
         },
     );
     Ok(Opened {
@@ -2036,6 +2052,9 @@ struct Channels {
     log_failure: Channel<String>,
     /// How its backup on login ended.
     backup: Channel<LoginBackupOutcome>,
+    /// Every window hears of a backup on login (`config-saved`), so a
+    /// config history in a window of its own refreshes too (#78).
+    app: AppHandle,
 }
 
 /// Passes the session's events on to the interface until they end.
@@ -2049,7 +2068,10 @@ fn forward(mut events: SessionEvents, channels: Channels) {
                 SessionEvent::HostKey(question) => channels.host_key.send(question),
                 SessionEvent::Algorithms(algorithms) => channels.algorithms.send(algorithms),
                 SessionEvent::LogFailed(failure) => channels.log_failure.send(failure.to_string()),
-                SessionEvent::Backup(outcome) => channels.backup.send(outcome),
+                SessionEvent::Backup(outcome) => {
+                    let _ = channels.app.emit(CONFIG_SAVED_EVENT, ());
+                    channels.backup.send(outcome)
+                }
             };
             // The webview is gone; dropping the events closes the session.
             if delivered.is_err() {
@@ -2065,6 +2087,7 @@ fn forward(mut events: SessionEvents, channels: Channels) {
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn session_reconnect(
+    app: AppHandle,
     manager: State<'_, SessionManager>,
     id: u64,
     size: Size,
@@ -2089,6 +2112,7 @@ async fn session_reconnect(
             algorithms: on_algorithms,
             log_failure: on_log_failure,
             backup: on_backup,
+            app,
         },
     );
     Ok(())
@@ -2100,6 +2124,7 @@ async fn session_reconnect(
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn session_duplicate(
+    app: AppHandle,
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
     id: u64,
@@ -2127,6 +2152,7 @@ async fn session_duplicate(
             algorithms: on_algorithms,
             log_failure: on_log_failure,
             backup: on_backup,
+            app,
         },
     );
     let encrypted = manager.encrypted(copy).map_err(|error| error.to_string())?;
@@ -2634,23 +2660,89 @@ async fn window_detach_run(
     Ok(())
 }
 
-/// Docks the calling detached window back: the main window shows its run
-/// as a tab (`dock-run`) and takes the focus, and the window closes.
+/// The label of the window showing the host `host`'s config history.
+fn config_window_label(host: &str) -> String {
+    let hex: String = host.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format!("{CONFIG_WINDOW_PREFIX}{hex}")
+}
+
+/// The host whose config history the window labelled `label` shows.
+fn config_window_host(label: &str) -> Option<String> {
+    let hex = label.strip_prefix(CONFIG_WINDOW_PREFIX)?;
+    if hex.is_empty() || hex.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// Shows the host `host`'s config history in a window of its own (#78):
+/// the existing one if it is open, else a new one. Async, as for runs.
 #[tauri::command]
-async fn window_dock(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
-    let run = window
-        .label()
-        .strip_prefix(RUN_WINDOW_PREFIX)
-        .ok_or("only a detached window docks back")?
-        .to_string();
+async fn window_detach_configs(
+    app: AppHandle,
+    preferred: State<'_, UserPreferences>,
+    host: String,
+) -> Result<(), String> {
+    if host.is_empty() {
+        return Err("no host to show".into());
+    }
+    let label = config_window_label(&host);
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    let theme = window_theme(preferred.lock().theme);
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
+        .title(format!("{} - config history {host}", product_name(&app)))
+        .inner_size(900.0, 640.0)
+        .min_inner_size(420.0, 320.0)
+        .theme(theme)
+        .build()
+        .map_err(|error| format!("the window could not be opened: {error}"))?;
+    Ok(())
+}
+
+/// The main window, brought forward.
+fn focused_main(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let main = app
         .get_webview_window(MAIN_WINDOW)
         .ok_or("the main window is gone")?;
-    main.emit_to(MAIN_WINDOW, DOCK_RUN_EVENT, run)
-        .map_err(|error| error.to_string())?;
     let _ = main.unminimize();
     let _ = main.set_focus();
+    Ok(main)
+}
+
+/// Docks the calling detached window back: the main window shows its run
+/// (`dock-run`) or config history (`dock-configs`) as a tab and takes the
+/// focus, and the window closes.
+#[tauri::command]
+async fn window_dock(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    let label = window.label();
+    let (event, subject) = if let Some(run) = label.strip_prefix(RUN_WINDOW_PREFIX) {
+        (DOCK_RUN_EVENT, run.to_string())
+    } else if let Some(host) = config_window_host(label) {
+        (DOCK_CONFIGS_EVENT, host)
+    } else {
+        return Err("only a detached window docks back".into());
+    };
+    let main = focused_main(&app)?;
+    main.emit_to(MAIN_WINDOW, event, subject)
+        .map_err(|error| error.to_string())?;
     window.destroy().map_err(|error| error.to_string())
+}
+
+/// From a detached config history: the main window opens a backup of its
+/// host (`back-up-host`, a job tab at pre-flight) and takes the focus.
+#[tauri::command]
+async fn window_back_up(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    let host = config_window_host(window.label()).ok_or("not a config history window")?;
+    focused_main(&app)?
+        .emit_to(MAIN_WINDOW, BACK_UP_HOST_EVENT, host)
+        .map_err(|error| error.to_string())
 }
 
 /// Closes every detached window (their jobs go on).
@@ -2797,6 +2889,8 @@ pub fn run() {
             enrich_preview,
             workspace_current,
             window_detach_run,
+            window_detach_configs,
+            window_back_up,
             window_dock,
             windows_close_detached,
             jobs_live,

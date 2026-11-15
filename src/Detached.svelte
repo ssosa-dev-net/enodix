@@ -1,11 +1,13 @@
 <script lang="ts">
-  // A detached window (#77): one run, outside the main window, on any
-  // monitor. No rail, no terminals: the run view, live from the shell's
-  // record of jobs, with Dock back. It follows the theme and font
-  // preferences; closing it leaves the job running.
+  // A detached window (#77, #78): one run or one host's config history,
+  // outside the main window, on any monitor. No rail, no terminals: the
+  // run view (live from the shell's record of jobs) or the config history
+  // (refreshed on every backup), with Dock back. It follows the theme and
+  // font preferences; closing it leaves a job running.
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import RunView from "./lib/RunView.svelte";
+  import ConfigHistory from "./lib/ConfigHistory.svelte";
   import { startLiveJobs } from "./lib/jobs.svelte";
   import {
     inventory,
@@ -21,14 +23,15 @@
   } from "./lib/preferences.svelte";
   import { onWorkspaceChanged, type WorkspaceView } from "./lib/workspace";
   import { appName } from "./lib/session";
-  import { dockBack } from "./lib/windows";
+  import { dockBack, type DetachedView } from "./lib/windows";
+  import { findHost } from "./lib/workspace";
 
   interface Props {
-    /** The run it shows. */
-    run: string;
+    /** What it shows. */
+    view: DetachedView;
   }
 
-  let { run }: Props = $props();
+  let { view }: Props = $props();
 
   let loaded = $state(false);
   let error = $state<string | null>(null);
@@ -57,10 +60,28 @@
   );
   void startLiveJobs();
 
-  appName().then((name) => (document.title = `${name} - run ${run}`));
+  let name = $state("");
+  appName().then((value) => (name = value));
+  $effect(() => {
+    if (!name) return;
+    document.title =
+      view.kind === "run"
+        ? `${name} - run ${view.run}`
+        : `${name} - config history ${hostName(view.host)}`;
+  });
+
+  function hostName(id: string): string {
+    const tree = inventory.workspace?.tree;
+    return (tree && findHost(tree, id)?.name) ?? id;
+  }
 </script>
 
-<main class="detached" data-detached="run" data-detached-run={run}>
+<main
+  class="detached"
+  data-detached={view.kind}
+  data-detached-run={view.kind === "run" ? view.run : undefined}
+  data-detached-host={view.kind === "configs" ? view.host : undefined}
+>
   {#if error}
     <p class="note" role="alert">{error}</p>
   {:else if !loaded}
@@ -72,8 +93,10 @@
         >Dock back</button
       >
     </p>
+  {:else if view.kind === "run"}
+    <RunView run={view.run} detached onclose={() => dockBack()} />
   {:else}
-    <RunView {run} detached onclose={() => dockBack()} />
+    <ConfigHistory host={view.host} detached />
   {/if}
 </main>
 

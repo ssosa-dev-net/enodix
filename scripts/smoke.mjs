@@ -4594,11 +4594,14 @@ async function detachedRunWindow({ evaluate, exists, clickOn, run, step }) {
         )
       ).includes("lab-r1# hang"),
     );
+    // (The window reads the live jobs once it has loaded.)
     for (const selector of [
       `${inRun} [data-run-action=dock]`,
       `${inRun} [data-run-action=cancel]`,
     ]) {
-      if (!(await shown(selector))) fail(`the run's window lacks ${selector}`);
+      await until(`the run's window ${what} with ${selector}`, () =>
+        shown(selector),
+      );
     }
     for (const selector of [
       "[data-rail]",
@@ -4694,6 +4697,20 @@ async function closingTheMainWindow({ app, evaluate, step }) {
     ),
   );
   window.devtools.close();
+  // A config history window too (#78), for a host the workspace may lack.
+  const host = "Jobs/jobs-r1.yaml";
+  await evaluate(
+    `window.__TAURI_INTERNALS__.invoke("window_detach_configs", { host: ${JSON.stringify(host)} })`,
+  );
+  const configWindow = await connectWindow(
+    `config-${Buffer.from(host, "utf8").toString("hex")}`,
+  );
+  await until("the config history's window", () =>
+    configWindow.evaluate(
+      `!!document.querySelector("[data-detached=configs]")`,
+    ),
+  );
+  configWindow.devtools.close();
   await evaluate(
     `window.__TAURI_INTERNALS__.invoke("plugin:window|close", { label: "main" })`,
   ).catch(() => {});
@@ -4702,7 +4719,9 @@ async function closingTheMainWindow({ app, evaluate, step }) {
     () => app.exitCode !== null,
     15_000,
   );
-  step("closing the main window closed the run's window and ended the app");
+  step(
+    "closing the main window closed the run and config history windows and ended the app",
+  );
 }
 
 /**
@@ -5048,6 +5067,10 @@ async function jobs({
     );
     const tabBarOf = (tab) =>
       `document.querySelector('[data-tab-bar] [data-tab="${tab}"]').closest("[data-tab-bar]")`;
+    await until(
+      `the run's tab ${runTab} in a tab bar (tabs: ${await evaluate(`[...document.querySelectorAll("[data-tab-bar] [data-tab]")].map((t) => t.dataset.tab).join(",")`)})`,
+      () => exists(`[data-tab-bar] [data-tab="${runTab}"]`),
+    );
     await evaluate(
       `document.querySelector('[data-tab-bar] [data-tab="${runTab}"]').click()`,
     );
@@ -5501,7 +5524,91 @@ async function jobs({
       fail(`the host has ${await historyTabs()} config history tabs`);
     }
     step("the host's history opens in one tab from the view, details and menu");
-    await closeTabOf(evaluate, history);
+
+    // In a window of its own (#78): the tab closes; the window has the
+    // versions, the text, a diff, copy, save and back up now, and stays
+    // open while a backup on login keeps a new version below.
+    const configLabel = `config-${Buffer.from(backupHost, "utf8").toString("hex")}`;
+    const inConfigWindow = "[data-detached=configs] [data-view=config-history]";
+    await clickOn(`${history} [data-config-action=detach]`);
+    await until(
+      "the history's tab closed",
+      async () => !(await exists(history)),
+    );
+    let configWindow = await connectWindow(configLabel);
+    const inside = (selector) =>
+      configWindow.evaluate(
+        `!!document.querySelector(${json(`${inConfigWindow} ${selector}`)})`,
+      );
+    const windowVersions = () =>
+      configWindow.evaluate(
+        `[...document.querySelectorAll(${json(`${inConfigWindow} [data-config-version]`)})].map((b) => b.dataset.configVersion)`,
+      );
+    await until("the history in its window", async () =>
+      (
+        await configWindow.evaluate(
+          `document.querySelector(${json(`${inConfigWindow} [data-config-text]`)})?.textContent ?? ""`,
+        )
+      ).includes("interface Loopback9"),
+    );
+    if (json(await windowVersions()) !== json(versions)) {
+      fail(`the history's window lists ${json(await windowVersions())}`);
+    }
+    if (
+      (await configWindow.evaluate(
+        `document.querySelector("[data-detached=configs]").dataset.detachedHost`,
+      )) !== backupHost
+    ) {
+      fail("the history's window shows another host");
+    }
+    for (const selector of [
+      "[data-config-action=copy]:not([disabled])",
+      "[data-config-export]",
+      "[data-config-action=back-up]",
+      "[data-config-action=dock]",
+      "[data-config-sensitive]",
+    ]) {
+      if (!(await inside(selector)))
+        fail(`the history's window lacks ${selector}`);
+    }
+    for (const selector of [
+      "[data-rail]",
+      ".terminal",
+      "[data-config-action=detach]",
+    ]) {
+      if (
+        await configWindow.evaluate(
+          `!!document.querySelector(${json(selector)})`,
+        )
+      )
+        fail(`the history's window shows ${selector}`);
+    }
+    await configWindow.evaluate(
+      `document.querySelector(${json(`${inConfigWindow} [data-config-action=diff]`)}).click()`,
+    );
+    await until("the diff in the history's window", async () =>
+      (
+        await configWindow.evaluate(
+          `[...document.querySelectorAll('${inConfigWindow} [data-diff-line="added"] .text')].map((l) => l.textContent)`,
+        )
+      ).includes("interface Loopback9"),
+    );
+    await screenshot("config-history-window");
+    step(
+      "the config history opened in a window of its own (its tab closed) with versions, text, diff, copy, save and back up now",
+    );
+    // Back up now there opens the backup's tab in the main window.
+    await configWindow.evaluate(
+      `document.querySelector(${json(`${inConfigWindow} [data-config-action=back-up]`)}).click()`,
+    );
+    await until("the backup's pre-flight in the main window", () =>
+      exists(`${dialog}[data-step=preflight] [data-job-host="${backupHost}"]`),
+    );
+    await clickOn(`${dialog} [data-job=dismiss]`);
+    await until("the job tab closed", async () => !(await exists(dialog)));
+    step(
+      "Back up now in the history's window opened the backup in the main window",
+    );
     await clickOn(backupRow);
     await showDetails(evaluate);
 
@@ -5569,11 +5676,80 @@ async function jobs({
     step(
       "back up on login: unchanged on connecting, a new version after a change and a reconnect, nothing in the terminal",
     );
+    // The history's window refreshed: the new version, shown first.
+    const loginVersion = (await backupMarker()).version;
+    await until("the history's window listing the new version", async () => {
+      const listed = await windowVersions();
+      return listed.length === 3 && listed[0] === loginVersion;
+    });
+    await until("the new version's text in the window", () =>
+      inside(`[data-config-text="${loginVersion}"]`),
+    );
+    step(
+      "the history's window refreshed when the backup on login kept a version",
+    );
+    // Terminals stay in the main window: no session action detaches one.
+    await evaluate(
+      `document.querySelector(${json(`${SHOWN_SESSION} [data-session-menu]`)}).click()`,
+    );
+    await until("the session's menu", () => exists("[data-session-actions]"));
+    const entries = await menuEntries(evaluate);
+    const windowed = await evaluate(
+      `[...document.querySelectorAll("[data-session-actions] [data-session-action]")].some((b) => /window|detach/i.test(b.textContent))`,
+    );
+    await evaluate(
+      `document.querySelector(${json(`${SHOWN_SESSION} [data-session-menu]`)}).click()`,
+    );
+    await until(
+      "the session's menu closed",
+      async () => !(await exists("[data-session-actions]")),
+    );
+    if (windowed || entries.some((entry) => /window|detach/.test(entry))) {
+      fail(`a terminal offers a window of its own: ${json(entries)}`);
+    }
+    step("a terminal cannot be detached into a window");
     await sessionAction(evaluate, "disconnect");
     await until(
       "the backed-up session closed",
       async () => (await status()) !== "Connected",
     );
+    // Closing the history's window, then opening it again and docking it
+    // back: the history is a tab in the main window again.
+    await configWindow
+      .evaluate(
+        `window.__TAURI_INTERNALS__.invoke("plugin:window|close", { label: ${json(configLabel)} })`,
+      )
+      .catch(() => {});
+    configWindow.devtools.close();
+    await until(
+      "the history's window closed",
+      async () => !(await windowOpen(configLabel)),
+    );
+    if (await exists(history)) fail("closing the window opened a tab");
+    await evaluate(
+      `window.__TAURI_INTERNALS__.invoke("window_detach_configs", { host: ${json(backupHost)} })`,
+    );
+    configWindow = await connectWindow(configLabel);
+    await until("the history's window again", () =>
+      inside(`[data-config-version="${loginVersion}"]`),
+    );
+    await configWindow
+      .evaluate(
+        `document.querySelector(${json(`${inConfigWindow} [data-config-action=dock]`)}).click()`,
+      )
+      .catch(() => {});
+    configWindow.devtools.close();
+    await until("the history docked back as a tab", () =>
+      exists(`${history} [data-config-version="${loginVersion}"]`),
+    );
+    await until(
+      "the history's window gone",
+      async () => !(await windowOpen(configLabel)),
+    );
+    step(
+      "closing the history's window closed only it; Dock back opened the history as a tab again",
+    );
+    await closeTabOf(evaluate, history);
   } finally {
     rmSync(backupHostFile, { force: true });
     if (savedSnippets === null) rmSync(snippetsFile, { force: true });
@@ -8876,6 +9052,11 @@ async function tabsAndPanes({
   await clickOn(`[data-tab="${c}"] [data-tab-close]`);
   await confirmClose("cancel");
   if (!(await allTabs()).some((t) => t.id === c)) fail("Cancel closed the tab");
+  // The shortcut from the terminal (the focus may still be returning
+  // from the question's Cancel).
+  await evaluate(
+    `document.querySelector(${json(`${slot(c)} .terminal textarea`)}).focus()`,
+  );
   await press("W", "KeyW", 87, CTRL | SHIFT);
   await confirmClose("close");
   await until("the tab closed", async () =>
