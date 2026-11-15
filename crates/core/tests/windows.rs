@@ -4,7 +4,7 @@
 //! window a member is in.
 
 use netterm_core::layout::{
-    LayoutError, Member, PaneId, Split, TabId, Taken, View, WindowId, Windows,
+    LayoutError, Member, PaneId, Split, TabId, Taken, Used, View, WindowId, Windows,
 };
 use netterm_core::session::SessionId;
 use serde_json::json;
@@ -921,4 +921,96 @@ fn a_session_window_gone_hands_its_sessions_to_the_main_window_and_closes() {
         Err(LayoutError::NoSuchWindow(session_window))
     );
     assert_eq!(windows.hand_to_main(MAIN), Err(LayoutError::MainWindow));
+}
+
+// The terminal last used, whichever window it is in (#86).
+
+#[test]
+fn the_terminal_last_used_is_the_one_snippets_go_to_whichever_window_it_is_in() {
+    let mut windows = Windows::new();
+    assert_eq!(windows.last_used(), None);
+    let session_window = windows.open_session_window();
+    let there = move_into(&mut windows, session_window, &[1])[0];
+    let here = open(&mut windows, MAIN, 1)[0];
+    windows.attach_session(MAIN, here, SessionId(2)).unwrap();
+
+    assert_eq!(
+        windows.session_of(session_window, there),
+        Some(SessionId(1))
+    );
+    assert_eq!(windows.session_of(MAIN, there), None);
+    windows.use_tab(session_window, there).unwrap();
+    assert_eq!(
+        windows.last_used(),
+        Some(Used {
+            window: session_window,
+            tab: there,
+            session: SessionId(1)
+        })
+    );
+
+    windows.use_tab(MAIN, here).unwrap();
+    assert_eq!(
+        windows.last_used(),
+        Some(Used {
+            window: MAIN,
+            tab: here,
+            session: SessionId(2)
+        })
+    );
+}
+
+#[test]
+fn the_terminal_last_used_follows_its_session_to_another_window_and_goes_with_it() {
+    let mut windows = Windows::new();
+    let tab = open(&mut windows, MAIN, 1)[0];
+    windows.attach_session(MAIN, tab, SessionId(1)).unwrap();
+    windows.use_tab(MAIN, tab).unwrap();
+    let session_window = windows.open_session_window();
+
+    let moved = windows.move_session(MAIN, tab, session_window).unwrap();
+    assert_eq!(
+        windows.last_used(),
+        Some(Used {
+            window: session_window,
+            tab: moved,
+            session: SessionId(1)
+        })
+    );
+
+    let back = windows.move_session(session_window, moved, MAIN).unwrap();
+    assert_eq!(
+        windows.last_used().map(|used| (used.window, used.tab)),
+        Some((MAIN, back))
+    );
+
+    windows.layout_mut(MAIN).unwrap().close_tab(back).unwrap();
+    assert_eq!(windows.last_used(), None);
+}
+
+#[test]
+fn using_a_view_tab_a_tab_without_a_session_or_an_unknown_window_changes_nothing() {
+    let mut windows = Windows::new();
+    let tab = open(&mut windows, MAIN, 1)[0];
+    windows.attach_session(MAIN, tab, SessionId(1)).unwrap();
+    windows.use_tab(MAIN, tab).unwrap();
+    let view = windows
+        .layout_mut(MAIN)
+        .unwrap()
+        .open_view(preferences())
+        .unwrap();
+    let opening = open(&mut windows, MAIN, 1)[0];
+
+    assert_eq!(
+        windows.use_tab(MAIN, view),
+        Err(LayoutError::NotASession(view))
+    );
+    assert_eq!(
+        windows.use_tab(WindowId(9), tab),
+        Err(LayoutError::NoSuchWindow(WindowId(9)))
+    );
+    // Its session is still opening: nothing to send to yet.
+    windows.use_tab(MAIN, opening).unwrap();
+
+    assert_eq!(windows.last_used().map(|used| used.tab), Some(tab));
 }

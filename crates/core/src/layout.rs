@@ -26,7 +26,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub use windows::{LayoutMut, Member, Taken, WindowId, WindowView, Windows};
+pub use windows::{LayoutMut, Member, Taken, Used, WindowId, WindowView, Windows};
 
 /// A tab, unique for the life of its [`Layout`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

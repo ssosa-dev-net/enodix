@@ -13,9 +13,10 @@ use netterm_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
 use netterm_core::job::{LoginBackup, LoginBackupOutcome, SessionLogin};
+use netterm_core::layout::WindowId;
 use netterm_core::session::{
     CloseReason, OpenError, OpenOptions, SessionError, SessionEvent, SessionEvents, SessionId,
-    SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
+    SessionManager, SessionRelays, SessionState, SessionTarget, SshTarget, TerminalSize,
 };
 use netterm_core::workspace::{HostId, Workspace};
 use support::{next_state, TestSshServer, PASSWORD, USERNAME, WAIT};
@@ -523,4 +524,35 @@ async fn a_refused_second_channel_closes_saying_so() {
         manager.open_channel(id, SIZE).unwrap_err(),
         SessionError::NotFound
     );
+}
+
+#[tokio::test]
+async fn the_outcome_is_kept_for_a_window_taking_the_session_later() {
+    let server = TestSshServer::start_device("r1").await;
+    let site = Site::new(&server);
+    let manager = support::manager();
+    let relays = SessionRelays::new();
+    let (id, events) = site.open(&manager, SessionLogin::Profile);
+    let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let key = relays.start(id, WindowId::MAIN, events, support::ToChannel(sender));
+    let outcome = tokio::time::timeout(WAIT * 3, async {
+        loop {
+            match received.recv().await {
+                Some(SessionEvent::Backup(outcome)) => return outcome,
+                Some(SessionEvent::Output(bytes)) => relays.acknowledge(id, key, bytes.len()),
+                Some(_) => {}
+                None => panic!("the session ended first"),
+            }
+        }
+    })
+    .await
+    .expect("no backup outcome arrived");
+
+    relays.release(id, key).unwrap();
+
+    assert!(
+        matches!(outcome, LoginBackupOutcome::Saved { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(relays.reported(id).unwrap().backup, Some(outcome));
 }

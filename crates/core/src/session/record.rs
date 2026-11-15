@@ -87,6 +87,15 @@ impl SessionRecord {
             role: workspace.host_role(id),
         })
     }
+
+    /// The session's host, if `workspace` is the one it came from and the
+    /// host is still in it: what its snippets are filled from (#86).
+    pub fn host_in(&self, workspace: &Workspace) -> Option<&HostId> {
+        let host = self.host.as_ref()?;
+        (self.workspace.as_deref() == Some(workspace.root())
+            && workspace.resolve_host(host).is_some())
+        .then_some(host)
+    }
 }
 
 /// Every session's record, by session id, until it is forgotten.

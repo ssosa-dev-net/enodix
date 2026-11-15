@@ -866,6 +866,18 @@ export function expandSnippet(
   return invoke<Expansion>("snippet_expand", { name, host, answers });
 }
 
+/**
+ * The snippet `name` for the session `id`, filled from its host while the
+ * open workspace is its own (the shell knows it, #86), then `answers`.
+ */
+export function expandSnippetForSession(
+  id: number,
+  name: string,
+  answers: Record<string, string>,
+) {
+  return invoke<Expansion>("session_snippet_expand", { id, name, answers });
+}
+
 /** A snippet made ready for each member of the multi-send group. */
 export type GroupExpansion =
   { kind: "lines"; members: string[][] } | { kind: "missing"; names: string[] };

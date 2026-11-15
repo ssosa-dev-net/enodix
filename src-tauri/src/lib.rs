@@ -1033,6 +1033,23 @@ fn snippet_expand(
     })?
 }
 
+/// The snippet `name` for the session `id`, filled from its host (while
+/// the open workspace is the one it came from, #86) and `answers`: how a
+/// session window fills a snippet for one of its terminals.
+#[tauri::command]
+fn session_snippet_expand(
+    shell: State<'_, Shell>,
+    records: State<'_, SessionRecords>,
+    id: u64,
+    name: String,
+    answers: BTreeMap<String, String>,
+) -> Result<Expansion, String> {
+    let host = read(&shell, |workspace| {
+        session_windows::snippet_host(&records, workspace, id)
+    })?;
+    snippet_expand(shell, name, host, answers)
+}
+
 /// A snippet made ready to send to every member of the multi-send group.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -3067,6 +3084,11 @@ pub fn run() {
             session_windows::session_window_take_tab,
             session_windows::session_dock_all,
             session_windows::session_windows_list,
+            session_windows::snippet_target,
+            session_windows::terminal_used,
+            session_windows::snippet_send_to,
+            session_windows::main_window_request,
+            session_snippet_expand,
             jobs_live,
             jobs_forget_finished,
             enrich_apply,

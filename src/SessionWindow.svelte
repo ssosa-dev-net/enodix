@@ -20,6 +20,7 @@
     type SessionAction,
     type SessionMove,
   } from "./lib/SessionMenu.svelte";
+  import SnippetVariables from "./lib/SnippetVariables.svelte";
   import StatusLine from "./lib/StatusLine.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
   import {
@@ -49,11 +50,15 @@
     trackSessionWindows,
     windowMoves,
   } from "./lib/sessionWindows.svelte";
+  import { expandSnippetForSession } from "./lib/workspace";
   import {
+    askMainWindow,
     closeSessionWindow,
     dockAll,
     dockSession,
+    onSnippetSend,
     onTabArrived,
+    terminalUsed,
     openSessionWindow,
     takeSessions,
     takeTab,
@@ -89,6 +94,10 @@
   let focusRequest = $state(0);
   /** Set while sessions leave: no other move meanwhile. */
   let moving = false;
+  /** A snippet waiting for the user to give its variables a value (#86). */
+  let asking = $state<{ tab: TabId; name: string; names: string[] } | null>(
+    null,
+  );
 
   void loadPreferences();
   // Changed in another window (zoom, theme): shown here too.
@@ -381,6 +390,67 @@
     }
   }
 
+  // The variables question is shown over its tab: hidden or closed, the
+  // snippet is not sent.
+  $effect(() => {
+    if (asking && !placement.get(asking.tab)?.shown) asking = null;
+  });
+
+  /**
+   * Sends the snippet `name`, from the main window's Snippets view, to
+   * `tab`'s terminal (the one used last, #86): the shell fills it from the
+   * session's host, the variables it lacks are asked over that pane, and
+   * it goes through the terminal's own paste path (its confirmation and
+   * line delay).
+   */
+  async function sendSnippet(
+    tab: TabId,
+    name: string,
+    answers: Record<string, string> = {},
+  ) {
+    const terminal = terminals[tab];
+    const id = terminal?.sessionId() ?? null;
+    if (!terminal || id === null || states[tab] !== "connected") {
+      error = `Cannot send ${name}: the session is no longer connected.`;
+      return;
+    }
+    if (activeTab !== tab) await edit({ kind: "activate", tab });
+    let expansion;
+    try {
+      expansion = await expandSnippetForSession(id, name, answers);
+    } catch (reason) {
+      error = `Cannot send ${name}: ${reason}`;
+      return;
+    }
+    if (expansion.kind === "missing") {
+      asking = { tab, name, names: expansion.names };
+      return;
+    }
+    const text = expansion.lines.map((line) => `${line}\n`).join("");
+    if (!terminal.sendText(text)) {
+      error = `Cannot send ${name}: the session is no longer connected.`;
+      return;
+    }
+    focusRequest += 1;
+  }
+
+  void onSnippetSend(({ tab, name }) => void sendSnippet(tab, name));
+
+  /** Asks the main window for something only it has, for `tab`'s session
+   * (#86); it comes forward. */
+  async function ask(
+    tab: TabId,
+    request: Parameters<typeof askMainWindow>[1],
+  ): Promise<boolean> {
+    try {
+      await askMainWindow(tab, request);
+      return true;
+    } catch (reason) {
+      error = String(reason);
+      return false;
+    }
+  }
+
   // Closing the window (its Close button, Alt+F4, the taskbar) docks its
   // sessions back first; one that cannot move now is asked about (#88
   // brings the real question).
@@ -574,6 +644,7 @@
           style:height="{rect?.height ?? 0}px"
           onfocusin={() => {
             if (!focused && place) void edit({ kind: "activate", tab });
+            void terminalUsed(tab);
           }}
         >
           <TerminalSession
@@ -595,8 +666,38 @@
             onstate={(next) => (states[tab] = next.state)}
             ondismiss={() => closeTab(tab)}
             onduplicate={(id) => duplicate(tab, id)}
+            ondetails={record.host === null
+              ? undefined
+              : () => void ask(tab, { kind: "details" })}
+            onpasswordlogin={record.host === null
+              ? undefined
+              : async (reason) => {
+                  // The main window asks for the password; this tab goes.
+                  if (await ask(tab, { kind: "passwordLogin", reason }))
+                    closeNow(tab);
+                }}
             moves={movesOf(tab)}
+            windowQuestion={asking?.tab === tab
+              ? "Not while the snippet's variables are asked"
+              : null}
           />
+          {#if asking?.tab === tab}
+            {@const { name: snippet, names } = asking}
+            <SnippetVariables
+              {snippet}
+              target={record.name}
+              {names}
+              onsend={(answers) => {
+                const send = { snippet, tab };
+                asking = null;
+                void sendSnippet(send.tab, send.snippet, answers);
+              }}
+              oncancel={() => {
+                asking = null;
+                focusRequest += 1;
+              }}
+            />
+          {/if}
         </div>
       {/each}
       {#if closing !== null && sessions[closing]}

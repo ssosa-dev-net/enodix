@@ -27,15 +27,16 @@ use std::time::Duration;
 use netterm_core::layout::{TabId, WindowId, WindowView, Windows};
 use netterm_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, SessionId, SessionManager, SessionRecord,
-    SessionRecords, SessionRelays, Transport,
+    SessionRecords, SessionRelays, SessionState, Transport,
 };
+use netterm_core::workspace::{HostId, Workspace};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 use super::{
     calling_window, focused_main, product_name, window_theme, window_view, Channels,
-    LoginBackupOutcome, StateMessage, Tabs, UserPreferences, MAIN_WINDOW,
+    LoginBackupOutcome, Shell, StateMessage, Tabs, UserPreferences, MAIN_WINDOW,
 };
 
 const SESSION_WINDOW_PREFIX: &str = "session-";
@@ -46,6 +47,14 @@ const SESSION_ARRIVED_EVENT: &str = "session-arrived";
 const SESSION_TAB_ARRIVED_EVENT: &str = "session-tab-arrived";
 /// Every window is told which session windows are open (#85).
 const SESSION_WINDOWS_EVENT: &str = "session-windows";
+/// The main window is told the terminal used last (#86), for its Snippets
+/// view.
+const SNIPPET_TARGET_EVENT: &str = "snippet-target";
+/// A session window is sent a snippet for one of its tabs (#86).
+const SNIPPET_SEND_EVENT: &str = "snippet-send";
+/// The main window is asked to do something for a session window's
+/// session (#86): open the details sheet, or log in with a password.
+const MAIN_WINDOW_REQUEST_EVENT: &str = "main-window-request";
 /// How long a new session window's page waits for its session.
 const TAKE_WAIT: Duration = Duration::from_secs(10);
 /// Where a session window opens, from the main window's corner.
@@ -240,9 +249,203 @@ pub(super) fn session_windows_list(
 }
 
 /// Tells every window which session windows are open now (one opened or
-/// closed, or its active tab changed), with `session-windows`.
+/// closed, or its active tab changed), with `session-windows`; and the
+/// main window the terminal used last (`snippet-target`), which may have
+/// moved or gone with it.
 pub(super) fn announce(app: &AppHandle, tabs: &Tabs, records: &SessionRecords) {
     let _ = app.emit(SESSION_WINDOWS_EVENT, listed(tabs, records));
+    let _ = app.emit_to(
+        MAIN_WINDOW,
+        SNIPPET_TARGET_EVENT,
+        snippet_target_of(tabs, records),
+    );
+}
+
+/// The terminal used last, which the main window's snippets go to (#86).
+#[derive(Clone, Serialize)]
+pub(super) struct SnippetTarget {
+    window: WindowId,
+    tab: TabId,
+    session: u64,
+    /// Its session's name, as its tab shows it.
+    name: String,
+}
+
+fn snippet_target_of(tabs: &Tabs, records: &SessionRecords) -> Option<SnippetTarget> {
+    let used = tabs.lock().last_used()?;
+    Some(SnippetTarget {
+        window: used.window,
+        tab: used.tab,
+        session: used.session.0,
+        name: records
+            .get(used.session)
+            .map(|record| record.name)
+            .unwrap_or_default(),
+    })
+}
+
+/// The terminal used last, in any window (#86).
+#[tauri::command]
+pub(super) fn snippet_target(
+    tabs: State<'_, Tabs>,
+    records: State<'_, SessionRecords>,
+) -> Option<SnippetTarget> {
+    snippet_target_of(&tabs, &records)
+}
+
+/// The calling window's terminal in the tab `tab` took the keyboard: it
+/// is the one used last (#86). The main window is told when that changes.
+#[tauri::command]
+pub(super) fn terminal_used(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    tabs: State<'_, Tabs>,
+    records: State<'_, SessionRecords>,
+    tab: TabId,
+) -> Result<(), String> {
+    let window = calling_window(&window)?;
+    let changed = {
+        let mut windows = tabs.lock();
+        let before = windows.last_used();
+        windows
+            .use_tab(window, tab)
+            .map_err(|error| error.to_string())?;
+        windows.last_used() != before
+    };
+    if changed {
+        let _ = app.emit_to(
+            MAIN_WINDOW,
+            SNIPPET_TARGET_EVENT,
+            snippet_target_of(&tabs, &records),
+        );
+    }
+    Ok(())
+}
+
+/// A snippet a session window sends to one of its tabs.
+#[derive(Clone, Serialize)]
+struct SnippetSend {
+    tab: TabId,
+    name: String,
+}
+
+/// Sends the snippet `name` from the main window's Snippets view to the
+/// session window `target`'s tab `tab` showing `id` (the terminal used
+/// last, #86): its page fills it in and pastes it there, asking over that
+/// pane what it must, and the window comes forward. Refused unless that
+/// tab shows that session and it is connected.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub(super) fn snippet_send_to(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    tabs: State<'_, Tabs>,
+    relays: State<'_, SessionRelays>,
+    target: WindowId,
+    tab: TabId,
+    id: u64,
+    name: String,
+) -> Result<(), String> {
+    if calling_window(&window)? != WindowId::MAIN {
+        return Err("snippets are sent from the main window".into());
+    }
+    let session = SessionId(id);
+    if target == WindowId::MAIN || tab_showing(&tabs.lock(), target, session) != Some(tab) {
+        return Err("that terminal is no longer there".into());
+    }
+    let connected = relays
+        .reported(session)
+        .is_some_and(|reported| matches!(reported.state, Some(SessionState::Connected)));
+    if !connected {
+        return Err("the session is no longer connected".into());
+    }
+    let receiving = app
+        .get_webview_window(&label_of(target))
+        .ok_or("that session window is gone")?;
+    receiving
+        .emit_to(
+            receiving.label(),
+            SNIPPET_SEND_EVENT,
+            SnippetSend { tab, name },
+        )
+        .map_err(|error| error.to_string())?;
+    let _ = receiving.unminimize();
+    let _ = receiving.set_focus();
+    Ok(())
+}
+
+/// The host the snippets of the session `id` are filled from: its host,
+/// while the open workspace is the one it came from and has it (#86).
+pub(super) fn snippet_host(
+    records: &SessionRecords,
+    workspace: &Workspace,
+    id: u64,
+) -> Option<HostId> {
+    records
+        .get(SessionId(id))
+        .and_then(|record| record.host_in(workspace).cloned())
+}
+
+/// What a session window asks of the main window for one of its sessions.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(super) enum MainRequest {
+    /// Open the details sheet on its host.
+    Details,
+    /// Log in to its host with a password: its SSH agent did not work.
+    PasswordLogin { reason: String },
+}
+
+/// A request, with the session's record, as the main window is told it.
+#[derive(Clone, Serialize)]
+struct MainRequested {
+    #[serde(flatten)]
+    request: MainRequest,
+    record: Option<SessionRecord>,
+    /// Its host: the open workspace is the one it came from and has it
+    /// (`SessionRecord::host_in`).
+    host: HostId,
+}
+
+/// The calling session window asks the main window to do `request` for
+/// the session of its tab `tab` (#86): the main window is told and comes
+/// forward. Refused (the main window cannot help) unless the session's
+/// host is in the open workspace, so the asking window keeps its tab.
+#[tauri::command]
+pub(super) fn main_window_request(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    tabs: State<'_, Tabs>,
+    records: State<'_, SessionRecords>,
+    tab: TabId,
+    request: MainRequest,
+) -> Result<(), String> {
+    let from = calling_window(&window)?;
+    if from == WindowId::MAIN {
+        return Err("not a session window".into());
+    }
+    let session = tabs
+        .lock()
+        .session_of(from, tab)
+        .ok_or("that tab shows no session")?;
+    let host = shell
+        .workspace()
+        .as_ref()
+        .and_then(|workspace| snippet_host(&records, workspace, session.0))
+        .ok_or("its host is not in the open workspace")?;
+    let record = records.get(session);
+    let main = focused_main(&app)?;
+    main.emit_to(
+        MAIN_WINDOW,
+        MAIN_WINDOW_REQUEST_EVENT,
+        MainRequested {
+            request,
+            record,
+            host,
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Builds a session window near `main`, `size` (logical) or as much of it
@@ -407,6 +610,11 @@ pub(super) struct Attached {
     /// Where it stands, before the events that waited for this window;
     /// `None`: none was shown yet.
     state: Option<StateMessage>,
+    /// What it reported to the windows before (#86), as their events said
+    /// it: the agreed algorithms, why its log failed, its backup outcome.
+    algorithms: Option<Vec<NegotiatedAlgorithms>>,
+    log_failure: Option<String>,
+    backup: Option<LoginBackupOutcome>,
 }
 
 /// The calling window is shown the session `id` from now on: it must show
@@ -439,7 +647,7 @@ pub(super) async fn session_attach(
         .transport(session)
         .map_err(|error| error.to_string())?;
     // Nobody holds it, so nothing is delivered between the two.
-    let state = relays.state(session).map(StateMessage::from);
+    let reported = relays.reported(session).unwrap_or_default();
     let attached = relays
         .attach(
             session,
@@ -461,7 +669,10 @@ pub(super) async fn session_attach(
         offset: attached.offset,
         encrypted,
         transport,
-        state,
+        state: reported.state.map(StateMessage::from),
+        algorithms: reported.algorithms,
+        log_failure: reported.log_failure.map(|failure| failure.to_string()),
+        backup: reported.backup,
     })
 }
 

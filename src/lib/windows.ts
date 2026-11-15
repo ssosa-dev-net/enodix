@@ -211,6 +211,91 @@ export function onSessionArrived(
   );
 }
 
+/**
+ * The terminal used last, in any window (#86): where the main window's
+ * Snippets view sends.
+ */
+export interface SnippetTarget {
+  window: number;
+  tab: TabId;
+  session: number;
+  name: string;
+}
+
+/** Tells the app that this window's terminal in `tab` took the keyboard. */
+export function terminalUsed(tab: TabId) {
+  return invoke<void>("terminal_used", { tab }).catch(() => {});
+}
+
+/** The terminal used last (null: none, or gone). */
+export function snippetTarget() {
+  return invoke<SnippetTarget | null>("snippet_target");
+}
+
+/** Calls `handler` (in the main window) whenever the terminal used last
+ * changes. */
+export function onSnippetTarget(
+  handler: (target: SnippetTarget | null) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWebviewWindow().listen<SnippetTarget | null>(
+    "snippet-target",
+    (event) => handler(event.payload),
+  );
+}
+
+/** Sends the snippet `name` to the terminal `target` in a session window,
+ * which fills it in, asks what it must over that pane and comes forward. */
+export function sendSnippetTo(target: SnippetTarget, name: string) {
+  return invoke<void>("snippet_send_to", {
+    target: target.window,
+    tab: target.tab,
+    id: target.session,
+    name,
+  });
+}
+
+/** Calls `handler` with each snippet the main window sends to one of
+ * this session window's tabs. */
+export function onSnippetSend(
+  handler: (send: { tab: TabId; name: string }) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWebviewWindow().listen<{ tab: TabId; name: string }>(
+    "snippet-send",
+    (event) => handler(event.payload),
+  );
+}
+
+/** What a session window asks of the main window for one of its
+ * sessions (#86). */
+export type MainRequest =
+  { kind: "details" } | { kind: "passwordLogin"; reason: string };
+
+/** Asks the main window to do `request` for the session of this session
+ * window's tab `tab`; the main window comes forward. */
+export function askMainWindow(tab: TabId, request: MainRequest) {
+  return invoke<void>("main_window_request", { tab, request });
+}
+
+/** A session window's request as the main window is told it: with the
+ * session's record, and its host while it is in the open workspace. */
+export type MainRequested = MainRequest & {
+  record: SessionRecord | null;
+  host: string;
+};
+
+/** Calls `handler` (in the main window) with each request. */
+export function onMainWindowRequest(
+  handler: (request: MainRequested) => void,
+): Promise<UnlistenFn> {
+  return getCurrentWebviewWindow().listen<MainRequested>(
+    "main-window-request",
+    (event) => handler(event.payload),
+  );
+}
+
+/** The core's id for the main window. */
+export const MAIN_WINDOW_ID = 0;
+
 /** Closes every detached window (their jobs go on). */
 export function closeDetachedWindows() {
   return invoke<void>("windows_close_detached");

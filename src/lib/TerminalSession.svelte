@@ -399,6 +399,11 @@
     return sendLines(lines, lineDelayMs);
   }
 
+  /** The core's id for the session, once it has opened. */
+  export function sessionId(): number | null {
+    return session?.id ?? null;
+  }
+
   /**
    * Sends `text` to the session the way a paste is sent (a snippet's
    * lines, each ending in a line break). Only while connected; returns
@@ -951,7 +956,16 @@
           return;
         }
         session = opened;
-        if (opened.takenState && !stateSeen) status = opened.takenState;
+        // What it reported to the window before, unless newer events
+        // (those that waited for this window) said otherwise (#86).
+        const taken = opened.taken;
+        if (taken) {
+          if (taken.state && !stateSeen) status = taken.state;
+          if (taken.algorithms && algorithms.length === 0)
+            algorithms = taken.algorithms;
+          logFailure ??= taken.logFailure;
+          backup ??= taken.backup;
+        }
         // The window may have been resized while the session was opening;
         // a session moved here learns this terminal's size whatever it is.
         const current = size();
