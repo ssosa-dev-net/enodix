@@ -1,4 +1,9 @@
 <script lang="ts" module>
+  import Archive from "@lucide/svelte/icons/archive";
+  import KeyRound from "@lucide/svelte/icons/key-round";
+  import ListChecks from "@lucide/svelte/icons/list-checks";
+  import Server from "@lucide/svelte/icons/server";
+  import SquareCode from "@lucide/svelte/icons/square-code";
   import type { SideView } from "./preferences.svelte";
 
   /** The rail's views, in order, with their names and shortcuts (Ctrl+Shift
@@ -10,17 +15,21 @@
     { view: "backups", name: "Config backups", key: "G" },
     { view: "credentials", name: "Credentials", key: "L" },
   ];
+
+  /** Each side view's icon (the rail's, and the palette's). */
+  export const SIDE_VIEW_ICONS = {
+    hosts: Server,
+    snippets: SquareCode,
+    jobs: ListChecks,
+    backups: Archive,
+    credentials: KeyRound,
+  };
 </script>
 
 <script lang="ts">
   // The thin rail of icons on the window's left edge: it picks the side
   // view, and clicking the open view's icon folds the side view away.
-  import Archive from "@lucide/svelte/icons/archive";
-  import KeyRound from "@lucide/svelte/icons/key-round";
-  import ListChecks from "@lucide/svelte/icons/list-checks";
-  import Server from "@lucide/svelte/icons/server";
   import Settings from "@lucide/svelte/icons/settings";
-  import SquareCode from "@lucide/svelte/icons/square-code";
   import { runningCount } from "./jobs.svelte";
 
   interface Props {
@@ -43,14 +52,6 @@
     onselect,
     onpreferences,
   }: Props = $props();
-
-  const icons = {
-    hosts: Server,
-    snippets: SquareCode,
-    jobs: ListChecks,
-    backups: Archive,
-    credentials: KeyRound,
-  };
 
   const running = $derived(runningCount());
   const elsewhere = $derived(runningCount(true));
@@ -94,7 +95,7 @@
   data-rail-folded={folded || undefined}
 >
   {#each SIDE_VIEWS as each (each.view)}
-    {@const Icon = icons[each.view]}
+    {@const Icon = SIDE_VIEW_ICONS[each.view]}
     {@const marked = mark(each.view)}
     <button
       class="icon"

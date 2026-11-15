@@ -1,8 +1,39 @@
+<script lang="ts" module>
+  import type { Component } from "svelte";
+
+  /** Something the palette does besides connecting and sending snippets
+   * (#76): open a side view or a view tab, create, import, switch. */
+  export interface PaletteAction {
+    /** Its marker: `[data-palette-command=<id>]`. */
+    id: string;
+    /** Its name, as listed and searched. */
+    label: string;
+    /** More words that find it. */
+    words: string;
+    /** What it does, beside its name (a shortcut, say). */
+    detail: string;
+    icon: Component<{ size?: number; "aria-hidden"?: boolean | "true" }>;
+    run: () => void;
+  }
+
+  /** The actions matching `query`: every typed word is part of the label
+   * or the words (none for an empty query). */
+  export function matchActions(
+    actions: readonly PaletteAction[],
+    query: string,
+  ): PaletteAction[] {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return [];
+    return actions.filter((action) => {
+      const text = `${action.label} ${action.words}`.toLowerCase();
+      return words.every((word) => text.includes(word));
+    });
+  }
+</script>
+
 <script lang="ts">
   import { tick } from "svelte";
   import RoleIcon from "./RoleIcon.svelte";
-  import type { ViewName } from "./layout";
-  import { openView, VIEWS } from "./views";
   import {
     fieldLabel,
     hostRole,
@@ -26,32 +57,18 @@
     onsnippet: (name: string) => void;
     /** The session snippets go to, by name; null: none. */
     target: string | null;
+    /** The actions it lists after the hosts. */
+    actions: readonly PaletteAction[];
     onclose: () => void;
   }
 
-  let { onconnect, onsnippet, target, onclose }: Props = $props();
+  let { onconnect, onsnippet, target, actions, onclose }: Props = $props();
 
   /** A query starting with this searches the snippets instead of hosts. */
   const SNIPPET_PREFIX = ">";
 
   /** The most hits shown at once. */
   const LIMIT = 50;
-
-  /** Views the palette opens (#72), listed after the hosts when every
-   * typed word is part of their label or keywords. */
-  const COMMANDS: readonly { view: ViewName; label: string; words: string }[] =
-    [
-      {
-        view: "platforms",
-        label: "Platform definitions",
-        words: "platforms prompts paging privilege show config devices jobs",
-      },
-      {
-        view: "highlights",
-        label: "Highlight rules",
-        words: "highlighting keywords patterns colours colors",
-      },
-    ];
 
   let query = $state("");
   let results = $state<SearchResults | null>(null);
@@ -61,15 +78,9 @@
   /** The snippets found, when the query searches snippets; else null. */
   let snippetHits = $state<Snippet[] | null>(null);
   const snippetMode = $derived(query.startsWith(SNIPPET_PREFIX));
-  /** The views matching the query (none for an empty or snippet query). */
-  const commands = $derived.by(() => {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    if (snippetMode || words.length === 0) return [];
-    return COMMANDS.filter((command) => {
-      const text = `${command.label} ${command.words}`.toLowerCase();
-      return words.every((word) => text.includes(word));
-    });
-  });
+  /** The actions matching the query (none for an empty or snippet
+   * query). */
+  const commands = $derived(snippetMode ? [] : matchActions(actions, query));
   /** The hosts listed (before the commands). */
   const hostCount = $derived(snippetHits ? 0 : (results?.hits.length ?? 0));
   let list = $state<HTMLElement>();
@@ -142,9 +153,9 @@
     onsnippet(snippet.name);
   }
 
-  function run(view: ViewName) {
+  function run(action: PaletteAction) {
     onclose();
-    openView(view);
+    action.run();
   }
 
   async function move(by: number) {
@@ -189,14 +200,14 @@
       const command =
         answered === query ? commands[active - hostCount] : undefined;
       if (command) {
-        run(command.view);
+        run(command);
         return;
       }
       const reveal = event.shiftKey;
       const hit = await chosen();
       if (!hit) {
         // No host matches: the first command, if one does.
-        if (commands[0]) run(commands[0].view);
+        if (commands[0]) run(commands[0]);
         return;
       }
       if (reveal) show(hit);
@@ -224,7 +235,7 @@
     <input
       bind:this={input}
       name="palette-query"
-      placeholder="Search hosts by name, address, tag or field; > for snippets"
+      placeholder="Search hosts and actions; > for snippets"
       bind:value={query}
       {onkeydown}
       autocomplete="off"
@@ -281,27 +292,27 @@
           {#if folder}<span class="folder">{folder}</span>{/if}
         </li>
       {/each}
-      {#each commands as command, offset (command.view)}
+      {#each commands as command, offset (command.id)}
         {@const index = hostCount + offset}
-        {@const Icon = VIEWS[command.view].icon}
+        {@const Icon = command.icon}
         <li
           id="palette-hit-{index}"
           role="option"
           aria-selected={index === active}
           class:active={index === active}
           data-index={index}
-          data-palette-command={command.view}
-          onclick={() => run(command.view)}
+          data-palette-command={command.id}
+          onclick={() => run(command)}
           onpointermove={() => (active = index)}
         >
           <span class="icon"><Icon size={14} aria-hidden="true" /></span>
           <span class="name">{command.label}</span>
-          <span class="detail">Open in a tab</span>
+          <span class="detail">{command.detail}</span>
         </li>
       {/each}
     </ul>
     {#if results && results.total === 0 && commands.length === 0}
-      <p class="empty">No host matches.</p>
+      <p class="empty">No host or action matches.</p>
     {/if}
     {#if snippetHits && snippetHits.length === 0}
       <p class="empty">No snippet matches.</p>

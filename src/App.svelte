@@ -1,9 +1,18 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
+  import FolderOpen from "@lucide/svelte/icons/folder-open";
+  import FolderPlus from "@lucide/svelte/icons/folder-plus";
+  import PanelLeft from "@lucide/svelte/icons/panel-left";
+  import ServerPlus from "@lucide/svelte/icons/server-plus";
   import X from "@lucide/svelte/icons/x";
   import type { Attachment } from "svelte/attachments";
-  import ActivityRail, { SIDE_VIEWS } from "./lib/ActivityRail.svelte";
-  import CommandPalette from "./lib/CommandPalette.svelte";
+  import ActivityRail, {
+    SIDE_VIEW_ICONS,
+    SIDE_VIEWS,
+  } from "./lib/ActivityRail.svelte";
+  import CommandPalette, {
+    type PaletteAction,
+  } from "./lib/CommandPalette.svelte";
   import ConfirmClose from "./lib/ConfirmClose.svelte";
   import ConfirmJoin from "./lib/ConfirmJoin.svelte";
   import PasteConfirm, { type PasteMember } from "./lib/PasteConfirm.svelte";
@@ -53,10 +62,15 @@
     hostRole,
     hostSafety,
     inventory,
+    newFolder,
+    newHost,
+    openCsvImport,
     openDetails,
+    openNornirImport,
     selectedFolder,
     selectedHost,
     setWorkspace,
+    targetFolder,
     trackFilterView,
     workspaceChanged,
     type Item,
@@ -750,6 +764,105 @@
       void changePreferences({ sideView: view, leftPanelHidden: false });
     }
   }
+
+  /** What the palette reaches besides hosts and snippets (#76): every
+   * side view, the view tabs that need no subject, creating, importing and
+   * switching the workspace. New hosts, folders and imports go to the
+   * selected folder (or the selected host's), as the add control's. */
+  const paletteActions: PaletteAction[] = [
+    ...SIDE_VIEWS.map((each) => ({
+      id: `side-${each.view}`,
+      label: each.name,
+      words: `side view show ${each.view}`,
+      detail: `Side view · Ctrl+Shift+${each.key}`,
+      icon: SIDE_VIEW_ICONS[each.view],
+      run: () =>
+        void changePreferences({ sideView: each.view, leftPanelHidden: false }),
+    })),
+    {
+      id: "fold-side-view",
+      label: "Fold or unfold the side view",
+      words: "hide show toggle panel",
+      detail: "Ctrl+Shift+B",
+      icon: PanelLeft,
+      run: toggleSideView,
+    },
+    {
+      id: "new-host",
+      label: "New host",
+      words: "add create device",
+      detail: "In the selected folder",
+      icon: ServerPlus,
+      run: () => newHost(targetFolder()),
+    },
+    {
+      id: "new-folder",
+      label: "New folder",
+      words: "add create",
+      detail: "In the selected folder",
+      icon: FolderPlus,
+      run: () => newFolder(targetFolder()),
+    },
+    {
+      id: "csv-import",
+      label: "Import from CSV",
+      words: "hosts spreadsheet add",
+      detail: "Open in a tab",
+      icon: VIEWS["csv-import"].icon,
+      run: () => openCsvImport(targetFolder()),
+    },
+    {
+      id: "nornir-import",
+      label: "Import from Nornir",
+      words: "hosts inventory yaml add",
+      detail: "Open in a tab",
+      icon: VIEWS["nornir-import"].icon,
+      run: () => openNornirImport(targetFolder()),
+    },
+    {
+      id: "switch-workspace",
+      label: "Switch workspace",
+      words: "open create add workspaces folder",
+      detail: "Ctrl+Shift+O",
+      icon: FolderOpen,
+      run: () => (switcher = true),
+    },
+    ...(
+      [
+        [
+          "preferences",
+          "Preferences",
+          "settings theme font scrollback python updates",
+          "Ctrl+,",
+        ],
+        [
+          "platforms",
+          "Platform definitions",
+          "platforms prompts paging privilege show config devices jobs",
+          "Open in a tab",
+        ],
+        [
+          "highlights",
+          "Highlight rules",
+          "highlighting keywords patterns colours colors",
+          "Open in a tab",
+        ],
+        [
+          "python-setup",
+          "Python setup",
+          "environment interpreter scripts nornir netmiko napalm",
+          "Open in a tab",
+        ],
+      ] as const
+    ).map(([view, label, words, detail]) => ({
+      id: view,
+      label,
+      words,
+      detail,
+      icon: VIEWS[view].icon,
+      run: () => openViewTab({ view, subject: null }),
+    })),
+  ];
 
   // The tree's filters apply whichever side view is shown.
   trackFilterView();
@@ -1503,6 +1616,7 @@
     onconnect={prompt}
     onsnippet={(snippet) => void sendSnippet(snippet)}
     target={snippetTarget}
+    actions={paletteActions}
     onclose={() => (inventory.palette = false)}
   />
 {/if}
