@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The Preferences dialog's Security section: whether credentials are in
+  // The Preferences view's Security section: whether credentials are in
   // the keychain or the vault; turning the vault on, changing its master
   // password and turning it off. Without a keychain (Linux) the vault is
   // the only store: it has to be on to keep anything, and cannot be turned

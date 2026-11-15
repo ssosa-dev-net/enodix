@@ -25,6 +25,21 @@ export interface SplitNode {
 
 export type LayoutNode = PaneNode | SplitNode;
 
+/**
+ * A view shown in a tab (#68): which view it is and what it is about (a
+ * host id, a run id), if anything. A view is open in one tab at most.
+ */
+export interface ViewRef {
+  view: ViewName;
+  subject: string | null;
+}
+
+/** The views that open as tabs. Later views add their name here. */
+export type ViewName = "preferences";
+
+/** What a tab holds: a session's terminal, or a view. */
+export type TabKind = { kind: "session" } | ({ kind: "view" } & ViewRef);
+
 export interface Layout {
   root: LayoutNode;
   activePane: PaneId;
@@ -33,12 +48,16 @@ export interface Layout {
    * or pasted in one of them reaches them all (the shell routes it).
    */
   group: TabId[];
+  /** What each tab holds, by tab id. */
+  kinds: Record<string, TabKind>;
   /** Raised by every change: an older layout is out of date. */
   revision: number;
 }
 
 export type LayoutEdit =
   | { kind: "openTab" }
+  /** Shows the view's tab if it is open, else opens one. */
+  | { kind: "openView"; view: ViewName; subject: string | null }
   | { kind: "openTabBeside"; tab: TabId }
   | { kind: "activate"; tab: TabId }
   | { kind: "activatePane"; pane: PaneId }
@@ -71,6 +90,14 @@ export function resetLayout(): Promise<Layout> {
 
 export function editLayout(edit: LayoutEdit): Promise<LayoutChanged> {
   return invoke<LayoutChanged>("layout_edit", { edit });
+}
+
+/** The view `tab` shows, or null for a session tab (or an unknown one). */
+export function viewOf(layout: Layout, tab: TabId): ViewRef | null {
+  const kind = layout.kinds[String(tab)];
+  return kind?.kind === "view"
+    ? { view: kind.view, subject: kind.subject }
+    : null;
 }
 
 /** Every pane, in reading order. */

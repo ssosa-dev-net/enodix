@@ -19,7 +19,8 @@
   } from "./lib/PaneView.svelte";
   import PanelResizer from "./lib/PanelResizer.svelte";
   import PlaceholderViews from "./lib/PlaceholderViews.svelte";
-  import PreferencesDialog from "./lib/PreferencesDialog.svelte";
+  import PreferencesView from "./lib/PreferencesView.svelte";
+  import { setViewOpener, VIEWS } from "./lib/views";
   import PythonSetupDialog from "./lib/PythonSetupDialog.svelte";
   import { python, refreshPython } from "./lib/python.svelte";
   import PlatformsDialog from "./lib/PlatformsDialog.svelte";
@@ -83,6 +84,8 @@
     type LayoutEdit,
     type PaneId,
     type TabId,
+    type ViewRef,
+    viewOf,
   } from "./lib/layout";
   import {
     expandSnippet,
@@ -270,6 +273,24 @@
     forgetClosedTabs();
   }
 
+  /** Shows `view` in a tab (its own if open). */
+  function openViewTab(view: ViewRef) {
+    focusRequest += 1;
+    void edit({ kind: "openView", view: view.view, subject: view.subject });
+  }
+  setViewOpener(openViewTab);
+
+  /** The view tabs, by tab id, as the core's layout names them. */
+  const viewTabs = $derived(
+    layout
+      ? Object.keys(layout.kinds).flatMap((key) => {
+          const tab = Number(key);
+          const shows = viewOf(layout!, tab);
+          return shows ? [{ tab, ...shows }] : [];
+        })
+      : [],
+  );
+
   /** Drops the sessions of tabs no longer in the layout (their terminals go). */
   function forgetClosedTabs() {
     for (const key of Object.keys(sessions)) {
@@ -356,8 +377,10 @@
     return `the multi-send group (${layout?.group.length ?? 0})`;
   }
 
-  /** Adds `tab` to the multi-send group, or takes it out. */
+  /** Adds `tab` to the multi-send group, or takes it out. View tabs never
+   * join (the core refuses them too). */
   function toggleGroup(tab: TabId) {
+    if (!sessions[tab]) return;
     if (inGroup(tab)) void edit({ kind: "leaveGroup", tab });
     else void join([tab], { kind: "joinGroup", tab });
   }
@@ -366,7 +389,7 @@
   function joinPane(pane: PaneId) {
     const joining = () =>
       (panes.find((each) => each.id === pane)?.tabs ?? []).filter(
-        (tab) => !inGroup(tab),
+        (tab) => sessions[tab] && !inGroup(tab),
       );
     void join(joining(), { kind: "joinPane", pane }, joining);
   }
@@ -490,9 +513,23 @@
 
   const handlers: PaneHandlers = {
     tab(tab) {
+      const shows = layout ? viewOf(layout, tab) : null;
+      if (shows) {
+        const name = VIEWS[shows.view].title(shows.subject);
+        return {
+          view: shows.view,
+          name,
+          title: name,
+          role: null,
+          environment: null,
+          state: "connected",
+          member: false,
+        };
+      }
       const session = sessions[tab];
       if (!session) return null;
       return {
+        view: null,
         name: session.name,
         title: session.title,
         role: roleOf(session),
@@ -519,7 +556,7 @@
     closePane: (pane) => void edit({ kind: "closePane", pane }),
     joinPane,
     menu: (tab, x, y) => {
-      const actions = terminals[tab]?.actions() ?? [];
+      const actions = sessions[tab] ? (terminals[tab]?.actions() ?? []) : [];
       tabMenu = {
         x,
         y,
@@ -539,6 +576,10 @@
 
   /** Closes `tab`, first asking if its session is still live. */
   function closeTab(tab: TabId) {
+    if (layout && viewOf(layout, tab)) {
+      void edit({ kind: "closeTab", tab });
+      return;
+    }
     if (!sessions[tab]) return;
     if (tabState(tab) !== "disconnected") {
       closing = tab;
@@ -995,7 +1036,7 @@
       : undefined;
     if (chosen) return () => selectView(chosen.view);
     if (!event.shiftKey && (event.code === "Comma" || event.key === ",")) {
-      return () => (preferences.dialog = true);
+      return () => openViewTab({ view: "preferences", subject: null });
     }
     // Opens or closes the details sheet on the selection.
     if (event.shiftKey && letter("D")) {
@@ -1038,7 +1079,6 @@
     if (vaultLocked) return;
     const busy =
       inventory.dialog ||
-      preferences.dialog ||
       highlighting.dialog ||
       python.dialog ||
       inventory.palette ||
@@ -1067,7 +1107,7 @@
       problems={inventory.workspace?.problems.length ?? 0}
       missingProfiles={profiles.view.missing.length}
       onselect={selectView}
-      onpreferences={() => (preferences.dialog = true)}
+      onpreferences={() => openViewTab({ view: "preferences", subject: null })}
     />
     {#if leftShown}
       <aside class="side-view" data-side-view={sideView}>
@@ -1170,6 +1210,32 @@
                 onsend={() => question.answer(true)}
                 oncancel={() => question.answer(false)}
               />
+            {/if}
+          </div>
+        {/each}
+        {#each viewTabs as item (item.tab)}
+          {@const place = placement.get(item.tab)}
+          {@const rect = place ? rects[place.pane] : undefined}
+          <div
+            class="slot view"
+            data-tab={item.tab}
+            data-pane={place?.pane}
+            data-view-slot={item.view}
+            data-view-active={(place?.shown &&
+              place.pane === layout.activePane) ||
+              undefined}
+            hidden={!place?.shown || rect === undefined}
+            style:left="{rect?.left ?? 0}px"
+            style:top="{rect?.top ?? 0}px"
+            style:width="{rect?.width ?? 0}px"
+            style:height="{rect?.height ?? 0}px"
+            onfocusin={() => {
+              if (place && place.pane !== layout?.activePane)
+                void edit({ kind: "activatePane", pane: place.pane });
+            }}
+          >
+            {#if item.view === "preferences"}
+              <PreferencesView />
             {/if}
           </div>
         {/each}
@@ -1389,15 +1455,6 @@
   />
 {/if}
 
-{#if preferences.dialog}
-  <PreferencesDialog
-    onclose={() => {
-      preferences.dialog = false;
-      focusRequest += 1;
-    }}
-  />
-{/if}
-
 {#if python.dialog}
   <PythonSetupDialog
     onclose={() => {
@@ -1531,6 +1588,10 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .slot.view {
+    background: var(--bg);
   }
 
   .slot.connect {

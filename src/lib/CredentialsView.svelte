@@ -15,7 +15,7 @@
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   import type { ProfileSummary } from "./credentials";
   import { inventory } from "./inventory.svelte";
-  import { preferences } from "./preferences.svelte";
+  import { openView } from "./views";
   import ProfileForm from "./ProfileForm.svelte";
   import { deleteProfile, deleteSecret, profiles } from "./profiles.svelte";
   import SecretForm from "./SecretForm.svelte";
@@ -171,7 +171,7 @@
           data-open-vault
           aria-label="The vault, in Preferences"
           title="The vault, in Preferences"
-          onclick={() => (preferences.dialog = true)}
+          onclick={() => openView("preferences")}
           ><Settings size={13} aria-hidden="true" /></button
         >
       </div>

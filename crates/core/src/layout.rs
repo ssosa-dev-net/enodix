@@ -15,8 +15,13 @@
 //! keeps it; new tabs start outside. To route input, each tab can be told
 //! the session it shows ([`Layout::attach_session`]); see
 //! [`Layout::input_targets`].
+//!
+//! A tab holds a session or a view (#68): a [`View`] names which view it is
+//! and what it is about. A view is open at most once: opening it again
+//! shows its tab. View tabs move, split and close like session tabs, but
+//! never join the multi-send group nor show a session.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +48,34 @@ impl fmt::Display for PaneId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// A view shown in a tab: which view it is (a name the interface knows,
+/// such as `preferences`) and what it is about (a host id, a run id), if it
+/// is about something. Two tabs never show the same view.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct View {
+    pub view: String,
+    pub subject: Option<String>,
+}
+
+impl View {
+    pub fn new(view: impl Into<String>, subject: Option<String>) -> Self {
+        Self {
+            view: view.into(),
+            subject,
+        }
+    }
+}
+
+/// What a tab holds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum TabKind {
+    /// A session's terminal ([`Layout::open_tab`]).
+    Session,
+    /// A view ([`Layout::open_view`]).
+    View(View),
 }
 
 /// Where a split puts the new pane, and how a split lays out its children.
@@ -90,6 +123,8 @@ pub enum LayoutError {
     NoSuchPane(PaneId),
     #[error("the last pane cannot be closed")]
     LastPane,
+    #[error("the tab {0} shows a view, not a session")]
+    NotASession(TabId),
 }
 
 /// The tabs and panes of a window.
@@ -100,6 +135,8 @@ pub struct Layout {
     active_pane: PaneId,
     /// The multi-send group's tabs, in the order they joined.
     group: Vec<TabId>,
+    /// What each tab holds.
+    kinds: BTreeMap<TabId, TabKind>,
     revision: u64,
     #[serde(skip)]
     next_id: u64,
@@ -122,6 +159,7 @@ impl Layout {
             root: Node::Pane(empty_pane(pane)),
             active_pane: pane,
             group: Vec::new(),
+            kinds: BTreeMap::new(),
             revision: 0,
             next_id: 2,
             sessions: HashMap::new(),
@@ -181,9 +219,42 @@ impl Layout {
         tabs
     }
 
-    /// A new tab at the end of the active pane, shown.
+    /// What `tab` holds; `None` for a tab that does not exist.
+    pub fn tab_kind(&self, tab: TabId) -> Option<&TabKind> {
+        self.kinds.get(&tab)
+    }
+
+    /// Whether `tab` exists and shows a view.
+    pub fn is_view(&self, tab: TabId) -> bool {
+        matches!(self.tab_kind(tab), Some(TabKind::View(_)))
+    }
+
+    /// The tab showing `view`, if it is open.
+    pub fn view_tab(&self, view: &View) -> Option<TabId> {
+        self.kinds
+            .iter()
+            .find(|(_, kind)| matches!(kind, TabKind::View(open) if open == view))
+            .map(|(&tab, _)| tab)
+    }
+
+    /// A new session tab at the end of the active pane, shown.
     pub fn open_tab(&mut self) -> TabId {
+        self.open_new(TabKind::Session)
+    }
+
+    /// Shows `view`: its tab if it is open (that pane becomes active),
+    /// else a new tab at the end of the active pane.
+    pub fn open_view(&mut self, view: View) -> TabId {
+        if let Some(tab) = self.view_tab(&view) {
+            self.activate(tab).expect("the view's tab exists");
+            return tab;
+        }
+        self.open_new(TabKind::View(view))
+    }
+
+    fn open_new(&mut self, kind: TabKind) -> TabId {
         let tab = TabId(self.new_id());
+        self.kinds.insert(tab, kind);
         let pane = self.active_pane;
         let pane = self.pane_mut(pane).expect("the active pane exists");
         pane.tabs.push(tab);
@@ -196,6 +267,7 @@ impl Layout {
     pub fn open_tab_beside(&mut self, beside: TabId) -> Result<TabId, LayoutError> {
         let pane_id = self.find_tab(beside)?;
         let tab = TabId(self.new_id());
+        self.kinds.insert(tab, TabKind::Session);
         let pane = self.pane_mut(pane_id).expect("found above");
         let at = position(&pane.tabs, beside) + 1;
         pane.tabs.insert(at, tab);
@@ -362,8 +434,9 @@ impl Layout {
     }
 
     /// Adds `tab` to the multi-send group (nothing changes if it is in it).
+    /// A view tab is refused.
     pub fn join_group(&mut self, tab: TabId) -> Result<(), LayoutError> {
-        self.find_tab(tab)?;
+        self.find_session_tab(tab)?;
         if !self.in_group(tab) {
             self.group.push(tab);
             self.changed();
@@ -371,7 +444,7 @@ impl Layout {
         Ok(())
     }
 
-    /// Adds every tab of `pane` that is not a member yet to the multi-send
+    /// Adds every session tab of `pane` that is not a member yet to the multi-send
     /// group, in the pane's order, and returns them (nothing changes if
     /// there are none).
     pub fn join_pane(&mut self, pane: PaneId) -> Result<Vec<TabId>, LayoutError> {
@@ -381,7 +454,7 @@ impl Layout {
             .tabs
             .iter()
             .copied()
-            .filter(|&tab| !self.in_group(tab))
+            .filter(|&tab| !self.in_group(tab) && !self.is_view(tab))
             .collect();
         if !joining.is_empty() {
             self.group.extend(&joining);
@@ -411,9 +484,9 @@ impl Layout {
 
     /// Records that `tab` shows `session` (a reconnect keeps the same
     /// session). Not part of what the interface is sent, so the revision
-    /// stays.
+    /// stays. A view tab is refused.
     pub fn attach_session(&mut self, tab: TabId, session: SessionId) -> Result<(), LayoutError> {
-        self.find_tab(tab)?;
+        self.find_session_tab(tab)?;
         self.sessions.insert(tab, session);
         Ok(())
     }
@@ -440,6 +513,7 @@ impl Layout {
     fn forget(&mut self, tab: TabId) {
         self.group.retain(|&member| member != tab);
         self.sessions.remove(&tab);
+        self.kinds.remove(&tab);
     }
 
     fn step(&mut self, by: isize) {
@@ -484,6 +558,14 @@ impl Layout {
 
     fn find_tab(&self, tab: TabId) -> Result<PaneId, LayoutError> {
         self.pane_of(tab).ok_or(LayoutError::NoSuchTab(tab))
+    }
+
+    fn find_session_tab(&self, tab: TabId) -> Result<(), LayoutError> {
+        self.find_tab(tab)?;
+        if self.is_view(tab) {
+            return Err(LayoutError::NotASession(tab));
+        }
+        Ok(())
     }
 
     fn find_pane(&self, pane: PaneId) -> Result<(), LayoutError> {

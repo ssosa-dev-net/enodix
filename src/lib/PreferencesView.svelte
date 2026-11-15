@@ -13,26 +13,12 @@
   import PythonSection from "./PythonSection.svelte";
   import { python } from "./python.svelte";
 
-  interface Props {
-    onclose: () => void;
-  }
-
-  let { onclose }: Props = $props();
-
   const current = $derived(preferences.current);
 
   /** A whole number from a number field, or null when it holds none. */
   function wholeNumber(input: HTMLInputElement): number | null {
     const value = Math.round(input.valueAsNumber);
     return Number.isFinite(value) ? value : null;
-  }
-
-  function onkeydown(event: KeyboardEvent) {
-    if (event.key !== "Escape") return;
-    // A field being typed in is saved (its change event), not dropped.
-    if (document.activeElement instanceof HTMLElement)
-      document.activeElement.blur();
-    onclose();
   }
 
   const SHORTCUTS: [string, string][] = [
@@ -43,16 +29,10 @@
   ];
 </script>
 
-<svelte:window {onkeydown} />
-
-<div
-  class="backdrop"
-  role="dialog"
-  aria-modal="true"
-  aria-labelledby="preferences-title"
-  data-dialog="preferences"
->
-  <section>
+<!-- A view tab (#68): beside the terminals, so a change shows at once on
+     a terminal in the pane next to it. Every field saves on change. -->
+<div class="view" data-view="preferences">
+  <section aria-labelledby="preferences-title">
     <h2 id="preferences-title">Preferences</h2>
     <div class="fields">
       <label for="preference-theme">Theme</label>
@@ -173,10 +153,7 @@
         <button
           type="button"
           data-open-highlights
-          onclick={() => {
-            onclose();
-            highlighting.dialog = true;
-          }}>Rules…</button
+          onclick={() => (highlighting.dialog = true)}>Rules…</button
         >
       </span>
 
@@ -221,12 +198,7 @@
 
     <VaultSection />
 
-    <PythonSection
-      onsetup={() => {
-        onclose();
-        python.dialog = true;
-      }}
-    />
+    <PythonSection onsetup={() => (python.dialog = true)} />
 
     <dl>
       {#each SHORTCUTS as [what, keys] (what)}
@@ -234,36 +206,22 @@
         <dd>{keys}</dd>
       {/each}
     </dl>
-
-    <div class="actions">
-      <!-- svelte-ignore a11y_autofocus -->
-      <button autofocus onclick={onclose}>Close</button>
-    </div>
   </section>
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 15;
-    display: grid;
-    place-items: center;
-    padding: var(--space-4);
-    background: var(--backdrop);
+  .view {
+    height: 100%;
+    overflow: auto;
+    background: var(--bg);
   }
 
   section {
-    width: min(30rem, 100%);
-    max-height: 100%;
-    overflow: auto;
+    width: min(36rem, 100%);
     display: grid;
     gap: var(--space-3);
-    padding: var(--space-4);
-    background: var(--dialog);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
+    padding: var(--space-5) var(--space-4);
+    margin: 0 auto;
   }
 
   h2 {
@@ -316,10 +274,5 @@
 
   dd {
     margin: 0;
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
   }
 </style>
