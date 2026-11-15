@@ -43,11 +43,10 @@ What has to be true before anyone but the developer uses the app. It runs alongs
 - Walk that path from a clean Windows profile and fix every place it stalls: the empty first window, creating or opening a workspace, the first credential profile, the first host-key question, the first failed login.
 - Error messages on that path say what to do next.
 
-**Design pass**
+**Redesign**
 
-- The interface was built to work, not to look good, and engineers choose a terminal partly on feel. A deliberate pass over typography, spacing, colour, icons and the empty states, in both themes, so the app looks like something worth trusting with production.
-- The terminal itself first (fonts, cursor, selection, scrollbars, tab bar), then the tree and side panel, then the dialogs.
-- No new features in this pass.
+- Specified and ticketed on 2026-11-15: the spec is issue #61 and its tickets are #62 to #79 in the project's tracker. They hold the design; this roadmap no longer does.
+- In short: an activity rail with one foldable side view replaces the toolbar and the permanent side columns; jobs, config history, preferences and the imports open as tabs beside the terminals; only short confirmations stay dialogs; job runs and config history can open as real windows. Behaviour does not change.
 
 **Edge testing**
 
@@ -216,7 +215,6 @@ Let scripts reach more than a host's SSH port through the app's jump hosts.
 
 ## Still open
 
-- **Design pass:** who sets the visual direction, and against which terminals it is compared.
 - **Edge testing:** which real devices and adapters are available beyond the containerlab images.
 
 - **Linux:** the check on a real desktop (Ubuntu and Fedora, X11 and Wayland), before Linux is claimed as supported.
