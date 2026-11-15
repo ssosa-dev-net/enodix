@@ -1,13 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "session",
-  "description": "What a session window may do (#84): show its session, and minimize, maximize, drag and close itself.",
+  "description": "What a session window may do (#84): show its sessions, name itself after the one shown (#85), and minimize, maximize, drag and close itself.",
   "windows": ["session-*"],
   "permissions": [
     "core:default",
     "core:window:allow-close",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-title"
   ]
 }

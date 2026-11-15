@@ -5,7 +5,6 @@
   import PanelLeft from "@lucide/svelte/icons/panel-left";
   import ServerPlus from "@lucide/svelte/icons/server-plus";
   import X from "@lucide/svelte/icons/x";
-  import type { Attachment } from "svelte/attachments";
   import ActivityRail, {
     SIDE_VIEW_ICONS,
     SIDE_VIEWS,
@@ -28,6 +27,11 @@
     type TabInfo,
   } from "./lib/PaneView.svelte";
   import PanelResizer from "./lib/PanelResizer.svelte";
+  import { PaneRects, sessionWindowSize } from "./lib/paneRects.svelte";
+  import {
+    trackSessionWindows,
+    windowMoves,
+  } from "./lib/sessionWindows.svelte";
   import BackupsView from "./lib/BackupsView.svelte";
   import PreferencesView from "./lib/PreferencesView.svelte";
   import { openRunTab, setViewOpener, VIEWS } from "./lib/views";
@@ -349,47 +353,15 @@
     }
   }
 
-  /** Where each pane's body is, relative to the panes' area. */
-  let rects = $state<
-    Record<PaneId, { left: number; top: number; width: number; height: number }>
-  >({});
-  let area = $state<HTMLElement>();
-  const bodies = new Map<PaneId, HTMLElement>();
-  const resizes = new ResizeObserver(() => measure());
-
-  function measure() {
-    if (!area) return;
-    const origin = area.getBoundingClientRect();
-    const next: typeof rects = {};
-    for (const [pane, body] of bodies) {
-      const box = body.getBoundingClientRect();
-      next[pane] = {
-        left: box.left - origin.left,
-        top: box.top - origin.top,
-        width: box.width,
-        height: box.height,
-      };
-    }
-    rects = next;
-  }
-
   // Terminals are placed over their pane's body rather than inside it, so
   // that moving a tab to another pane keeps its terminal (and session).
-  function paneBody(pane: PaneId): Attachment<HTMLElement> {
-    return (body) => {
-      bodies.set(pane, body);
-      resizes.observe(body);
-      measure();
-      return () => {
-        bodies.delete(pane);
-        resizes.unobserve(body);
-      };
-    };
-  }
+  const panesArea = new PaneRects();
+  /** Where each pane's body is, relative to the panes' area. */
+  const rects = $derived(panesArea.rects);
 
   // Panes can move without changing size (another pane closing).
   $effect(() => {
-    if (layout) void tick().then(measure);
+    if (layout) void tick().then(() => panesArea.measure());
   });
 
   /** The session's host id, if that host is in the open workspace. */
@@ -621,7 +593,7 @@
         ],
       };
     },
-    body: paneBody,
+    body: (pane) => panesArea.body(pane),
   };
 
   /** Closes `tab`, first asking if its session is still live. */
@@ -906,6 +878,8 @@
     );
   });
   trackHighlightRules();
+  // Where a session can move: Open in window offers each session window.
+  trackSessionWindows();
   void startUpdates();
   // Python features stay off until an interpreter is chosen and works.
   void refreshPython();
@@ -1065,32 +1039,28 @@
   }
 
   /**
-   * Moves `tab`'s session to a window of its own (#84), unless its
-   * terminal refuses now (a question or a paste would be lost). The
-   * window is sized so that its terminal keeps its columns and rows.
+   * Moves `tab`'s session to a window of its own (#84), or into the open
+   * session window `into` (#85), unless its terminal refuses now (a
+   * question or a paste would be lost). A new window is sized so that its
+   * terminal keeps its columns and rows.
    */
-  async function openInWindow(tab: TabId) {
+  async function openInWindow(tab: TabId, into: number | null = null) {
     const terminal = terminals[tab];
     const place = placement.get(tab);
     const rect = place ? rects[place.pane] : undefined;
     if (!terminal || !sessions[tab] || !rect) return;
     if (terminal.moveRefusal() !== null) return;
-    // A session window: a tab bar, the session (as its slot here), and
-    // the status line.
-    const height = (selector: string, otherwise: number) =>
-      document.querySelector(selector)?.getBoundingClientRect().height ||
-      otherwise;
-    const size = {
-      width: rect.width,
-      height:
-        rect.height +
-        height("[data-window-bar]", 38) +
-        height("[data-status-line]", 22),
-    };
     const given = await terminal.handOver();
     if (!given) return;
     try {
-      adopt(await openSessionWindow(tab, given.id, given.snapshot, size));
+      const shown = await openSessionWindow(
+        tab,
+        given.id,
+        given.snapshot,
+        sessionWindowSize(rect),
+        into,
+      );
+      if (shown) adopt(shown);
       forgetClosedTabs();
     } catch (error) {
       await terminal.takeBack().catch(() => {});
@@ -1464,7 +1434,7 @@
       </aside>
     {/if}
 
-    <section class="centre" bind:this={area}>
+    <section class="centre" bind:this={panesArea.area}>
       {#if layout}
         <PaneView
           node={layout.root}
@@ -1524,11 +1494,10 @@
               onduplicate={(id) => duplicate(tab, id)}
               onpasswordlogin={passwordLogin(tab, session)}
               ondetails={detailsOf(session)}
-              move={{
-                id: "open-in-window",
-                label: "Open in window",
-                run: () => void openInWindow(tab),
-              }}
+              moves={windowMoves(
+                (into) => void openInWindow(tab, into),
+                "Ctrl+Shift+N",
+              )}
               windowQuestion={windowQuestionOf(tab)}
             />
             {#if groupPasteQuestion?.tab === tab}
@@ -1896,7 +1865,7 @@
     display: flex;
   }
 
-  /* Placed over its pane's body (see paneBody). */
+  /* Placed over its pane's body (see PaneRects). */
   .slot {
     position: absolute;
     min-width: 0;

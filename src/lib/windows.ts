@@ -7,6 +7,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Layout, TabId } from "./layout";
 import type { SessionRecord } from "./session";
@@ -77,50 +78,118 @@ export function backUpInMainWindow() {
   return invoke<void>("window_back_up");
 }
 
+/** This session window's id in the core (`session-<n>`), or null. */
+export function thisSessionWindow(): number | null {
+  return isSessionWindow()
+    ? Number(getCurrentWindow().label.slice(SESSION_WINDOW_PREFIX.length))
+    : null;
+}
+
 /**
- * Moves the main window's tab `tab`, whose session `id` this window has
- * given up, to a session window of its own, which shows `snapshot` first;
- * `size` is its inner size (CSS pixels) at which the terminal keeps its
- * columns and rows. Resolves to the main window's layout.
+ * Moves this window's tab `tab`, whose session `id` this window has given
+ * up, to another window, which shows `snapshot` first: into the open
+ * session window `into` (#85), or, when null, into a new session window,
+ * whose inner size (CSS pixels) `size` keeps the terminal's columns and
+ * rows. Resolves to this window's layout; null once this session window
+ * closed, its last tab gone.
  */
 export function openSessionWindow(
   tab: TabId,
   id: number,
   snapshot: string,
   size: { width: number; height: number },
+  into: number | null = null,
 ) {
-  return invoke<Layout>("window_open_session", {
+  return invoke<Layout | null>("window_open_session", {
     tab,
     id,
     snapshot,
     ...size,
+    into,
   });
 }
 
-/** What a session window starts from. */
+/** A session a session window takes. */
 export interface TakenSession {
   session: number;
   tab: TabId;
   /** Null: the page was reloaded, and what it showed is lost. */
   snapshot: string | null;
   record: SessionRecord | null;
-  layout: Layout;
 }
 
-/** This session window's session, once moved here. */
-export function takeSession() {
-  return invoke<TakenSession>("session_window_take");
+/** This session window's sessions, once one moved here, and its layout. */
+export function takeSessions() {
+  return invoke<{ sessions: TakenSession[]; layout: Layout }>(
+    "session_window_take",
+  );
+}
+
+/** The session of the tab `tab` moved into this open session window
+ * (#85), and the window's layout. */
+export function takeTab(tab: TabId) {
+  return invoke<{ session: TakenSession; layout: Layout }>(
+    "session_window_take_tab",
+    { tab },
+  );
+}
+
+/** Calls `handler` with each tab moved into this open session window. */
+export function onTabArrived(
+  handler: (tab: TabId) => void,
+): Promise<UnlistenFn> {
+  // This window's own: a plain `listen` hears every window's.
+  return getCurrentWebviewWindow().listen<{ tab: TabId }>(
+    "session-tab-arrived",
+    (event) => handler(event.payload.tab),
+  );
+}
+
+/** A session tab given back to the main window. */
+export interface Docking {
+  tab: TabId;
+  /** Its session, given up. */
+  id: number;
+  snapshot: string;
 }
 
 /** Docks this session window's tab back into the main window (its
- * session given up, `snapshot` its terminal); this window closes. */
+ * session given up, `snapshot` its terminal). Resolves to this window's
+ * layout; null once it closed, that being its last tab. */
 export function dockSession(tab: TabId, id: number, snapshot: string) {
-  return invoke<void>("session_dock", { tab, id, snapshot });
+  return invoke<Layout | null>("session_dock", { tab, id, snapshot });
 }
 
-/** Closes this session window and its session (its tab was closed). */
+/** Docks every tab given back into the main window, in order (#85). */
+export function dockAll(docking: Docking[]) {
+  return invoke<Layout | null>("session_dock_all", { docking });
+}
+
+/** Closes this session window and its sessions (its last tab was
+ * closed). */
 export function closeSessionWindow() {
   return invoke<void>("session_window_close");
+}
+
+/** An open session window, named by the session its active tab shows. */
+export interface ListedWindow {
+  window: number;
+  /** Empty while that is not known. */
+  name: string;
+}
+
+/** The open session windows (#85). */
+export function listSessionWindows() {
+  return invoke<ListedWindow[]>("session_windows_list");
+}
+
+/** Calls `handler` with the open session windows whenever they change. */
+export function onSessionWindows(
+  handler: (list: ListedWindow[]) => void,
+): Promise<UnlistenFn> {
+  return listen<ListedWindow[]>("session-windows", (event) =>
+    handler(event.payload),
+  );
 }
 
 /** A session the main window is given (docked back, or from a session

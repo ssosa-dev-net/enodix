@@ -11,7 +11,10 @@
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
-  import SessionMenu, { type SessionAction } from "./SessionMenu.svelte";
+  import SessionMenu, {
+    type SessionAction,
+    type SessionMove,
+  } from "./SessionMenu.svelte";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import { PROTOCOL_NAMES } from "./ways";
   import NegotiationFailure from "./NegotiationFailure.svelte";
@@ -101,11 +104,12 @@
      */
     ondetails?: () => void;
     /**
-     * Moving the session to another window (#84): Open in window, or Dock
-     * back in a session window. Offered in the session's menu, disabled
-     * while `moveRefusal` gives a reason.
+     * Moving the session to another window (#84, #85): into a new window
+     * or an open session window, or back to the main window. Offered in
+     * the session's menu, each disabled while `moveRefusal` (or its own
+     * `refusal`) gives a reason.
      */
-    move?: { id: "open-in-window" | "dock"; label: string; run: () => void };
+    moves?: SessionMove[];
     /**
      * Why the window holds a question about this session (snippet
      * variables, a group paste), which a move would lose; null: none.
@@ -135,7 +139,7 @@
     onduplicate,
     onpasswordlogin,
     ondetails,
-    move,
+    moves = [],
     windowQuestion = null,
   }: Props = $props();
 
@@ -441,21 +445,16 @@
         run: () => session && duplicate(session.id),
       });
     }
-    if (move) {
-      const refusal = moveRefusal();
-      const run = move.run;
+    for (const move of moves) {
+      const refusal = moveRefusal() ?? move.refusal?.() ?? null;
       list.push({
         id: move.id,
         label: move.label,
-        shortcut: "Ctrl+Shift+N",
-        title:
-          refusal ??
-          (move.id === "dock"
-            ? "Return this session to a tab of the main window"
-            : "Move this session to a window of its own"),
+        shortcut: move.shortcut,
+        title: refusal ?? move.title,
         disabled: refusal !== null,
-        attributes: { [`data-${move.id}`]: "" },
-        run,
+        attributes: { [`data-${move.id}`]: "", ...move.attributes },
+        run: move.run,
       });
     }
     if (status.state === "closed") {

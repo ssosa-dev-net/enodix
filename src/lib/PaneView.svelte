@@ -73,10 +73,11 @@
      * bar ends with the window's buttons. */
     right?: boolean;
     /**
-     * Whether the bar offers a new tab and the pane's tools (split, join,
-     * close pane); a session window's (#84) offers none.
+     * Whether a pane offers a new connection (its bar's new tab, an empty
+     * pane's Connect here) and multi-send (joining the pane); a session
+     * window's (#85) offers neither, only split and close pane.
      */
-    tools?: boolean;
+    connects?: boolean;
   }
 
   let {
@@ -86,7 +87,7 @@
     handlers,
     top = true,
     right = true,
-    tools = true,
+    connects = true,
   }: Props = $props();
 
   const STATE_TEXT = {
@@ -175,7 +176,7 @@
         {handlers}
         top={top && (node.direction === "right" || index === 0)}
         right={right && (node.direction === "down" || last)}
-        {tools}
+        {connects}
       />
     {/each}
   </div>
@@ -286,7 +287,7 @@
           {/if}
         {/each}
       </div>
-      {#if tools}
+      {#if connects}
         <button
           class="icon"
           data-new-tab
@@ -299,59 +300,62 @@
       <span class="spacer"></span>
       <!-- Next to the window's buttons, these give way first in a narrow
            pane (see .bar.framed .tools). -->
-      {#if tools}
-        <div class="tools">
-          {#if pane.tabs.some((tab) => {
+      <div class="tools">
+        {#if connects && pane.tabs.some((tab) => {
             const info = handlers.tab(tab);
             return info !== null && !info.view && !info.member;
           })}
-            <button
-              class="icon"
-              data-join-pane
-              aria-label="Add this pane's tabs to the multi-send group"
-              title="Add this pane's tabs to the multi-send group"
-              onclick={() => handlers.joinPane(pane.id)}
-            >
-              <UsersRound size={15} aria-hidden="true" />
-            </button>
-          {/if}
           <button
             class="icon"
-            data-split="right"
-            aria-label="Split right"
-            title="Split right"
-            onclick={() => handlers.split(pane.id, "right")}
+            data-join-pane
+            aria-label="Add this pane's tabs to the multi-send group"
+            title="Add this pane's tabs to the multi-send group"
+            onclick={() => handlers.joinPane(pane.id)}
           >
-            <Columns2 size={15} aria-hidden="true" />
+            <UsersRound size={15} aria-hidden="true" />
           </button>
+        {/if}
+        <button
+          class="icon"
+          data-split="right"
+          aria-label="Split right"
+          title="Split right"
+          onclick={() => handlers.split(pane.id, "right")}
+        >
+          <Columns2 size={15} aria-hidden="true" />
+        </button>
+        <button
+          class="icon"
+          data-split="down"
+          aria-label="Split down"
+          title="Split down"
+          onclick={() => handlers.split(pane.id, "down")}
+        >
+          <Rows2 size={15} aria-hidden="true" />
+        </button>
+        {#if several}
           <button
             class="icon"
-            data-split="down"
-            aria-label="Split down"
-            title="Split down"
-            onclick={() => handlers.split(pane.id, "down")}
+            data-close-pane
+            aria-label="Close pane"
+            title="Close pane (its tabs move to the pane next to it)"
+            onclick={() => handlers.closePane(pane.id)}
           >
-            <Rows2 size={15} aria-hidden="true" />
+            <SquareX size={15} aria-hidden="true" />
           </button>
-          {#if several}
-            <button
-              class="icon"
-              data-close-pane
-              aria-label="Close pane"
-              title="Close pane (its tabs move to the pane next to it)"
-              onclick={() => handlers.closePane(pane.id)}
-            >
-              <SquareX size={15} aria-hidden="true" />
-            </button>
-          {/if}
-        </div>
-      {/if}
+        {/if}
+      </div>
       {#if top && right}
         <WindowControls />
       {/if}
     </div>
     <div class="body" data-pane={pane.id} {@attach handlers.body(pane.id)}>
-      {#if pane.active === null && pane.id !== activePane}
+      {#if !connects && pane.active === null}
+        <!-- A session window has no connect view (#85). -->
+        <div class="empty" data-empty-pane="drop">
+          <p>Drag a tab into this pane.</p>
+        </div>
+      {:else if pane.active === null && pane.id !== activePane}
         <div class="empty">
           <button onclick={() => handlers.activatePane(pane.id)}
             >Connect here</button
