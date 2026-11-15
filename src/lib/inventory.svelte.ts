@@ -11,7 +11,7 @@ import {
   type SavedJob,
 } from "./jobs";
 import { kindOf } from "./jobTabs.svelte";
-import { openJobTab } from "./views";
+import { openJobTab, openView } from "./views";
 import * as api from "./workspace";
 import type {
   Edited,
@@ -85,8 +85,6 @@ export const inventory = $state({
   platforms: false,
   /** While the review of a "Fill in from devices" run is open: its id. */
   enrichReview: null as string | null,
-  /** While the config history is open: the host it shows. */
-  configHistory: null as string | null,
 });
 
 /**
@@ -195,9 +193,9 @@ export async function runSavedJob(name: string) {
   openJob(target, jobTargetLabel(target), plan);
 }
 
-/** Opens the config history of the host `id`. */
+/** Opens the config history of the host `id` in its tab (one per host). */
 export function openConfigHistory(id: string) {
-  inventory.configHistory = id;
+  openView("configs", id);
 }
 
 /** Opens the CSV import dialog with `folder` as its first target. */

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
-use netterm_core::configs::{ConfigStore, ConfigVersion};
+use netterm_core::configs::{BackedUpHost, ConfigStore, ConfigVersion};
 use netterm_core::credentials::{
     prepare_workspace, vault_file, ActiveStore, AgentEndpoint, AgentServer, HostLogin,
     KeychainStore, MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles, Secrets,
@@ -1666,6 +1666,33 @@ fn config_versions(
         .map_err(|error| error.to_string())
 }
 
+/// The open workspace's hosts that have kept configurations, in tree order
+/// (hosts, then subfolders), each with what its last backup did (none
+/// without a workspace id).
+#[tauri::command]
+fn config_backed_up(
+    shell: State<'_, Shell>,
+    configs: State<'_, Configs>,
+) -> Result<Vec<BackedUpHost>, String> {
+    fn walk(folder: &netterm_core::workspace::Folder, ids: &mut Vec<HostId>) {
+        ids.extend(folder.hosts.iter().map(|host| host.id.clone()));
+        for child in &folder.folders {
+            walk(child, ids);
+        }
+    }
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    let Some(id) = workspace.id() else {
+        return Ok(Vec::new());
+    };
+    let mut hosts = Vec::new();
+    walk(workspace.tree(), &mut hosts);
+    configs
+        .0
+        .backed_up(id, &hosts)
+        .map_err(|error| error.to_string())
+}
+
 /// The text of one kept version of a host's configuration.
 #[tauri::command]
 fn config_version(
@@ -2688,6 +2715,7 @@ pub fn run() {
             session_discard,
             logs_open_folder,
             config_versions,
+            config_backed_up,
             config_version,
             config_diff,
             config_export,

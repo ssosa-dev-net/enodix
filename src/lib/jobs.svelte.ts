@@ -38,7 +38,15 @@ export const liveJobs = $state({
   /** +1 whenever a job starts or finishes, or a run is deleted (the run
    * lists refetch). */
   revision: 0,
+  /** +1 whenever a backup keeps or checks a configuration (a job's, or a
+   * backup on login): the config views refetch. */
+  configs: 0,
 });
+
+/** Notes that a backup kept or checked a configuration. */
+export function noteBackup() {
+  liveJobs.configs += 1;
+}
 
 /** The open workspace's root, or "" with none. */
 function openRoot(): string {
@@ -69,6 +77,7 @@ function apply(job: LiveJob, event: JobEvent) {
     job.outputs[event.host] = (job.outputs[event.host] ?? "") + event.text;
   } else if (event.kind === "backup") {
     job.backups[event.host] = event.outcome;
+    noteBackup();
   } else {
     for (const host of event.hosts) {
       job.states[host.id] = host.state;
@@ -78,6 +87,7 @@ function apply(job: LiveJob, event: JobEvent) {
     }
     job.finished = true;
     liveJobs.revision += 1;
+    noteBackup();
   }
 }
 

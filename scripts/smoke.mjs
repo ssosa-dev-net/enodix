@@ -1699,6 +1699,8 @@ async function main() {
 
   await jobs({
     evaluate,
+    mouse,
+    centreOf,
     click,
     fillForm,
     doubleClick,
@@ -4210,6 +4212,8 @@ async function nornirImport({ evaluate, fillForm, text, screenshot, step }) {
  */
 async function jobs({
   evaluate,
+  mouse,
+  centreOf,
   click,
   fillForm,
   doubleClick,
@@ -4745,18 +4749,83 @@ async function jobs({
       if (result.state !== "done") fail(`the backup failed: ${json(result)}`);
       return result;
     };
+    // The Config backups side view (#70): what each backed-up host's last
+    // backup did; the Hosts view and the host's details come back after.
+    const backupsView = "[data-side-view=backups] [data-backups-view]";
+    const backupsEntry = async (expected) => {
+      await showSideView(evaluate, "backups");
+      const entry = await until(
+        `jobs-b1 in the backups view (${expected})`,
+        () =>
+          evaluate(`(() => {
+          const row = document.querySelector('${backupsView} [data-backup-host="${backupHost}"]');
+          return row?.dataset.last === ${json(expected)} &&
+            { last: row.dataset.last, versions: Number(row.dataset.versions), newest: row.dataset.newest };
+        })()`),
+      );
+      return entry;
+    };
+    const backToHost = async () => {
+      await showSideView(evaluate, "hosts");
+      await clickOn(backupRow);
+      await showDetails(evaluate);
+      await until("jobs-b1's side panel", () =>
+        exists(".side [data-host-back-up]"),
+      );
+    };
+    if (!existsSync(join(appData, "configs"))) {
+      await showSideView(evaluate, "backups");
+      await until("the empty backups view", () =>
+        exists(`${backupsView} [data-backups-empty]`),
+      );
+      if (!(await exists(`${backupsView} [data-backups-back-up]`))) {
+        fail("the empty backups view offers no backup of a folder");
+      }
+      // It offers a folder's backup: the Jobs folder, at its pre-flight.
+      await evaluate(`(() => {
+        const select = document.querySelector("${backupsView} [name=backups-folder]");
+        select.value = "Jobs";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+      await clickOn(`${backupsView} [data-backups-back-up]`);
+      await until("the folder backup's pre-flight", () =>
+        exists(
+          `${dialog}[data-step=preflight] [data-job-host="${backupHost}"]`,
+        ),
+      );
+      await clickOn(`${dialog} [data-job=dismiss]`);
+      await until("the job tab closed", async () => !(await exists(dialog)));
+      step("the empty backups view says how backups are made and offers one");
+      await backToHost();
+    }
     const first = await backUp();
     if (first.backup !== "saved") fail(`the first backup: ${json(first)}`);
+    const firstEntry = await backupsEntry("first");
+    if (firstEntry.versions !== 1 || firstEntry.newest !== first.version) {
+      fail(`the backups view after the first backup: ${json(firstEntry)}`);
+    }
+    await backToHost();
     const second = await backUp();
     if (second.backup !== "unchanged" || second.version !== first.version) {
       fail(`a second backup of an unchanged device: ${json(second)}`);
     }
+    // The view refreshes: the last backup changed nothing.
+    const secondEntry = await backupsEntry("unchanged");
+    if (secondEntry.versions !== 1) {
+      fail(`the backups view after an unchanged backup: ${json(secondEntry)}`);
+    }
+    await screenshot("backups-view");
+    await backToHost();
+    step("the backups view lists the host with what its last backup did");
+    // The versions kept (not the view's note of an unchanged backup).
     const kept = () => {
       const root = join(appData, "configs");
       if (!existsSync(root)) return [];
       return readdirSync(root).flatMap((id) => {
         const folder = join(root, id, "Jobs", "jobs-b1");
-        return existsSync(folder) ? readdirSync(folder) : [];
+        return existsSync(folder)
+          ? readdirSync(folder).filter((name) => name.endsWith(".txt"))
+          : [];
       });
     };
     if (kept().length !== 1) fail(`versions on disk: ${json(kept())}`);
@@ -4797,13 +4866,28 @@ async function jobs({
     if (kept().length !== 2) fail(`versions on disk: ${json(kept())}`);
     step("a changed configuration was kept as a second version");
 
-    // The history, from the host panel: both versions, the text without
-    // the prompt, a diff, and Save to….
-    const history = "[data-dialog=config-history]";
-    await clickOn(".side [data-open-config-history]");
-    await until("the config history", () =>
+    // The history, in its tab from the backups view (now "changed"): both
+    // versions, the text without the prompt, a diff, and Save to….
+    const thirdEntry = await backupsEntry("changed");
+    if (thirdEntry.versions !== 2 || thirdEntry.newest !== third.version) {
+      fail(`the backups view after a changed backup: ${json(thirdEntry)}`);
+    }
+    // (The host is checked apart: selectors here go inside quoted strings.)
+    const history = ".slot.view:not([hidden]) [data-view=config-history]";
+    await clickOn(`${backupsView} [data-backup-host="${backupHost}"]`);
+    await until("the config history tab", () =>
       exists(`${history} [data-config-version]`),
     );
+    if (await exists("[data-dialog=config-history]")) {
+      fail("the config history is still a dialog");
+    }
+    if (
+      (await evaluate(
+        `document.querySelector(${json(history)}).dataset.host`,
+      )) !== backupHost
+    ) {
+      fail("the config history tab shows another host");
+    }
     if (!(await exists(`${history} [data-config-sensitive]`))) {
       fail("the config history does not say how sensitive backups are");
     }
@@ -4854,11 +4938,29 @@ async function jobs({
       rmSync(saveConfigTo, { recursive: true, force: true });
     }
     step("Save to… wrote the version's text to the chosen folder");
-    await clickOn(`${history} [data-config-action=close]`);
-    await until(
-      "the config history closed",
-      async () => !(await exists(history)),
+    // From the details and the context menu: the same tab, never a second.
+    const historyTabs = () =>
+      evaluate(
+        `document.querySelectorAll('.slot.view [data-view=config-history][data-host="${backupHost}"]').length`,
+      );
+    await backToHost();
+    await clickOn(".side [data-open-config-history]");
+    await until("the history tab from the details", () => exists(history));
+    const row = await centreOf(backupRow);
+    await mouse("mousePressed", row, { button: "right", clickCount: 1 });
+    await mouse("mouseReleased", row, { button: "right", clickCount: 1 });
+    await until("the host's context menu", () =>
+      exists("[role=menu] [data-menu=config-history]"),
     );
+    await clickOn("[role=menu] [data-menu=config-history]");
+    await until("the history tab from the context menu", () => exists(history));
+    if ((await historyTabs()) !== 1) {
+      fail(`the host has ${await historyTabs()} config history tabs`);
+    }
+    step("the host's history opens in one tab from the view, details and menu");
+    await closeTabOf(evaluate, history);
+    await clickOn(backupRow);
+    await showDetails(evaluate);
 
     // Back up on login: on for the host, each connection checks the
     // configuration over a second channel, showing nothing in the terminal.

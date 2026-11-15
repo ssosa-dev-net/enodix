@@ -7,11 +7,14 @@
 // Adding a view: its name in `ViewName` (`layout.ts`), an entry in `VIEWS`
 // (title, icon), and a branch in `App.svelte`'s view slot.
 
+import Archive from "@lucide/svelte/icons/archive";
 import FileClock from "@lucide/svelte/icons/file-clock";
 import ListChecks from "@lucide/svelte/icons/list-checks";
 import Settings from "@lucide/svelte/icons/settings";
 import type { Component } from "svelte";
+import { inventory } from "./inventory.svelte";
 import type { ViewName, ViewRef } from "./layout";
+import { findHost } from "./workspace";
 import {
   addDraft,
   draftOfRun,
@@ -33,7 +36,19 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
   job: { title: draftTitle, icon: ListChecks },
   /** A kept run: output, search, compare, save, delete, run again (#69). */
   run: { title: runTitle, icon: FileClock },
+  /** A host's config history: versions, text, diff, save (#70). */
+  configs: {
+    title: (host) => `Config ${hostName(host)}`,
+    icon: Archive,
+  },
 };
+
+/** The open workspace's name for the host `id` (else the id). */
+function hostName(id: string | null): string {
+  if (!id) return "";
+  const tree = inventory.workspace?.tree;
+  return (tree && findHost(tree, id)?.name) ?? id;
+}
 
 let opener: ((view: ViewRef) => void) | null = null;
 

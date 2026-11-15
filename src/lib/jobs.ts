@@ -270,6 +270,27 @@ export interface ConfigVersion {
   bytes: number;
 }
 
+/** What a host's last config backup did. */
+export type LastBackup = "first" | "changed" | "unchanged";
+
+/** A host with kept configurations (the Config backups view, #70). */
+export interface BackedUpHost {
+  host: string;
+  /** How many versions are kept. */
+  versions: number;
+  /** The newest version's name. */
+  newest: string;
+  /** When it was last backed up, `YYYY-MM-DD_HH-MM-SS` (local time): the
+   * newest version's time, or a later backup's that changed nothing. */
+  lastBackup: string;
+  last: LastBackup;
+}
+
+/** The open workspace's hosts with kept configurations, in tree order. */
+export function backedUpHosts() {
+  return invoke<BackedUpHost[]>("config_backed_up");
+}
+
 /** The kept versions of a host's configuration, newest first. */
 export function configVersions(host: string) {
   return invoke<ConfigVersion[]>("config_versions", { host });
