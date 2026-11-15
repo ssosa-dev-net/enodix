@@ -6633,6 +6633,134 @@ async function terminalComforts({
 /** Ctrl+K finds a host from the terminal, connects to it or shows it in the
  * tree; a saved filter is written to the workspace, applied to the tree
  * and deleted. */
+/**
+ * The palette's actions (#76): typed with the terminal holding the keys,
+ * each found by its name and run (by click, or Enter when no host matches),
+ * then what it opened is checked and put back.
+ */
+async function paletteActions({
+  evaluate,
+  exists,
+  type,
+  key,
+  ctrlK,
+  enter,
+  palette,
+}) {
+  const escape = { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 };
+  const action = (id) => `[data-palette-command=${JSON.stringify(id)}]`;
+  /** Opens the palette from the terminal, types `query`, and runs the
+   * action `id` (by Enter, or by clicking its row). */
+  const run = async (id, query, by = "click") => {
+    await evaluate(
+      `document.querySelector("${SHOWN_SESSION} .xterm textarea")?.focus()`,
+    );
+    await key(ctrlK);
+    await until("the palette", () => exists(`${palette} input`));
+    await until("the palette's input focused", () =>
+      evaluate(`document.activeElement?.name === "palette-query"`),
+    );
+    await type(query);
+    await until(`the action ${id} for "${query}"`, () => exists(action(id)));
+    if (by === "enter") {
+      await until(`"${query}" found no host`, async () =>
+        evaluate(`(() => {
+          const first = document.querySelector("${palette} [role=option]");
+          return first?.dataset.paletteCommand === ${JSON.stringify(id)} &&
+            first.getAttribute("aria-selected") === "true";
+        })()`),
+      );
+      await key(enter);
+    } else {
+      await evaluate(
+        `document.querySelector(${JSON.stringify(action(id))}).click()`,
+      );
+    }
+    await until("the palette closed", async () => !(await exists(palette)));
+  };
+  const railActive = (view) => exists(`[data-rail=${view}][data-active]`);
+
+  // Every side view, and folding.
+  for (const [view, name] of [
+    ["snippets", "snippets"],
+    ["jobs", "jobs"],
+    ["backups", "config backups"],
+    ["credentials", "credentials"],
+    ["hosts", "hosts"],
+  ]) {
+    await run(`side-${view}`, name);
+    await until(`the ${view} side view from the palette`, () =>
+      railActive(view),
+    );
+  }
+  await run("fold-side-view", "fold side view");
+  await until("the side view folded from the palette", () =>
+    exists("[data-rail-folded]"),
+  );
+  await run("fold-side-view", "unfold");
+  await until(
+    "the side view back from the palette",
+    async () =>
+      !(await exists("[data-rail-folded]")) && (await railActive("hosts")),
+  );
+
+  // The view tabs that need no subject, and both imports.
+  for (const [view, query] of [
+    ["preferences", "preferences"],
+    ["platforms", "platform definitions"],
+    ["highlights", "highlight rules"],
+    ["python-setup", "python setup"],
+    ["csv-import", "import csv"],
+    ["nornir-import", "import nornir"],
+  ]) {
+    const tab = `[data-tab-view=${JSON.stringify(view)}]`;
+    const before = await exists(tab);
+    await run(view, query);
+    await until(`the ${view} tab from the palette`, () =>
+      evaluate(`(() => {
+        const tabs = document.querySelectorAll(${JSON.stringify(tab)});
+        return tabs.length === 1 && tabs[0].getAttribute("aria-selected") === "true" &&
+          !!document.querySelector(${JSON.stringify(`.slot.view:not([hidden]) [data-view=${view}]`)});
+      })()`),
+    );
+    if (!before) {
+      await evaluate(
+        `document.querySelector(${JSON.stringify(`${tab} [data-tab-close]`)}).click()`,
+      );
+      await until(`the ${view} tab closed`, async () => !(await exists(tab)));
+    }
+  }
+
+  // New host and new folder ask in the workspace's dialog; Escape cancels.
+  for (const [id, query, title] of [
+    ["new-host", "new host", "New host"],
+    ["new-folder", "new folder", "New folder"],
+  ]) {
+    await run(id, query);
+    await until(`the ${title} dialog from the palette`, () =>
+      evaluate(
+        `document.querySelector("[role=dialog] #dialog-title")?.textContent === ${JSON.stringify(title)}`,
+      ),
+    );
+    await key(escape);
+    await until(
+      `the ${title} dialog cancelled`,
+      async () => !(await exists("[role=dialog] #dialog-title")),
+    );
+  }
+
+  // The switcher, by Enter (no host matches the words).
+  await run("switch-workspace", "switch workspace", "enter");
+  await until("the switcher from the palette", () =>
+    exists("[data-dialog=workspaces]"),
+  );
+  await key(escape);
+  await until(
+    "the switcher closed",
+    async () => !(await exists("[data-dialog=workspaces]")),
+  );
+}
+
 async function searchAndFilter({
   evaluate,
   text,
@@ -6722,6 +6850,11 @@ async function searchAndFilter({
   );
   await click("Cancel");
   step("a search on the role found the host and Enter connected to it");
+
+  await paletteActions({ evaluate, exists, type, key, ctrlK, enter, palette });
+  step(
+    "the palette opened every side view, the view tabs, new host and folder, both imports and the switcher",
+  );
 
   // The filter field narrows the tree as words are typed.
   const odd = '[data-host="odd.yaml"]';
