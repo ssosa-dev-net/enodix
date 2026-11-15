@@ -28,6 +28,9 @@
   import SnippetsView from "./lib/SnippetsView.svelte";
   import SnippetVariables from "./lib/SnippetVariables.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
+  import SessionMenu, { type SessionAction } from "./lib/SessionMenu.svelte";
+  import StatusLine from "./lib/StatusLine.svelte";
+  import { jumpHostOf } from "./lib/ways";
   import UnlockVault from "./lib/UnlockVault.svelte";
   import UpdateNotice from "./lib/UpdateNotice.svelte";
   import { startUpdates } from "./lib/updates.svelte";
@@ -84,7 +87,9 @@
   import {
     expandSnippet,
     expandSnippetForGroup,
+    findHost,
     onWorkspaceChanged,
+    resolveSettings,
     restoreWorkspace,
     type Environment,
     type Host,
@@ -114,6 +119,10 @@
     name: string;
     /** Shown in the session's header, such as `user@host:port`. */
     title: string;
+    /** The host's address, shown beside the title; null: none. */
+    address: string | null;
+    /** The jump host it goes through, once known; null: none. */
+    jumpHost: string | null;
     /** The inventory host it connects to, if any (for its role). */
     hostId: string | null;
     /**
@@ -141,6 +150,14 @@
   let sessions = $state<Record<TabId, OpenSession>>({});
   /** Each tab's session state, as its terminal reports it. */
   let states = $state<Record<TabId, SessionState["state"]>>({});
+  /** Each tab's terminal size, for the status line. */
+  let sizes = $state<Record<TabId, { cols: number; rows: number }>>({});
+  /** The tab whose context menu is open, with its entries. */
+  let tabMenu = $state<{
+    x: number;
+    y: number;
+    entries: SessionAction[];
+  } | null>(null);
   /** Raised when a tab is clicked, so that its terminal takes the keys. */
   let focusRequest = $state(0);
   /** The tab whose closing waits for the user's confirmation. */
@@ -198,6 +215,13 @@
       ? tab
       : null;
   });
+  /** The active pane's session, as the status line shows it. */
+  const statusSession = $derived.by(() => {
+    const tab = activePane?.active ?? null;
+    const session = tab === null ? undefined : sessions[tab];
+    const size = tab === null ? undefined : sizes[tab];
+    return session && size ? { name: session.name, ...size } : null;
+  });
   /** That tab's name, as the snippet panel and palette show it. */
   const snippetTarget = $derived(
     snippetTab === null
@@ -253,6 +277,7 @@
       if (!placement.has(tab)) {
         delete sessions[tab];
         delete states[tab];
+        delete sizes[tab];
       }
     }
   }
@@ -493,6 +518,22 @@
     split: (pane, direction) => void edit({ kind: "split", pane, direction }),
     closePane: (pane) => void edit({ kind: "closePane", pane }),
     joinPane,
+    menu: (tab, x, y) => {
+      const actions = terminals[tab]?.actions() ?? [];
+      tabMenu = {
+        x,
+        y,
+        entries: [
+          ...actions,
+          {
+            id: "close-tab",
+            label: "Close tab",
+            shortcut: "Ctrl+Shift+W",
+            run: () => closeTab(tab),
+          },
+        ],
+      };
+    },
     body: paneBody,
   };
 
@@ -697,17 +738,35 @@
   ) {
     const hostId = "id" in target ? target.id : null;
     const workspace = hostId ? (inventory.workspace?.root ?? null) : null;
+    const host =
+      hostId && inventory.workspace
+        ? findHost(inventory.workspace.tree, hostId)
+        : null;
     void edit({ kind: "openTab" }, (tab) => {
       sessions[tab] = {
         source: { kind: "target", target },
         name,
         title,
+        address: host && !title.includes(host.address) ? host.address : null,
+        jumpHost: null,
         hostId,
         workspace,
         safety: (hostId ? hostSafety(hostId) : null) ?? NO_SAFETY,
         role: hostId ? hostRole(hostId) : null,
         profileLogin,
       };
+      // Telnet and serial never go through one.
+      if (hostId && target.kind === "host") {
+        resolveSettings({ kind: "host", id: hostId }).then(
+          (settings) => {
+            const jump = jumpHostOf(hostId, settings);
+            if (sessions[tab]) sessions[tab].jumpHost = jump;
+          },
+          () => {
+            // The header then names no jump host; connecting says more.
+          },
+        );
+      }
     });
   }
 
@@ -1000,180 +1059,201 @@
 
 <svelte:window {onkeydowncapture} bind:innerWidth={windowWidth} />
 
-<div class="layout" style:grid-template-columns={columns}>
-  <ActivityRail
-    view={sideView}
-    folded={!leftShown}
-    problems={inventory.workspace?.problems.length ?? 0}
-    missingProfiles={profiles.view.missing.length}
-    onselect={selectView}
-    onpreferences={() => (preferences.dialog = true)}
-  />
-  {#if leftShown}
-    <aside class="side-view" data-side-view={sideView}>
-      {#if sideView === "hosts"}
-        <div class="hosts-area" class:under-sheet={detailsShown}>
-          <HostsView
-            onopen={() => (switcher = true)}
-            onconnect={prompt}
-            ondetails={showDetails}
+<div class="window">
+  <div class="layout" style:grid-template-columns={columns}>
+    <ActivityRail
+      view={sideView}
+      folded={!leftShown}
+      problems={inventory.workspace?.problems.length ?? 0}
+      missingProfiles={profiles.view.missing.length}
+      onselect={selectView}
+      onpreferences={() => (preferences.dialog = true)}
+    />
+    {#if leftShown}
+      <aside class="side-view" data-side-view={sideView}>
+        {#if sideView === "hosts"}
+          <div class="hosts-area" class:under-sheet={detailsShown}>
+            <HostsView
+              onopen={() => (switcher = true)}
+              onconnect={prompt}
+              ondetails={showDetails}
+            />
+          </div>
+          {#if detailsShown}
+            <DetailsSheet
+              {host}
+              {folder}
+              onconnect={prompt}
+              onclose={closeDetails}
+            />
+          {/if}
+        {:else if sideView === "snippets"}
+          <SnippetsView
+            target={snippetTarget}
+            onsend={(snippet) => void sendSnippet(snippet)}
           />
-        </div>
-        {#if detailsShown}
-          <DetailsSheet
-            {host}
-            {folder}
-            onconnect={prompt}
-            onclose={closeDetails}
-          />
+        {:else if sideView === "credentials"}
+          <CredentialsView />
+        {:else}
+          <PlaceholderViews view={sideView} />
         {/if}
-      {:else if sideView === "snippets"}
-        <SnippetsView
-          target={snippetTarget}
-          onsend={(snippet) => void sendSnippet(snippet)}
-        />
-      {:else if sideView === "credentials"}
-        <CredentialsView />
-      {:else}
-        <PlaceholderViews view={sideView} />
-      {/if}
-    </aside>
-  {/if}
-
-  <section class="centre" bind:this={area}>
-    {#if layout}
-      <PaneView
-        node={layout.root}
-        activePane={layout.activePane}
-        several={panes.length > 1}
-        {handlers}
-      />
-      {#each Object.entries(sessions) as [key, session] (key)}
-        {@const tab = Number(key)}
-        {@const place = placement.get(tab)}
-        {@const rect = place ? rects[place.pane] : undefined}
-        {@const shown = !!place?.shown && rect !== undefined}
-        {@const focused = shown && place?.pane === layout.activePane}
-        <div
-          class="slot"
-          data-tab={tab}
-          data-pane={place?.pane}
-          data-active={focused || undefined}
-          hidden={!shown}
-          style:left="{rect?.left ?? 0}px"
-          style:top="{rect?.top ?? 0}px"
-          style:width="{rect?.width ?? 0}px"
-          style:height="{rect?.height ?? 0}px"
-          onfocusin={() => {
-            if (!focused && place) handlers.activate(tab);
-          }}
-        >
-          <TerminalSession
-            bind:this={terminals[tab]}
-            source={session.source}
-            {tab}
-            groupSize={inGroup(tab) ? layout.group.length : null}
-            ontogglegroup={() => toggleGroup(tab)}
-            onendgroup={() => void edit({ kind: "endGroup" })}
-            ongrouppaste={(text) =>
-              pasteToGroup(
-                tab,
-                new Map(receivingMembers(tab).map((member) => [member, text])),
-              )}
-            title={session.title}
-            role={roleOf(session)}
-            safety={safetyOf(session)}
-            name={session.name}
-            {shown}
-            {focused}
-            {focusRequest}
-            onstate={(state) => (states[tab] = state.state)}
-            ondismiss={() => dismiss(tab)}
-            onduplicate={(id) => duplicate(tab, id)}
-            onpasswordlogin={passwordLogin(tab, session)}
-            ondetails={detailsOf(session)}
-          />
-          {#if groupPasteQuestion?.tab === tab}
-            {@const question = groupPasteQuestion}
-            <PasteConfirm
-              text={question.text}
-              lineCount={question.lineCount}
-              target={session.name}
-              environment={question.environment}
-              lineDelayMs={0}
-              members={question.members}
-              onsend={() => question.answer(true)}
-              oncancel={() => question.answer(false)}
-            />
-          {/if}
-        </div>
-      {/each}
-      {@const connectRect = rects[layout.activePane]}
-      {#if activePane && activePane.active === null && connectRect}
-        <div
-          class="slot connect"
-          data-pane={activePane.id}
-          style:left="{connectRect.left}px"
-          style:top="{connectRect.top}px"
-          style:width="{connectRect.width}px"
-          style:height="{connectRect.height}px"
-        >
-          {#if view.kind === "prompt"}
-            {@const host = view.host}
-            {@const protocol = view.protocol}
-            {#key host.id}
-              <CredentialsPrompt
-                {host}
-                missingProfile={view.missingProfile}
-                fallback={view.fallback}
-                oncancel={() => (view = { kind: "quick" })}
-                onconnect={(credentials) =>
-                  connect(
-                    { kind: "host", id: host.id, credentials },
-                    host.name,
-                    `${credentials.username}@${host.name}`,
-                  )}
-                onprofile={() => prompt(host, protocol)}
-              />
-            {/key}
-          {:else}
-            <QuickConnect
-              {name}
-              onconnect={(target) =>
-                connect(
-                  { kind: "quick", ...target },
-                  target.host,
-                  `${target.username}@${target.host}:${target.port}`,
-                )}
-              onserial={(port, parameters) =>
-                connect(
-                  { kind: "quickSerial", port, parameters },
-                  port,
-                  `${port} (${parameters.baudRate} ${parameters.dataBits}${parameters.parity[0].toUpperCase()}${parameters.stopBits})`,
-                )}
-            />
-          {/if}
-        </div>
-      {/if}
+      </aside>
     {/if}
-  </section>
 
-  {#if leftShown}
-    <div class="edge" style:left="{RAIL + leftWidth}px">
-      <PanelResizer
-        side="left"
-        width={leftWidth}
-        min={PANEL_WIDTHS.min}
-        max={widest}
-        onlive={(width) => (liveLeft = width)}
-        oncommit={(width) => void changePreferences({ leftPanelWidth: width })}
-        onreset={() =>
-          void changePreferences({ leftPanelWidth: PANEL_WIDTHS.left })}
-        onhide={toggleSideView}
-      />
-    </div>
-  {/if}
+    <section class="centre" bind:this={area}>
+      {#if layout}
+        <PaneView
+          node={layout.root}
+          activePane={layout.activePane}
+          several={panes.length > 1}
+          {handlers}
+        />
+        {#each Object.entries(sessions) as [key, session] (key)}
+          {@const tab = Number(key)}
+          {@const place = placement.get(tab)}
+          {@const rect = place ? rects[place.pane] : undefined}
+          {@const shown = !!place?.shown && rect !== undefined}
+          {@const focused = shown && place?.pane === layout.activePane}
+          <div
+            class="slot"
+            data-tab={tab}
+            data-pane={place?.pane}
+            data-active={focused || undefined}
+            hidden={!shown}
+            style:left="{rect?.left ?? 0}px"
+            style:top="{rect?.top ?? 0}px"
+            style:width="{rect?.width ?? 0}px"
+            style:height="{rect?.height ?? 0}px"
+            onfocusin={() => {
+              if (!focused && place) handlers.activate(tab);
+            }}
+          >
+            <TerminalSession
+              bind:this={terminals[tab]}
+              source={session.source}
+              {tab}
+              groupSize={inGroup(tab) ? layout.group.length : null}
+              ontogglegroup={() => toggleGroup(tab)}
+              onendgroup={() => void edit({ kind: "endGroup" })}
+              ongrouppaste={(text) =>
+                pasteToGroup(
+                  tab,
+                  new Map(
+                    receivingMembers(tab).map((member) => [member, text]),
+                  ),
+                )}
+              title={session.title}
+              address={session.address}
+              jumpHost={session.jumpHost}
+              onsize={(size) => (sizes[tab] = size)}
+              role={roleOf(session)}
+              safety={safetyOf(session)}
+              name={session.name}
+              {shown}
+              {focused}
+              {focusRequest}
+              onstate={(state) => (states[tab] = state.state)}
+              ondismiss={() => dismiss(tab)}
+              onduplicate={(id) => duplicate(tab, id)}
+              onpasswordlogin={passwordLogin(tab, session)}
+              ondetails={detailsOf(session)}
+            />
+            {#if groupPasteQuestion?.tab === tab}
+              {@const question = groupPasteQuestion}
+              <PasteConfirm
+                text={question.text}
+                lineCount={question.lineCount}
+                target={session.name}
+                environment={question.environment}
+                lineDelayMs={0}
+                members={question.members}
+                onsend={() => question.answer(true)}
+                oncancel={() => question.answer(false)}
+              />
+            {/if}
+          </div>
+        {/each}
+        {@const connectRect = rects[layout.activePane]}
+        {#if activePane && activePane.active === null && connectRect}
+          <div
+            class="slot connect"
+            data-pane={activePane.id}
+            style:left="{connectRect.left}px"
+            style:top="{connectRect.top}px"
+            style:width="{connectRect.width}px"
+            style:height="{connectRect.height}px"
+          >
+            {#if view.kind === "prompt"}
+              {@const host = view.host}
+              {@const protocol = view.protocol}
+              {#key host.id}
+                <CredentialsPrompt
+                  {host}
+                  missingProfile={view.missingProfile}
+                  fallback={view.fallback}
+                  oncancel={() => (view = { kind: "quick" })}
+                  onconnect={(credentials) =>
+                    connect(
+                      { kind: "host", id: host.id, credentials },
+                      host.name,
+                      `${credentials.username}@${host.name}`,
+                    )}
+                  onprofile={() => prompt(host, protocol)}
+                />
+              {/key}
+            {:else}
+              <QuickConnect
+                {name}
+                onconnect={(target) =>
+                  connect(
+                    { kind: "quick", ...target },
+                    target.host,
+                    `${target.username}@${target.host}:${target.port}`,
+                  )}
+                onserial={(port, parameters) =>
+                  connect(
+                    { kind: "quickSerial", port, parameters },
+                    port,
+                    `${port} (${parameters.baudRate} ${parameters.dataBits}${parameters.parity[0].toUpperCase()}${parameters.stopBits})`,
+                  )}
+              />
+            {/if}
+          </div>
+        {/if}
+      {/if}
+    </section>
+
+    {#if leftShown}
+      <div class="edge" style:left="{RAIL + leftWidth}px">
+        <PanelResizer
+          side="left"
+          width={leftWidth}
+          min={PANEL_WIDTHS.min}
+          max={widest}
+          onlive={(width) => (liveLeft = width)}
+          oncommit={(width) =>
+            void changePreferences({ leftPanelWidth: width })}
+          onreset={() =>
+            void changePreferences({ leftPanelWidth: PANEL_WIDTHS.left })}
+          onhide={toggleSideView}
+        />
+      </div>
+    {/if}
+  </div>
+  <StatusLine vault={profiles.vault} session={statusSession} />
 </div>
+
+{#if tabMenu}
+  <SessionMenu
+    entries={tabMenu.entries}
+    x={tabMenu.x}
+    y={tabMenu.y}
+    onclose={() => {
+      tabMenu = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
 
 <UpdateNotice live={liveSessions} />
 
@@ -1386,9 +1466,15 @@
 {/if}
 
 <style>
+  .window {
+    height: 100%;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
   .layout {
     position: relative;
-    height: 100%;
+    min-height: 0;
     display: grid;
   }
 

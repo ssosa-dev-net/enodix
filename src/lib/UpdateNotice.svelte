@@ -97,7 +97,7 @@
   .notice {
     position: fixed;
     right: 1rem;
-    bottom: 1rem;
+    bottom: 2.5rem; /* above the status line */
     z-index: 12;
     width: min(22rem, calc(100% - 2rem));
     display: grid;

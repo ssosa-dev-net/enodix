@@ -9,6 +9,9 @@
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
+  import SessionMenu, { type SessionAction } from "./SessionMenu.svelte";
+  import Ellipsis from "@lucide/svelte/icons/ellipsis";
+  import { PROTOCOL_NAMES } from "./ways";
   import NegotiationFailure from "./NegotiationFailure.svelte";
   import PasteConfirm from "./PasteConfirm.svelte";
   import { ENVIRONMENT_NAMES, planPaste } from "./paste";
@@ -55,6 +58,12 @@
     ongrouppaste: (text: string) => void;
     /** Shown in the header, such as `user@host:port`. */
     title: string;
+    /** The host's address, if the title does not show it; null: none. */
+    address: string | null;
+    /** The jump host the session goes through; null: none. */
+    jumpHost: string | null;
+    /** Told the terminal's columns and rows whenever they change. */
+    onsize?: (size: { cols: number; rows: number }) => void;
     /** The role of the session's host, if it has one. */
     role: Role | null;
     /** Its host's environment (the border colour) and paste line delay. */
@@ -93,6 +102,9 @@
     onendgroup,
     ongrouppaste,
     title,
+    address,
+    jumpHost,
+    onsize,
     role,
     safety,
     name,
@@ -319,6 +331,123 @@
     if (!session || status.state !== "connected") return false;
     pasteText(text);
     return true;
+  }
+
+  /** The terminal's columns and rows, for the window's status line. */
+  let terminalSize = $state({ cols: 80, rows: 24 });
+  $effect(() => onsize?.(terminalSize));
+
+  /** Where the header's menu of actions is open; null: closed. */
+  let menuAt = $state<{ x: number; y: number } | null>(null);
+  let menuButton = $state<HTMLButtonElement>();
+
+  /**
+   * The session's actions as things stand, for the header's menu and the
+   * tab's context menu (#67). Their shortcuts are the window's (App).
+   */
+  export function actions(): SessionAction[] {
+    const back = () => xterm?.focus();
+    const list: SessionAction[] = [];
+    if (ondetails) {
+      const details = ondetails;
+      list.push({
+        id: "details",
+        label: "Details",
+        title: "Show this host's details over the Hosts view",
+        attributes: { "data-session-details": "" },
+        run: details,
+      });
+    }
+    list.push({
+      id: "duplicate",
+      label: "Duplicate",
+      title: "Open a second session to the same host",
+      disabled: !session,
+      run: () => session && onduplicate(session.id),
+    });
+    if (status.state === "closed") {
+      list.push(
+        {
+          id: "reconnect",
+          label: "Reconnect",
+          shortcut: "Enter",
+          disabled: !session,
+          run: () => {
+            reconnect();
+            back();
+          },
+        },
+        {
+          id: "new-connection",
+          label: "New connection",
+          title: "Close this tab and show the connect view in its place",
+          run: ondismiss,
+        },
+      );
+    } else {
+      list.push({
+        id: "disconnect",
+        label: "Disconnect",
+        disabled: !session,
+        run: () => {
+          session?.close();
+          back();
+        },
+      });
+    }
+    list.push({
+      id: "multi-send",
+      label:
+        groupSize === null
+          ? "Join the multi-send group"
+          : "Leave the multi-send group",
+      shortcut: "Ctrl+Shift+M",
+      title:
+        groupSize === null
+          ? "What you type in a member reaches every member"
+          : undefined,
+      attributes: {
+        "data-multi-send-toggle": groupSize === null ? "join" : "leave",
+      },
+      run: () => {
+        ontogglegroup();
+        back();
+      },
+    });
+    if (groupSize !== null) {
+      list.push({
+        id: "end-group",
+        label: "End the multi-send group",
+        attributes: { "data-end-group": "" },
+        run: () => {
+          onendgroup();
+          back();
+        },
+      });
+    }
+    if (session?.transport === "serial" && status.state === "connected") {
+      list.push({
+        id: "send-break",
+        label: "Send break",
+        title: "Send a break signal on the line (to interrupt a device's boot)",
+        attributes: { "data-send-break": "" },
+        run: () => {
+          session?.sendBreak();
+          back();
+        },
+      });
+    }
+    return list;
+  }
+
+  function toggleMenu(event: MouseEvent) {
+    if (menuAt) {
+      menuAt = null;
+      return;
+    }
+    const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    // Right-aligned under the button (SessionMenu keeps it in the window).
+    menuAt = { x: box.right - 192, y: box.bottom + 2 };
   }
 
   /** Gives the terminal the font, scrollback and colours chosen. */
@@ -643,7 +772,11 @@
     });
     // For the smoke test, which checks where input came from.
     Object.assign(container, { input });
-    terminal.onResize((newSize) => session?.resize(newSize));
+    terminalSize = size();
+    terminal.onResize((newSize) => {
+      terminalSize = { cols: newSize.cols, rows: newSize.rows };
+      session?.resize(newSize);
+    });
     const resizeObserver = new ResizeObserver(() => {
       if (!catchingUp) fit.fit();
     });
@@ -759,17 +892,37 @@
       ? "receiving"
       : "not-receiving"}
 >
-  <header class:has-role={role} style:--role-color={role?.color}>
+  <header
+    class:has-role={role}
+    style:--role-color={role?.color}
+    data-session-header
+  >
     {#if role}
-      <span class="role" data-session-role={role.id}>
+      <span class="role" data-session-role={role.id} title={role.name}>
         <RoleIcon {role} />
-        {role.name}
+        <span class="role-name">{role.name}</span>
       </span>
     {/if}
-    <span class="title">{title}</span>
+    <span class="title" title={name === title ? undefined : title}>{title}</span
+    >
+    {#if address}
+      <span class="detail" data-session-address>{address}</span>
+    {/if}
+    {#if jumpHost}
+      <span
+        class="detail"
+        data-session-jump-host={jumpHost}
+        title="Reached through the jump host {jumpHost}">via {jumpHost}</span
+      >
+    {/if}
+    {#if session}
+      <span class="protocol" data-session-protocol={session.transport}
+        >{PROTOCOL_NAMES[session.transport]}</span
+      >
+    {/if}
     {#if safety.environment}
       <span
-        class="environment"
+        class="marker environment"
         data-environment-badge={safety.environment}
         title={safety.environment === "production"
           ? "A production device: a paste of more than one line always asks first"
@@ -780,16 +933,46 @@
     {/if}
     {#if session && !session.encrypted}
       <span
-        class="unencrypted"
+        class="marker unencrypted"
         data-unencrypted
         title="Everything this session sends, passwords included, crosses the network unencrypted (telnet)"
       >
         Unencrypted
       </span>
     {/if}
+    {#if status.state === "connected" && legacy.length > 0}
+      <span
+        class="marker legacy"
+        data-legacy-crypto={legacy.map((a) => a.legacy.join(",")).join(";")}
+        title={`Outdated algorithms in use:\n${legacyTitle}`}
+      >
+        Legacy crypto
+      </span>
+    {/if}
+    {#if groupSize !== null}
+      <span
+        class="marker multi-send"
+        data-multi-send-bar
+        data-group-size={groupSize}
+        title={groupSize === 1
+          ? "In the multi-send group: no other member yet"
+          : `In the multi-send group: typing reaches all ${groupSize} sessions of the group (Ctrl+Shift+M leaves it)`}
+      >
+        Multi-send {groupSize}
+        {#if status.state !== "connected"}
+          <span
+            class="not-receiving"
+            data-not-receiving
+            title="Not receiving while {status.state === 'closed'
+              ? 'disconnected'
+              : 'connecting'}">· not receiving</span
+          >
+        {/if}
+      </span>
+    {/if}
     {#if backup}
       <span
-        class="backup {backup.kind}"
+        class="marker backup {backup.kind}"
         data-login-backup={backup.kind}
         data-version={backup.kind === "failed" ? undefined : backup.version}
         title={backup.kind === "saved"
@@ -801,90 +984,41 @@
         {backup.kind === "failed" ? "Not backed up" : "Backed up"}
       </span>
     {/if}
-    {#if status.state === "connected" && legacy.length > 0}
+    {#if logFailure}
       <span
-        class="legacy"
-        data-legacy-crypto={legacy.map((a) => a.legacy.join(",")).join(";")}
-        title={`Outdated algorithms in use:\n${legacyTitle}`}
+        class="marker log-off"
+        data-log-failed-marker
+        title="The session log cannot be written: {logFailure}"
       >
-        Legacy crypto
+        Not logging
       </span>
     {/if}
     <span class="status {status.state}" role="status" title={statusText}
       >{statusText}</span
     >
-    {#if session?.transport === "serial" && status.state === "connected"}
-      <button
-        data-send-break
-        onclick={() => {
-          session?.sendBreak();
-          xterm?.focus();
-        }}
-        title="Send a break signal on the line (to interrupt a device's boot)"
-      >
-        Send break
-      </button>
-    {/if}
     <button
-      data-multi-send-toggle={groupSize === null ? "join" : "leave"}
-      aria-pressed={groupSize !== null}
-      onclick={() => {
-        ontogglegroup();
+      class="menu-button"
+      data-session-menu
+      aria-label="Session actions"
+      title="Session actions (also on the tab's context menu)"
+      aria-haspopup="menu"
+      aria-expanded={menuAt !== null}
+      bind:this={menuButton}
+      onmousedown={(event) => event.preventDefault()}
+      onclick={toggleMenu}><Ellipsis size={16} aria-hidden="true" /></button
+    >
+  </header>
+  {#if menuAt}
+    <SessionMenu
+      entries={actions()}
+      x={menuAt.x}
+      y={menuAt.y}
+      opener={menuButton}
+      onclose={() => {
+        menuAt = null;
         xterm?.focus();
       }}
-      title={groupSize === null
-        ? "Add this session to the multi-send group: what you type in a member reaches every member (Ctrl+Shift+M)"
-        : "Take this session out of the multi-send group (Ctrl+Shift+M)"}
-    >
-      {groupSize === null ? "Multi-send" : "Leave group"}
-    </button>
-    {#if ondetails}
-      <button
-        data-session-details
-        onclick={ondetails}
-        title="Show this host's details beside the tree (Ctrl+Shift+D)"
-      >
-        Details
-      </button>
-    {/if}
-    <button
-      onclick={() => session && onduplicate(session.id)}
-      disabled={!session}
-      title="Open a second session to the same host"
-    >
-      Duplicate
-    </button>
-    {#if status.state === "closed"}
-      <button onclick={reconnect} disabled={!session}>Reconnect</button>
-      <button onclick={ondismiss}>New connection</button>
-    {:else}
-      <button onclick={() => session?.close()} disabled={!session}>
-        Disconnect
-      </button>
-    {/if}
-  </header>
-  {#if groupSize !== null}
-    <div class="multi-send" data-multi-send-bar data-group-size={groupSize}>
-      <span class="what">
-        {groupSize === 1
-          ? "Multi-send group: no other member yet"
-          : `Multi-send: typing reaches all ${groupSize} sessions of the group`}
-      </span>
-      {#if status.state !== "connected"}
-        <span class="not-receiving" data-not-receiving
-          >Not receiving while {status.state === "closed"
-            ? "disconnected"
-            : "connecting"}</span
-        >
-      {/if}
-      <button
-        data-end-group
-        onclick={() => {
-          onendgroup();
-          xterm?.focus();
-        }}>End group</button
-      >
-    </div>
+    />
   {/if}
   <div class="body">
     <div class="terminal" bind:this={container}></div>
@@ -979,6 +1113,17 @@
       <div class="ended" role="alert" data-session-ended>
         <span class="reason">{status.reason}.</span>
         <span>Press <kbd>Enter</kbd> to reconnect.</span>
+        <button data-session-new-connection onclick={ondismiss}
+          >New connection</button
+        >
+      </div>
+    {:else if status.state === "closed"}
+      <!-- It never opened, so there is nothing to reconnect. -->
+      <div class="ended" role="alert" data-session-failed>
+        <span class="reason">{status.reason}.</span>
+        <button data-session-new-connection onclick={ondismiss}
+          >New connection</button
+        >
       </div>
     {/if}
     {#if hostKey}
@@ -1067,52 +1212,6 @@
     background: var(--env-production-bg);
   }
 
-  .environment {
-    padding: var(--space-0-5) var(--space-1-5);
-    border: 1px solid var(--env-color);
-    border-radius: var(--radius-full);
-    color: var(--env-color);
-    font-size: var(--text-xs);
-    white-space: nowrap;
-    cursor: help;
-  }
-
-  .session.grouped {
-    grid-template-rows: auto auto 1fr;
-  }
-
-  /* A multi-send member: what is typed here reaches the whole group. */
-  .multi-send {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-0-5) var(--space-2);
-    border-bottom: 2px solid var(--multi-send);
-    background: var(--multi-send-bg);
-    color: var(--text);
-    font-size: var(--text-xs);
-  }
-
-  .multi-send .what {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-weight: var(--weight-semibold);
-  }
-
-  .multi-send .not-receiving {
-    color: var(--warning);
-    white-space: nowrap;
-  }
-
-  .session[data-environment="production"] .environment {
-    color: var(--on-env-production);
-    background: var(--env-production);
-    font-weight: var(--weight-bold);
-  }
-
   .overlay {
     position: absolute;
     inset: 0;
@@ -1156,58 +1255,112 @@
     gap: var(--space-2);
   }
 
+  /* One quiet line, whatever markers it shows: they never wrap it. */
   header {
+    box-sizing: border-box;
+    height: 30px;
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
-    gap: var(--space-1-5) var(--space-3);
-    padding: var(--space-1-5) var(--space-3);
+    gap: var(--space-2);
+    padding: 0 var(--space-1) 0 var(--space-3);
+    overflow: hidden;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
-    font-size: var(--text-sm);
-  }
-
-  header button {
     font-size: var(--text-xs);
-    padding: var(--space-1) var(--space-2);
+    white-space: nowrap;
   }
 
   header.has-role {
     box-shadow: inset 3px 0 var(--role-color);
   }
 
+  /* A multi-send member: a line under the header (no extra height). */
+  .session.grouped header {
+    box-shadow: inset 0 -2px var(--multi-send);
+  }
+
+  .session.grouped header.has-role {
+    box-shadow:
+      inset 3px 0 var(--role-color),
+      inset 0 -2px var(--multi-send);
+  }
+
   .role {
+    flex: none;
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);
     color: var(--role-color);
-    font-size: var(--text-xs);
-    white-space: nowrap;
   }
 
   .title {
+    flex: 0 1 auto;
+    min-width: 3rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: var(--text-sm);
     font-weight: var(--weight-semibold);
+    color: var(--text);
+  }
+
+  .detail,
+  .protocol {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--muted);
+  }
+
+  .protocol {
+    flex: none;
+  }
+
+  .marker {
+    flex: none;
+    padding: 0 var(--space-1-5);
+    line-height: 18px;
+    border: 1px solid currentColor;
+    border-radius: var(--radius-full);
+    cursor: help;
+  }
+
+  .environment {
+    border-color: var(--env-color);
+    color: var(--env-color);
+  }
+
+  .session[data-environment="production"] .environment {
+    color: var(--on-env-production);
+    background: var(--env-production);
+    font-weight: var(--weight-bold);
   }
 
   .unencrypted {
-    padding: var(--space-0-5) var(--space-1-5);
-    border: 1px solid var(--danger);
-    border-radius: var(--radius-full);
     color: var(--danger);
-    font-size: var(--text-xs);
-    white-space: nowrap;
-    cursor: help;
+  }
+
+  .legacy,
+  .log-off,
+  .backup.failed {
+    color: var(--warning);
+  }
+
+  .multi-send {
+    border-color: var(--multi-send);
+    background: var(--multi-send-bg);
+    color: var(--text);
+    font-weight: var(--weight-semibold);
+  }
+
+  .multi-send .not-receiving {
+    color: var(--warning);
   }
 
   .backup {
     color: var(--muted);
-    font-size: var(--text-xs);
-    white-space: nowrap;
-    cursor: help;
-  }
-
-  .backup.failed {
-    color: var(--warning);
+    border-color: var(--border-strong);
   }
 
   .backup-failed {
@@ -1227,24 +1380,14 @@
     overflow-wrap: anywhere;
   }
 
-  .legacy {
-    padding: var(--space-0-5) var(--space-1-5);
-    border: 1px solid var(--warning);
-    border-radius: var(--radius-full);
-    color: var(--warning);
-    font-size: var(--text-xs);
-    white-space: nowrap;
-    cursor: help;
-  }
-
   .status {
-    /* Room for the reason; the buttons wrap below when it lacks it. */
-    flex: 1 1 14rem;
+    /* Takes the room left; cut short before anything else is. */
+    flex: 1 1 0;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
     color: var(--muted);
+    text-align: right;
   }
 
   .status::before {
@@ -1268,6 +1411,24 @@
     background: var(--state-disconnected);
   }
 
+  .menu-button {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    width: 26px;
+    height: 24px;
+    padding: 0;
+    border-color: transparent;
+    background: none;
+    color: var(--muted);
+  }
+
+  .menu-button:hover,
+  .menu-button[aria-expanded="true"] {
+    color: var(--text);
+    background: var(--surface-raised);
+  }
+
   .body {
     position: relative;
     min-height: 0;
@@ -1278,6 +1439,7 @@
   .ended {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-0-5) var(--space-2);
     padding: var(--space-1-5) var(--space-2);
     background: var(--surface);
@@ -1300,6 +1462,12 @@
   .log-failed .reason {
     flex: 1 1 14rem;
     overflow-wrap: anywhere;
+  }
+
+  .ended button {
+    margin-left: auto;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--text-xs);
   }
 
   .log-failed .reason::first-letter,
