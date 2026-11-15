@@ -19,14 +19,16 @@
 //! carries it between the pages and the session relays.
 //!
 //! A session window destroyed without docking back (its page could not
-//! answer) has its sessions let go of and handed to the main window
-//! without their scrollback (`destroyed`).
+//! answer), or one whose page died while it stayed open (#89, `page_died`),
+//! has its sessions let go of and handed to the main window without their
+//! scrollback (`hand_over`); the latter is then closed.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use netterm_core::layout::{
-    close_workspace_sessions, live_in_session_windows, TabId, WindowId, WindowView, Windows,
+    close_workspace_sessions, live_in_session_windows, take_over_dead_window, TabId, WindowId,
+    WindowView, Windows,
 };
 use netterm_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, SessionId, SessionManager, SessionRecord,
@@ -527,6 +529,7 @@ fn build(
         .shadow(true)
         .focused(true)
         .build()
+        .inspect(watch_page)
         .map_err(|error| format!("the window could not be opened: {error}"))
 }
 
@@ -958,18 +961,17 @@ pub(super) fn main_window_connect(
 }
 
 /// The session window labelled `label` was destroyed. If it still showed
-/// sessions (it did not dock them back: its page could not answer), the
-/// core hands them to the main window (`Windows::hand_to_main`), whoever
-/// held them is let go of, and the main window is told. With the main
-/// window gone too (the app is closing), they are discarded.
+/// sessions (it did not dock them back: its page could not answer), they
+/// are handed to the main window (`hand_over`). With the main window gone
+/// too (the app is closing), they are discarded.
 pub(super) fn destroyed(app: &AppHandle, label: &str) {
     let Some(window) = window_of(label) else {
         return;
     };
-    let tabs = app.state::<Tabs>();
-    let relays = app.state::<SessionRelays>();
-    let records = app.state::<SessionRecords>();
-    let Some(main) = app.get_webview_window(MAIN_WINDOW) else {
+    if app.get_webview_window(MAIN_WINDOW).is_none() {
+        let tabs = app.state::<Tabs>();
+        let relays = app.state::<SessionRelays>();
+        let records = app.state::<SessionRecords>();
         let sessions = {
             let mut windows = tabs.lock();
             let sessions = windows.session_tabs(window);
@@ -982,21 +984,44 @@ pub(super) fn destroyed(app: &AppHandle, label: &str) {
             records.forget(session);
         }
         return;
-    };
+    }
+    hand_over(app, window);
+}
+
+/// The session window `window`'s page died while its window stayed open
+/// (#89: its renderer crashed or was killed; a channel into it still says
+/// `Ok`, so nothing else notices). Its sessions go to the main window
+/// (`hand_over`) and the window is closed: a window the shell took
+/// sessions from is never left showing them, since its terminals could
+/// still type to the devices.
+fn page_died(app: &AppHandle, window: WindowId) {
+    hand_over(app, window);
+    if let Some(webview) = app.get_webview_window(&label_of(window)) {
+        let _ = webview.destroy();
+    }
+}
+
+/// Takes the session window `window`'s sessions away from it (the core's
+/// `take_over_dead_window`: moved to the main window, whoever held them let
+/// go of) and tells the main window of each (`session-arrived`, with the
+/// snapshot its page never took, or none: its output so far is lost).
+/// Nothing if it is gone already (docked back, closed, or taken over).
+fn hand_over(app: &AppHandle, window: WindowId) {
+    let tabs = app.state::<Tabs>();
+    let relays = app.state::<SessionRelays>();
+    let records = app.state::<SessionRecords>();
     let (handed, layout) = {
         let mut windows = tabs.lock();
-        let Ok(handed) = windows.hand_to_main(window) else {
-            // Docked back or closed already.
+        let Ok(handed) = take_over_dead_window(&mut windows, &relays, window) else {
             return;
         };
         (handed, windows.view(WindowId::MAIN))
     };
     announce(app, &tabs, &records);
-    let Some(layout) = layout else {
+    let (Some(main), Some(layout)) = (app.get_webview_window(MAIN_WINDOW), layout) else {
         return;
     };
     for taken in handed {
-        relays.let_go(taken.session);
         let _ = main.emit_to(
             MAIN_WINDOW,
             SESSION_ARRIVED_EVENT,
@@ -1009,4 +1034,22 @@ pub(super) fn destroyed(app: &AppHandle, label: &str) {
             },
         );
     }
+}
+
+/// Watches the page of the session window `webview` (#89): once its
+/// renderer is gone, `page_died`. Windows: WebView2's `ProcessFailed` with
+/// the render process exited. Linux: WebKitGTK's `web-process-terminated`.
+/// Elsewhere nothing is watched. A page that is only slow (a minimised
+/// window's throttled timers, a flood being drawn) raises neither.
+fn watch_page(webview: &tauri::WebviewWindow) {
+    let Some(window) = window_of(webview.label()) else {
+        return;
+    };
+    let app = webview.app_handle().clone();
+    let died = move || {
+        let app = app.clone();
+        // Not from inside the webview's own event: the window is destroyed.
+        tauri::async_runtime::spawn(async move { page_died(&app, window) });
+    };
+    let _ = webview.with_webview(move |platform| super::page_watch::watch(platform, died));
 }
