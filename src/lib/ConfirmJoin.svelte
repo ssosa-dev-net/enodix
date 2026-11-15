@@ -21,17 +21,17 @@
   function onkeydown(event: KeyboardEvent) {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       oncancel();
     }
   }
 </script>
 
-<svelte:window {onkeydown} />
-
 <div
   class="backdrop"
   role="alertdialog"
-  aria-modal="true"
+  tabindex="-1"
+  {onkeydown}
   aria-labelledby="confirm-join-title"
   data-confirm-join
   data-join-count={joining}
@@ -76,14 +76,15 @@
 </div>
 
 <style>
+  /* Over its pane only (#74): the caller places it there. */
   .backdrop {
-    position: fixed;
+    position: absolute;
     inset: 0;
-    z-index: 20;
     display: grid;
     place-items: center;
-    padding: var(--space-6);
+    padding: var(--space-4);
     background: var(--backdrop);
+    overflow: auto;
   }
 
   form {

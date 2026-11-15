@@ -185,6 +185,8 @@
   );
   /** Tabs waiting for the user's yes before joining the group (#36). */
   let joining = $state<{
+    /** The pane the question covers: the tab's, or the pane joining. */
+    pane: PaneId | null;
     production: string[];
     count: number;
     answer: (join: boolean) => void;
@@ -431,6 +433,10 @@
     if (production.length > 0) {
       const agreed = await new Promise<boolean>((answer) => {
         joining = {
+          pane:
+            change.kind === "joinPane"
+              ? change.pane
+              : (placement.get(tabs[0])?.pane ?? null),
           production: production.map((tab) => sessions[tab]?.name ?? ""),
           count: tabs.length,
           answer,
@@ -1155,7 +1161,6 @@
       snippets.editing ||
       asking ||
       joining ||
-      groupPasteQuestion ||
       closing !== null;
     const action = zoomShortcut(event) ?? (busy ? null : shortcut(event));
     if (!action) return;
@@ -1235,7 +1240,10 @@
             style:width="{rect?.width ?? 0}px"
             style:height="{rect?.height ?? 0}px"
             onfocusin={() => {
-              if (!focused && place) handlers.activate(tab);
+              // Focus is already where the user put it (perhaps a question
+              // over this pane): no focus request, which would hand the
+              // keys back to the pane active until then.
+              if (!focused && place) void edit({ kind: "activate", tab });
             }}
           >
             <TerminalSession
@@ -1342,6 +1350,51 @@
             {/if}
           </div>
         {/each}
+        {#if joining}
+          {@const question = joining}
+          {@const rect =
+            question.pane === null ? undefined : rects[question.pane]}
+          <div
+            class="pane-question"
+            data-pane-dialog={question.pane}
+            style:left={rect ? `${rect.left}px` : "0"}
+            style:top={rect ? `${rect.top}px` : "0"}
+            style:width={rect ? `${rect.width}px` : "100%"}
+            style:height={rect ? `${rect.height}px` : "100%"}
+          >
+            <ConfirmJoin
+              production={question.production}
+              joining={question.count}
+              onjoin={() => question.answer(true)}
+              oncancel={() => question.answer(false)}
+            />
+          </div>
+        {/if}
+        {#if closing !== null && sessions[closing]}
+          {@const tab = closing}
+          {@const state = tabState(tab)}
+          {@const pane = placement.get(tab)?.pane}
+          {@const rect = pane === undefined ? undefined : rects[pane]}
+          <div
+            class="pane-question"
+            data-pane-dialog={pane}
+            style:left={rect ? `${rect.left}px` : "0"}
+            style:top={rect ? `${rect.top}px` : "0"}
+            style:width={rect ? `${rect.width}px` : "100%"}
+            style:height={rect ? `${rect.height}px` : "100%"}
+          >
+            <ConfirmClose
+              name={sessions[tab].name}
+              state={state === "disconnected" ? "connected" : state}
+              environment={safetyOf(sessions[tab]).environment}
+              onclose={confirmClose}
+              oncancel={() => {
+                closing = null;
+                focusRequest += 1;
+              }}
+            />
+          </div>
+        {/if}
         {@const connectRect = rects[layout.activePane]}
         {#if activePane && activePane.active === null && connectRect}
           <div
@@ -1476,29 +1529,6 @@
     onkeep={() => decide("keep")}
     onclosesessions={() => decide("close")}
     oncancel={() => decide("cancel")}
-  />
-{/if}
-
-{#if joining}
-  {@const question = joining}
-  <ConfirmJoin
-    production={question.production}
-    joining={question.count}
-    onjoin={() => question.answer(true)}
-    oncancel={() => question.answer(false)}
-  />
-{/if}
-
-{#if closing !== null && sessions[closing]}
-  {@const state = tabState(closing)}
-  <ConfirmClose
-    name={sessions[closing].name}
-    state={state === "disconnected" ? "connected" : state}
-    onclose={confirmClose}
-    oncancel={() => {
-      closing = null;
-      focusRequest += 1;
-    }}
   />
 {/if}
 
@@ -1651,6 +1681,15 @@
 
   .slot.view {
     background: var(--bg);
+  }
+
+  /* A question about one pane's tab, over that pane's body only (#74):
+     the other panes stay usable. */
+  .pane-question {
+    position: absolute;
+    z-index: 5;
+    min-width: 0;
+    min-height: 0;
   }
 
   .slot.connect {

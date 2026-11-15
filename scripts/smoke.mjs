@@ -8296,9 +8296,81 @@ async function tabsAndPanes({
   );
   step("the terminal recovered from a lost WebGL context");
 
-  // Closing a tab with a live session asks first; Cancel keeps it.
+  // Questions about one tab cover only its pane (#74). `within(dialog,
+  // tab)`: the dialog lies over the tab's slot and not over `a`'s pane.
+  const placedOver = (dialog, tab) =>
+    evaluate(`(() => {
+      const card = document.querySelector(${json(dialog)});
+      if (!card) return null;
+      const box = card.getBoundingClientRect();
+      const own = document.querySelector('.slot[data-tab="${tab}"]').getBoundingClientRect();
+      const other = document.querySelector('.slot[data-tab="${a}"]').getBoundingClientRect();
+      const inside = box.left >= own.left - 1 && box.right <= own.right + 1 &&
+        box.top >= own.top - 1 && box.bottom <= own.bottom + 1;
+      const overlaps = box.left < other.right && box.right > other.left &&
+        box.top < other.bottom && box.bottom > other.top;
+      return { inside, overlaps, pane: card.closest("[data-pane-dialog]")?.dataset.paneDialog ?? null };
+    })()`);
+  const cPane = String((await layout())[0].pane);
+
+  // A paste confirmation dims only its pane: the terminal in the other
+  // pane still takes typing while it is open; Escape cancels it.
+  await evaluate(
+    `document.querySelector(${json(`${slot(c)} .terminal textarea`)}).focus()`,
+  );
+  writeClipboard("pane-one\npane-two\n");
+  await press("V", "KeyV", 86, CTRL | SHIFT);
+  await until("the paste question over its pane", () =>
+    exists(`${slot(c)} [data-paste-confirm]`),
+  );
+  const pastePlace = await placedOver(`${slot(c)} [data-paste-confirm]`, c);
+  if (!pastePlace.inside || pastePlace.overlaps) {
+    fail(
+      `the paste question is not over its own pane only: ${json(pastePlace)}`,
+    );
+  }
+  await screenshot("paste-over-its-pane");
+  await evaluate(
+    `document.querySelector(${json(`${slot(a)} .terminal textarea`)}).focus()`,
+  );
+  await type("size\r");
+  await until("typing in the other pane during the paste question", async () =>
+    /size\s*\d+x\d+[\s\S]*size\s*\d+x\d+/.test(await screenOfTab(a)),
+  );
+  if (!(await exists(`${slot(c)} [data-paste-confirm]`))) {
+    fail("typing in another pane cancelled the paste question");
+  }
+  await evaluate(
+    `document.querySelector(${json(`${slot(c)} [data-paste=cancel]`)}).focus()`,
+  );
+  await press("Escape", "Escape", 27, 0);
+  await until(
+    "the paste question cancelled by Escape",
+    async () => !(await exists(`${slot(c)} [data-paste-confirm]`)),
+  );
+  if ((await screenOfTab(c)).includes("pane-one")) {
+    fail("a cancelled paste reached the device");
+  }
+  step(
+    "a paste question covered only its pane; the other pane took typing meanwhile; Escape cancelled it",
+  );
+
+  // Closing a tab with a live session asks first, over its pane; Cancel
+  // keeps it, and so does Escape.
   await clickOn(`[data-tab="${c}"] [data-tab-close]`);
+  await until("the close confirmation", () => exists("[data-confirm-close]"));
+  const closePlace = await placedOver("[data-confirm-close] form", c);
+  if (!closePlace.inside || closePlace.overlaps || closePlace.pane !== cPane) {
+    fail(`the close question is not over its pane: ${json(closePlace)}`);
+  }
   await screenshot("close-confirmation");
+  await press("Escape", "Escape", 27, 0);
+  await until(
+    "the close question cancelled by Escape",
+    async () => !(await exists("[data-confirm-close]")),
+  );
+  if (!(await allTabs()).some((t) => t.id === c)) fail("Escape closed the tab");
+  await clickOn(`[data-tab="${c}"] [data-tab-close]`);
   await confirmClose("cancel");
   if (!(await allTabs()).some((t) => t.id === c)) fail("Cancel closed the tab");
   await press("W", "KeyW", 87, CTRL | SHIFT);
@@ -8372,6 +8444,14 @@ async function multiSend({
       windowsVirtualKeyCode: 86,
       modifiers: CTRL | SHIFT,
     };
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...event,
+    });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+  };
+  const press = async (key, code, windowsVirtualKeyCode, modifiers) => {
+    const event = { key, code, windowsVirtualKeyCode, modifiers };
     await devtools.send("Input.dispatchKeyEvent", {
       type: "keyDown",
       ...event,
@@ -8549,6 +8629,7 @@ async function multiSend({
           count: card.dataset.joinCount,
           production: [...card.querySelectorAll("[data-join-production]")].map((li) => li.dataset.joinProduction),
           focused: document.activeElement?.dataset.join ?? null,
+          pane: card.closest("[data-pane-dialog]")?.dataset.paneDialog ?? null,
         };
       })()`);
     const groupSize = async () =>
@@ -8562,7 +8643,8 @@ async function multiSend({
     if (
       json(paneAsked.production) !== json(["ms-prod"]) ||
       Number(paneAsked.count) < 2 ||
-      paneAsked.focused !== "cancel"
+      paneAsked.focused !== "cancel" ||
+      paneAsked.pane !== String(pane)
     ) {
       fail(`the pane's join question shows ${json(paneAsked)}`);
     }
@@ -8575,12 +8657,19 @@ async function multiSend({
     const asked = await until("the production join question", joinQuestion);
     if (
       json(asked) !==
-      json({ count: "1", production: ["ms-prod"], focused: "cancel" })
+      json({
+        count: "1",
+        production: ["ms-prod"],
+        focused: "cancel",
+        pane: String(pane),
+      })
     ) {
       fail(`the production join question shows ${json(asked)}`);
     }
     await screenshot("multi-send-production-join");
-    await clickOn("[data-join=cancel]");
+    // Escape cancels it, as Cancel does.
+    await evaluate(`document.querySelector("[data-join=cancel]").focus()`);
+    await press("Escape", "Escape", 27, 0);
     await until("the question gone", async () => !(await joinQuestion()));
     if ((await tabOf(d)).member !== null)
       fail("Cancel added the production tab");
@@ -8615,6 +8704,12 @@ async function multiSend({
           names: [...card.querySelectorAll("[data-paste-member]")].map((li) => li.dataset.pasteMember),
           text: card.querySelector("[data-paste-text]").textContent.replace(/\\r\\n/g, "\\n"),
           focused: document.activeElement?.dataset.paste ?? null,
+          overPane: (() => {
+            const box = card.getBoundingClientRect();
+            const own = card.closest(".slot").getBoundingClientRect();
+            return box.left >= own.left - 1 && box.right <= own.right + 1 &&
+              box.top >= own.top - 1 && box.bottom <= own.bottom + 1;
+          })(),
         };
       })()`);
     const names = await evaluate(
@@ -8629,7 +8724,8 @@ async function multiSend({
       pasted.names.length !== 3 ||
       !pasted.names.includes("ms-prod") ||
       pasted.text !== "ms-one\nms-two\n" ||
-      pasted.focused !== "cancel"
+      pasted.focused !== "cancel" ||
+      !pasted.overPane
     ) {
       fail(`the group's paste question shows ${json(pasted)} (${json(names)})`);
     }

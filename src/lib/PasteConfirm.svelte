@@ -61,7 +61,6 @@
 <div
   class="overlay"
   role="alertdialog"
-  aria-modal="true"
   aria-labelledby="paste-confirm-title"
   tabindex="-1"
   {onkeydown}
