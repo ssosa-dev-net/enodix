@@ -136,6 +136,12 @@ impl SessionEvents {
         self.flow.acknowledge(bytes);
     }
 
+    /// The session's flow control, for a relay that acknowledges on its
+    /// consumers' behalf.
+    pub(super) fn flow(&self) -> Arc<Flow> {
+        self.flow.clone()
+    }
+
     fn gather(&mut self, bytes: Vec<u8>) {
         if self.batch.is_empty() {
             self.batch = bytes;
