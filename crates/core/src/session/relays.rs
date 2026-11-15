@@ -6,16 +6,25 @@
 //! consumer's key no earlier relay gave out. Acknowledgements are passed on
 //! to the session's relay, which ignores any but the current consumer's.
 //!
-//! When a relay's consumer is found gone on delivery (its window closed or
-//! its page reloaded), its relay is dropped, which closes the session as
+//! A session moves to another window (#84) by [`SessionRelays::release`]
+//! from the window showing it and [`SessionRelays::attach`] from the next;
+//! a window that died holding it is made to let go with
+//! [`SessionRelays::let_go`].
+//!
+//! When a main window's consumer is found gone on delivery (its page
+//! reloaded or closed), its relay is dropped, which closes the session as
 //! dropping its [`SessionEvents`] does; never a relay a reconnect has
-//! started since. Session windows change this rule (#84).
+//! started since. A session window's found gone leaves the session open,
+//! held by nobody, for the main window to take.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use super::{Consumer, ConsumerGone, ConsumerKey, Relay, SessionEvent, SessionEvents, SessionId};
+use super::{
+    Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay, SessionEvent,
+    SessionEvents, SessionId, SessionState,
+};
 use crate::layout::WindowId;
 
 /// Each session's relay and the window it is shown in.
@@ -73,8 +82,11 @@ impl<C: Consumer> Consumer for Registered<C> {
             return;
         };
         let mut shown = relays.shown();
+        // Only the main window's sessions go with its page.
         let removed = match shown.get(&session) {
-            Some(current) if current.number == number => shown.remove(&session),
+            Some(current) if current.number == number && current.window == WindowId::MAIN => {
+                shown.remove(&session)
+            }
             _ => None,
         };
         drop(shown);
@@ -132,6 +144,55 @@ impl SessionRelays {
         if let Some(shown) = self.shared.shown().get(&session) {
             shown.relay.acknowledge(key, bytes);
         }
+    }
+
+    /// Stops showing `session` to the consumer `key`, which is moving it to
+    /// another window: see [`Relay::release`]. Returns the end of its share
+    /// of the output, in bytes.
+    pub fn release(&self, session: SessionId, key: ConsumerKey) -> Result<u64, HandoverError> {
+        self.relay(session)?.release(key)
+    }
+
+    /// Shows `session` in `window` from now on, to `consumer`: see
+    /// [`Relay::attach`]. Refused while another consumer holds it.
+    pub fn attach(
+        &self,
+        session: SessionId,
+        window: WindowId,
+        consumer: impl Consumer,
+    ) -> Result<Attached, HandoverError> {
+        let mut shown = self.shared.shown();
+        let current = shown
+            .get_mut(&session)
+            .ok_or(HandoverError::NoSuchSession)?;
+        let attached = current.relay.attach(Registered {
+            consumer,
+            relays: Arc::downgrade(&self.shared),
+            session,
+            number: current.number,
+        })?;
+        current.window = window;
+        Ok(attached)
+    }
+
+    /// Lets go of whoever holds `session` (a window that died holding
+    /// it); returns the output delivered so far, or `None` for a session
+    /// without a relay.
+    pub fn let_go(&self, session: SessionId) -> Option<u64> {
+        Some(self.relay(session).ok()?.let_go())
+    }
+
+    /// The last state `session` showed a window, while it has a relay.
+    pub fn state(&self, session: SessionId) -> Option<SessionState> {
+        self.relay(session).ok()?.shown_state()
+    }
+
+    fn relay(&self, session: SessionId) -> Result<Relay, HandoverError> {
+        self.shared
+            .shown()
+            .get(&session)
+            .map(|shown| shown.relay.clone())
+            .ok_or(HandoverError::NoSuchSession)
     }
 
     /// The window `session` is shown in, while it has a relay.

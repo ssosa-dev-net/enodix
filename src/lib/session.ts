@@ -4,7 +4,7 @@
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { TabId } from "./layout";
-import type { FlowControl, Parity } from "./workspace";
+import type { FlowControl, Parity, PasteSafety, Role } from "./workspace";
 
 export interface QuickConnectTarget {
   host: string;
@@ -176,6 +176,37 @@ export interface Session {
   reconnect(size: TerminalSize): Promise<void>;
   /** Forgets the session (closing it if open), when its terminal goes. */
   discard(): void;
+  /**
+   * This window gives the session up, to move it to another (#84).
+   * Resolves once every byte this window was given has reached `onOutput`;
+   * nothing more arrives here after.
+   */
+  release(): Promise<void>;
+  /** Takes the session back after a release, when the move failed. */
+  reattach(): Promise<void>;
+  /** What the app keeps of the session, as any window shows it. */
+  readonly record: SessionRecord;
+  /**
+   * For a session taken over from another window: where it stood then
+   * (null: nothing shown yet). Null for a session opened here.
+   */
+  readonly takenState: SessionState | null;
+}
+
+/**
+ * What the app keeps of each session (#84), whichever window shows it:
+ * its name, host and header facts and its paste safety, as they were when
+ * it opened.
+ */
+export interface SessionRecord {
+  name: string;
+  title: string;
+  address: string | null;
+  jumpHost: string | null;
+  host: string | null;
+  workspace: string | null;
+  safety: PasteSafety;
+  role: Role | null;
 }
 
 /** What the interface does with a session's events. */
@@ -223,9 +254,16 @@ export type LoginBackupOutcome =
 
 /** Where a new session comes from. */
 export type SessionSource =
-  | { kind: "target"; target: ConnectTarget }
+  /** `name` and `title`: what its tab and header show (its record's). */
+  | { kind: "target"; target: ConnectTarget; name: string; title: string }
   /** A second connection like the open session with this id. */
-  | { kind: "duplicate"; of: number };
+  | { kind: "duplicate"; of: number }
+  /**
+   * The open session `id`, moved here from another window (#84):
+   * `snapshot` is its terminal as that window showed it, written before
+   * its output from then on; null when that window died and it is lost.
+   */
+  | { kind: "adopt"; id: number; snapshot: string | null };
 
 export function appName(): Promise<string> {
   return invoke<string>("app_name");
@@ -241,6 +279,10 @@ export function appName(): Promise<string> {
 function channels(handlers: SessionHandlers) {
   let known: { id: number; consumer: number } | null = null;
   let consumedEarly = 0;
+  /** Output received on these channels (bytes), from `offset` on. */
+  let received = 0;
+  let offset = 0;
+  let waiting: { upTo: number; resolve: () => void }[] = [];
   const acknowledge = (bytes: number) => {
     if (known === null) consumedEarly += bytes;
     else
@@ -251,22 +293,76 @@ function channels(handlers: SessionHandlers) {
   };
   return {
     // Output travels on its own channel as raw bytes, not as JSON.
-    onOutput: new Channel<ArrayBuffer>((buffer) =>
+    onOutput: new Channel<ArrayBuffer>((buffer) => {
+      received += buffer.byteLength;
       handlers.onOutput(new Uint8Array(buffer), () =>
         acknowledge(buffer.byteLength),
-      ),
-    ),
+      );
+      const reached = offset + received;
+      for (const wait of waiting.filter((each) => reached >= each.upTo))
+        wait.resolve();
+      waiting = waiting.filter((each) => reached < each.upTo);
+    }),
     onState: new Channel<SessionState>(handlers.onState),
     onPrompt: new Channel<LoginPrompt>(handlers.onPrompt),
     onHostKey: new Channel<HostKeyQuestion>(handlers.onHostKey),
     onAlgorithms: new Channel<NegotiatedAlgorithms[]>(handlers.onAlgorithms),
     onLogFailure: new Channel<string>(handlers.onLogFailure),
     onBackup: new Channel<LoginBackupOutcome>(handlers.onBackup),
-    ready(id: number, consumer: number) {
+    /** `startsAt`: the output (bytes) other windows were given first. */
+    ready(id: number, consumer: number, startsAt = 0) {
       known = { id, consumer };
+      offset = startsAt;
       if (consumedEarly > 0) acknowledge(consumedEarly);
+      consumedEarly = 0;
+    },
+    /** This window's key, once known. */
+    key: () => known?.consumer ?? null,
+    /**
+     * Resolves once the output up to `upTo` (bytes since the relay
+     * started) has reached `onOutput`. Channel messages can arrive after
+     * a command's answer, so a release waits on this.
+     */
+    receivedUpTo(upTo: number): Promise<void> {
+      if (offset + received >= upTo) return Promise.resolve();
+      return new Promise((resolve) => waiting.push({ upTo, resolve }));
     },
   };
+}
+
+/** The channels alone, as a command takes them. */
+function eventsOf(current: ReturnType<typeof channels>) {
+  const { onOutput, onState, onPrompt, onHostKey, onAlgorithms } = current;
+  const { onLogFailure, onBackup } = current;
+  return {
+    onOutput,
+    onState,
+    onPrompt,
+    onHostKey,
+    onAlgorithms,
+    onLogFailure,
+    onBackup,
+  };
+}
+
+/** A session taken over from another window, as the shell returns it. */
+interface Attached {
+  consumer: number;
+  offset: number;
+  encrypted: boolean;
+  transport: Transport;
+  state: SessionState | null;
+}
+
+/** Shows the session `id` here: see `SessionSource`'s `adopt`. */
+async function attach(id: number, handlers: SessionHandlers) {
+  const current = channels(handlers);
+  const attached = await invoke<Attached>("session_attach", {
+    id,
+    ...eventsOf(current),
+  });
+  current.ready(id, attached.consumer, attached.offset);
+  return { current, attached };
 }
 
 /**
@@ -285,6 +381,7 @@ interface Opened {
   consumer: number;
   encrypted: boolean;
   transport: Transport;
+  record: SessionRecord;
 }
 
 /**
@@ -297,27 +394,57 @@ export async function openSession(
   size: TerminalSize,
   handlers: SessionHandlers,
 ): Promise<Session> {
-  const { ready, ...events } = channels(handlers);
-  const { id, consumer, encrypted, transport } =
-    source.kind === "target"
-      ? await invoke<Opened>("session_open", {
-          target: source.target,
-          tab,
-          size,
-          ...events,
-        })
-      : await invoke<Opened>("session_duplicate", {
-          id: source.of,
-          tab,
-          size,
-          ...events,
-        });
-  ready(id, consumer);
+  let current: ReturnType<typeof channels>;
+  let id: number;
+  let encrypted: boolean;
+  let transport: Transport;
+  let record: SessionRecord;
+  let takenState: SessionState | null = null;
+  if (source.kind === "adopt") {
+    const taken = await attach(source.id, handlers);
+    current = taken.current;
+    ({ encrypted, transport } = taken.attached);
+    id = source.id;
+    takenState = taken.attached.state;
+    record = (await sessionRecord(id)) ?? NO_RECORD;
+  } else {
+    current = channels(handlers);
+    const opened =
+      source.kind === "target"
+        ? await invoke<Opened>("session_open", {
+            target: source.target,
+            tab,
+            name: source.name,
+            title: source.title,
+            size,
+            ...eventsOf(current),
+          })
+        : await invoke<Opened>("session_duplicate", {
+            id: source.of,
+            tab,
+            size,
+            ...eventsOf(current),
+          });
+    ({ id, encrypted, transport, record } = opened);
+    current.ready(id, opened.consumer);
+  }
 
   return {
     id,
     encrypted,
     transport,
+    record,
+    takenState,
+    async release() {
+      const upTo = await invoke<number>("session_release", {
+        id,
+        consumer: current.key(),
+      });
+      await current.receivedUpTo(upTo);
+    },
+    async reattach() {
+      current = (await attach(id, handlers)).current;
+    },
     input: (data) => send(id, "session_input", { data: Array.from(data) }),
     write: (data) => send(id, "session_write", { data: Array.from(data) }),
     sendBreak: () => send(id, "session_break", {}),
@@ -328,14 +455,37 @@ export async function openSession(
     close: () => send(id, "session_close", {}),
     async reconnect(size) {
       // New channels: the old ones ended with the old connection.
-      const { ready, ...events } = channels(handlers);
+      current = channels(handlers);
       const consumer = await invoke<number>("session_reconnect", {
         id,
         size,
-        ...events,
+        ...eventsOf(current),
       });
-      ready(id, consumer);
+      current.ready(id, consumer);
     },
     discard: () => send(id, "session_discard", {}),
   };
 }
+
+/** Forgets the session `id` (closing it if open): a terminal that was to
+ * show it went without it. */
+export function discardSession(id: number) {
+  send(id, "session_discard", {});
+}
+
+/** What the app keeps of the session `id`; null: none (discarded). */
+export function sessionRecord(id: number): Promise<SessionRecord | null> {
+  return invoke<SessionRecord | null>("session_record", { id });
+}
+
+/** A session the app keeps no record of (it should not happen). */
+const NO_RECORD: SessionRecord = {
+  name: "",
+  title: "",
+  address: null,
+  jumpHost: null,
+  host: null,
+  workspace: null,
+  safety: { environment: null, lineDelayMs: 0 },
+  role: null,
+};

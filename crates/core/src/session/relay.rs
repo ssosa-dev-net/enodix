@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::Notify;
 
 use super::output::Flow;
-use super::{SessionEvent, SessionEvents};
+use super::{SessionEvent, SessionEvents, SessionState};
 
 /// Where a relay delivers a session's events: in the app, one window.
 pub trait Consumer: Send + 'static {
@@ -86,6 +86,8 @@ pub enum HandoverError {
     /// The consumer named is not the one shown the session (it was
     /// released, went away or never was).
     NotShownThere,
+    /// There is no such session (or it has no relay).
+    NoSuchSession,
 }
 
 impl fmt::Display for HandoverError {
@@ -93,6 +95,7 @@ impl fmt::Display for HandoverError {
         match self {
             Self::Shown => f.write_str("the session is shown elsewhere"),
             Self::NotShownThere => f.write_str("the session is not shown there"),
+            Self::NoSuchSession => f.write_str("there is no such session"),
         }
     }
 }
@@ -142,6 +145,8 @@ struct State {
     consumer: Option<Current>,
     /// Output delivered so far, to every consumer, in bytes.
     delivered: u64,
+    /// The last state delivered, to whichever consumer.
+    shown_state: Option<SessionState>,
     abandoned: bool,
 }
 
@@ -177,6 +182,7 @@ impl Relay {
             state: Mutex::new(State {
                 consumer: None,
                 delivered: 0,
+                shown_state: None,
                 abandoned: false,
             }),
             wake: Notify::new(),
@@ -249,6 +255,23 @@ impl Relay {
         let bytes = bytes.min(current.unacknowledged);
         current.unacknowledged -= bytes;
         shared.flow.acknowledge(bytes);
+    }
+
+    /// Lets go of whichever consumer is shown the session (one whose
+    /// window died without releasing it, #84), as [`Self::release`] does;
+    /// returns the output delivered so far in all, in bytes.
+    pub fn let_go(&self) -> u64 {
+        let shared = self.shared();
+        let mut state = shared.state();
+        shared.let_go(&mut state);
+        state.delivered
+    }
+
+    /// The last state delivered to a consumer (any of them): where the
+    /// session stands for one taking it now, before the events that wait
+    /// for it. `None` until one was delivered.
+    pub fn shown_state(&self) -> Option<SessionState> {
+        self.shared().state().shown_state.clone()
     }
 
     /// The consumer shown the session now, if any.
@@ -337,10 +360,17 @@ fn offer(shared: &Shared, event: SessionEvent) -> Offered {
         SessionEvent::Output(bytes) => bytes.len(),
         _ => 0,
     };
+    let shown_state = match &event {
+        SessionEvent::State(session_state) => Some(session_state.clone()),
+        _ => None,
+    };
     match current.consumer.deliver(event.clone()) {
         Ok(()) => {
             current.unacknowledged += bytes;
             state.delivered += bytes as u64;
+            if shown_state.is_some() {
+                state.shown_state = shown_state;
+            }
             Offered::Delivered
         }
         Err(ConsumerGone) => {

@@ -52,6 +52,19 @@ pub struct Windows {
     layouts: BTreeMap<WindowId, Layout>,
     next_window: u64,
     group: Group,
+    /// What a session tab moved to a session window showed (#84), until
+    /// the window's page takes it.
+    snapshots: HashMap<Member, String>,
+}
+
+/// A session a window takes (#84): its tab there, and what the window that
+/// gave it up showed, as escape sequences; `None` when that is lost (the
+/// page showing it went away, or reloaded).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Taken {
+    pub tab: TabId,
+    pub session: SessionId,
+    pub snapshot: Option<String>,
 }
 
 /// The multi-send group, and the session each tab shows (for routing).
@@ -134,6 +147,7 @@ impl Windows {
             layouts: BTreeMap::from([(WindowId::MAIN, Layout::new())]),
             next_window: WindowId::MAIN.0 + 1,
             group: Group::default(),
+            snapshots: HashMap::new(),
         }
     }
 
@@ -311,8 +325,109 @@ impl Windows {
             .collect()
     }
 
+    /// The session tabs of `window` whose session is known, with it, in
+    /// the layout's order (panes in reading order).
+    pub fn session_tabs(&self, window: WindowId) -> Vec<(TabId, SessionId)> {
+        let Some(layout) = self.layout(window) else {
+            return Vec::new();
+        };
+        layout
+            .panes()
+            .into_iter()
+            .filter_map(|pane| layout.pane(pane))
+            .flat_map(|pane| pane.tabs.iter().copied())
+            .filter_map(|tab| {
+                let session = self.group.sessions.get(&Member { window, tab })?;
+                Some((tab, *session))
+            })
+            .collect()
+    }
+
+    /// Moves the session tab `tab` of the window `from` to the window `to`
+    /// (#84), where it becomes a new tab at the end of the active pane,
+    /// shown; returns its id there. Its session goes with it. Until the
+    /// group spans windows in the interface (#87), a member leaves the
+    /// group (raising every revision). A view tab, the same window or an
+    /// unknown one is refused, changing nothing.
+    pub fn move_session(
+        &mut self,
+        from: WindowId,
+        tab: TabId,
+        to: WindowId,
+    ) -> Result<TabId, LayoutError> {
+        self.existing(from)?.find_session_tab(tab)?;
+        self.existing(to)?;
+        if from == to {
+            return Err(LayoutError::SameWindow);
+        }
+        let session = self
+            .group
+            .sessions
+            .get(&Member { window: from, tab })
+            .copied();
+        let moved = self.layouts.get_mut(&to).expect("checked above").open_tab();
+        if let Some(session) = session {
+            self.group.sessions.insert(
+                Member {
+                    window: to,
+                    tab: moved,
+                },
+                session,
+            );
+        }
+        // Dropping the edit forgets the closed tab's membership and session.
+        self.layout_mut(from)
+            .expect("checked above")
+            .close_tab(tab)?;
+        Ok(moved)
+    }
+
+    /// Keeps `snapshot` (what the window giving it up showed) for the
+    /// session tab `tab` of the session window `window`, until its page
+    /// takes the session (#84).
+    pub fn keep_snapshot(&mut self, window: WindowId, tab: TabId, snapshot: String) {
+        self.snapshots.insert(Member { window, tab }, snapshot);
+    }
+
+    /// The session `window` shows (its first session tab), for its page to
+    /// take, with the snapshot kept for it, used up; `None` while it shows
+    /// none (it has not been moved there yet). A page taking it again (it
+    /// reloaded) gets no snapshot: what it showed is lost.
+    pub fn take_session(&mut self, window: WindowId) -> Option<Taken> {
+        let (tab, session) = self.session_tabs(window).into_iter().next()?;
+        Some(Taken {
+            tab,
+            session,
+            snapshot: self.snapshots.remove(&Member { window, tab }),
+        })
+    }
+
+    /// The session window `window` went away without docking back (#84):
+    /// each of its sessions moves to the main window, which shows them in
+    /// new tabs (with the snapshot its page never took, if any), and the
+    /// window closes. Returns them, in order.
+    pub fn hand_to_main(&mut self, window: WindowId) -> Result<Vec<Taken>, LayoutError> {
+        if window == WindowId::MAIN {
+            return Err(LayoutError::MainWindow);
+        }
+        self.existing(window)?;
+        let mut handed = Vec::new();
+        for (tab, session) in self.session_tabs(window) {
+            let snapshot = self.snapshots.remove(&Member { window, tab });
+            let tab = self.move_session(window, tab, WindowId::MAIN)?;
+            handed.push(Taken {
+                tab,
+                session,
+                snapshot,
+            });
+        }
+        self.close_window(window)?;
+        Ok(handed)
+    }
+
     /// Drops every member and session of `window`.
     fn forget_window(&mut self, window: WindowId) {
+        self.snapshots.retain(|member, _| member.window != window);
         if self.group.forget(|member| member.window == window) {
             self.group_changed();
         }
