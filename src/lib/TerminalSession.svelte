@@ -1,10 +1,12 @@
 <script lang="ts">
   import { FitAddon } from "@xterm/addon-fit";
   import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
+  import { SerializeAddon } from "@xterm/addon-serialize";
   import { Terminal } from "@xterm/xterm";
   import { onMount, tick, untrack } from "svelte";
   import { webglRenderer } from "./renderer";
   import { terminalInput, type TerminalInput } from "./terminalInput";
+  import { unserializedModes } from "./handover";
   import { highlighting, highlightTerminal } from "./highlight.svelte";
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
@@ -24,6 +26,7 @@
     type Preferences,
   } from "./preferences.svelte";
   import {
+    discardSession,
     openSession,
     type HostKeyDecision,
     type HostKeyQuestion,
@@ -46,10 +49,13 @@
      * null: what is typed here then reaches every connected member.
      */
     groupSize: number | null;
-    /** Adds this session's tab to the multi-send group, or takes it out. */
-    ontogglegroup: () => void;
+    /**
+     * Adds this session's tab to the multi-send group, or takes it out;
+     * without it (a session window, until #87) multi-send is not offered.
+     */
+    ontogglegroup?: () => void;
     /** Ends the multi-send group. */
-    onendgroup: () => void;
+    onendgroup?: () => void;
     /**
      * Takes a paste (or snippet text) made here while the tab is in the
      * multi-send group: the group's paste is planned and confirmed once for
@@ -81,7 +87,9 @@
     /** Called when the user leaves this session's view. */
     ondismiss: () => void;
     /** Called with this session's id when the user duplicates it. */
-    onduplicate: (id: number) => void;
+    /** Called with this session's id when the user duplicates it; without
+     * it (a session window), Duplicate is not offered. */
+    onduplicate?: (id: number) => void;
     /**
      * Called when the user asks to log in with a password after the SSH
      * agent did not work; without it, that is not offered.
@@ -92,6 +100,17 @@
      * connect, or a host no longer in the open workspace) there is none.
      */
     ondetails?: () => void;
+    /**
+     * Moving the session to another window (#84): Open in window, or Dock
+     * back in a session window. Offered in the session's menu, disabled
+     * while `moveRefusal` gives a reason.
+     */
+    move?: { id: "open-in-window" | "dock"; label: string; run: () => void };
+    /**
+     * Why the window holds a question about this session (snippet
+     * variables, a group paste), which a move would lose; null: none.
+     */
+    windowQuestion?: string | null;
   }
 
   let {
@@ -116,7 +135,58 @@
     onduplicate,
     onpasswordlogin,
     ondetails,
+    move,
+    windowQuestion = null,
   }: Props = $props();
+
+  /** Written first in a terminal whose earlier output is lost (#84). */
+  const LOST_LINE =
+    "\x1b[2m--- earlier output was lost: the window showing it closed ---\x1b[0m\r\n";
+
+  /** Set once the session has gone to another window: not discarded. */
+  let moved = false;
+  /** Pastes queued or still being sent, line by line. */
+  let pastes = $state(0);
+
+  /**
+   * Why the session cannot move to another window now, or null (#84):
+   * what lives in this window would be lost or cut in half by a move.
+   */
+  export function moveRefusal(): string | null {
+    if (!session) return "Not until the session has opened";
+    if (status.state === "connecting")
+      return "Not while the session is connecting";
+    if (prompt || hostKey || pasteQuestion)
+      return "Not while a question about the session is open";
+    if (windowQuestion) return windowQuestion;
+    if (pastes > 0) return "Not while a paste is still being sent";
+    return null;
+  }
+
+  /** Gives the session up for another window (set up on mount). */
+  let giveUp: () => Promise<{
+    id: number;
+    snapshot: string;
+  } | null> = async () => null;
+
+  /**
+   * Gives the session up to move it to another window (#84): once every
+   * byte this window was given is in the terminal, returns the session's
+   * id and the terminal's screen and scrollback, with its modes, as
+   * escape sequences. Null if it cannot move now (`moveRefusal`). From
+   * then on the terminal shows nothing more, and going away leaves the
+   * session open; `takeBack` undoes it if the move fails.
+   */
+  export function handOver() {
+    return giveUp();
+  }
+
+  /** Shows the session here again after a failed move. */
+  export async function takeBack() {
+    if (!session) return;
+    moved = false;
+    await session.reattach();
+  }
 
   /** Output held for a hidden terminal, acknowledged at once (see `deliver`). */
   const HIDDEN_BUFFER_BYTES = 1 << 20;
@@ -361,13 +431,33 @@
         run: details,
       });
     }
-    list.push({
-      id: "duplicate",
-      label: "Duplicate",
-      title: "Open a second session to the same host",
-      disabled: !session,
-      run: () => session && onduplicate(session.id),
-    });
+    if (onduplicate) {
+      const duplicate = onduplicate;
+      list.push({
+        id: "duplicate",
+        label: "Duplicate",
+        title: "Open a second session to the same host",
+        disabled: !session,
+        run: () => session && duplicate(session.id),
+      });
+    }
+    if (move) {
+      const refusal = moveRefusal();
+      const run = move.run;
+      list.push({
+        id: move.id,
+        label: move.label,
+        shortcut: "Ctrl+Shift+N",
+        title:
+          refusal ??
+          (move.id === "dock"
+            ? "Return this session to a tab of the main window"
+            : "Move this session to a window of its own"),
+        disabled: refusal !== null,
+        attributes: { [`data-${move.id}`]: "" },
+        run,
+      });
+    }
     if (status.state === "closed") {
       list.push(
         {
@@ -398,32 +488,36 @@
         },
       });
     }
-    list.push({
-      id: "multi-send",
-      label:
-        groupSize === null
-          ? "Join the multi-send group"
-          : "Leave the multi-send group",
-      shortcut: "Ctrl+Shift+M",
-      title:
-        groupSize === null
-          ? "What you type in a member reaches every member"
-          : undefined,
-      attributes: {
-        "data-multi-send-toggle": groupSize === null ? "join" : "leave",
-      },
-      run: () => {
-        ontogglegroup();
-        back();
-      },
-    });
-    if (groupSize !== null) {
+    if (ontogglegroup) {
+      const toggle = ontogglegroup;
+      list.push({
+        id: "multi-send",
+        label:
+          groupSize === null
+            ? "Join the multi-send group"
+            : "Leave the multi-send group",
+        shortcut: "Ctrl+Shift+M",
+        title:
+          groupSize === null
+            ? "What you type in a member reaches every member"
+            : undefined,
+        attributes: {
+          "data-multi-send-toggle": groupSize === null ? "join" : "leave",
+        },
+        run: () => {
+          toggle();
+          back();
+        },
+      });
+    }
+    if (groupSize !== null && onendgroup) {
+      const end = onendgroup;
       list.push({
         id: "end-group",
         label: "End the multi-send group",
         attributes: { "data-end-group": "" },
         run: () => {
-          onendgroup();
+          end();
           back();
         },
       });
@@ -474,6 +568,8 @@
     terminal.loadAddon(fit);
     const search = new SearchAddon();
     terminal.loadAddon(search);
+    const serializer = new SerializeAddon();
+    terminal.loadAddon(serializer);
     terminal.open(container);
     fit.fit();
     // Decoration over what the screen shows; the bytes are not touched.
@@ -638,6 +734,16 @@
       }
     };
     let pasting: Promise<void> = Promise.resolve();
+    /** Queues `send`, counted in `pastes` until it is done (#84: a paste
+     * in flight is never cut short by a move). */
+    const queuePaste = (send: () => Promise<void>) => {
+      pastes += 1;
+      pasting = pasting
+        .then(send)
+        .catch(() => {})
+        .finally(() => (pastes -= 1));
+      return pasting;
+    };
     pasteText = (text: string) => {
       if (text === "") return;
       // A member's paste is the group's: planned once for every member.
@@ -645,13 +751,10 @@
         if (!ended()) ongrouppaste(text);
         return;
       }
-      pasting = pasting.then(() => sendPaste(text)).catch(() => {});
+      void queuePaste(() => sendPaste(text));
     };
-    sendLines = (lines, lineDelayMs) => {
-      const sent = pasting.then(() => pasteEach(lines, lineDelayMs, true));
-      pasting = sent.catch(() => {});
-      return pasting;
-    };
+    sendLines = (lines, lineDelayMs) =>
+      queuePaste(() => pasteEach(lines, lineDelayMs, true));
     const paste = async () => {
       try {
         pasteText(await navigator.clipboard.readText());
@@ -785,6 +888,30 @@
     });
     resizeObserver.observe(container);
 
+    // A session moved here (#84): what the window giving it up showed
+    // comes first, then its output from then on.
+    const adopted = untrack(() => source);
+    if (adopted.kind === "adopt") terminal.write(adopted.snapshot ?? LOST_LINE);
+    /** Whether a state arrived here yet (it is newer than a taken one). */
+    let stateSeen = false;
+    giveUp = async () => {
+      if (!session || moveRefusal() !== null) return null;
+      const giving = session;
+      // Held output goes into xterm first, or the snapshot would miss it.
+      reveal();
+      await giving.release();
+      await new Promise<void>((resolve) => terminal.write("", resolve));
+      // A paste or a question may have begun meanwhile: it stays here.
+      if (moveRefusal() !== null) {
+        await giving.reattach().catch(() => {});
+        return null;
+      }
+      moved = true;
+      return {
+        id: giving.id,
+        snapshot: serializer.serialize() + unserializedModes(terminal),
+      };
+    };
     const requestedSize = size();
     openSession(
       source,
@@ -795,6 +922,7 @@
         // never queues up faster than the terminal can show it.
         onOutput: deliver,
         onState: (state) => {
+          stateSeen = true;
           status = state;
           if (state.state !== "connecting") {
             prompt = null;
@@ -824,9 +952,12 @@
           return;
         }
         session = opened;
-        // The window may have been resized while the session was opening.
+        if (opened.takenState && !stateSeen) status = opened.takenState;
+        // The window may have been resized while the session was opening;
+        // a session moved here learns this terminal's size whatever it is.
         const current = size();
         if (
+          adopted.kind === "adopt" ||
           current.cols !== requestedSize.cols ||
           current.rows !== requestedSize.rows
         ) {
@@ -854,8 +985,13 @@
       container.removeEventListener("contextmenu", oncontextmenu);
       container.removeEventListener("wheel", onwheel, { capture: true });
       resizeObserver.disconnect();
-      // Gone with its terminal: it can no longer be reconnected.
-      session?.discard();
+      // Gone with its terminal: it can no longer be reconnected. A session
+      // moved to another window lives on there; one moved here that could
+      // not be shown goes with this terminal too.
+      if (!moved) {
+        if (session) session.discard();
+        else if (adopted.kind === "adopt") discardSession(adopted.id);
+      }
       highlights.dispose();
       input?.dispose();
       webgl.dispose();

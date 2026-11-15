@@ -72,6 +72,11 @@
     /** Whether it reaches the window's right edge: the top-right pane's
      * bar ends with the window's buttons. */
     right?: boolean;
+    /**
+     * Whether the bar offers a new tab and the pane's tools (split, join,
+     * close pane); a session window's (#84) offers none.
+     */
+    tools?: boolean;
   }
 
   let {
@@ -81,6 +86,7 @@
     handlers,
     top = true,
     right = true,
+    tools = true,
   }: Props = $props();
 
   const STATE_TEXT = {
@@ -169,6 +175,7 @@
         {handlers}
         top={top && (node.direction === "right" || index === 0)}
         right={right && (node.direction === "down" || last)}
+        {tools}
       />
     {/each}
   </div>
@@ -279,62 +286,66 @@
           {/if}
         {/each}
       </div>
-      <button
-        class="icon"
-        data-new-tab
-        aria-label="New connection in this pane"
-        title="New connection in this pane"
-        onclick={() => handlers.newTab(pane.id)}
-        ><Plus size={16} aria-hidden="true" /></button
-      >
+      {#if tools}
+        <button
+          class="icon"
+          data-new-tab
+          aria-label="New connection in this pane"
+          title="New connection in this pane"
+          onclick={() => handlers.newTab(pane.id)}
+          ><Plus size={16} aria-hidden="true" /></button
+        >
+      {/if}
       <span class="spacer"></span>
       <!-- Next to the window's buttons, these give way first in a narrow
            pane (see .bar.framed .tools). -->
-      <div class="tools">
-        {#if pane.tabs.some((tab) => {
-          const info = handlers.tab(tab);
-          return info !== null && !info.view && !info.member;
-        })}
+      {#if tools}
+        <div class="tools">
+          {#if pane.tabs.some((tab) => {
+            const info = handlers.tab(tab);
+            return info !== null && !info.view && !info.member;
+          })}
+            <button
+              class="icon"
+              data-join-pane
+              aria-label="Add this pane's tabs to the multi-send group"
+              title="Add this pane's tabs to the multi-send group"
+              onclick={() => handlers.joinPane(pane.id)}
+            >
+              <UsersRound size={15} aria-hidden="true" />
+            </button>
+          {/if}
           <button
             class="icon"
-            data-join-pane
-            aria-label="Add this pane's tabs to the multi-send group"
-            title="Add this pane's tabs to the multi-send group"
-            onclick={() => handlers.joinPane(pane.id)}
+            data-split="right"
+            aria-label="Split right"
+            title="Split right"
+            onclick={() => handlers.split(pane.id, "right")}
           >
-            <UsersRound size={15} aria-hidden="true" />
+            <Columns2 size={15} aria-hidden="true" />
           </button>
-        {/if}
-        <button
-          class="icon"
-          data-split="right"
-          aria-label="Split right"
-          title="Split right"
-          onclick={() => handlers.split(pane.id, "right")}
-        >
-          <Columns2 size={15} aria-hidden="true" />
-        </button>
-        <button
-          class="icon"
-          data-split="down"
-          aria-label="Split down"
-          title="Split down"
-          onclick={() => handlers.split(pane.id, "down")}
-        >
-          <Rows2 size={15} aria-hidden="true" />
-        </button>
-        {#if several}
           <button
             class="icon"
-            data-close-pane
-            aria-label="Close pane"
-            title="Close pane (its tabs move to the pane next to it)"
-            onclick={() => handlers.closePane(pane.id)}
+            data-split="down"
+            aria-label="Split down"
+            title="Split down"
+            onclick={() => handlers.split(pane.id, "down")}
           >
-            <SquareX size={15} aria-hidden="true" />
+            <Rows2 size={15} aria-hidden="true" />
           </button>
-        {/if}
-      </div>
+          {#if several}
+            <button
+              class="icon"
+              data-close-pane
+              aria-label="Close pane"
+              title="Close pane (its tabs move to the pane next to it)"
+              onclick={() => handlers.closePane(pane.id)}
+            >
+              <SquareX size={15} aria-hidden="true" />
+            </button>
+          {/if}
+        </div>
+      {/if}
       {#if top && right}
         <WindowControls />
       {/if}

@@ -130,6 +130,12 @@ pub const COLOR_OUTPUT: &[u8] = b"\x1b[1;31mdown\x1b[0m \x1b[38;5;46mup\x1b[0m\r
 pub const FULLSCREEN_OUTPUT: &[u8] =
     b"\x1b[?1049h\x1b[2J\x1b[H\x1b[5;10H\xe2\x94\x82 top\x1b[?25l\x1b[?25h\x1b[?1049l";
 
+/// What `program` sends: a full-screen program's screen and modes.
+pub const PROGRAM_ON: &[u8] = b"\x1b[?1049h\x1b[?2004h\x1b[?1h\x1b[2J\x1b[Hfull screen program\r\n";
+
+/// What `program off` sends: those modes off, back to the main screen.
+pub const PROGRAM_OFF: &[u8] = b"\x1b[?1l\x1b[?2004l\x1b[?1049l";
+
 /// One line of `flood` output.
 pub const FLOOD_LINE: &[u8] = b"flood flood flood flood flood flood flood\r\n";
 
@@ -797,6 +803,17 @@ impl ScriptedShell {
             }
             Some("colors") => session.data(channel, COLOR_OUTPUT)?,
             Some("fullscreen") => session.data(channel, FULLSCREEN_OUTPUT)?,
+            // A full-screen program that stays (#84): the alternate screen,
+            // bracketed paste and application cursor keys; `program off`
+            // leaves it.
+            Some("program") => {
+                let output: &[u8] = if words.next() == Some("off") {
+                    PROGRAM_OFF
+                } else {
+                    PROGRAM_ON
+                };
+                session.data(channel, output)?;
+            }
             // A cursor-position and a device-attributes request, which a
             // terminal answers by itself (the answers arrive as input).
             Some("query") => session.data(channel, &b"\x1b[6n\x1b[c"[..])?,

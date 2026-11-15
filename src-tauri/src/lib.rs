@@ -40,9 +40,9 @@ use netterm_core::preferences::{FontZoom, Preferences, Theme};
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, HostKeyDecision,
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, OpenOptions, SerialParameters,
-    SerialPortInfo, SerialTarget, SessionEvent, SessionId, SessionManager, SessionRelays,
-    SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize, Transport, WhenConnected,
-    DEFAULT_CONNECT_TIMEOUT,
+    SerialPortInfo, SerialTarget, SessionEvent, SessionId, SessionManager, SessionRecord,
+    SessionRecords, SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
+    Transport, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
 };
 use netterm_core::template::Variables;
 use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
@@ -57,6 +57,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 use tauri_plugin_opener::OpenerExt;
 
 mod python;
+mod session_windows;
 
 /// Overrides the per-user application data folder (the smoke test uses it to
 /// start from a known state).
@@ -1847,8 +1848,11 @@ fn config_export(
 /// the interface acknowledges output with `session_acknowledge`, naming
 /// the consumer key returned here. The session is shown in the window that
 /// opens it, in its tab `tab`.
-/// Returns the session's id, the consumer key and whether the session is
-/// encrypted (telnet is not).
+/// `name` and `title` are what its tab and header show: the app keeps them
+/// with the host's facts as its record (`SessionRecord`, #84), which any
+/// window showing the session reads.
+/// Returns the session's id, the consumer key, whether the session is
+/// encrypted (telnet is not) and its record.
 // One argument per channel is how Tauri commands receive them.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -1860,8 +1864,11 @@ async fn session_open(
     configs: State<'_, Configs>,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
+    records: State<'_, SessionRecords>,
     target: ConnectTarget,
     tab: TabId,
+    name: String,
+    title: String,
     size: Size,
     on_output: Channel<InvokeResponseBody>,
     on_state: Channel<StateMessage>,
@@ -1875,6 +1882,12 @@ async fn session_open(
     let log = session_log(&shell, &target)?;
     let when_connected = login_backup(&shell, &configs, &target)
         .map(|backup| Arc::new(backup) as Arc<dyn WhenConnected>);
+    let host = match &target {
+        ConnectTarget::Host { id, .. }
+        | ConnectTarget::Telnet { id }
+        | ConnectTarget::Serial { id } => Some(id.clone()),
+        ConnectTarget::Quick { .. } | ConnectTarget::QuickSerial { .. } => None,
+    };
     let target = match target {
         ConnectTarget::Serial { id } => {
             SessionTarget::Serial(with_open_profiles(&shell, |profiles| {
@@ -1919,6 +1932,15 @@ async fn session_open(
     };
     let encrypted = target.encrypted();
     let transport = target.transport();
+    let record = host
+        .and_then(|host| {
+            read(&shell, |workspace| {
+                SessionRecord::for_host(workspace, &host, transport, &name, &title)
+            })
+            .ok()
+            .flatten()
+        })
+        .unwrap_or_else(|| SessionRecord::new(&name, &title));
     let (id, events) = manager.open_with(
         target,
         size.into(),
@@ -1927,6 +1949,7 @@ async fn session_open(
             when_connected,
         },
     );
+    records.record(id, record.clone());
     tabs.attach(window, tab, id);
     let consumer = relays.start(
         id,
@@ -1948,6 +1971,7 @@ async fn session_open(
         consumer: consumer.get(),
         encrypted,
         transport,
+        record,
     })
 }
 
@@ -2054,6 +2078,8 @@ struct Opened {
     encrypted: bool,
     /// `ssh`, `telnet` or `serial` (serial sessions can send a break).
     transport: Transport,
+    /// What the app keeps of it, for any window showing it (#84).
+    record: SessionRecord,
 }
 
 /// Where a session's events go in the interface.
@@ -2094,13 +2120,14 @@ impl Consumer for Channels {
 
 /// The window a layout or session command came from, as the core names
 /// it: the window is always the caller, never an argument, so a page
-/// cannot edit another window's layout (#83). Only the main window shows
-/// sessions for now.
+/// cannot edit another window's layout (#83). The main window, or a
+/// session window (`session-<n>`, #84).
 fn calling_window(window: &tauri::WebviewWindow) -> Result<WindowId, String> {
-    match window.label() {
-        MAIN_WINDOW => Ok(WindowId::MAIN),
-        label => Err(format!("the window {label} shows no sessions")),
+    let label = window.label();
+    if label == MAIN_WINDOW {
+        return Ok(WindowId::MAIN);
     }
+    session_windows::window_of(label).ok_or_else(|| format!("the window {label} shows no sessions"))
 }
 
 /// Opens a session that has closed again, in place: the same target,
@@ -2157,6 +2184,7 @@ async fn session_duplicate(
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
+    records: State<'_, SessionRecords>,
     id: u64,
     tab: TabId,
     size: Size,
@@ -2172,6 +2200,7 @@ async fn session_duplicate(
     let (copy, events) = manager
         .duplicate(SessionId(id), size.into())
         .map_err(|error| error.to_string())?;
+    records.copy(SessionId(id), copy);
     tabs.attach(window, tab, copy);
     let consumer = relays.start(
         copy,
@@ -2190,11 +2219,15 @@ async fn session_duplicate(
     );
     let encrypted = manager.encrypted(copy).map_err(|error| error.to_string())?;
     let transport = manager.transport(copy).map_err(|error| error.to_string())?;
+    let record = records
+        .get(copy)
+        .unwrap_or_else(|| SessionRecord::new("", ""));
     Ok(Opened {
         id: copy.0,
         consumer: consumer.get(),
         encrypted,
         transport,
+        record,
     })
 }
 
@@ -2289,6 +2322,9 @@ struct LayoutChanged {
 #[tauri::command]
 fn layout_reset(window: tauri::WebviewWindow, tabs: State<'_, Tabs>) -> Result<WindowView, String> {
     let window = calling_window(&window)?;
+    if window != WindowId::MAIN {
+        return Err("a session window's layout is its session's".into());
+    }
     let mut windows = tabs.lock();
     windows.reset(window).map_err(|error| error.to_string())?;
     window_view(&windows, window)
@@ -2302,6 +2338,18 @@ fn layout_edit(
     edit: LayoutEdit,
 ) -> Result<LayoutChanged, String> {
     let window = calling_window(&window)?;
+    // The group spans windows in the core, but only the main window shows
+    // its markers until #87: a session window takes no part in it.
+    let group_edit = matches!(
+        edit,
+        LayoutEdit::JoinGroup { .. }
+            | LayoutEdit::JoinPane { .. }
+            | LayoutEdit::LeaveGroup { .. }
+            | LayoutEdit::EndGroup
+    );
+    if group_edit && window != WindowId::MAIN {
+        return Err("a session window takes no part in multi-send".into());
+    }
     let mut windows = tabs.lock();
     let created =
         apply_layout_edit(&mut windows, window, edit).map_err(|error| error.to_string())?;
@@ -2371,9 +2419,15 @@ fn apply_layout_edit(
 /// Forgets the session (closing it if it is open) and its relay: its
 /// terminal is gone.
 #[tauri::command]
-fn session_discard(manager: State<'_, SessionManager>, relays: State<'_, SessionRelays>, id: u64) {
+fn session_discard(
+    manager: State<'_, SessionManager>,
+    relays: State<'_, SessionRelays>,
+    records: State<'_, SessionRecords>,
+    id: u64,
+) {
     relays.forget(SessionId(id));
     manager.discard(SessionId(id));
+    records.forget(SessionId(id));
 }
 
 /// Answers the questions the session's server asked last.
@@ -2835,11 +2889,16 @@ fn close_detached(app: &AppHandle) {
     }
 }
 
-/// Closes every detached window: the main window switched workspace, and
-/// their runs belong to the other one.
+/// Closes every run and config history window: the main window switched
+/// workspace, and what they show belongs to the other one. Session windows
+/// stay (#84): their sessions stay open across a switch, as tabs do.
 #[tauri::command]
 fn windows_close_detached(app: AppHandle) {
-    close_detached(&app);
+    for (label, window) in app.webview_windows() {
+        if label != MAIN_WINDOW && session_windows::window_of(&label).is_none() {
+            let _ = window.destroy();
+        }
+    }
 }
 
 pub fn run() {
@@ -2900,6 +2959,7 @@ pub fn run() {
             )));
             app.manage(Tabs(Mutex::new(Windows::new())));
             app.manage(SessionRelays::new());
+            app.manage(SessionRecords::new());
             app.manage(CsvFile(Mutex::new(None)));
             app.manage(NornirFiles(Mutex::new(None)));
             app.manage(JobPlans(Mutex::new(None)));
@@ -2967,9 +3027,16 @@ pub fn run() {
             Ok(())
         })
         // Closing the main window closes the detached ones (and so the app).
+        // A session window gone without docking back hands its sessions to
+        // the main window (#84).
         .on_window_event(|window, event| {
-            if window.label() == MAIN_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {
+            if !matches!(event, tauri::WindowEvent::Destroyed) {
+                return;
+            }
+            if window.label() == MAIN_WINDOW {
                 close_detached(window.app_handle());
+            } else {
+                session_windows::destroyed(window.app_handle(), window.label());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -2980,6 +3047,13 @@ pub fn run() {
             window_back_up,
             window_dock,
             windows_close_detached,
+            session_windows::session_record,
+            session_windows::session_release,
+            session_windows::window_open_session,
+            session_windows::session_window_take,
+            session_windows::session_attach,
+            session_windows::session_dock,
+            session_windows::session_window_close,
             jobs_live,
             jobs_forget_finished,
             enrich_apply,

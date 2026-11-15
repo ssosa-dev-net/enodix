@@ -1817,7 +1817,7 @@ async function main() {
   const headerEntries = await menuEntries(evaluate);
   if (
     JSON.stringify(headerEntries) !==
-    JSON.stringify(["duplicate", "disconnect", "multi-send"])
+    JSON.stringify(["duplicate", "open-in-window", "disconnect", "multi-send"])
   ) {
     fail(`the header's menu offers ${JSON.stringify(headerEntries)}`);
   }
@@ -2217,6 +2217,8 @@ async function main() {
     screenshot,
     step,
   });
+
+  await sessionWindows({ evaluate, devtools, screenshot, step });
 
   await terminalComforts({
     evaluate,
@@ -6140,26 +6142,6 @@ async function jobs({
     step(
       "the history's window refreshed when the backup on login kept a version",
     );
-    // Terminals stay in the main window: no session action detaches one.
-    await evaluate(
-      `document.querySelector(${json(`${SHOWN_SESSION} [data-session-menu]`)}).click()`,
-    );
-    await until("the session's menu", () => exists("[data-session-actions]"));
-    const entries = await menuEntries(evaluate);
-    const windowed = await evaluate(
-      `[...document.querySelectorAll("[data-session-actions] [data-session-action]")].some((b) => /window|detach/i.test(b.textContent))`,
-    );
-    await evaluate(
-      `document.querySelector(${json(`${SHOWN_SESSION} [data-session-menu]`)}).click()`,
-    );
-    await until(
-      "the session's menu closed",
-      async () => !(await exists("[data-session-actions]")),
-    );
-    if (windowed || entries.some((entry) => /window|detach/.test(entry))) {
-      fail(`a terminal offers a window of its own: ${json(entries)}`);
-    }
-    step("a terminal cannot be detached into a window");
     await sessionAction(evaluate, "disconnect");
     await until(
       "the backed-up session closed",
@@ -10015,6 +9997,413 @@ async function multiSend({
   if (await ran(a, "multisend4")) fail("typing still reached the old member");
   await show(b);
   step("ending the group removed the markers and made typing local again");
+}
+
+/**
+ * Session windows (#84), on the sessions `multiSend` leaves (three, put
+ * in the group again here). A member moved to a window of its own (from
+ * its menu) leaves the group and keeps its header, colours and size
+ * there; typing reaches its device only; Dock back returns it. Moved
+ * again by the shortcut while a numbered listing arrives, the listing is
+ * unbroken; a full-screen program's modes survive Dock back. A question
+ * open stops a move. A closed session moves and reconnects there; a
+ * reloaded session window takes its session again, saying what was lost;
+ * closing the window docks the session back.
+ */
+async function sessionWindows({ evaluate, devtools, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const CTRL = 2;
+  const SHIFT = 8;
+  const keysOn = (client) => ({
+    async press(key, code, windowsVirtualKeyCode, modifiers = 0) {
+      const event = { key, code, windowsVirtualKeyCode, modifiers };
+      await client.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        ...event,
+      });
+      await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+    },
+    async type(text) {
+      for (const char of text) {
+        const key =
+          char === "\r"
+            ? { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }
+            : { key: char };
+        await client.send("Input.dispatchKeyEvent", {
+          type: "keyDown",
+          text: char,
+          ...key,
+        });
+        await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+      }
+    },
+  });
+  const main = keysOn(devtools);
+  const moveShortcut = (keys) => keys.press("N", "KeyN", 78, CTRL | SHIFT);
+  const tabs = () =>
+    evaluate(`[...document.querySelectorAll("[role=tab]")].map((tab) => ({
+      id: Number(tab.dataset.tab),
+      state: tab.dataset.tabState,
+      member: tab.dataset.multiSend ?? null,
+      name: tab.querySelector("[data-tab-name]")?.textContent ?? "",
+    }))`);
+  const slot = (tab) => `.slot[data-tab="${tab}"]`;
+  const shown = SHOWN_SESSION;
+  const show = async (tab) => {
+    await clickOn(`[data-tab="${tab}"]`);
+    await until(`tab ${tab} shown`, () => exists(`${slot(tab)}[data-active]`));
+  };
+  const focusTerminal = (target, selector) =>
+    target(
+      `document.querySelector(${json(`${selector} .terminal textarea`)}).focus()`,
+    );
+  /** Every line of the terminal's normal buffer (scrollback and screen). */
+  const lines = (target, selector) =>
+    target(`(() => {
+      const terminal = document.querySelector(${json(`${selector} .terminal`)})?.xterm;
+      if (!terminal) return [];
+      const buffer = terminal.buffer.normal;
+      const lines = [];
+      for (let y = 0; y < buffer.length; y++)
+        lines.push(buffer.getLine(y)?.translateToString(true) ?? "");
+      return lines;
+    })()`);
+  const ran = async (target, selector, word) =>
+    new RegExp(`\\$ ${word}\\s*(\\n|$)`).test(await screenOf(target, selector));
+  const ranAnywhere = async (target, selector, word) =>
+    (await lines(target, selector)).some((line) =>
+      new RegExp(`\\$ ${word}\\s*$`).test(line),
+    );
+  /** What the session's header, border and terminal show. */
+  const looks = (target, selector) =>
+    target(`(() => {
+      const session = document.querySelector(${json(`${selector} .session`)});
+      const header = session?.querySelector("[data-session-header]");
+      const terminal = session?.querySelector(".terminal")?.xterm;
+      const buffer = terminal?.buffer.normal;
+      let red = null;
+      for (let y = (buffer?.length ?? 0) - 1; y >= 0 && !red; y--) {
+        const line = buffer.getLine(y);
+        const at = line?.translateToString(true).indexOf("down up") ?? -1;
+        if (at < 0) continue;
+        const cell = line.getCell(at);
+        red = { palette: cell.isFgPalette(), color: cell.getFgColor(), bold: cell.isBold() };
+      }
+      return header && {
+        title: header.querySelector(".title")?.textContent,
+        protocol: header.querySelector("[data-session-protocol]")?.dataset.sessionProtocol ?? null,
+        environment: session.dataset.sessionEnvironment,
+        red,
+        size: { cols: terminal.cols, rows: terminal.rows },
+      };
+    })()`);
+  const modes = (target, selector) =>
+    target(`(() => {
+      const terminal = document.querySelector(${json(`${selector} .terminal`)})?.xterm;
+      if (!terminal) return null;
+      const modes = terminal.modes;
+      return {
+        buffer: terminal.buffer.active.type,
+        bracketedPaste: modes.bracketedPasteMode,
+        applicationCursor: modes.applicationCursorKeysMode,
+        mouse: modes.mouseTrackingMode,
+        encoding: terminal._core?.coreMouseService?.activeEncoding ?? null,
+        screen: terminal.buffer.active.getLine(0)?.translateToString(true) ?? "",
+      };
+    })()`);
+  const openWindow = async (label) => {
+    const window = await connectWindow(label);
+    await until(`the session in ${label}`, () =>
+      window.evaluate(
+        `!!document.querySelector(".slot[data-active] .terminal")`,
+      ),
+    );
+    return window;
+  };
+  const gone = (label) =>
+    until(`${label} closed`, async () => !(await windowOpen(label)));
+  // The moving session's tab here, if any: the main window keeps only
+  // the other two members' tabs meanwhile.
+  const movingTab = async () =>
+    (await tabs()).find((tab) => !known.has(tab.id));
+  const groupSizes = () =>
+    evaluate(
+      `[...document.querySelectorAll("[data-multi-send-bar]")].map((bar) => bar.dataset.groupSize)`,
+    );
+
+  // Three members, as multiSend left them, in the group again; the one
+  // to move printed colours first (alone).
+  const sessionTabs = (await tabs()).filter((tab) => tab.state);
+  const [a, b, c] = sessionTabs.map((tab) => tab.id);
+  if (c === undefined) fail("sessionWindows needs three open sessions");
+  // Tabs seen before the moves: a session coming back gets a new one.
+  const known = new Set((await tabs()).map((tab) => tab.id));
+  const members = async () =>
+    (await tabs()).filter((tab) => [a, b, c].includes(tab.id) && tab.member);
+  const name = (await tabs()).find((tab) => tab.id === b).name;
+  await show(b);
+  await focusTerminal(evaluate, slot(b));
+  await main.type("colors\r");
+  await until("the colours printed", async () =>
+    (await screenOf(evaluate, slot(b))).includes("down up"),
+  );
+  for (const tab of [a, b, c]) {
+    await show(tab);
+    await sessionAction(evaluate, "multi-send", slot(tab));
+  }
+  await until(
+    `three members (tabs: ${JSON.stringify(await tabs())})`,
+    async () => (await members()).length === 3,
+  );
+  await show(b);
+  const before = await looks(evaluate, slot(b));
+
+  // From the session's menu, a member: its tab closes here.
+  await sessionAction(evaluate, "open-in-window", slot(b));
+  let window = await openWindow("session-1");
+  if (await movingTab()) fail("the moved session's tab is still here");
+  for (const selector of [
+    "[data-window-bar] [role=tab]",
+    "[data-session-header]",
+    "[data-status-line] [data-status-size]",
+    "[data-window-controls]",
+  ]) {
+    if (!(await window.evaluate(`!!document.querySelector(${json(selector)})`)))
+      fail(`the session window lacks ${selector}`);
+  }
+  for (const selector of [
+    "[data-rail]",
+    "[data-side-view]",
+    "[data-welcome]",
+    "[data-new-tab]",
+    "[data-split]",
+    "[data-multi-send-bar]",
+  ]) {
+    if (await window.evaluate(`!!document.querySelector(${json(selector)})`))
+      fail(`the session window shows ${selector}`);
+  }
+  const title = await window.evaluate("document.title");
+  if (!title.startsWith(name))
+    fail(`the session window's title is ${json(title)}`);
+  const after = await looks(window.evaluate, shown);
+  const { size: sizeBefore, ...restBefore } = before;
+  const { size: sizeAfter, ...restAfter } = after;
+  if (json(restAfter) !== json(restBefore) || !after.red?.palette)
+    fail(`the session moved as ${json(after)}, was ${json(before)}`);
+  step(
+    `Open in window moved it to "${title}": its tab, header, terminal and status line, no rail or views, the same header and colours`,
+  );
+  if (json(sizeAfter) !== json(sizeBefore))
+    step(
+      `(the screen did not allow ${json(sizeBefore)}: the terminal is ${json(sizeAfter)})`,
+    );
+  await checkContrast(window.evaluate, "session window");
+  await checkOwnFrame(window.evaluate, "the session window");
+
+  // It left the group: the others count two.
+  await until("the group of two", async () => {
+    const sizes = await groupSizes();
+    return sizes.length === 2 && sizes.every((size) => size === "2");
+  });
+  step("the member that moved left the group; the others count two");
+
+  // Typing reaches its device without a click, and no group member.
+  const keys = keysOn(window.devtools);
+  await until("the session window's terminal focused", () =>
+    window.evaluate(
+      `document.hasFocus() && !!document.activeElement?.closest(".terminal")`,
+    ),
+  );
+  await keys.type("winmoved\r");
+  await until("the typing echoed in the session window", () =>
+    ran(window.evaluate, shown, "winmoved"),
+  );
+  await show(a);
+  await sleep(300);
+  if (await ranAnywhere(evaluate, slot(a), "winmoved"))
+    fail("typing in the session window reached the group");
+  step("typing in the session window reached its device, and no group member");
+  if (screenshot) await screenshot("session-window");
+
+  // Dock back from its menu: a tab here, the window gone.
+  await sessionAction(window.evaluate, "dock", shown);
+  window.devtools.close();
+  await gone("session-1");
+  let back = await until("the session back in the main window", () =>
+    movingTab(),
+  );
+  await show(back.id);
+  if (!(await ranAnywhere(evaluate, slot(back.id), "winmoved")))
+    fail("Dock back lost the scrollback");
+  step("Dock back returned it to a tab here, with its scrollback");
+
+  // By the shortcut, while a listing arrives: unbroken in the window.
+  await focusTerminal(evaluate, slot(back.id));
+  await main.type("lines 9000\r");
+  await moveShortcut(main);
+  window = await openWindow("session-2");
+  await until("the whole listing in the session window", async () =>
+    (await lines(window.evaluate, shown)).includes("line 9000"),
+  );
+  const listed = (await lines(window.evaluate, shown))
+    .map((line) => /^line (\d+)$/.exec(line))
+    .filter(Boolean)
+    .map((match) => Number(match[1]));
+  const run = listed.slice(listed.lastIndexOf(1));
+  if (run.length !== 9000 || run.some((n, index) => n !== index + 1))
+    fail(
+      `the listing moved mid-output is broken: ${run.length} lines, ${run[0]} to ${run.at(-1)}`,
+    );
+  step("a 9,000-line listing moved by Ctrl+Shift+N arrived once and in order");
+
+  // A full-screen program moves back with its screen and modes.
+  const moved = keysOn(window.devtools);
+  await moved.type("mouse on\r");
+  await moved.type("program\r");
+  const held = await until("the program on screen", async () => {
+    const now = await modes(window.evaluate, shown);
+    return now?.buffer === "alternate" && now.bracketedPaste && now;
+  });
+  await moveShortcut(moved);
+  window.devtools.close();
+  await gone("session-2");
+  back = await until("the session docked back", () => movingTab());
+  await show(back.id);
+  const kept = await until("the program's screen here", async () => {
+    const now = await modes(evaluate, slot(back.id));
+    return now?.screen.includes("full screen program") && now;
+  });
+  for (const key of [
+    "buffer",
+    "bracketedPaste",
+    "applicationCursor",
+    "mouse",
+    "encoding",
+  ]) {
+    if (kept[key] !== held[key])
+      fail(`docking back lost ${key}: ${json(kept)} after ${json(held)}`);
+  }
+  await focusTerminal(evaluate, slot(back.id));
+  await main.type("program off\r");
+  await main.type("mouse off\r");
+  await until(
+    "the main screen again",
+    async () => (await modes(evaluate, slot(back.id)))?.buffer === "normal",
+  );
+  if (!(await lines(evaluate, slot(back.id))).includes("line 9000"))
+    fail("docking back lost the listing");
+  step(
+    "Dock back (Ctrl+Shift+N) kept the program's alternate screen, bracketed paste, cursor keys and mouse reporting, and the scrollback",
+  );
+
+  // Not while a question is open: a multi-line paste waits for its yes.
+  const savedClipboard = readClipboard();
+  try {
+    writeClipboard("show clock\nshow version\n");
+    await focusTerminal(evaluate, slot(back.id));
+    await main.press("V", "KeyV", 86, CTRL | SHIFT);
+    await until("the paste question", () =>
+      exists(`${slot(back.id)} [data-paste-confirm]`),
+    );
+    const menu = `${slot(back.id)} [data-session-menu]`;
+    await clickOn(menu);
+    const refused = await until("the menu's Open in window", () =>
+      evaluate(`(() => {
+        const entry = document.querySelector("[data-session-actions] [data-session-action=open-in-window]");
+        return entry && { disabled: entry.disabled, title: entry.title };
+      })()`),
+    );
+    await clickOn(menu);
+    if (!refused.disabled || !/question/.test(refused.title))
+      fail(`Open in window was offered with a question open: ${json(refused)}`);
+    await moveShortcut(main);
+    await sleep(500);
+    if (await windowOpen("session-3"))
+      fail("the shortcut moved a session with a question open");
+    await clickOn(`${slot(back.id)} [data-paste=cancel]`);
+  } finally {
+    writeClipboard(savedClipboard);
+  }
+  step(
+    "with a paste question open, Open in window was disabled, saying why, and the shortcut did nothing",
+  );
+
+  // A closed session moves, and reconnects there with Enter.
+  await focusTerminal(evaluate, slot(back.id));
+  await main.type("exit\r");
+  await until("the session closed", async () =>
+    (await tabs()).some(
+      (tab) => tab.id === back.id && tab.state === "disconnected",
+    ),
+  );
+  await moveShortcut(main);
+  window = await openWindow("session-3");
+  await until("the closed session in its window", () =>
+    window.evaluate(
+      `!!document.querySelector("[data-tab-state=disconnected]") && !!document.querySelector("[data-session-ended]")`,
+    ),
+  );
+  await keysOn(window.devtools).press("Enter", "Enter", 13);
+  await until("reconnected in the session window", () =>
+    window.evaluate(`!!document.querySelector("[data-tab-state=connected]")`),
+  );
+  step("a closed session moved, and Enter reconnected it in its window");
+
+  // A reload keeps the session, saying its earlier output was lost.
+  await window.devtools.send("Page.reload");
+  window.devtools.close();
+  await sleep(500);
+  window = await openWindow("session-3");
+  await until("the lost-output line", async () =>
+    (await screenOf(window.evaluate, shown)).includes(
+      "earlier output was lost",
+    ),
+  );
+  await focusTerminal(window.evaluate, shown);
+  await keysOn(window.devtools).type("reloaded\r");
+  // (Its prompt went with the lost output: the echo has none before it.)
+  const echoed = async (target, selector) =>
+    (await lines(target, selector)).some((line) => /^reloaded\s*$/.test(line));
+  await until("typing after the reload", () =>
+    echoed(window.evaluate, shown),
+  ).catch(async (error) => {
+    const seen = await window.evaluate(`({
+      status: document.querySelector("[role=status]")?.textContent ?? null,
+      error: document.querySelector("[data-session-window-error]")?.textContent ?? null,
+      focus: document.hasFocus(),
+      active: document.activeElement?.className ?? null,
+    })`);
+    fail(
+      `${error.message}; window ${json(seen)}; screen ${json(await screenOf(window.evaluate, shown))}`,
+    );
+  });
+  step(
+    "a reloaded session window took its session again, connected, saying earlier output was lost",
+  );
+
+  // Its Close button docks the session back first.
+  await window
+    .evaluate(`document.querySelector("[data-window-control=close]").click()`)
+    .catch(() => {});
+  window.devtools.close();
+  await gone("session-3");
+  back = await until("the session docked back on close", () => movingTab());
+  if (back.state !== "connected")
+    fail(`closing the window left the session ${back.state}`);
+  await show(back.id);
+  if (!(await echoed(evaluate, slot(back.id))))
+    fail("closing the window lost the session's scrollback");
+  step(
+    "closing the session window docked its session back, with its scrollback",
+  );
+
+  // The group as multiSend left it: ended.
+  await show(a);
+  await sessionAction(evaluate, "end-group", slot(a));
 }
 
 let exitCode = 0;

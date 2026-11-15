@@ -5,12 +5,15 @@ import "@xterm/xterm/css/xterm.css";
 import "./app.css";
 import App from "./App.svelte";
 import Detached from "./Detached.svelte";
-import { detachedView } from "./lib/windows";
+import SessionWindow from "./SessionWindow.svelte";
+import { detachedView, isSessionWindow } from "./lib/windows";
 
 const target = document.getElementById("app")!;
 // A detached window shows one run (#77) or one host's config history
-// (#78) alone; the main window, all.
+// (#78) alone, a session window one session (#84); the main window, all.
 const view = detachedView();
-export default view === null
-  ? mount(App, { target })
-  : mount(Detached, { target, props: { view } });
+export default isSessionWindow()
+  ? mount(SessionWindow, { target })
+  : view === null
+    ? mount(App, { target })
+    : mount(Detached, { target, props: { view } });

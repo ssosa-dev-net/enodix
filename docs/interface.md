@@ -44,6 +44,17 @@ everything 0.2.0 could do, the app still does, reached differently.
 - **Real windows**: a job run and a host's config history can open in a
   window of their own ("Open in window") and dock back. Closing the main
   window closes them; closing a run's window leaves its job running.
+- **Session windows** (#84): a session can move to a window of its own,
+  live ("Open in window" in its menu or its tab's context menu, or
+  Ctrl+Shift+N), with its scrollback and screen. The window has the
+  session's tab, header, terminal and status line, and no rail or side
+  views; its title names the session. "Dock back" (its menu, Ctrl+Shift+N,
+  or closing the window) returns it to a tab of the main window. A move
+  is not offered while the session is connecting, while a question is
+  open on it, or while a paste is still being sent. A session that moves
+  leaves the multi-send group, and a session window takes no part in it
+  (for now). If a session window goes away without docking back, the main
+  window takes its session, saying its earlier output was lost.
 - **Status line** (foot of the window): the vault's state and the active
   session's size.
 - **Palette** (Ctrl+K): hosts, snippets (`>`), and every action that has
@@ -75,6 +86,7 @@ everything 0.2.0 could do, the app still does, reached differently.
 | Ctrl+Shift+PageUp / PageDown          | Move the tab                        |
 | Ctrl+Shift+W                          | Close the tab                       |
 | Ctrl+Shift+M                          | Join or leave multi-send            |
+| Ctrl+Shift+N                          | Open the session in a window / Dock back |
 | Ctrl+= / Ctrl+- / Ctrl+0, Ctrl+scroll | Terminal font size                  |
 | Ctrl+Shift+F                          | Search the terminal's scrollback    |
 | Ctrl+Shift+C, Ctrl+Insert             | Copy (Ctrl+C copies a selection)    |
@@ -107,6 +119,7 @@ else. Each of its features, and where it is now:
 | Quick connect (SSH, serial)                      | Empty pane; welcome view                                                           |
 | Tabs, split panes, drag tabs                     | Terminal area (unchanged)                                                          |
 | Duplicate, disconnect, reconnect, send break     | Session menu (header and tab context menu); Enter reconnects                       |
+| A session in a window of its own (new)           | Session menu, tab context menu, Ctrl+Shift+N; Dock back in its window              |
 | Session markers (production, unencrypted, ...)   | Session header line and tab                                                        |
 | Host key and login questions                     | Over their terminal                                                                |
 | Legacy crypto failure advice                     | Over the closed terminal                                                           |

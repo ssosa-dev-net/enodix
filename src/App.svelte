@@ -36,6 +36,8 @@
     onBackUpHost,
     onDockConfigs,
     onDockRun,
+    onSessionArrived,
+    openSessionWindow,
   } from "./lib/windows";
   import PythonSetup from "./lib/PythonSetup.svelte";
   import { refreshPython } from "./lib/python.svelte";
@@ -1036,7 +1038,7 @@
         : null;
     void edit({ kind: "openTab" }, (tab) => {
       sessions[tab] = {
-        source: { kind: "target", target },
+        source: { kind: "target", target, name, title },
         name,
         title,
         address: host && !title.includes(host.address) ? host.address : null,
@@ -1061,6 +1063,74 @@
       }
     });
   }
+
+  /**
+   * Moves `tab`'s session to a window of its own (#84), unless its
+   * terminal refuses now (a question or a paste would be lost). The
+   * window is sized so that its terminal keeps its columns and rows.
+   */
+  async function openInWindow(tab: TabId) {
+    const terminal = terminals[tab];
+    const place = placement.get(tab);
+    const rect = place ? rects[place.pane] : undefined;
+    if (!terminal || !sessions[tab] || !rect) return;
+    if (terminal.moveRefusal() !== null) return;
+    // A session window: a tab bar, the session (as its slot here), and
+    // the status line.
+    const height = (selector: string, otherwise: number) =>
+      document.querySelector(selector)?.getBoundingClientRect().height ||
+      otherwise;
+    const size = {
+      width: rect.width,
+      height:
+        rect.height +
+        height("[data-window-bar]", 38) +
+        height("[data-status-line]", 22),
+    };
+    const given = await terminal.handOver();
+    if (!given) return;
+    try {
+      adopt(await openSessionWindow(tab, given.id, given.snapshot, size));
+      forgetClosedTabs();
+    } catch (error) {
+      await terminal.takeBack().catch(() => {});
+      inventory.editError = `The session could not move to a window of its own: ${error}`;
+    }
+  }
+
+  /** What the window holds about `tab`'s session that a move would lose. */
+  function windowQuestionOf(tab: TabId): string | null {
+    if (asking?.tab === tab)
+      return "Not while the snippet's variables are asked";
+    if (groupPasteQuestion?.tab === tab)
+      return "Not while a question about the session is open";
+    return null;
+  }
+
+  // A session docked back from its window, or taken from a window that
+  // died (without its earlier output), gets a tab here (#84), shown as
+  // the app's record of it says.
+  void onSessionArrived((arrived) => {
+    const record = arrived.record;
+    const name = record?.name ?? `Session ${arrived.session}`;
+    sessions[arrived.tab] = {
+      source: {
+        kind: "adopt",
+        id: arrived.session,
+        snapshot: arrived.snapshot,
+      },
+      name,
+      title: record?.title ?? name,
+      address: record?.address ?? null,
+      jumpHost: record?.jumpHost ?? null,
+      hostId: record?.host ?? null,
+      workspace: record?.workspace ?? null,
+      safety: record?.safety ?? NO_SAFETY,
+      role: record?.role ?? null,
+    };
+    adopt(arrived.layout);
+    focusRequest += 1;
+  });
 
   /** Opens a second session like `original`'s (core session `id`) in a
    * new tab beside it. */
@@ -1277,6 +1347,12 @@
     if (event.shiftKey && letter("M")) {
       return tab === null ? null : () => toggleGroup(tab);
     }
+    // Open in window (#84): the active session, if it may move now.
+    if (event.shiftKey && letter("N")) {
+      return tab === null || !sessions[tab]
+        ? null
+        : () => void openInWindow(tab);
+    }
     // Not Ctrl+B: that is tmux's prefix, so it must reach devices.
     if (event.shiftKey && letter("B")) {
       return () => toggleSideView();
@@ -1448,6 +1524,12 @@
               onduplicate={(id) => duplicate(tab, id)}
               onpasswordlogin={passwordLogin(tab, session)}
               ondetails={detailsOf(session)}
+              move={{
+                id: "open-in-window",
+                label: "Open in window",
+                run: () => void openInWindow(tab),
+              }}
+              windowQuestion={windowQuestionOf(tab)}
             />
             {#if groupPasteQuestion?.tab === tab}
               {@const question = groupPasteQuestion}

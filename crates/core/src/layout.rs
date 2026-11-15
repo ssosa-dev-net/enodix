@@ -26,7 +26,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub use windows::{LayoutMut, Member, WindowId, WindowView, Windows};
+pub use windows::{LayoutMut, Member, Taken, WindowId, WindowView, Windows};
 
 /// A tab, unique for the life of its [`Layout`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -131,6 +131,8 @@ pub enum LayoutError {
     NoSuchWindow(WindowId),
     #[error("the main window cannot be closed")]
     MainWindow,
+    #[error("the tab is already in that window")]
+    SameWindow,
 }
 
 /// The tabs and panes of a window.

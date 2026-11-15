@@ -9,6 +9,7 @@
 mod agent;
 mod algorithms;
 mod output;
+mod record;
 mod recording;
 mod relay;
 mod relays;
@@ -35,6 +36,7 @@ pub use algorithms::{
 };
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
+pub use record::{SessionRecord, SessionRecords};
 pub use relay::{Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay};
 pub use relays::SessionRelays;
 pub use serial::{

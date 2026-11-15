@@ -3,7 +3,9 @@
 //! shows no view tabs, and the group routes input by session whichever
 //! window a member is in.
 
-use netterm_core::layout::{LayoutError, Member, PaneId, Split, TabId, View, WindowId, Windows};
+use netterm_core::layout::{
+    LayoutError, Member, PaneId, Split, TabId, Taken, View, WindowId, Windows,
+};
 use netterm_core::session::SessionId;
 use serde_json::json;
 
@@ -552,4 +554,185 @@ fn a_view_tab_never_receives_a_sessions_input() {
     );
     assert_eq!(windows.input_targets(SessionId(1)), vec![SessionId(1)]);
     assert_eq!(windows.input_targets(SessionId(2)), vec![SessionId(2)]);
+}
+
+// Moving a session's tab to another window (#84).
+
+#[test]
+fn a_tab_moved_to_another_window_leaves_one_and_joins_the_other_with_its_session() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let [a, b] = open(&mut windows, MAIN, 2)[..] else {
+        unreachable!()
+    };
+    windows.attach_session(MAIN, a, SessionId(1)).unwrap();
+    windows.attach_session(MAIN, b, SessionId(2)).unwrap();
+
+    let moved = windows.move_session(MAIN, a, session_window).unwrap();
+
+    let main = windows.layout(MAIN).unwrap();
+    assert_eq!(main.pane(main.active_pane()).unwrap().tabs, vec![b]);
+    let other = windows.layout(session_window).unwrap();
+    assert_eq!(other.active_tab(), Some(moved));
+    assert_eq!(windows.session_tabs(MAIN), vec![(b, SessionId(2))]);
+    assert_eq!(
+        windows.session_tabs(session_window),
+        vec![(moved, SessionId(1))]
+    );
+}
+
+#[test]
+fn a_tab_moves_back_to_the_main_window_as_its_newest_tab() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let [a, b] = open(&mut windows, MAIN, 2)[..] else {
+        unreachable!()
+    };
+    windows.attach_session(MAIN, a, SessionId(1)).unwrap();
+    let there = windows.move_session(MAIN, a, session_window).unwrap();
+
+    let back = windows.move_session(session_window, there, MAIN).unwrap();
+
+    let main = windows.layout(MAIN).unwrap();
+    assert_eq!(main.pane(main.active_pane()).unwrap().tabs, vec![b, back]);
+    assert_eq!(main.active_tab(), Some(back));
+    assert_eq!(windows.session_tabs(MAIN), vec![(back, SessionId(1))]);
+    assert_eq!(windows.session_tabs(session_window), vec![]);
+}
+
+#[test]
+fn a_tab_whose_session_is_not_known_yet_moves_without_one() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let a = open(&mut windows, MAIN, 1)[0];
+
+    let moved = windows.move_session(MAIN, a, session_window).unwrap();
+
+    assert_eq!(windows.session_tabs(session_window), vec![]);
+    windows
+        .attach_session(session_window, moved, SessionId(1))
+        .unwrap();
+    assert_eq!(
+        windows.session_tabs(session_window),
+        vec![(moved, SessionId(1))]
+    );
+}
+
+#[test]
+fn moving_a_member_takes_it_out_of_the_group_and_raises_every_revision() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let [a, b, c] = open(&mut windows, MAIN, 3)[..] else {
+        unreachable!()
+    };
+    for (tab, session) in [(a, 1), (b, 2), (c, 3)] {
+        windows
+            .attach_session(MAIN, tab, SessionId(session))
+            .unwrap();
+        windows.join_group(MAIN, tab).unwrap();
+    }
+    let before = (revision(&windows, MAIN), revision(&windows, session_window));
+
+    let moved = windows.move_session(MAIN, b, session_window).unwrap();
+
+    assert_eq!(windows.group(), &[member(MAIN, a), member(MAIN, c)]);
+    assert!(!windows.in_group(session_window, moved));
+    assert!(revision(&windows, MAIN) > before.0);
+    assert!(revision(&windows, session_window) > before.1);
+    // Its input goes to itself only, and the others' no longer reaches it.
+    assert_eq!(windows.input_targets(SessionId(2)), vec![SessionId(2)]);
+    assert_eq!(
+        windows.input_targets(SessionId(1)),
+        vec![SessionId(1), SessionId(3)]
+    );
+}
+
+#[test]
+fn moving_a_view_tab_or_to_the_same_or_an_unknown_window_is_refused() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let a = open(&mut windows, MAIN, 1)[0];
+    let view = windows
+        .layout_mut(MAIN)
+        .unwrap()
+        .open_view(preferences())
+        .unwrap();
+    let before = revision(&windows, MAIN);
+
+    assert_eq!(
+        windows.move_session(MAIN, view, session_window),
+        Err(LayoutError::NotASession(view))
+    );
+    assert_eq!(
+        windows.move_session(MAIN, a, MAIN),
+        Err(LayoutError::SameWindow)
+    );
+    assert_eq!(
+        windows.move_session(MAIN, a, WindowId(99)),
+        Err(LayoutError::NoSuchWindow(WindowId(99)))
+    );
+    assert_eq!(
+        windows.move_session(MAIN, TabId(99), session_window),
+        Err(LayoutError::NoSuchTab(TabId(99)))
+    );
+    assert_eq!(revision(&windows, MAIN), before);
+    assert_eq!(windows.session_tabs(session_window), vec![]);
+}
+
+// What a session window's page starts from, and a window gone without
+// docking back (#84).
+
+#[test]
+fn a_session_windows_page_takes_its_session_with_the_snapshot_kept_for_it() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let a = open(&mut windows, MAIN, 1)[0];
+    windows.attach_session(MAIN, a, SessionId(1)).unwrap();
+    // Not moved yet: nothing to take.
+    assert_eq!(windows.take_session(session_window), None);
+
+    let moved = windows.move_session(MAIN, a, session_window).unwrap();
+    windows.keep_snapshot(session_window, moved, "screen".into());
+
+    assert_eq!(
+        windows.take_session(session_window),
+        Some(Taken {
+            tab: moved,
+            session: SessionId(1),
+            snapshot: Some("screen".into()),
+        })
+    );
+    // Taken again (the page reloaded): the snapshot was used up.
+    assert_eq!(
+        windows
+            .take_session(session_window)
+            .map(|taken| taken.snapshot),
+        Some(None)
+    );
+}
+
+#[test]
+fn a_session_window_gone_hands_its_sessions_to_the_main_window_and_closes() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let a = open(&mut windows, MAIN, 1)[0];
+    windows.attach_session(MAIN, a, SessionId(1)).unwrap();
+    let moved = windows.move_session(MAIN, a, session_window).unwrap();
+    windows.keep_snapshot(session_window, moved, "never taken".into());
+
+    let handed = windows.hand_to_main(session_window).unwrap();
+
+    let [back] = &handed[..] else {
+        panic!("{handed:?}")
+    };
+    assert_eq!(back.session, SessionId(1));
+    // Its page never took the snapshot: the main window gets it.
+    assert_eq!(back.snapshot.as_deref(), Some("never taken"));
+    assert_eq!(windows.session_tabs(MAIN), vec![(back.tab, SessionId(1))]);
+    assert!(windows.layout(session_window).is_none());
+    assert_eq!(
+        windows.hand_to_main(session_window),
+        Err(LayoutError::NoSuchWindow(session_window))
+    );
+    assert_eq!(windows.hand_to_main(MAIN), Err(LayoutError::MainWindow));
 }

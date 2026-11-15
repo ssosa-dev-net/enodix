@@ -242,3 +242,159 @@ async fn forgetting_a_session_drops_its_relay_and_closes_it() {
     closes(&manager, id).await;
     assert_eq!(relays.shown_in(id), None);
 }
+
+// Moving a session to another window (#84).
+
+const SESSION_WINDOW: WindowId = WindowId(1);
+
+fn consumer() -> (
+    ToWindow,
+    mpsc::UnboundedReceiver<SessionEvent>,
+    Arc<AtomicBool>,
+) {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let gone = Arc::new(AtomicBool::new(false));
+    (
+        ToWindow {
+            events: sender,
+            gone: gone.clone(),
+        },
+        receiver,
+        gone,
+    )
+}
+
+/// Attaches a new window's consumer to `session`, shown in `window`.
+fn attach(relays: &SessionRelays, session: SessionId, window: WindowId) -> (Window, u64) {
+    let (consumer, events, gone) = consumer();
+    let attached = relays
+        .attach(session, window, consumer)
+        .expect("the session is held by nobody");
+    (
+        Window {
+            key: attached.key,
+            events,
+            gone,
+        },
+        attached.offset,
+    )
+}
+
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[tokio::test]
+async fn a_released_session_is_attached_in_another_window_and_its_output_follows() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let (id, events) = connected(&manager, &server).await;
+    let mut main = show(&relays, id, events);
+    manager.write(id, b"echo before\r".to_vec()).unwrap();
+    let before = main.unacknowledged_output().await;
+
+    let end = relays.release(id, main.key).expect("main shows it");
+    let (mut moved, offset) = attach(&relays, id, SESSION_WINDOW);
+    manager.write(id, b"echo after\r".to_vec()).unwrap();
+    let after = moved.unacknowledged_output().await;
+
+    assert_eq!(end, before.len() as u64);
+    assert_eq!(offset, end);
+    assert!(text(&after).contains("after"), "{}", text(&after));
+    assert!(main.unacknowledged_output().await.is_empty());
+    assert_eq!(relays.shown_in(id), Some(SESSION_WINDOW));
+}
+
+#[tokio::test]
+async fn releasing_with_a_key_that_is_not_shown_the_session_is_refused() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let (id, events) = connected(&manager, &server).await;
+    let main = show(&relays, id, events);
+
+    let wrong = ConsumerKey::from_raw(main.key.get() + 1000);
+
+    assert!(relays.release(id, wrong).is_err());
+    assert!(relays.release(SessionId(999), main.key).is_err());
+    // Still held: another window cannot take it.
+    let (consumer, _events, _gone) = consumer();
+    assert!(relays.attach(id, SESSION_WINDOW, consumer).is_err());
+}
+
+#[tokio::test]
+async fn letting_go_of_a_dead_windows_session_hands_it_to_the_next_window() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let (id, events) = connected(&manager, &server).await;
+    let mut main = show(&relays, id, events);
+    relays.release(id, main.key).unwrap();
+    // The session window that took it; its page then dies without a word.
+    let (dead, _) = attach(&relays, id, SESSION_WINDOW);
+
+    assert!(relays.let_go(id).is_some());
+    let (mut adopting, _) = attach(&relays, id, WindowId::MAIN);
+    manager.write(id, b"echo adopted\r".to_vec()).unwrap();
+
+    assert!(text(&adopting.unacknowledged_output().await).contains("adopted"));
+    assert!(main.unacknowledged_output().await.is_empty());
+    assert_eq!(relays.shown_in(id), Some(WindowId::MAIN));
+    // The dead window's key no longer counts.
+    relays.acknowledge(id, dead.key, 1);
+    assert_eq!(relays.let_go(SessionId(999)), None);
+}
+
+#[tokio::test]
+async fn a_session_window_found_gone_leaves_its_session_open_for_the_main_window() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let (id, events) = connected(&manager, &server).await;
+    let main = show(&relays, id, events);
+    relays.release(id, main.key).unwrap();
+    let (Window { events, gone, .. }, _) = attach(&relays, id, SESSION_WINDOW);
+
+    drop(events);
+    manager.write(id, b"echo lost\r".to_vec()).unwrap();
+    tokio::time::timeout(WAIT, async {
+        while !gone.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the consumer was not told");
+
+    // Still open, and held by nobody: the main window takes it.
+    assert!(manager.write(id, b"echo still\r".to_vec()).is_ok());
+    let (mut adopting, _) = attach(&relays, id, WindowId::MAIN);
+    let output = text(&adopting.unacknowledged_output().await);
+    assert!(output.contains("lost"), "{output}");
+    assert!(output.contains("still"), "{output}");
+}
+
+#[tokio::test]
+async fn the_last_state_shown_is_kept_for_the_next_window() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let (id, events) = manager.open(SessionTarget::Ssh(server.target()), SIZE);
+    let mut main = show(&relays, id, events);
+    tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(SessionEvent::State(SessionState::Connected)) = main.events.recv().await {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the session did not connect");
+
+    assert_eq!(relays.state(id), Some(SessionState::Connected));
+
+    manager.close(id).unwrap();
+    main.closed().await;
+    assert!(matches!(relays.state(id), Some(SessionState::Closed(_))));
+    assert_eq!(relays.state(SessionId(999)), None);
+}
