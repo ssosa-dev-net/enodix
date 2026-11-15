@@ -3254,10 +3254,11 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
 }
 
 /**
- * Snippets: one is created in the panel and saved to the workspace, sent
- * to a host session from the panel and from the palette (its host's
+ * Snippets: the empty Snippets view offers the first, which is created
+ * and saved to the workspace; the view's filter narrows the list; it is
+ * sent to a host session from the view and from the palette (its host's
  * fields filled in, the other variable asked for, line by line), edited,
- * deleted, and one written on disk shows in the panel.
+ * deleted, and one written on disk shows in the view.
  */
 async function snippets({
   evaluate,
@@ -3299,9 +3300,13 @@ async function snippets({
     (await screen()).includes("test-ssh$"),
   );
 
-  // Created in the Snippets view, saved to the workspace's snippets file.
+  // With none yet, the Snippets view says what they are and offers the
+  // first; created there, saved to the workspace's snippets file.
   await showSideView(evaluate, "snippets");
-  await clickOn("[data-snippet-new]");
+  await until("the empty Snippets view", () =>
+    exists("[data-snippets] [data-snippets-empty] [data-snippet-first]"),
+  );
+  await clickOn("[data-snippet-first]");
   await until("the snippet form", () => exists("[data-snippet-form]"));
   await fillForm(
     {
@@ -3321,6 +3326,52 @@ async function snippets({
     exists('[data-snippet-group=Smoke] [data-snippet="Smoke check"]'),
   );
   step("a snippet created in the panel was saved to the workspace");
+
+  // The filter narrows the list as the user types (the core matches every
+  // word in the name, group or text), keeping the groups.
+  const saved = fileText();
+  writeFileSync(
+    file,
+    `${saved}Clock: show clock
+`,
+  );
+  await until("a second snippet in the view", () =>
+    exists('[data-snippet-group=""] [data-snippet=Clock]'),
+  );
+  const filter = async (query) => {
+    await evaluate(`(() => {
+      const input = document.querySelector("input[name=snippet-filter]");
+      input.value = ${json(query)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+  };
+  const listed = () =>
+    evaluate(
+      `[...document.querySelectorAll("[data-snippets] [data-snippet]")].map((b) => b.dataset.snippet)`,
+    );
+  const filtered = async (query, expected) => {
+    await filter(query);
+    await until(`the snippets matching ${json(query)}`, async () => {
+      const names = await listed();
+      return json(names) === json(expected);
+    });
+  };
+  await filtered("snipb", ["Smoke check"]);
+  await filtered("SMOKE {{vlan}}", ["Smoke check"]);
+  await filtered("clock", ["Clock"]);
+  await filtered("nothing-like-it", []);
+  await until("the no-match message", () => exists("[data-snippets-none]"));
+  await filtered("", ["Clock", "Smoke check"]);
+  writeFileSync(file, saved);
+  await until(
+    "the second snippet gone",
+    async () => json(await listed()) === json(["Smoke check"]),
+  );
+  const target = await evaluate(
+    `document.querySelector("[data-snippet-target]").dataset.snippetTarget`,
+  );
+  if (target !== "snip-r1") fail(`snippets are sent to ${json(target)}`);
+  step("the Snippets view filtered by name, group and text as typed");
 
   // Sent from the panel: the host's address, name and site are filled in,
   // the unknown variable is asked for, and each line arrives as its own.
@@ -3416,6 +3467,9 @@ async function snippets({
   await until(
     "the snippet gone from the panel",
     async () => !(await exists("[data-snippet]")),
+  );
+  await until("the empty Snippets view again", () =>
+    exists("[data-snippets-empty]"),
   );
   step("a snippet was renamed and deleted from the panel");
 

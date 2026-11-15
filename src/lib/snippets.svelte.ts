@@ -7,6 +7,8 @@ import type { Snippet } from "./workspace";
 export const snippets = $state({
   /** The snippet in the editor (`previous`: its name; null for a new one). */
   editing: null as { previous: string | null; snippet: Snippet } | null,
+  /** The Snippets view's filter, kept while other views are shown. */
+  query: "",
 });
 
 export function newSnippet() {
