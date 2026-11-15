@@ -26,15 +26,23 @@
   import SaveJobForm from "./SaveJobForm.svelte";
   import { pickWorkspaceFolder } from "./workspace";
   import { openView } from "./views";
+  import { detachRun, dockBack } from "./windows";
 
   interface Props {
     /** The run's id. */
     run: string;
-    /** Closes the tab (once the run is deleted). */
+    /** Closes the tab (once the run is deleted, or shown in a window of
+     * its own). */
     onclose: () => void;
+    /**
+     * Shown in a window of its own (#77): it docks back, and the actions
+     * that open tabs or change the workspace (review, run again, save as
+     * job, delete) wait for the main window.
+     */
+    detached?: boolean;
   }
 
-  let { run: selected, onclose }: Props = $props();
+  let { run: selected, onclose, detached = false }: Props = $props();
 
   let list = $state<RunList | null>(null);
   /** Runs the shell says are still running (by id). */
@@ -272,6 +280,19 @@
     });
   }
 
+  function detach() {
+    const id = selected;
+    if (!id) return;
+    return attempt(async () => {
+      await detachRun(id);
+      onclose();
+    });
+  }
+
+  function dock() {
+    return attempt(() => dockBack());
+  }
+
   function cancel() {
     const job = live;
     if (!job) return;
@@ -312,7 +333,25 @@
             onclick={cancel}>Cancel job</button
           >
         {/if}
-        {#if run.step.kind === "enrich" && run.ended}
+        {#if detached}
+          <button
+            type="button"
+            class="primary"
+            data-run-action="dock"
+            title="Show the run as a tab in the main window; this window closes"
+            disabled={busy}
+            onclick={dock}>Dock back</button
+          >
+        {:else}
+          <button
+            type="button"
+            data-run-action="detach"
+            title="Show the run in a window of its own; this tab closes"
+            disabled={busy}
+            onclick={detach}>Open in window</button
+          >
+        {/if}
+        {#if !detached && run.step.kind === "enrich" && run.ended}
           {@const id = run.id}
           <button
             type="button"
@@ -323,23 +362,25 @@
             }}>Review…</button
           >
         {/if}
-        <button
-          type="button"
-          data-run-action="again"
-          disabled={busy}
-          title={run.step.kind === "script"
-            ? "Plan the same script for the same target, as the workspace is now"
-            : "Plan the same snippet on the same target, as the workspace is now"}
-          onclick={again}>Run again…</button
-        >
-        {#key run.id}
-          <SaveJobForm
-            step={run.step}
-            target={run.target}
-            suggested={`${runTitle(run)} on ${targetLabel(run)}`}
-          />
-        {/key}
-        {#if !isRunning(run.id)}
+        {#if !detached}
+          <button
+            type="button"
+            data-run-action="again"
+            disabled={busy}
+            title={run.step.kind === "script"
+              ? "Plan the same script for the same target, as the workspace is now"
+              : "Plan the same snippet on the same target, as the workspace is now"}
+            onclick={again}>Run again…</button
+          >
+          {#key run.id}
+            <SaveJobForm
+              step={run.step}
+              target={run.target}
+              suggested={`${runTitle(run)} on ${targetLabel(run)}`}
+            />
+          {/key}
+        {/if}
+        {#if !detached && !isRunning(run.id)}
           {#if confirmingDelete}
             <span class="confirm">Delete this run from disk?</span>
             <button

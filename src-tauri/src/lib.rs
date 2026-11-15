@@ -24,8 +24,8 @@ use netterm_core::import::nornir::{NornirImport, NornirInventory, NornirPreview}
 use netterm_core::import::ImportReport;
 use netterm_core::job::results::{OutputRef, RunList, RunStore, SearchHit, StoredRun};
 use netterm_core::job::{
-    self, JobCanceller, JobEvent, JobOptions, JobPlan, JobStep, JobTarget, LoginBackup,
-    LoginBackupOutcome, SessionLogin,
+    self, JobCanceller, JobEvent, JobOptions, JobPlan, JobStep, JobTarget, LiveJob, LiveJobs,
+    LoginBackup, LoginBackupOutcome, NewLiveJob, SessionLogin,
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId, View};
@@ -75,6 +75,26 @@ const UPDATE_ENDPOINT_VARIABLE: &str = "NETTERM_UPDATE_ENDPOINT";
 /// The event that brings the interface the workspace after changes made
 /// outside the app.
 const WORKSPACE_CHANGED_EVENT: &str = "workspace-changed";
+
+/// The event that brings every window the preferences once changed.
+const PREFERENCES_CHANGED_EVENT: &str = "preferences-changed";
+
+/// The event that brings every window a job that has just started (its
+/// record, `LiveJob`).
+const JOB_STARTED_EVENT: &str = "job-started";
+
+/// The event that brings every window a job's event, numbered
+/// (`JobBroadcast`).
+const JOB_EVENT: &str = "job-event";
+
+/// The event that asks the main window to show a run docked back from its
+/// own window (the run id).
+const DOCK_RUN_EVENT: &str = "dock-run";
+
+/// The main window's label; a detached run window's is this prefix and
+/// the run id.
+const MAIN_WINDOW: &str = "main";
+const RUN_WINDOW_PREFIX: &str = "run-";
 
 /// The credential agent, kept for as long as the app runs.
 struct CredentialAgent(#[allow(dead_code)] Option<AgentServer>);
@@ -1389,22 +1409,64 @@ struct StartedJob {
     run: String,
 }
 
+/// The record of live jobs, shared by every window (#77).
+#[derive(Default)]
+struct Live(Mutex<LiveJobs>);
+
+impl Live {
+    fn lock(&self) -> MutexGuard<'_, LiveJobs> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A job's event as every window gets it: `number` counts from 1, so a
+/// window that read the job's record applies only later ones.
+#[derive(Serialize, Clone)]
+struct JobBroadcast {
+    id: u64,
+    number: u64,
+    event: JobEvent,
+}
+
+/// Every job started in this app run and not forgotten, with what it has
+/// reported so far.
+#[tauri::command]
+fn jobs_live(live: State<'_, Arc<Live>>) -> Vec<LiveJob> {
+    live.lock().jobs().to_vec()
+}
+
+/// Forgets the finished jobs other than the one keeping the run `keep`
+/// (their runs stay on disk).
+#[tauri::command]
+fn jobs_forget_finished(live: State<'_, Arc<Live>>, keep: Option<String>) {
+    live.lock().forget_finished(keep.as_deref());
+}
+
 /// Starts the job last planned, with its own sessions (never logged, never
 /// a terminal's), at most `parallel` hosts at once (default 10), keeping
-/// its run on disk. Its progress arrives on `on_event` until `finished`,
-/// and goes on if nobody listens.
+/// its run on disk. It is recorded in `Live` (`label` = what it runs on)
+/// and announced to every window (`job-started`), and its progress is
+/// broadcast (`job-event`) until `finished`, whoever listens.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn job_start(
+    app: AppHandle,
+    shell: State<'_, Shell>,
     manager: State<'_, SessionManager>,
     plans: State<'_, JobPlans>,
     runs: State<'_, Runs>,
     configs: State<'_, Configs>,
     jobs: State<'_, Arc<RunningJobs>>,
+    live: State<'_, Arc<Live>>,
     python: State<'_, Arc<python::PythonSetup>>,
     parallel: Option<usize>,
-    on_event: Channel<JobEvent>,
+    label: String,
 ) -> Result<StartedJob, String> {
+    let root = shell
+        .workspace()
+        .as_ref()
+        .map(|workspace| workspace.root().display().to_string())
+        .ok_or("no workspace is open")?;
     let peeked = {
         let plans = plans.0.lock().unwrap_or_else(PoisonError::into_inner);
         plans
@@ -1444,6 +1506,7 @@ async fn job_start(
         .0
         .begin(&workspace, &planned.target, &planned.plan)
         .map_err(|error| format!("the run cannot be kept, so the job did not start: {error}"))?;
+    let plan = planned.plan.clone();
     let mut job = job::start(&manager, planned.plan, options).map_err(|e| e.to_string())?;
     // Started: the plan is used up (a refused start keeps it).
     plans.take();
@@ -1451,10 +1514,23 @@ async fn job_start(
     let id = jobs.next.fetch_add(1, Ordering::Relaxed);
     let run = recorder.id().to_string();
     jobs.cancellers().insert(id, job.canceller());
+    let record = live
+        .lock()
+        .start(NewLiveJob {
+            id,
+            workspace: root,
+            run: run.clone(),
+            label,
+            target: planned.target,
+            plan,
+        })
+        .clone();
+    let _ = app.emit(JOB_STARTED_EVENT, &record);
     let jobs = Arc::clone(&jobs);
+    let live = Arc::clone(&live);
     tauri::async_runtime::spawn(async move {
         let mut unkept = false;
-        // The job keeps running if the interface stops listening.
+        // The job keeps running whether or not a window listens.
         while let Some(event) = job.next().await {
             if let Err(error) = recorder.record(&event) {
                 if !unkept {
@@ -1462,7 +1538,10 @@ async fn job_start(
                     unkept = true;
                 }
             }
-            let _ = on_event.send(event);
+            let number = live.lock().record(id, &event);
+            if let Some(number) = number {
+                let _ = app.emit(JOB_EVENT, JobBroadcast { id, number, event });
+            }
         }
         jobs.cancellers().remove(&id);
     });
@@ -2318,11 +2397,14 @@ fn adopt_preferences(
     // Saved: from here on these are the preferences, whatever the frame does.
     *current = next.clone();
     if theme_changed {
-        if let Some(window) = app.get_webview_window("main") {
+        for window in app.webview_windows().values() {
             // Only the frame's colours; the page already follows the theme.
             let _ = window.set_theme(window_theme(next.theme));
         }
     }
+    // Detached windows follow the theme and font (the main window applies
+    // its own answer).
+    let _ = app.emit(PREFERENCES_CHANGED_EVENT, &next);
     Ok(next)
 }
 
@@ -2512,6 +2594,81 @@ fn session_close(manager: State<'_, SessionManager>, id: u64) -> Result<(), Stri
         .map_err(|error| error.to_string())
 }
 
+/// The open workspace as it is, without opening it again (a detached
+/// window's first look); `None` with none open.
+#[tauri::command]
+fn workspace_current(shell: State<'_, Shell>) -> Option<WorkspaceView> {
+    shell.workspace().as_ref().map(WorkspaceView::from)
+}
+
+/// Shows the run `run` in a window of its own (#77): the existing one if
+/// it is open, else a new one. The page reads its run from its label.
+/// Async: building a window in a synchronous command deadlocks on Windows.
+#[tauri::command]
+async fn window_detach_run(
+    app: AppHandle,
+    preferred: State<'_, UserPreferences>,
+    run: String,
+) -> Result<(), String> {
+    // Run ids are `YYYY-MM-DD_HH-MM-SS[_n]`: valid in a window label.
+    if run.is_empty()
+        || !run
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!("{run:?} is not a run"));
+    }
+    let label = format!("{RUN_WINDOW_PREFIX}{run}");
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    let theme = window_theme(preferred.lock().theme);
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
+        .title(format!("{} - run {run}", product_name(&app)))
+        .inner_size(900.0, 640.0)
+        .min_inner_size(420.0, 320.0)
+        .theme(theme)
+        .build()
+        .map_err(|error| format!("the window could not be opened: {error}"))?;
+    Ok(())
+}
+
+/// Docks the calling detached window back: the main window shows its run
+/// as a tab (`dock-run`) and takes the focus, and the window closes.
+#[tauri::command]
+async fn window_dock(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    let run = window
+        .label()
+        .strip_prefix(RUN_WINDOW_PREFIX)
+        .ok_or("only a detached window docks back")?
+        .to_string();
+    let main = app
+        .get_webview_window(MAIN_WINDOW)
+        .ok_or("the main window is gone")?;
+    main.emit_to(MAIN_WINDOW, DOCK_RUN_EVENT, run)
+        .map_err(|error| error.to_string())?;
+    let _ = main.unminimize();
+    let _ = main.set_focus();
+    window.destroy().map_err(|error| error.to_string())
+}
+
+/// Closes every detached window (their jobs go on).
+fn close_detached(app: &AppHandle) {
+    for (label, window) in app.webview_windows() {
+        if label != MAIN_WINDOW {
+            let _ = window.destroy();
+        }
+    }
+}
+
+/// Closes every detached window: the main window switched workspace, and
+/// their runs belong to the other one.
+#[tauri::command]
+fn windows_close_detached(app: AppHandle) {
+    close_detached(&app);
+}
+
 pub fn run() {
     let context = tauri::generate_context!();
     // Only a release build (`scripts/release.mjs`) configures the updater:
@@ -2579,6 +2736,7 @@ pub fn run() {
             // Config backups likewise.
             app.manage(Configs(ConfigStore::new(data_folder.join("configs"))));
             app.manage(Arc::new(RunningJobs::default()));
+            app.manage(Arc::new(Live::default()));
             let preferences = Preferences::load(&data_folder);
             let theme = window_theme(preferences.theme);
             app.manage(UserPreferences(Mutex::new(preferences)));
@@ -2621,7 +2779,7 @@ pub fn run() {
                 watcher: Mutex::new(None),
             });
             let title = product_name(app.handle());
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
+            WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default())
                 .title(title)
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(480.0, 320.0)
@@ -2629,8 +2787,20 @@ pub fn run() {
                 .build()?;
             Ok(())
         })
+        // Closing the main window closes the detached ones (and so the app).
+        .on_window_event(|window, event| {
+            if window.label() == MAIN_WINDOW && matches!(event, tauri::WindowEvent::Destroyed) {
+                close_detached(window.app_handle());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             enrich_preview,
+            workspace_current,
+            window_detach_run,
+            window_dock,
+            windows_close_detached,
+            jobs_live,
+            jobs_forget_finished,
             enrich_apply,
             app_name,
             app_quit,

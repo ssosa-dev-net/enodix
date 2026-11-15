@@ -1,8 +1,17 @@
-// The jobs this window started, with their progress, kept apart from the
-// tabs that show them: closing a job's tab leaves it running (the shell
+// The jobs started in this app run, with their progress, kept apart from
+// the tabs that show them: closing a job's tab leaves it running (the shell
 // drives it and keeps its run on disk), and the rail's Jobs icon counts the
 // running ones.
+//
+// The shell keeps the record (#77, the core's `job::LiveJobs`) for every
+// window: it announces each job as it starts (`job-started`) and
+// broadcasts its events numbered (`job-event`). A window reads the record
+// when it starts (`startLiveJobs`), so a reloaded page or a detached
+// window opened late shows what already happened, then applies only the
+// events numbered after what it read.
 
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { inventory } from "./inventory.svelte";
 import {
   startJob,
@@ -13,7 +22,7 @@ import {
   type SaveOutcome,
 } from "./jobs";
 
-/** A job started from this window, and what it has reported so far. */
+/** A job started in this app run, and what it has reported so far. */
 export interface LiveJob {
   id: number;
   /** The root of the workspace it runs in (run ids are per workspace). */
@@ -31,6 +40,16 @@ export interface LiveJob {
   /** A script's exit status, once it ended with one. */
   exits: Record<string, number>;
   finished: boolean;
+  /** The number of the latest event it holds. */
+  events: number;
+}
+
+/** A job's event as the shell broadcasts it. */
+interface JobBroadcast {
+  id: number;
+  /** Counts from 1 per job. */
+  number: number;
+  event: JobEvent;
 }
 
 export const liveJobs = $state({
@@ -54,8 +73,8 @@ function openRoot(): string {
 }
 
 /**
- * How many jobs started here are still running: in the open workspace,
- * or (`elsewhere`) in the others.
+ * How many jobs are still running: in the open workspace, or
+ * (`elsewhere`) in the others.
  */
 export function runningCount(elsewhere = false): number {
   return liveJobs.jobs.filter(
@@ -63,7 +82,7 @@ export function runningCount(elsewhere = false): number {
   ).length;
 }
 
-/** The job started here that keeps the open workspace's run `run`. */
+/** The live job that keeps the open workspace's run `run`. */
 export function liveJob(run: string): LiveJob | undefined {
   return liveJobs.jobs.find(
     (job) => job.run === run && job.workspace === openRoot(),
@@ -91,9 +110,64 @@ function apply(job: LiveJob, event: JobEvent) {
   }
 }
 
+/** Takes in a job's record, unless the one held is as new. */
+function adopt(record: LiveJob) {
+  const index = liveJobs.jobs.findIndex((job) => job.id === record.id);
+  if (index < 0) {
+    liveJobs.jobs.push(record);
+    liveJobs.revision += 1;
+  } else if (liveJobs.jobs[index].events < record.events) {
+    // In place: tabs hold the entry.
+    Object.assign(liveJobs.jobs[index], record);
+    liveJobs.revision += 1;
+  }
+}
+
+/** Applies a broadcast event once, in order. */
+function receive({ id, number, event }: JobBroadcast) {
+  const job = liveJobs.jobs.find((entry) => entry.id === id);
+  // Already in the record read (or one missed: the record is read again).
+  if (!job || number <= job.events) return;
+  if (number !== job.events + 1) {
+    void reload();
+    return;
+  }
+  job.events = number;
+  apply(job, event);
+}
+
+async function reload() {
+  const records = await invoke<LiveJob[]>("jobs_live");
+  for (const record of records) adopt(record);
+}
+
+let started: Promise<void> | null = null;
+
+/**
+ * Follows the shell's record of live jobs: listens first, then reads it,
+ * so nothing falls between. Events of jobs not yet read wait for it. Once
+ * per window; the window lives as long as the listeners.
+ */
+export function startLiveJobs(): Promise<void> {
+  started ??= (async () => {
+    let loaded = false;
+    const early: JobBroadcast[] = [];
+    await listen<LiveJob>("job-started", (event) => adopt(event.payload));
+    await listen<JobBroadcast>("job-event", (event) => {
+      if (loaded) receive(event.payload);
+      else early.push(event.payload);
+    });
+    await reload();
+    loaded = true;
+    for (const broadcast of early) receive(broadcast);
+  })();
+  return started;
+}
+
 /**
  * Starts the job last planned (`plan`, on `target`), at most `parallel`
- * hosts at once; its progress is kept here. Errors propagate.
+ * hosts at once; its progress is kept here, as in every window. Errors
+ * propagate.
  */
 export async function launchJob(
   plan: JobPlan,
@@ -101,36 +175,35 @@ export async function launchJob(
   label: string,
   parallel: number,
 ): Promise<LiveJob> {
-  let job: LiveJob | null = null;
-  // Events can arrive before the start answers.
-  const early: JobEvent[] = [];
-  const started = await startJob(parallel, (event) => {
-    if (job) apply(job, event);
-    else early.push(event);
-  });
-  liveJobs.jobs.push({
-    id: started.id,
-    workspace: openRoot(),
-    run: started.run,
-    label,
-    target,
-    plan,
-    states: {},
-    outputs: {},
-    backups: {},
-    exits: {},
-    finished: false,
-  });
-  // The proxied entry, so that changes show.
-  job = liveJobs.jobs[liveJobs.jobs.length - 1];
-  for (const event of early) apply(job, event);
-  liveJobs.revision += 1;
+  void startLiveJobs();
+  const begun = await startJob(parallel, label);
+  // Its announcement can come after the answer.
+  let job = liveJobs.jobs.find((entry) => entry.id === begun.id);
+  if (!job) {
+    adopt({
+      id: begun.id,
+      workspace: openRoot(),
+      run: begun.run,
+      label,
+      target,
+      plan,
+      states: {},
+      outputs: {},
+      backups: {},
+      exits: {},
+      finished: false,
+      events: 0,
+    });
+    job = liveJobs.jobs.find((entry) => entry.id === begun.id)!;
+  }
   return job;
 }
 
-/** Forgets finished jobs other than `keep` (their runs stay on disk). */
+/** Forgets finished jobs other than `keep`, here and in the shell's
+ * record (their runs stay on disk). */
 export function forgetFinished(keep: string | null = null) {
   liveJobs.jobs = liveJobs.jobs.filter(
     (job) => !job.finished || job.run === keep,
   );
+  void invoke("jobs_forget_finished", { keep });
 }

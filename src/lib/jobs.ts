@@ -3,7 +3,7 @@
 // a Python script of the workspace run once for the hosts. The interface
 // only shows the pre-flight list and the progress.
 
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import type { Environment } from "./workspace";
 
 /** Which hosts a job runs on. */
@@ -153,16 +153,11 @@ export interface StartedJob {
 
 /**
  * Starts the job last planned, at most `parallel` hosts at once (1 to
- * `MAX_PARALLEL`), keeping its run on disk.
+ * `MAX_PARALLEL`), keeping its run on disk; `label` = what it runs on. Its
+ * progress reaches every window as events (`jobs.svelte.ts`).
  */
-export function startJob(
-  parallel: number,
-  onEvent: (event: JobEvent) => void,
-): Promise<StartedJob> {
-  return invoke<StartedJob>("job_start", {
-    parallel,
-    onEvent: new Channel<JobEvent>(onEvent),
-  });
+export function startJob(parallel: number, label: string) {
+  return invoke<StartedJob>("job_start", { parallel, label });
 }
 
 /** A host of a kept run. */

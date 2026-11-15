@@ -23,6 +23,7 @@
   import { inventory } from "./inventory.svelte";
   import SaveJobForm from "./SaveJobForm.svelte";
   import { openView } from "./views";
+  import { detachRun } from "./windows";
   import { python, pythonOff, refreshPython } from "./python.svelte";
 
   interface Props {
@@ -584,6 +585,16 @@
             close(true);
           }}>Open run</button
         >
+        <button
+          type="button"
+          data-job="detach"
+          title="Show the run in a window of its own; this tab closes"
+          onclick={() =>
+            detachRun(run).then(
+              () => close(true),
+              (reason) => (error = String(reason)),
+            )}>Open in window</button
+        >
       {/if}
       <button
         type="button"
@@ -648,6 +659,16 @@
             openView("run", run);
             close(true);
           }}>Open run</button
+        >
+        <button
+          type="button"
+          data-job="detach"
+          title="Show the run in a window of its own; this tab closes"
+          onclick={() =>
+            detachRun(run).then(
+              () => close(true),
+              (reason) => (error = String(reason)),
+            )}>Open in window</button
         >
       {/if}
       <button
