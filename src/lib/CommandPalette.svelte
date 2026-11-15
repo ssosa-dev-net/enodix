@@ -1,6 +1,8 @@
 <script lang="ts">
   import { tick } from "svelte";
   import RoleIcon from "./RoleIcon.svelte";
+  import type { ViewName } from "./layout";
+  import { openView, VIEWS } from "./views";
   import {
     fieldLabel,
     hostRole,
@@ -35,6 +37,22 @@
   /** The most hits shown at once. */
   const LIMIT = 50;
 
+  /** Views the palette opens (#72), listed after the hosts when every
+   * typed word is part of their label or keywords. */
+  const COMMANDS: readonly { view: ViewName; label: string; words: string }[] =
+    [
+      {
+        view: "platforms",
+        label: "Platform definitions",
+        words: "platforms prompts paging privilege show config devices jobs",
+      },
+      {
+        view: "highlights",
+        label: "Highlight rules",
+        words: "highlighting keywords patterns colours colors",
+      },
+    ];
+
   let query = $state("");
   let results = $state<SearchResults | null>(null);
   /** The query `results` answer, which lags while the core answers. */
@@ -43,6 +61,17 @@
   /** The snippets found, when the query searches snippets; else null. */
   let snippetHits = $state<Snippet[] | null>(null);
   const snippetMode = $derived(query.startsWith(SNIPPET_PREFIX));
+  /** The views matching the query (none for an empty or snippet query). */
+  const commands = $derived.by(() => {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (snippetMode || words.length === 0) return [];
+    return COMMANDS.filter((command) => {
+      const text = `${command.label} ${command.words}`.toLowerCase();
+      return words.every((word) => text.includes(word));
+    });
+  });
+  /** The hosts listed (before the commands). */
+  const hostCount = $derived(snippetHits ? 0 : (results?.hits.length ?? 0));
   let list = $state<HTMLElement>();
   let input = $state<HTMLInputElement>();
 
@@ -113,8 +142,14 @@
     onsnippet(snippet.name);
   }
 
+  function run(view: ViewName) {
+    onclose();
+    openView(view);
+  }
+
   async function move(by: number) {
-    const count = snippetHits?.length ?? results?.hits.length ?? 0;
+    const count =
+      snippetHits?.length ?? (results?.hits.length ?? 0) + commands.length;
     if (count === 0) return;
     active = (active + by + count) % count;
     await tick();
@@ -150,9 +185,20 @@
         if (snippet && target !== null) send(snippet);
         return;
       }
+      // A command chosen (they follow the hosts listed).
+      const command =
+        answered === query ? commands[active - hostCount] : undefined;
+      if (command) {
+        run(command.view);
+        return;
+      }
       const reveal = event.shiftKey;
       const hit = await chosen();
-      if (!hit) return;
+      if (!hit) {
+        // No host matches: the first command, if one does.
+        if (commands[0]) run(commands[0].view);
+        return;
+      }
       if (reveal) show(hit);
       else connect(hit);
     } else if (event.key === "Escape") {
@@ -186,7 +232,8 @@
       role="combobox"
       aria-expanded="true"
       aria-controls="palette-results"
-      aria-activedescendant={(snippetHits?.length ?? results?.hits.length)
+      aria-activedescendant={(snippetHits?.length ??
+      (results?.hits.length ?? 0) + commands.length)
         ? `palette-hit-${active}`
         : undefined}
     />
@@ -234,8 +281,26 @@
           {#if folder}<span class="folder">{folder}</span>{/if}
         </li>
       {/each}
+      {#each commands as command, offset (command.view)}
+        {@const index = hostCount + offset}
+        {@const Icon = VIEWS[command.view].icon}
+        <li
+          id="palette-hit-{index}"
+          role="option"
+          aria-selected={index === active}
+          class:active={index === active}
+          data-index={index}
+          data-palette-command={command.view}
+          onclick={() => run(command.view)}
+          onpointermove={() => (active = index)}
+        >
+          <span class="icon"><Icon size={14} aria-hidden="true" /></span>
+          <span class="name">{command.label}</span>
+          <span class="detail">Open in a tab</span>
+        </li>
+      {/each}
     </ul>
-    {#if results && results.total === 0}
+    {#if results && results.total === 0 && commands.length === 0}
       <p class="empty">No host matches.</p>
     {/if}
     {#if snippetHits && snippetHits.length === 0}

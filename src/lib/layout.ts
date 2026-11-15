@@ -36,7 +36,14 @@ export interface ViewRef {
 
 /** The views that open as tabs. Later views add their name here. */
 export type ViewName =
-  "preferences" | "job" | "run" | "configs" | "csv-import" | "nornir-import";
+  | "preferences"
+  | "job"
+  | "run"
+  | "configs"
+  | "csv-import"
+  | "nornir-import"
+  | "platforms"
+  | "highlights";
 
 /** What a tab holds: a session's terminal, or a view. */
 export type TabKind = { kind: "session" } | ({ kind: "view" } & ViewRef);
