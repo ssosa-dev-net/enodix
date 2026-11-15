@@ -1299,6 +1299,12 @@
     color: var(--role-color);
   }
 
+  /* The role's own colour is the workspace's choice and may not stand out
+     from the header: the icon carries it, the name stays readable. */
+  .role-name {
+    color: var(--muted);
+  }
+
   .title {
     flex: 0 1 auto;
     min-width: 3rem;

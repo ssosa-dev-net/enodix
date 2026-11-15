@@ -41,7 +41,6 @@
   import { refreshPython } from "./lib/python.svelte";
   import Platforms from "./lib/Platforms.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
-  import SnippetDialog from "./lib/SnippetDialog.svelte";
   import SnippetsView from "./lib/SnippetsView.svelte";
   import SnippetVariables from "./lib/SnippetVariables.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
@@ -86,7 +85,6 @@
   import { hostLogin } from "./lib/credentials";
   import { trackHighlightRules } from "./lib/highlight.svelte";
   import { profiles, refreshProfiles } from "./lib/profiles.svelte";
-  import { snippets } from "./lib/snippets.svelte";
   import { joinConfirmations, NO_SAFETY, planGroupPaste } from "./lib/paste";
   import {
     changePreferences,
@@ -237,6 +235,12 @@
     if (question && !placement.get(question.tab)?.shown) {
       question.answer(false);
     }
+  });
+
+  // The variables question is shown over its tab too: hidden or closed,
+  // the snippet is not sent.
+  $effect(() => {
+    if (asking && !placement.get(asking.tab)?.shown) asking = null;
   });
 
   const panes = $derived(layout ? panesOf(layout.root) : []);
@@ -1329,8 +1333,6 @@
       inventory.palette ||
       switcher ||
       switching ||
-      snippets.editing ||
-      asking ||
       joining ||
       closing !== null;
     const action = zoomShortcut(event) ?? (busy ? null : shortcut(event));
@@ -1458,6 +1460,24 @@
                 members={question.members}
                 onsend={() => question.answer(true)}
                 oncancel={() => question.answer(false)}
+              />
+            {/if}
+            {#if asking?.tab === tab}
+              {@const { name: snippet, names } = asking}
+              <SnippetVariables
+                {snippet}
+                target={inGroup(tab) ? groupName() : session.name}
+                {names}
+                onsend={(answers) => {
+                  // Read before clearing `asking`, which these come from.
+                  const send = { snippet, tab };
+                  asking = null;
+                  void sendSnippet(send.snippet, answers, send.tab);
+                }}
+                oncancel={() => {
+                  asking = null;
+                  focusRequest += 1;
+                }}
               />
             {/if}
           </div>
@@ -1715,37 +1735,6 @@
     onstartedover={() => {
       vaultLocked = false;
       reopenWorkspace();
-    }}
-  />
-{/if}
-
-{#if snippets.editing}
-  {@const editing = snippets.editing}
-  <SnippetDialog
-    previous={editing.previous}
-    initial={editing.snippet}
-    onclose={() => {
-      snippets.editing = null;
-      focusRequest += 1;
-    }}
-  />
-{/if}
-
-{#if asking}
-  {@const { tab, name, names } = asking}
-  <SnippetVariables
-    snippet={name}
-    target={inGroup(tab) ? groupName() : (sessions[tab]?.name ?? "")}
-    {names}
-    onsend={(answers) => {
-      // Read before clearing `asking`, which these are derived from.
-      const send = { name, tab };
-      asking = null;
-      void sendSnippet(send.name, answers, send.tab);
-    }}
-    oncancel={() => {
-      asking = null;
-      focusRequest += 1;
     }}
   />
 {/if}

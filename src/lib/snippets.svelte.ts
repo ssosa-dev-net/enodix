@@ -1,26 +1,14 @@
-// Snippets as the interface shows them: the editor dialog's state and the
-// panel's grouping. The snippets themselves come with the workspace; the
-// core saves them and fills in their variables (`snippet_expand`).
+// Snippets as the interface shows them: the Snippets view's filter and its
+// grouping. The snippets themselves come with the workspace; the core saves
+// them and fills in their variables (`snippet_expand`). The view's form is
+// its own state (SnippetsView).
 
 import type { Snippet } from "./workspace";
 
 export const snippets = $state({
-  /** The snippet in the editor (`previous`: its name; null for a new one). */
-  editing: null as { previous: string | null; snippet: Snippet } | null,
   /** The Snippets view's filter, kept while other views are shown. */
   query: "",
 });
-
-export function newSnippet() {
-  snippets.editing = {
-    previous: null,
-    snippet: { name: "", group: null, text: "" },
-  };
-}
-
-export function editSnippet(snippet: Snippet) {
-  snippets.editing = { previous: snippet.name, snippet: { ...snippet } };
-}
 
 /** The snippets by group, in the order each group first appears; the
  * snippets without a group first. */

@@ -1,10 +1,15 @@
 <script lang="ts">
+  // The values a snippet's variables lack, asked before it is sent. It
+  // belongs to one terminal, so it covers only that session's pane (#79,
+  // as the paste confirmation since #74): drawn inside the session's slot;
+  // other panes stay usable. Escape is handled here, not on the window, so
+  // Escape typed in another terminal reaches its device.
   import { untrack } from "svelte";
 
   interface Props {
     /** The snippet being sent. */
     snippet: string;
-    /** The session it goes to. */
+    /** The session it goes to (or the multi-send group). */
     target: string;
     /** The variables without a value, in the order the snippet uses them. */
     names: string[];
@@ -21,22 +26,26 @@
   $effect(() => {
     fields?.querySelector("input")?.focus();
   });
+
+  function onkeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      oncancel();
+    }
+  }
 </script>
 
-<svelte:window
-  onkeydown={(event) => {
-    if (event.key === "Escape") oncancel();
-  }}
-/>
-
 <div
-  class="backdrop"
+  class="overlay"
   role="dialog"
-  aria-modal="true"
   aria-labelledby="snippet-variables-title"
-  data-dialog="snippet-variables"
+  tabindex="-1"
+  data-snippet-variables={snippet}
+  {onkeydown}
 >
   <form
+    class="card"
     onsubmit={(event) => {
       event.preventDefault();
       onsend(Object.fromEntries(names.map((name, i) => [name, values[i]])));
@@ -58,24 +67,27 @@
       {/each}
     </div>
     <div class="actions">
-      <button type="button" onclick={oncancel}>Cancel</button>
+      <button type="button" data-snippet-variables-cancel onclick={oncancel}
+        >Cancel</button
+      >
       <button type="submit" data-snippet-variables-send>Send</button>
     </div>
   </form>
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
+  .overlay {
+    position: absolute;
     inset: 0;
-    z-index: 15;
+    z-index: 3;
     display: grid;
     place-items: center;
     padding: var(--space-4);
     background: var(--backdrop);
+    overflow: auto;
   }
 
-  form {
+  .card {
     width: min(26rem, 100%);
     max-height: 100%;
     overflow: auto;
@@ -85,7 +97,6 @@
     background: var(--dialog);
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
   }
 
   h2 {

@@ -330,8 +330,10 @@
     font-size: var(--text-sm);
   }
 
-  li.off .text {
-    opacity: 0.6;
+  /* An off rule is quieter, still readable (a colour, not opacity). */
+  li.off .text strong,
+  li.off .text .mono {
+    color: var(--muted);
   }
 
   .swatch {

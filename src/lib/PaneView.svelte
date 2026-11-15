@@ -434,7 +434,6 @@
 
   .tab[data-multi-send="not-receiving"] .member {
     border-style: dashed;
-    opacity: 0.7;
   }
 
   .tab.dragging {

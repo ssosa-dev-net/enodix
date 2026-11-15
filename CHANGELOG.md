@@ -5,7 +5,35 @@ in the project's tracker.
 
 ## Unreleased
 
-Nothing yet.
+### A new interface
+
+The same features, reached differently (spec #61, #62 to #79);
+[docs/interface.md](docs/interface.md) says where each one now is.
+
+- A new look: one dark and one light palette, the Inter typeface for the
+  interface (terminals keep your font), real icons, all shipped inside the
+  app. Text meets WCAG AA contrast in both themes (#62, #79).
+- An activity rail switches one side view between Hosts, Snippets, Jobs,
+  Config backups and Credentials, and folds it away. The toolbar and the
+  right-hand properties column are gone; host and folder details open as
+  a sheet when asked for (#63 to #66, #70).
+- Each terminal has one quiet header line with its markers and a menu of
+  its actions, also on the tab; a status line shows the vault and the
+  terminal size (#67).
+- Job runs, past runs, config history, Preferences, the CSV and Nornir
+  imports, platform definitions, highlight rules, the fill-in review and
+  Python setup open as tabs beside the terminals, and can be split into a
+  pane of their own (#68 to #73).
+- Questions about one terminal (host key, login, paste confirmation, a
+  snippet's variables, closing a live tab, joining multi-send) cover only
+  its pane; the snippet editor is part of the Snippets view (#74, #79).
+- A welcome view with recent workspaces and quick connect, and empty
+  views that say what goes there (#75).
+- The palette (Ctrl+K) reaches every view and action that moved (#76).
+- A job run and a host's config history can open in a window of their
+  own, on any monitor, and dock back (#77, #78).
+- Preferences and workspace files carry over unchanged; the right panel's
+  width and folding are no longer used.
 
 ## 0.2.0
 

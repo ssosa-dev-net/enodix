@@ -355,7 +355,7 @@
   }
 
   li.unusable .text strong {
-    opacity: 0.6;
+    color: var(--muted);
   }
 
   .text {

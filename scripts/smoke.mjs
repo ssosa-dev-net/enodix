@@ -263,6 +263,166 @@ function fail(message) {
   throw new Error(message);
 }
 
+/**
+ * Text on screen that does not stand out enough from what is behind it
+ * (#79): WCAG AA, 4.5:1, or 3:1 for large text (24 px, or 18.66 px bold),
+ * in the theme shown and then in the other one (the theme attribute is
+ * swapped and put back at once, transitions off). Judged: every element
+ * holding visible text and every filled field; not judged: terminals
+ * (their colours are the device's), disabled controls (exempt in WCAG),
+ * text over an image or gradient. The background is the element's own
+ * and its ancestors' composited; opacity along the way dims the text.
+ */
+const CONTRAST_PROBE = `(() => {
+  const parse = (c) => {
+    let m = /^rgba?\\(([^)]+)\\)$/.exec(c);
+    if (m) {
+      const p = m[1].split(/[\\s,\\/]+/).filter(Boolean).map(parseFloat);
+      return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+    }
+    m = /^color\\(srgb ([^)]+)\\)$/.exec(c);
+    if (m) {
+      const p = m[1].split(/[\\s\\/]+/).filter(Boolean).map(parseFloat);
+      return [p[0] * 255, p[1] * 255, p[2] * 255, p.length > 3 ? p[3] : 1];
+    }
+    return null;
+  };
+  const over = (top, bottom) =>
+    [0, 1, 2].map((i) => top[i] * top[3] + bottom[i] * (1 - top[3])).concat(1);
+  const luminance = (c) => {
+    const [r, g, b] = c.slice(0, 3).map((v) => {
+      v /= 255;
+      return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => {
+    const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p);
+    return (x + 0.05) / (y + 0.05);
+  };
+  const hex = (c) =>
+    "#" + c.slice(0, 3).map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
+  const describe = (element) => {
+    const marks = [...element.attributes]
+      .filter((a) => a.name.startsWith("data-") || a.name === "class" || a.name === "role")
+      .slice(0, 3)
+      .map((a) => "[" + a.name + "=" + a.value.slice(0, 40) + "]")
+      .join("");
+    const holder = element.closest("[data-view], [data-side-view], [data-dialog], [role=dialog], [role=alertdialog], header, nav, .slot");
+    const where = holder && holder !== element
+      ? holder.tagName.toLowerCase() + (holder.dataset.view ? "[data-view=" + holder.dataset.view + "]" : holder.dataset.sideView ? "[data-side-view=" + holder.dataset.sideView + "]" : "") + " "
+      : "";
+    const text = (element.value ?? element.textContent ?? "").trim().replace(/\\s+/g, " ").slice(0, 30);
+    return where + element.tagName.toLowerCase() + marks + " " + JSON.stringify(text);
+  };
+  const judge = () => {
+    // Styles and backgrounds are looked up once per element and theme.
+    const styles = new Map();
+    const styleOf = (e) => {
+      let s = styles.get(e);
+      if (!s) styles.set(e, (s = getComputedStyle(e)));
+      return s;
+    };
+    const behinds = new Map();
+    const opacities = new Map();
+    const opacityOf = (e) => {
+      if (!e) return 1;
+      let o = opacities.get(e);
+      if (o === undefined) {
+        o = parseFloat(styleOf(e).opacity) * opacityOf(e.parentElement);
+        opacities.set(e, o);
+      }
+      return o;
+    };
+    const rootColour = parse(getComputedStyle(document.documentElement).backgroundColor) ?? [255, 255, 255, 1];
+    const background = (element) => {
+      if (behinds.has(element)) return behinds.get(element);
+      const layers = [];
+      let image = false;
+      for (let e = element; e; e = e.parentElement) {
+        const s = styleOf(e);
+        if (s.backgroundImage !== "none") {
+          image = true;
+          break;
+        }
+        if (s.backgroundImage !== "none") return null;
+        const c = parse(s.backgroundColor);
+        if (c && c[3] > 0) {
+          layers.push(c);
+          if (c[3] >= 1) break;
+        }
+      }
+      let colour = rootColour[3] >= 1 ? rootColour : over(rootColour, [255, 255, 255, 1]);
+      for (const layer of layers.reverse()) colour = over(layer, colour);
+      if (image) colour = null;
+      behinds.set(element, colour);
+      return colour;
+    };
+    const elements = new Set();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.textContent.trim() && node.parentElement) elements.add(node.parentElement);
+    }
+    for (const field of document.querySelectorAll("input, textarea, select")) {
+      if (["checkbox", "radio", "range", "color", "hidden", "file"].includes(field.type)) continue;
+      if (field.value) elements.add(field);
+    }
+    const found = [];
+    for (const element of elements) {
+      if (["SCRIPT", "STYLE", "OPTION", "TITLE", "NOSCRIPT", "DATALIST"].includes(element.tagName)) continue;
+      if (element.closest(".xterm, [hidden], :disabled, [aria-disabled=true]")) continue;
+      if (!element.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
+      const box = element.getBoundingClientRect();
+      if (box.width < 2 || box.height < 2) continue;
+      const style = styleOf(element);
+      const colour = parse(style.color);
+      const behind = background(element);
+      if (!colour || !behind) continue;
+      const opacity = opacityOf(element);
+      const shown = over([colour[0], colour[1], colour[2], colour[3] * opacity], behind);
+      const size = parseFloat(style.fontSize);
+      const large = size >= 24 || (size >= 18.66 && parseInt(style.fontWeight, 10) >= 700);
+      const needed = large ? 3 : 4.5;
+      const got = ratio(shown, behind);
+      if (got < needed - 0.005) {
+        found.push(describe(element) + ": " + hex(shown) + " on " + hex(behind) + " is " + got.toFixed(2) + ":1");
+      }
+    }
+    return found;
+  };
+  const calm = document.createElement("style");
+  calm.textContent = "*, *::before, *::after { transition: none !important; animation: none !important; }";
+  document.head.append(calm);
+  const root = document.documentElement;
+  const theme = root.dataset.theme === "light" ? "light" : "dark";
+  const other = theme === "light" ? "dark" : "light";
+  const result = {};
+  try {
+    result[theme] = judge();
+    root.dataset.theme = other;
+    result[other] = judge();
+  } finally {
+    root.dataset.theme = theme;
+    calm.remove();
+  }
+  return result;
+})()`;
+
+/** Contrast failures found so far, by theme and element, with where. */
+const contrastFailures = new Map();
+
+/** Checks the contrast of what is on screen now in both themes (#79);
+ * failures are kept and reported together at the end of the run. */
+async function checkContrast(evaluate, where) {
+  const found = await evaluate(CONTRAST_PROBE);
+  for (const [theme, failures] of Object.entries(found ?? {})) {
+    for (const failure of failures) {
+      const key = `${theme}: ${failure}`;
+      if (!contrastFailures.has(key)) contrastFailures.set(key, where);
+    }
+  }
+}
+
 /** The side view's width the sidePanels part leaves for the restart. */
 const SIDE_PANEL_WIDTH = 400;
 /** The side view it leaves selected, for the restart to find. */
@@ -695,7 +855,12 @@ async function sidePanels({
     async () => (await width(left)) === SIDE_PANEL_WIDTH,
   );
   await showSideView(evaluate, SIDE_VIEW_KEPT);
-  await sleep(500); // the save goes through the core after the drag ends
+  // The width is saved through the core after the drag ends.
+  await until(`the width ${SIDE_PANEL_WIDTH} saved`, () =>
+    new RegExp(`^left_panel_width: *${SIDE_PANEL_WIDTH}$`, "m").test(
+      readFileSync(join(appData, "preferences.yaml"), "utf8"),
+    ),
+  );
   await screenshot("panels-resized");
   await devtools.send("Browser.setWindowBounds", { windowId, bounds });
 }
@@ -724,27 +889,39 @@ const menuEntries = (evaluate) =>
 /**
  * Runs one of a session's actions (`data-session-action`: duplicate,
  * disconnect, reconnect, new-connection, multi-send, end-group,
- * send-break, details) from the menu on its header line (#67). Throws if
- * the session does not offer it now (the menu is closed again).
+ * send-break, details) from the menu on its header line (#67). The menu
+ * is opened again until the action is offered (a state that just changed
+ * may not have reached the menu yet: the entry was missing now and then
+ * right after a connect); throws if it still is not after `within` ms.
  */
-async function sessionAction(evaluate, action, session = SHOWN_SESSION) {
-  await evaluate(
-    `document.querySelector(${JSON.stringify(`${session} [data-session-menu]`)}).click()`,
-  );
-  await until("the session's menu", () =>
-    evaluate(`!!document.querySelector("[data-session-actions]")`),
-  );
-  const ran = await evaluate(`(() => {
-    const entry = document.querySelector("[data-session-actions] [data-session-action=${action}]");
-    if (!entry || entry.disabled) return false;
-    entry.click();
-    return true;
-  })()`);
-  if (!ran) {
-    await evaluate(
-      `document.querySelector(${JSON.stringify(`${session} [data-session-menu]`)}).click()`,
+async function sessionAction(
+  evaluate,
+  action,
+  session = SHOWN_SESSION,
+  within = 5000,
+) {
+  const menu = JSON.stringify(`${session} [data-session-menu]`);
+  const deadline = Date.now() + within;
+  for (;;) {
+    await evaluate(`document.querySelector(${menu}).click()`);
+    await until("the session's menu", () =>
+      evaluate(`!!document.querySelector("[data-session-actions]")`),
     );
-    throw new Error(`the session offers no ${action} now`);
+    const ran = await evaluate(`(() => {
+      const entry = document.querySelector("[data-session-actions] [data-session-action=${action}]");
+      if (!entry || entry.disabled) return false;
+      entry.click();
+      return true;
+    })()`);
+    if (ran) break;
+    await evaluate(`document.querySelector(${menu}).click()`);
+    await until("the session's menu closed", async () =>
+      evaluate(`!document.querySelector("[data-session-actions]")`),
+    );
+    if (Date.now() >= deadline) {
+      throw new Error(`the session offers no ${action} now`);
+    }
+    await sleep(250);
   }
   await until("the session's menu closed", async () =>
     evaluate(`!document.querySelector("[data-session-actions]")`),
@@ -888,10 +1065,38 @@ async function connectTarget(page) {
     if (message.error) waiter.reject(new Error(message.error.message));
     else waiter.resolve(message.result);
   });
+  // A page that goes away (a window closed by the call itself) never
+  // answers: its calls fail instead of waiting forever, which hung the
+  // run now and then (#79). A call unanswered for a minute fails too.
+  let closed = false;
+  socket.addEventListener("close", () => {
+    closed = true;
+    for (const [id, waiter] of pending) {
+      pending.delete(id);
+      waiter.reject(new Error(`the page went away during ${waiter.method}`));
+    }
+  });
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
+      if (closed) {
+        reject(new Error(`the page is gone (${method})`));
+        return;
+      }
       const id = ++nextId;
-      pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (pending.delete(id)) {
+          reject(new Error(`no answer to ${method} within 60 s`));
+        }
+      }, 60_000);
+      const settle = (how) => (value) => {
+        clearTimeout(timer);
+        how(value);
+      };
+      pending.set(id, {
+        method,
+        resolve: settle(resolve),
+        reject: settle(reject),
+      });
       socket.send(JSON.stringify({ id, method, params }));
     });
   return { send, close: () => socket.close() };
@@ -973,8 +1178,25 @@ async function welcome({ evaluate, text, screenshot, step }) {
   );
 }
 
+/** Every file of the folder below `root`, by path, with its text. */
+function filesBelow(root, folder = root, found = {}) {
+  for (const entry of readdirSync(folder, { withFileTypes: true })) {
+    const path = join(folder, entry.name);
+    if (entry.isDirectory()) filesBelow(root, path, found);
+    else
+      found[path.slice(root.length + 1).replaceAll("\\", "/")] = readFileSync(
+        path,
+        "utf8",
+      );
+  }
+  return found;
+}
+
 async function main() {
   createWorkspace();
+  // What the workspace holds before the app opens it: opening must not
+  // change a file (#61: an upgrade leaves workspace files alone).
+  const workspaceBefore = filesBelow(workspace);
   headlessInventory();
   rmSync(PORTABLE_MARKER, { force: true });
   writeFileSync(INSTALLED_MARKER, "");
@@ -1099,7 +1321,10 @@ async function main() {
     evaluate(`document.querySelector("[data-decision=${decision}]").click()`);
   const step = (message) => console.log(`ok - ${message}`);
   // Set SMOKE_SCREENSHOTS to a folder to keep pictures of the window.
+  // Every screen photographed is also checked for contrast, in both
+  // themes (#79), whether or not pictures are kept.
   const screenshot = async (name) => {
+    await checkContrast(evaluate, name);
     const folder = process.env.SMOKE_SCREENSHOTS;
     if (!folder) return;
     const { data } = await devtools.send("Page.captureScreenshot");
@@ -1153,6 +1378,27 @@ async function main() {
   );
   // One line at the foot of the Hosts view, which opens the list.
   await until("the malformed file reported", async () =>
+    (await text("[data-problems]")).includes("could not be loaded"),
+  );
+  {
+    // Only the identity file is added (as by every release since #25).
+    const after = filesBelow(workspace);
+    const changed = Object.keys({ ...workspaceBefore, ...after }).filter(
+      (path) =>
+        path !== "_workspace.yaml" && workspaceBefore[path] !== after[path],
+    );
+    if (changed.length > 0) {
+      fail(`opening the workspace changed ${JSON.stringify(changed)}`);
+    }
+    if (
+      workspaceBefore["_workspace.yaml"] !== undefined &&
+      workspaceBefore["_workspace.yaml"] !== after["_workspace.yaml"]
+    ) {
+      fail("opening the workspace rewrote its identity file");
+    }
+  }
+  step("opening the workspace changed none of its files");
+  await until("the malformed file reported, still", async () =>
     (await text("[data-problems]")).includes("could not be loaded"),
   );
   await evaluate(`document.querySelector("[data-problems]").click()`);
@@ -2233,6 +2479,7 @@ async function vault({ app, devtools, evaluate, step }) {
     ))
   )
     fail("the unlock screen lacks its mark and title");
+  await checkContrast(again, "unlock screen");
   const whileLocked = headlessCredentials("vault-r1.yaml");
   if (
     whileLocked.status !== 1 ||
@@ -2437,6 +2684,7 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
     fail(`the start-over warning: ${warning}`);
   }
   if (!/gone/.test(warning)) fail(`the start-over warning: ${warning}`);
+  await checkContrast(ev, "start over");
   await clickOn("[data-start-over=cancel]");
   await until("back at the unlock form", () =>
     shown("[data-unlock-screen] [name=vault-unlock-password]"),
@@ -3819,7 +4067,20 @@ async function snippets({
     exists("[data-snippets] [data-snippets-empty] [data-snippet-first]"),
   );
   await clickOn("[data-snippet-first]");
-  await until("the snippet form", () => exists("[data-snippet-form]"));
+  // The form opens in the view, in place of the list (#79): nothing
+  // window-modal, Escape goes back to the list.
+  const inView =
+    "[data-side-view=snippets] [data-snippets][data-mode=edit] form[data-snippet-form]";
+  await until("the snippet form in the view", () => exists(inView));
+  if (await exists("[aria-modal=true]")) fail("the snippet form is modal");
+  await evaluate(
+    `document.querySelector("input[name=snippet-name]").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`,
+  );
+  await until("the list again after Escape", () =>
+    exists("[data-snippets][data-mode=list] [data-snippet-first]"),
+  );
+  await clickOn("[data-snippet-first]");
+  await until("the snippet form", () => exists(inView));
   await fillForm(
     {
       "snippet-name": "Smoke check",
@@ -3897,14 +4158,17 @@ async function snippets({
   const answer = async (vlan) => {
     const asked = await until("the variables asked for", () =>
       evaluate(`(() => {
-        const dialog = document.querySelector("[data-dialog=snippet-variables]");
+        const dialog = document.querySelector("${SHOWN_SESSION} [data-snippet-variables]");
         return dialog && [...dialog.querySelectorAll("[data-variable]")].map((i) => i.dataset.variable);
       })()`),
     );
     if (json(asked) !== json(["vlan"])) fail(`asked for ${json(asked)}`);
+    // Over its own pane only (#79): nothing window-modal.
+    if (await exists("[aria-modal=true]"))
+      fail("the variables question is modal");
     await fillForm(
       { "variable-0": vlan },
-      "[data-dialog=snippet-variables] form",
+      `${SHOWN_SESSION} [data-snippet-variables] form`,
     );
   };
   // Two lines: the paste confirmation shows them first (on by default).
@@ -4622,6 +4886,7 @@ async function detachedRunWindow({ evaluate, exists, clickOn, run, step }) {
   await until("the run's tab closed", async () => !(await exists(tab)));
   let window = await connectWindow(label);
   await showing(window, "opened");
+  await checkContrast(window.evaluate, "run window");
   const main = await look(evaluate);
   const detached = await look(window.evaluate);
   if (json(main) !== json(detached) || !main.font.includes("Cascadia Mono"))
@@ -5058,13 +5323,25 @@ async function jobs({
     // A terminal to the device, and the run's tab in a pane of its own
     // beside it: the job's progress shows there while the user types.
     await showSideView(evaluate, "hosts");
+    // The new session's tab, not one shown before it (an earlier terminal
+    // to the same device also shows its prompt: taking that one, which
+    // the new connection then replaced, failed the run now and then).
+    const tabsBefore = await evaluate(
+      `[...document.querySelectorAll("[data-tab-bar] [data-tab]")].map((t) => t.dataset.tab)`,
+    );
     await doubleClick(hostRow);
-    await until("a terminal on jobs-r1", async () =>
-      (await screen()).includes("lab-r1#"),
-    );
-    const sessionTab = await evaluate(
-      `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
-    );
+    const sessionTab = await until("a new terminal on jobs-r1", async () => {
+      const shown = await evaluate(`(() => {
+        const slot = document.querySelector("${SHOWN_SESSION}");
+        return slot && document.querySelector('[data-tab-bar] [data-tab="' + slot.dataset.tab + '"]')
+          ? slot.dataset.tab : null;
+      })()`);
+      return shown !== null &&
+        !tabsBefore.includes(shown) &&
+        (await screen()).includes("lab-r1#")
+        ? shown
+        : null;
+    });
     const tabBarOf = (tab) =>
       `document.querySelector('[data-tab-bar] [data-tab="${tab}"]').closest("[data-tab-bar]")`;
     await until(
@@ -5554,6 +5831,7 @@ async function jobs({
     if (json(await windowVersions()) !== json(versions)) {
       fail(`the history's window lists ${json(await windowVersions())}`);
     }
+    await checkContrast(configWindow.evaluate, "config history window");
     if (
       (await configWindow.evaluate(
         `document.querySelector("[data-detached=configs]").dataset.detachedHost`,
@@ -7086,6 +7364,8 @@ async function paletteActions({
     await until(`the ${view} side view from the palette`, () =>
       railActive(view),
     );
+    // Every side view and view tab is checked for contrast (#79).
+    await checkContrast(evaluate, `side view ${view}`);
   }
   await run("fold-side-view", "fold side view");
   await until("the side view folded from the palette", () =>
@@ -7117,6 +7397,7 @@ async function paletteActions({
           !!document.querySelector(${JSON.stringify(`.slot.view:not([hidden]) [data-view=${view}]`)});
       })()`),
     );
+    await checkContrast(evaluate, `view tab ${view}`);
     if (!before) {
       await evaluate(
         `document.querySelector(${JSON.stringify(`${tab} [data-tab-close]`)}).click()`,
@@ -7136,6 +7417,7 @@ async function paletteActions({
         `document.querySelector("[role=dialog] #dialog-title")?.textContent === ${JSON.stringify(title)}`,
       ),
     );
+    await checkContrast(evaluate, `dialog ${id}`);
     await key(escape);
     await until(
       `the ${title} dialog cancelled`,
@@ -7148,6 +7430,7 @@ async function paletteActions({
   await until("the switcher from the palette", () =>
     exists("[data-dialog=workspaces]"),
   );
+  await checkContrast(evaluate, "workspace switcher");
   await key(escape);
   await until(
     "the switcher closed",
@@ -7670,7 +7953,7 @@ async function agentAndKeyboardInteractive({
 
   // Keyboard-interactive: after the password, the server asks for a code,
   // which the user is shown and answers.
-  await sessionAction(evaluate, "disconnect").catch(() => {});
+  await sessionAction(evaluate, "disconnect", SHOWN_SESSION, 0).catch(() => {});
   await click("New connection").catch(() => {});
   await until("the quick-connect form", () => exists("input[name=host]"));
   await fillForm(
@@ -7821,7 +8104,7 @@ async function legacyCrypto({
     await fillForm({ username: USERNAME, password: PASSWORD }, "main form");
   };
 
-  await sessionAction(evaluate, "disconnect").catch(() => {});
+  await sessionAction(evaluate, "disconnect", SHOWN_SESSION, 0).catch(() => {});
   await click("New connection").catch(() => {});
   writeFileSync(
     hostFile,
@@ -7958,7 +8241,7 @@ async function telnet({
     );
   };
 
-  await sessionAction(evaluate, "disconnect").catch(() => {});
+  await sessionAction(evaluate, "disconnect", SHOWN_SESSION, 0).catch(() => {});
   await click("New connection").catch(() => {});
   writeFileSync(
     hostFile,
@@ -8819,6 +9102,9 @@ async function tabsAndPanes({
     const from = await centreOf(fromSelector);
     const to = await centreOf(toSelector);
     to.x += offsetX;
+    // Over the tab first, then in steps to the target, as a hand would: a
+    // press with no move before it, then one jump, was missed now and then.
+    await mouse("mouseMoved", from);
     await mouse("mousePressed", from, { button: "left", clickCount: 1 });
     await mouse(
       "mouseMoved",
@@ -8828,7 +9114,16 @@ async function tabsAndPanes({
         buttons: 1,
       },
     );
-    await mouse("mouseMoved", to, { button: "left", buttons: 1 });
+    for (let step = 1; step <= 4; step++) {
+      await mouse(
+        "mouseMoved",
+        {
+          x: from.x + 10 + ((to.x - from.x - 10) * step) / 4,
+          y: from.y + 2 + ((to.y - from.y - 2) * step) / 4,
+        },
+        { button: "left", buttons: 1 },
+      );
+    }
     await mouse("mouseReleased", to, { button: "left", clickCount: 1 });
   };
 
@@ -9443,7 +9738,7 @@ async function multiSend({
     await clickOn('[data-snippet="Who"]');
     const variables = await until("the variables asked for", () =>
       evaluate(`(() => {
-        const dialog = document.querySelector("[data-dialog=snippet-variables]");
+        const dialog = document.querySelector("${SHOWN_SESSION} [data-snippet-variables]");
         return dialog && [...dialog.querySelectorAll("[data-variable]")].map((i) => i.dataset.variable);
       })()`),
     );
@@ -9452,7 +9747,7 @@ async function multiSend({
     }
     await fillForm(
       { "variable-0": "quick" },
-      "[data-dialog=snippet-variables] form",
+      `${SHOWN_SESSION} [data-snippet-variables] form`,
     );
     for (const tab of [b, a]) {
       await show(tab);
@@ -9510,6 +9805,19 @@ async function multiSend({
 let exitCode = 0;
 try {
   await main();
+  if (contrastFailures.size > 0) {
+    const listed = [...contrastFailures].map(
+      ([failure, where]) => `  ${failure} (at ${where})`,
+    );
+    fail(
+      [`text under the contrast minimum (${listed.length}):`, ...listed].join(
+        String.fromCharCode(10),
+      ),
+    );
+  }
+  console.log(
+    "ok - every screen checked met the contrast minimum in both themes",
+  );
   console.log("smoke test passed");
 } catch (error) {
   console.error(`smoke test FAILED: ${error.message}`);
