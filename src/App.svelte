@@ -31,7 +31,12 @@
   import BackupsView from "./lib/BackupsView.svelte";
   import PreferencesView from "./lib/PreferencesView.svelte";
   import { openRunTab, setViewOpener, VIEWS } from "./lib/views";
-  import { closeDetachedWindows, onDockRun } from "./lib/windows";
+  import {
+    closeDetachedWindows,
+    onBackUpHost,
+    onDockConfigs,
+    onDockRun,
+  } from "./lib/windows";
   import PythonSetup from "./lib/PythonSetup.svelte";
   import { refreshPython } from "./lib/python.svelte";
   import Platforms from "./lib/Platforms.svelte";
@@ -65,6 +70,8 @@
     inventory,
     newFolder,
     newHost,
+    openBackup,
+    openConfigHistory,
     openCsvImport,
     openDetails,
     openNornirImport,
@@ -879,6 +886,19 @@
     focusRequest += 1;
     openRunTab(run);
   });
+  // A config history docked back likewise (#78), and its Back up now
+  // opens the backup's tab here.
+  void onDockConfigs((host) => {
+    focusRequest += 1;
+    openConfigHistory(host);
+  });
+  void onBackUpHost((host) => {
+    const tree = inventory.workspace?.tree;
+    openBackup(
+      { kind: "hosts", ids: [host] },
+      (tree && findHost(tree, host)?.name) ?? host,
+    );
+  });
   trackHighlightRules();
   void startUpdates();
   // Python features stay off until an interpreter is chosen and works.
@@ -1476,7 +1496,10 @@
                 onclose={() => closeViewTab(item.tab, true)}
               />
             {:else if item.view === "configs" && item.subject && inventory.workspace}
-              <ConfigHistory host={item.subject} />
+              <ConfigHistory
+                host={item.subject}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
             {:else if item.view === "csv-import" && inventory.workspace}
               <CsvImport
                 folder={inventory.csvImport ?? ""}

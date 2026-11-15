@@ -34,7 +34,6 @@
     type SessionSource,
     type SessionState,
   } from "./session";
-  import { noteBackup } from "./jobs.svelte";
   import type { TabId } from "./layout";
   import type { Environment, PasteSafety, Role } from "./workspace";
 
@@ -813,7 +812,8 @@
         onLogFailure: (reason) => (logFailure = reason),
         onBackup: (outcome) => {
           backup = outcome;
-          noteBackup();
+          // Every window refreshes its config views on the shell's
+          // config-saved (#78), this one included.
           backupNoticeDismissed = false;
         },
       },

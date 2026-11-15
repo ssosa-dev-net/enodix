@@ -153,6 +153,9 @@ export function startLiveJobs(): Promise<void> {
     let loaded = false;
     const early: JobBroadcast[] = [];
     await listen<LiveJob>("job-started", (event) => adopt(event.payload));
+    // A backup on login, from any window's terminal (#78; not awaited:
+    // the live jobs are read meanwhile).
+    void listen("config-saved", () => noteBackup());
     await listen<JobBroadcast>("job-event", (event) => {
       if (loaded) receive(event.payload);
       else early.push(event.payload);
