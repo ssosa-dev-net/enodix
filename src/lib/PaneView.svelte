@@ -128,6 +128,16 @@
     handlers.move(ended.tab, pane, index);
   }
 
+  /** The tab bar has no scrollbar: the wheel moves it sideways. */
+  function scrollTabs(event: WheelEvent) {
+    const bar = event.currentTarget as HTMLElement;
+    if (bar.scrollWidth <= bar.clientWidth) return;
+    const by = event.deltaX !== 0 ? event.deltaX : event.deltaY;
+    if (by === 0) return;
+    event.preventDefault();
+    bar.scrollLeft += by;
+  }
+
   function onclick(tab: TabId) {
     if (!dragged) handlers.activate(tab);
   }
@@ -143,7 +153,7 @@
   {@const pane = node}
   <div class="pane" class:active={pane.id === activePane} data-pane={pane.id}>
     <div class="bar" data-tab-bar={pane.id} data-pane={pane.id}>
-      <div class="tabs" role="tablist" aria-label="Tabs">
+      <div class="tabs" role="tablist" aria-label="Tabs" onwheel={scrollTabs}>
         {#each pane.tabs as tab (tab)}
           {@const info = handlers.tab(tab)}
           {#if info}
@@ -348,7 +358,7 @@
     min-width: 0;
     flex: 0 1 auto;
     overflow-x: auto;
-    scrollbar-width: thin;
+    scrollbar-width: none;
   }
 
   .pane.active .bar {
