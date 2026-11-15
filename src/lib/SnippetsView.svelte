@@ -10,13 +10,9 @@
   import Trash from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import { inventory, removeSnippet } from "./inventory.svelte";
-  import {
-    bySnippetGroup,
-    editSnippet,
-    newSnippet,
-    snippets,
-  } from "./snippets.svelte";
-  import { findSnippets } from "./workspace";
+  import SnippetForm from "./SnippetForm.svelte";
+  import { bySnippetGroup, snippets } from "./snippets.svelte";
+  import { findSnippets, type Snippet } from "./workspace";
 
   interface Props {
     /** The session snippets go to (the active pane's), by name; null: none. */
@@ -25,6 +21,27 @@
   }
 
   let { target, onsend }: Props = $props();
+
+  /** The snippet in the form, drawn in place of the list (`previous`: its
+   * name; null for a new one); null: the list. Leaving the view drops it. */
+  let editing = $state<{ previous: string | null; snippet: Snippet } | null>(
+    null,
+  );
+  const newSnippet = () =>
+    (editing = {
+      previous: null,
+      snippet: { name: "", group: null, text: "" },
+    });
+  const editSnippet = (snippet: Snippet) =>
+    (editing = { previous: snippet.name, snippet: { ...snippet } });
+
+  // Escape inside the form goes back to the list.
+  function onkeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && editing) {
+      event.stopPropagation();
+      editing = null;
+    }
+  }
 
   const workspace = $derived(inventory.workspace);
   const list = $derived(workspace?.snippets ?? []);
@@ -64,7 +81,13 @@
   }
 </script>
 
-<div class="snippets" data-snippets>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="snippets"
+  data-snippets
+  data-mode={editing ? "edit" : "list"}
+  {onkeydown}
+>
   <header>
     <h2>
       Snippets
@@ -84,6 +107,16 @@
     <p class="hint" data-needs-workspace>
       Snippets live in a workspace: open or create one to see them here.
     </p>
+  {:else if editing}
+    <div class="form">
+      {#key editing}
+        <SnippetForm
+          previous={editing.previous}
+          initial={editing.snippet}
+          onclose={() => (editing = null)}
+        />
+      {/key}
+    </div>
   {:else if list.length === 0}
     <div class="empty" data-snippets-empty>
       <p>
@@ -299,6 +332,12 @@
     min-height: 0;
     overflow: auto;
     padding: var(--space-0-5) 0 var(--space-2);
+  }
+
+  .form {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
   }
 
   .hint {

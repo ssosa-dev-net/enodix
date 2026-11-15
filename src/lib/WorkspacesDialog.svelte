@@ -358,12 +358,12 @@
     text-overflow: ellipsis;
     color: var(--muted);
     font-size: var(--text-xs);
-    opacity: 0.7;
   }
 
+  /* Workspaces of the same name: the path tells them apart. */
   .path.shown,
   li.active .path {
-    opacity: 1;
+    color: var(--text);
   }
 
   .remove {

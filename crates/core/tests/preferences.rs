@@ -370,3 +370,48 @@ fn the_interface_ignores_right_panel_values_it_sends() {
 
     assert_eq!(back, Preferences::default());
 }
+
+#[test]
+fn a_file_written_by_0_2_0_carries_every_choice_over() {
+    // Every key 0.2.0 wrote, none at its default (the redesign, #61, must
+    // keep them all but the right panel's, which it retired).
+    let data = TempDir::new().unwrap();
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "theme: light
+font_family: JetBrains Mono
+font_size: 18
+scrollback: 2500
+copy_on_select: true
+right_click_paste: true
+highlighting: false
+confirm_multi_line_paste: false
+check_for_updates: false
+left_panel_width: 512
+right_panel_width: 300
+left_panel_hidden: true
+right_panel_hidden: true
+",
+    )
+    .unwrap();
+
+    let loaded = Preferences::load(data.path());
+
+    assert_eq!(
+        loaded,
+        Preferences {
+            theme: Theme::Light,
+            font_family: "JetBrains Mono".into(),
+            font_size: 18,
+            scrollback: 2500,
+            copy_on_select: true,
+            right_click_paste: true,
+            highlighting: false,
+            confirm_multi_line_paste: false,
+            check_for_updates: false,
+            left_panel_width: 512,
+            left_panel_hidden: true,
+            side_view: SideView::Hosts,
+        }
+    );
+}

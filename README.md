@@ -25,6 +25,14 @@ git). Free and open source under the GPL-3.0.
 - **Fill in from devices:** vendor, model, serial number and OS version
   fetched with NAPALM, reviewed before anything is written.
 
+The window is a thin rail of icons on the left (Hosts, Snippets, Jobs,
+Config backups, Credentials, and Preferences at its foot), one side view
+that it switches and folds, and the terminals in tabs and split panes.
+Job runs, config history, Preferences, the imports and the other tools
+open as tabs beside the terminals, and a job run or a config history can
+open in a window of its own. [docs/interface.md](docs/interface.md)
+describes the window, lists the shortcuts and says where everything is.
+
 Releases up to 0.1.2 have the sessions and the inventory only; everything
 else in the list came with 0.2.0. Releases so far are pre-releases: not
 code-signed, and without the automatic updates described below (install
@@ -97,7 +105,7 @@ project's release key.
 
 ### Turning the update check off
 
-Open **Preferences** (the gear in the workspace header) and clear **Check for
+Open **Preferences** (the gear at the foot of the rail, or Ctrl+,) and clear **Check for
 a new version at start**. With it off, the app makes no network connection
 that you did not start (sessions, web links, **Check now**). The setting is
 kept per user in the app's data folder (`preferences.yaml`, key
@@ -166,7 +174,7 @@ app, so that its host key is trusted. See
 [python/README.md](python/README.md) for the options, the mapping and the
 limits.
 
-The app can also do this for you: **Preferences**, Python sets up an
+The app can also do this for you: in **Preferences**, Python sets up an
 environment (after showing what it will install) or uses your own
 interpreter, and then **Run script…** on a folder, filter or host runs a
 `.py` file of the workspace as a job, and **Fill in from devices** asks

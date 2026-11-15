@@ -313,7 +313,7 @@
   .workspace .path {
     display: none;
     grid-column: 2 / -1;
-    color: var(--faint);
+    color: var(--muted);
     font-size: var(--text-2xs);
     overflow: hidden;
     text-overflow: ellipsis;
