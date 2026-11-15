@@ -9,6 +9,8 @@
 
 import Archive from "@lucide/svelte/icons/archive";
 import FileClock from "@lucide/svelte/icons/file-clock";
+import FileInput from "@lucide/svelte/icons/file-input";
+import FileSpreadsheet from "@lucide/svelte/icons/file-spreadsheet";
 import ListChecks from "@lucide/svelte/icons/list-checks";
 import Settings from "@lucide/svelte/icons/settings";
 import type { Component } from "svelte";
@@ -41,6 +43,10 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
     title: (host) => `Config ${hostName(host)}`,
     icon: Archive,
   },
+  /** The CSV import: file, mapping, preview, report (#71; one tab). */
+  "csv-import": { title: () => "Import CSV", icon: FileSpreadsheet },
+  /** The Nornir import: files, preview, report (#71; one tab). */
+  "nornir-import": { title: () => "Import Nornir", icon: FileInput },
 };
 
 /** The open workspace's name for the host `id` (else the id). */

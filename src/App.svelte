@@ -38,8 +38,8 @@
   import { startUpdates } from "./lib/updates.svelte";
   import { vaultStatus } from "./lib/vault";
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
-  import CsvImportDialog from "./lib/CsvImportDialog.svelte";
-  import NornirImportDialog from "./lib/NornirImportDialog.svelte";
+  import CsvImport from "./lib/CsvImport.svelte";
+  import NornirImport from "./lib/NornirImport.svelte";
   import JobTab from "./lib/JobTab.svelte";
   import JobsSideView from "./lib/JobsSideView.svelte";
   import RunView from "./lib/RunView.svelte";
@@ -640,9 +640,9 @@
     void edit({ kind: "closeTab", tab });
   }
 
-  // Job, run and config history tabs belong to the workspace they were
-  // opened in (host ids and run ids mean nothing elsewhere): switching
-  // closes them. Their jobs go on running.
+  // Job, run, config history and import tabs belong to the workspace they
+  // were opened in (host ids, run ids and folders mean nothing elsewhere):
+  // switching closes them. Their jobs go on running.
   let shownRoot: string | null | undefined = undefined;
   $effect(() => {
     const root = inventory.workspace?.root ?? null;
@@ -652,7 +652,9 @@
           if (
             item.view === "job" ||
             item.view === "run" ||
-            item.view === "configs"
+            item.view === "configs" ||
+            item.view === "csv-import" ||
+            item.view === "nornir-import"
           )
             void edit({ kind: "closeTab", tab: item.tab });
         }
@@ -1317,6 +1319,16 @@
               />
             {:else if item.view === "configs" && item.subject && inventory.workspace}
               <ConfigHistory host={item.subject} />
+            {:else if item.view === "csv-import" && inventory.workspace}
+              <CsvImport
+                folder={inventory.csvImport ?? ""}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
+            {:else if item.view === "nornir-import" && inventory.workspace}
+              <NornirImport
+                folder={inventory.nornirImport ?? ""}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
             {/if}
           </div>
         {/each}
@@ -1410,26 +1422,6 @@
     onsnippet={(snippet) => void sendSnippet(snippet)}
     target={snippetTarget}
     onclose={() => (inventory.palette = false)}
-  />
-{/if}
-
-{#if inventory.csvImport !== null && inventory.workspace}
-  <CsvImportDialog
-    folder={inventory.csvImport}
-    onclose={() => {
-      inventory.csvImport = null;
-      focusRequest += 1;
-    }}
-  />
-{/if}
-
-{#if inventory.nornirImport !== null && inventory.workspace}
-  <NornirImportDialog
-    folder={inventory.nornirImport}
-    onclose={() => {
-      inventory.nornirImport = null;
-      focusRequest += 1;
-    }}
   />
 {/if}
 

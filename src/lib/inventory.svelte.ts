@@ -75,11 +75,11 @@ export const inventory = $state({
    * everything. */
   filterView: null as { hosts: Set<string>; folders: Set<string> } | null,
   /**
-   * While the CSV import dialog is open: the folder it was opened on (the
-   * target it starts with).
+   * The folder the CSV import tab was last opened on (its target while no
+   * preview is shown); null until it is opened in this workspace.
    */
   csvImport: null as string | null,
-  /** The same for the Nornir import dialog. */
+  /** The same for the Nornir import tab. */
   nornirImport: null as string | null,
   /** Whether the platform definitions dialog is open. */
   platforms: false,
@@ -198,9 +198,11 @@ export function openConfigHistory(id: string) {
   openView("configs", id);
 }
 
-/** Opens the CSV import dialog with `folder` as its first target. */
+/** Opens the CSV import tab (or brings it forward) with `folder` as its
+ * target. */
 export function openCsvImport(folder: string) {
   inventory.csvImport = folder;
+  openView("csv-import");
 }
 
 /**
@@ -227,9 +229,11 @@ export async function applyEnrich(
   return apply(await api.applyEnrich(run, replace));
 }
 
-/** Opens the Nornir import dialog with `folder` as its first target. */
+/** Opens the Nornir import tab (or brings it forward) with `folder` as
+ * its target. */
 export function openNornirImport(folder: string) {
   inventory.nornirImport = folder;
+  openView("nornir-import");
 }
 
 /**

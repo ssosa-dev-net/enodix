@@ -1,4 +1,7 @@
 <script lang="ts">
+  // The CSV import, in its tab (#71; one at a time, as the shell keeps one
+  // read file): file, column mapping, preview, report. The tree stays in
+  // view beside it and updates when the import writes.
   import { untrack } from "svelte";
   import { inventory, reveal, runCsvImport } from "./inventory.svelte";
   import {
@@ -16,8 +19,10 @@
   } from "./workspace";
 
   interface Props {
-    /** The folder the hosts go to at first. */
+    /** The folder the hosts go to: the last one the import was opened on
+     * (it becomes the target again while no preview is shown). */
     folder: string;
+    /** Closes the tab. */
     onclose: () => void;
   }
 
@@ -60,6 +65,15 @@
 
   $effect(() => {
     fileInput?.focus();
+  });
+
+  // Opened again on another folder: that folder becomes the target, unless
+  // a preview (made for the target it shows) is on screen.
+  $effect(() => {
+    const opened = folder;
+    untrack(() => {
+      if (step === "file" || step === "map") target = opened;
+    });
   });
 
   const folders = $derived(
@@ -155,27 +169,11 @@
     const what = entry.host ?? entry.name;
     return `${where}${what ? ` · ${what}` : ""}${entry.reason ? ` — ${entry.reason}` : ""}`;
   }
-
-  function onkeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && !busy) {
-      event.preventDefault();
-      onclose();
-    }
-  }
 </script>
 
-<svelte:window {onkeydown} />
-
-<div class="backdrop">
-  <div
-    class="dialog"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="csv-import-title"
-    data-dialog="csv-import"
-    data-step={step}
-  >
-    <h2 id="csv-import-title">Import hosts from CSV</h2>
+<div class="import" data-view="csv-import" data-step={step}>
+  <div class="inner">
+    <h2>Import hosts from CSV</h2>
 
     {#if step === "file"}
       <form
@@ -433,30 +431,22 @@
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 22;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    padding: 6vh var(--space-4) var(--space-4);
-    background: var(--backdrop);
+  .import {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg);
+    font-size: var(--text-sm);
   }
 
-  .dialog {
-    width: min(60rem, 100%);
-    max-height: 88vh;
+  .inner {
+    height: 100%;
+    max-width: 70rem;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     padding: var(--space-3);
-    background: var(--dialog);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
-    overflow: hidden;
-    font-size: var(--text-sm);
   }
 
   h2 {
