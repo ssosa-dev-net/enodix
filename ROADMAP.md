@@ -47,7 +47,8 @@ What has to be true before anyone but the developer uses the app. It runs alongs
 
 - Done on 2026-11-15: the spec is issue #61 and its tickets #62 to #79 in the project's tracker, all closed, and released in 0.3.0. [docs/interface.md](docs/interface.md) describes the result and where each feature of 0.2.0 now lives.
 - In short: an activity rail with one foldable side view replaces the toolbar and the permanent side columns; jobs, config history, preferences and the imports open as tabs beside the terminals; only short confirmations stay dialogs; job runs and config history can open as real windows. Behaviour does not change.
-- Found in use after 0.3.0, ticketed: the system title bar wastes a line and does not match, so the app will draw its own window frame (#80); and terminals cannot leave the main window, which engineers with several monitors need when troubleshooting across devices (spec #81, starting with a prototype of the live handover, #82). The cosmetic fixes made after 0.3.0 and the window frame go into the next release.
+- Found in use after 0.3.0: the system title bar wasted a line and did not match, so the app now draws its own window frame (#80, built). The cosmetic fixes made after 0.3.0 and the window frame go into the next release.
+- Also found in use, being built: terminals cannot leave the main window, which engineers with several monitors need when troubleshooting across devices (spec #81). The risky part, handing a live session from one window to another without losing output, was proven by a prototype (#82) and its mechanism is in the core with tests. The build is tickets #83 to #89; nothing of it is in the app yet.
 
 **Edge testing**
 
