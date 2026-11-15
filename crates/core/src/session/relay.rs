@@ -17,8 +17,13 @@
 //!
 //! A consumer that finds it can no longer deliver ([`ConsumerGone`]: its
 //! window was closed or died) lets go the same way, and the session stays
-//! open for another consumer to take. Dropping every handle to the relay
-//! while nobody is shown the session drops its events, which closes it.
+//! open for another consumer to take. The relay learns of it only from a
+//! failed delivery: a consumer that dies while the session sends nothing
+//! (or is paused by flow control on its account) stays attached until its
+//! owner calls [`Relay::release`]. Dropping every handle to the relay drops
+//! the session's events at once, whoever is shown it, which closes the
+//! session as dropping [`SessionEvents`] does: when it next has something
+//! to report.
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +38,9 @@ use super::{SessionEvent, SessionEvents};
 pub trait Consumer: Send + 'static {
     /// Delivers one event, in order. An error means the consumer is gone
     /// for good; the event is kept for the next consumer.
+    ///
+    /// Called with the relay locked: it must not block, and must not call
+    /// back into the relay.
     fn deliver(&mut self, event: SessionEvent) -> Result<(), ConsumerGone>;
 
     /// Called once the relay has let go of a consumer that went away
@@ -99,7 +107,8 @@ pub struct Relay {
     handle: Arc<Handle>,
 }
 
-/// Every [`Relay`] handle shares one; dropping the last abandons the relay.
+/// What every [`Relay`] handle shares; dropping the last abandons the
+/// relay, which closes the session.
 struct Handle {
     shared: Arc<Shared>,
 }
@@ -114,7 +123,7 @@ impl Drop for Handle {
 struct Shared {
     state: Mutex<State>,
     /// Wakes the delivering task: a consumer attached, or the relay was
-    /// abandoned. Only that task waits.
+    /// abandoned. Only that task waits, on one wait at a time.
     wake: Notify,
     flow: Arc<Flow>,
     next_key: AtomicU64,
@@ -258,9 +267,18 @@ impl fmt::Debug for Relay {
 
 /// The relay's task: takes each event and delivers it to whoever is shown
 /// the session, waiting for somebody when nobody is.
+/// Returning drops the events, which closes the session.
 async fn deliver(mut events: SessionEvents, shared: Arc<Shared>) {
-    while let Some(event) = events.next().await {
-        let mut pending = event;
+    loop {
+        // `next` is cancel-safe: output gathered when abandoned is dropped
+        // with the session.
+        let event = tokio::select! {
+            event = events.next() => event,
+            () = abandoned(&shared) => return,
+        };
+        let Some(mut pending) = event else {
+            return;
+        };
         loop {
             match offer(&shared, pending) {
                 Offered::Delivered => break,
@@ -278,6 +296,16 @@ async fn deliver(mut events: SessionEvents, shared: Arc<Shared>) {
     }
 }
 
+/// Resolves once every handle to the relay has been dropped.
+async fn abandoned(shared: &Shared) {
+    loop {
+        if shared.state().abandoned {
+            return;
+        }
+        shared.wake.notified().await;
+    }
+}
+
 /// What became of an event offered to the consumer.
 enum Offered {
     Delivered,
@@ -285,7 +313,8 @@ enum Offered {
     Waiting(SessionEvent),
     /// The consumer has gone; the event waits for the next one.
     Gone(SessionEvent, Current),
-    /// Nobody is shown the session and nobody can attach anymore.
+    /// Every handle to the relay was dropped: nobody can acknowledge or
+    /// attach anymore.
     Abandoned,
 }
 
@@ -294,12 +323,11 @@ enum Offered {
 /// consumer it released.
 fn offer(shared: &Shared, event: SessionEvent) -> Offered {
     let mut state = shared.state();
+    if state.abandoned {
+        return Offered::Abandoned;
+    }
     let Some(current) = state.consumer.as_mut() else {
-        return if state.abandoned {
-            Offered::Abandoned
-        } else {
-            Offered::Waiting(event)
-        };
+        return Offered::Waiting(event);
     };
     let bytes = match &event {
         SessionEvent::Output(bytes) => bytes.len(),
