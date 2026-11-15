@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import type { Attachment } from "svelte/attachments";
+  import ActivityRail, { SIDE_VIEWS } from "./lib/ActivityRail.svelte";
   import CommandPalette from "./lib/CommandPalette.svelte";
   import ConfirmClose from "./lib/ConfirmClose.svelte";
   import ConfirmJoin from "./lib/ConfirmJoin.svelte";
@@ -11,11 +12,13 @@
   import FolderDetails from "./lib/FolderDetails.svelte";
   import HighlightRulesDialog from "./lib/HighlightRulesDialog.svelte";
   import HostDetails from "./lib/HostDetails.svelte";
+  import HostsView from "./lib/HostsView.svelte";
   import PaneView, {
     type PaneHandlers,
     type TabInfo,
   } from "./lib/PaneView.svelte";
   import PanelResizer from "./lib/PanelResizer.svelte";
+  import PlaceholderViews from "./lib/PlaceholderViews.svelte";
   import PreferencesDialog from "./lib/PreferencesDialog.svelte";
   import PythonSetupDialog from "./lib/PythonSetupDialog.svelte";
   import { python, refreshPython } from "./lib/python.svelte";
@@ -23,13 +26,13 @@
   import ProfilesDialog from "./lib/ProfilesDialog.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
   import SnippetDialog from "./lib/SnippetDialog.svelte";
+  import SnippetsPanel from "./lib/SnippetsPanel.svelte";
   import SnippetVariables from "./lib/SnippetVariables.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
   import UnlockVault from "./lib/UnlockVault.svelte";
   import UpdateNotice from "./lib/UpdateNotice.svelte";
   import { startUpdates } from "./lib/updates.svelte";
   import { vaultStatus } from "./lib/vault";
-  import WorkspacePanel from "./lib/WorkspacePanel.svelte";
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
   import CsvImportDialog from "./lib/CsvImportDialog.svelte";
   import NornirImportDialog from "./lib/NornirImportDialog.svelte";
@@ -45,6 +48,7 @@
     selectedFolder,
     selectedHost,
     setWorkspace,
+    trackFilterView,
     workspaceChanged,
   } from "./lib/inventory.svelte";
   import { hostLogin } from "./lib/credentials";
@@ -59,6 +63,7 @@
     PANEL_WIDTHS,
     preferences,
     zoomFont,
+    type SideView,
   } from "./lib/preferences.svelte";
   import {
     appName,
@@ -515,13 +520,18 @@
   const host = $derived(selectedHost());
   const folder = $derived(selectedFolder());
 
-  // Side panels: widths from the preferences, or the one being dragged.
+  // The rail, the side view it selects (its width and whether it is
+  // folded are the left panel's preferences) and the details panel: widths
+  // from the preferences, or the one being dragged.
   let liveLeft = $state<number | null>(null);
   let liveRight = $state<number | null>(null);
   let windowWidth = $state(window.innerWidth);
   /** The terminal area keeps at least this much when panels widen. */
   const MIN_CENTRE = 320;
   const REVEAL_STRIP = 14;
+  /** The activity rail's width. */
+  const RAIL = 48;
+  const sideView = $derived(preferences.current.sideView);
   const leftShown = $derived(!preferences.current.leftPanelHidden);
   const hasDetails = $derived(Boolean(host || folder));
   const rightShown = $derived(
@@ -529,17 +539,22 @@
   );
   const leftWidth = $derived(liveLeft ?? preferences.current.leftPanelWidth);
   const rightWidth = $derived(liveRight ?? preferences.current.rightPanelWidth);
-  const leftColumn = $derived(leftShown ? leftWidth : REVEAL_STRIP);
+  const leftColumn = $derived(leftShown ? leftWidth : 0);
   const rightColumn = $derived(
     hasDetails ? (rightShown ? rightWidth : REVEAL_STRIP) : 0,
   );
   /** How wide a panel may get without squeezing the terminal. */
   const widest = (other: number) =>
-    Math.min(PANEL_WIDTHS.max, windowWidth - other - MIN_CENTRE);
+    Math.min(PANEL_WIDTHS.max, windowWidth - RAIL - other - MIN_CENTRE);
   const columns = $derived(
-    hasDetails
-      ? `${leftColumn}px minmax(0, 1fr) ${rightColumn}px`
-      : `${leftColumn}px minmax(0, 1fr)`,
+    [
+      `${RAIL}px`,
+      leftShown ? `${leftColumn}px` : null,
+      "minmax(0, 1fr)",
+      hasDetails ? `${rightColumn}px` : null,
+    ]
+      .filter(Boolean)
+      .join(" "),
   );
 
   function togglePanel(side: "left" | "right") {
@@ -553,6 +568,19 @@
       });
     }
   }
+
+  /** What a rail icon (or its shortcut) does: shows `view`, or folds the
+   * side view if it already shows it. */
+  function selectView(view: SideView) {
+    if (view === sideView && leftShown) {
+      void changePreferences({ leftPanelHidden: true });
+    } else {
+      void changePreferences({ sideView: view, leftPanelHidden: false });
+    }
+  }
+
+  // The tree's filters apply whichever side view is shown.
+  trackFilterView();
 
   void loadPreferences();
   trackHighlightRules();
@@ -883,6 +911,14 @@
     if (event.shiftKey && letter("B")) {
       return () => togglePanel("left");
     }
+    // Each side view: Ctrl+Shift and a letter no terminal program needs.
+    const chosen = event.shiftKey
+      ? SIDE_VIEWS.find((each) => letter(each.key))
+      : undefined;
+    if (chosen) return () => selectView(chosen.view);
+    if (!event.shiftKey && (event.code === "Comma" || event.key === ",")) {
+      return () => (preferences.dialog = true);
+    }
     if (event.shiftKey && letter("D")) {
       return hasDetails ? () => togglePanel("right") : null;
     }
@@ -945,21 +981,31 @@
 <svelte:window {onkeydowncapture} bind:innerWidth={windowWidth} />
 
 <div class="layout" style:grid-template-columns={columns}>
+  <ActivityRail
+    view={sideView}
+    folded={!leftShown}
+    problems={inventory.workspace?.problems.length ?? 0}
+    missingProfiles={profiles.view.missing.length}
+    onselect={selectView}
+    onpreferences={() => (preferences.dialog = true)}
+  />
   {#if leftShown}
-    <WorkspacePanel
-      onopen={() => (switcher = true)}
-      onconnect={prompt}
-      {snippetTarget}
-      onsnippet={(snippet) => void sendSnippet(snippet)}
-    />
-  {:else}
-    <button
-      class="reveal"
-      data-reveal-panel="left"
-      title="Show the workspace panel (Ctrl+Shift+B)"
-      aria-label="Show the workspace panel"
-      onclick={() => togglePanel("left")}>›</button
-    >
+    <aside class="side-view" data-side-view={sideView}>
+      {#if sideView === "hosts"}
+        <HostsView onopen={() => (switcher = true)} onconnect={prompt} />
+      {:else if sideView === "snippets"}
+        {#if inventory.workspace}
+          <SnippetsPanel
+            target={snippetTarget}
+            onsend={(snippet) => void sendSnippet(snippet)}
+          />
+        {:else}
+          <p class="hint">Open a workspace to see its snippets.</p>
+        {/if}
+      {:else}
+        <PlaceholderViews view={sideView} />
+      {/if}
+    </aside>
   {/if}
 
   <section class="centre" bind:this={area}>
@@ -1098,7 +1144,7 @@
   {/if}
 
   {#if leftShown}
-    <div class="edge" style:left="{leftWidth}px">
+    <div class="edge" style:left="{RAIL + leftWidth}px">
       <PanelResizer
         side="left"
         width={leftWidth}
@@ -1358,6 +1404,27 @@
     width: 0;
   }
 
+  .side-view {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+  }
+
+  .side-view > :global(*) {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .side-view .hint {
+    flex: none;
+    margin: var(--space-3);
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
   /* A folded panel: a thin strip that brings it back. */
   .reveal {
     min-width: 0;
@@ -1368,10 +1435,6 @@
     color: var(--muted);
     font-size: var(--text-xs);
     cursor: pointer;
-  }
-
-  .reveal[data-reveal-panel="left"] {
-    border-right: 1px solid var(--border);
   }
 
   .reveal[data-reveal-panel="right"] {

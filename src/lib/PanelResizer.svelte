@@ -65,7 +65,7 @@
   role="separator"
   aria-orientation="vertical"
   aria-label={side === "left"
-    ? "Resize the workspace panel"
+    ? "Resize the side view"
     : "Resize the details panel"}
   aria-valuenow={width}
   aria-valuemin={min}
@@ -84,10 +84,10 @@
     class="hide"
     data-hide-panel={side}
     title={side === "left"
-      ? "Hide the workspace panel (Ctrl+Shift+B)"
+      ? "Fold the side view (Ctrl+Shift+B)"
       : "Hide the details panel (Ctrl+Shift+D)"}
     aria-label={side === "left"
-      ? "Hide the workspace panel"
+      ? "Fold the side view"
       : "Hide the details panel"}
     onmousedown={(event) => event.preventDefault()}
     onclick={onhide}>{side === "left" ? "‹" : "›"}</button

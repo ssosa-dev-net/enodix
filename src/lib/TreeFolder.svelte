@@ -6,6 +6,7 @@
   import {
     folderShown,
     hostRole,
+    hostSafety,
     hostShown,
     inventory,
   } from "./inventory.svelte";
@@ -76,6 +77,7 @@
   {/each}
   {#each folder.hosts.filter((host) => hostShown(host.id)) as host (host.id)}
     {@const role = hostRole(host.id)}
+    {@const environment = hostSafety(host.id)?.environment ?? null}
     <li>
       <button
         class="host"
@@ -87,7 +89,10 @@
         data-path={host.id}
         data-drop={folder.path}
         data-label={host.name}
-        title={role ? `${host.address} · ${role.name}` : host.address}
+        data-environment={environment ?? undefined}
+        title={[host.address, role?.name, environment]
+          .filter(Boolean)
+          .join(" · ")}
         onclick={() => (inventory.selected = { kind: "host", id: host.id })}
         ondblclick={() => onconnect(host)}
         onkeydown={(event) => onkeydown(event, host)}
@@ -97,6 +102,17 @@
           <RoleIcon {role} />
         {/if}
         <span class="label">{host.name}</span>
+        {#if environment === "production"}
+          <span class="env production" data-host-environment="production"
+            >PROD</span
+          >
+        {:else if environment}
+          <span
+            class="env {environment}"
+            data-host-environment={environment}
+            aria-hidden="true"
+          ></span>
+        {/if}
         <span class="address">{host.address}</span>
       </button>
     </li>
@@ -163,6 +179,37 @@
   .folder .label {
     font-weight: var(--weight-medium);
     color: var(--muted);
+  }
+
+  /* The host's environment, told apart by shape as well as colour: a
+     production label, a staging dot, a lab ring. */
+  .env {
+    flex: none;
+  }
+
+  .env.production {
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--env-production);
+    color: var(--on-env-production);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-semibold);
+    line-height: 1.4;
+  }
+
+  .env.staging,
+  .env.lab {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+  }
+
+  .env.staging {
+    background: var(--env-staging);
+  }
+
+  .env.lab {
+    border: 2px solid var(--env-lab);
   }
 
   .address {

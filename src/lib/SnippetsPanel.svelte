@@ -96,10 +96,10 @@
 
 <style>
   .snippets {
-    flex: none;
+    flex: 1 1 auto;
+    min-height: 0;
     display: flex;
     flex-direction: column;
-    max-height: 40%;
     border-top: 1px solid var(--border);
   }
 

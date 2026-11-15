@@ -62,7 +62,10 @@ export const inventory = $state({
   palette: false,
   /** The saved filter the tree is viewed through, by name. */
   activeFilter: null as string | null,
-  /** What the active filter shows; null shows everything. */
+  /** The words typed in the Hosts view's filter field ("" for none). */
+  query: "",
+  /** What the active filter and the typed words show; null shows
+   * everything. */
   filterView: null as { hosts: Set<string>; folders: Set<string> } | null,
   /**
    * While the CSV import dialog is open: the folder it was opened on (the
@@ -256,6 +259,7 @@ export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.expanded = {};
   inventory.editError = null;
   inventory.activeFilter = null;
+  inventory.query = "";
   inventory.filterView = null;
   inventory.csvImport = null;
   inventory.nornirImport = null;
@@ -326,44 +330,58 @@ export function reveal(path: string, self = false) {
 
 /** Shows the host `id` in the tree: expands its folders and selects it. */
 export function revealHost(id: string) {
-  if (!hostShown(id)) viewThrough(null);
+  if (!hostShown(id)) {
+    viewThrough(null);
+    inventory.query = "";
+  }
   reveal(id);
   inventory.selected = { kind: "host", id };
 }
 
-/** Views the tree through the saved filter `name`, or everything (null). */
+/** Views the tree through the saved filter `name`, or no saved filter
+ * (null: everything, or what the typed words show). */
 export function viewThrough(name: string | null) {
   inventory.activeFilter = name;
-  if (name === null) inventory.filterView = null;
+  if (name === null && !inventory.query.trim()) inventory.filterView = null;
 }
 
 /**
- * Keeps the active filter's view up to date as the workspace changes, and
- * expands its folders when a filter is chosen. Call during component setup.
+ * Keeps the view of the active filter and the typed words up to date as the
+ * workspace changes (the core matches both: the words as a `text`
+ * condition), and expands the folders they show when they change. Call
+ * during component setup.
  */
 export function trackFilterView() {
   let expandedFor: string | null = null;
   $effect(() => {
     const name = inventory.activeFilter;
+    const words = inventory.query.trim();
     const filter = inventory.workspace?.filters.find((f) => f.name === name);
-    if (!filter) {
-      // Deleted, renamed outside the app, or none chosen.
+    if (name !== null && !filter) {
+      // Deleted or renamed outside the app.
       inventory.activeFilter = null;
+    }
+    const conditions = [
+      ...(filter ? $state.snapshot(filter.conditions) : []),
+      ...(words ? [{ field: "text", value: words }] : []),
+    ];
+    if (conditions.length === 0) {
       inventory.filterView = null;
       expandedFor = null;
       return;
     }
+    const shown = `${filter?.name ?? ""}|${words}`;
     let stale = false;
     api
-      .applyFilter($state.snapshot(filter))
+      .applyFilter({ name: filter?.name ?? "", conditions })
       .then((view: FilterView) => {
         if (stale) return;
         inventory.filterView = {
           hosts: new Set(view.hosts),
           folders: new Set(view.folders),
         };
-        if (expandedFor !== filter.name) {
-          expandedFor = filter.name;
+        if (expandedFor !== shown) {
+          expandedFor = shown;
           for (const path of view.folders) inventory.expanded[path] = true;
         }
       })
@@ -395,8 +413,12 @@ const FILTER_FIELDS: [string, string][] = [
   ["text", "Any field (search words)"],
 ];
 
-/** Asks for a filter of one condition, saves it and views the tree through it. */
-export function newFilter() {
+/**
+ * Asks for a filter of one condition, saves it and views the tree through
+ * it; with `words` (the filter field's), it starts as those words in any
+ * field, and the field is cleared once saved.
+ */
+export function newFilter(words = "") {
   const tree = inventory.workspace?.tree;
   if (!tree) return;
   const custom = [
@@ -416,8 +438,13 @@ export function newFilter() {
     message: "Values match whole, ignoring case; * stands for any text.",
     fields: [
       { name: "filter-name", label: "Name", value: "" },
-      { name: "field", label: "Field", value: options[0].value, options },
-      { name: "value", label: "Value", value: "" },
+      {
+        name: "field",
+        label: "Field",
+        value: words ? "text" : options[0].value,
+        options,
+      },
+      { name: "value", label: "Value", value: words },
     ],
     confirm: "Save",
     onconfirm: (values) =>
@@ -432,7 +459,10 @@ export function newFilter() {
         const saved = inventory.workspace?.filters.find(
           (filter) => filter.name.toLowerCase() === name.toLowerCase(),
         );
-        if (saved) viewThrough(saved.name);
+        if (saved) {
+          if (words) inventory.query = "";
+          viewThrough(saved.name);
+        }
       }),
   };
 }
