@@ -187,10 +187,24 @@ export interface Session {
   /** What the app keeps of the session, as any window shows it. */
   readonly record: SessionRecord;
   /**
-   * For a session taken over from another window: where it stood then
-   * (null: nothing shown yet). Null for a session opened here.
+   * For a session taken over from another window: what it had reported
+   * to the windows before (#86). Null for a session opened here.
    */
-  readonly takenState: SessionState | null;
+  readonly taken: Reported | null;
+}
+
+/**
+ * What a session reported to the windows shown it before this one (#86):
+ * reported once, as events, so a window taking it over starts from these.
+ * The events that waited for it are newer.
+ */
+export interface Reported {
+  /** Where it stood (null: nothing shown yet). */
+  state: SessionState | null;
+  algorithms: NegotiatedAlgorithms[] | null;
+  /** Why its log could not be written. */
+  logFailure: string | null;
+  backup: LoginBackupOutcome | null;
 }
 
 /**
@@ -346,12 +360,11 @@ function eventsOf(current: ReturnType<typeof channels>) {
 }
 
 /** A session taken over from another window, as the shell returns it. */
-interface Attached {
+interface Attached extends Reported {
   consumer: number;
   offset: number;
   encrypted: boolean;
   transport: Transport;
-  state: SessionState | null;
 }
 
 /** Shows the session `id` here: see `SessionSource`'s `adopt`. */
@@ -399,13 +412,14 @@ export async function openSession(
   let encrypted: boolean;
   let transport: Transport;
   let record: SessionRecord;
-  let takenState: SessionState | null = null;
+  let taken: Reported | null = null;
   if (source.kind === "adopt") {
-    const taken = await attach(source.id, handlers);
-    current = taken.current;
-    ({ encrypted, transport } = taken.attached);
+    const attached = await attach(source.id, handlers);
+    current = attached.current;
+    ({ encrypted, transport } = attached.attached);
     id = source.id;
-    takenState = taken.attached.state;
+    const { state, algorithms, logFailure, backup } = attached.attached;
+    taken = { state, algorithms, logFailure, backup };
     record = (await sessionRecord(id)) ?? NO_RECORD;
   } else {
     current = channels(handlers);
@@ -434,7 +448,7 @@ export async function openSession(
     encrypted,
     transport,
     record,
-    takenState,
+    taken,
     async release() {
       const upTo = await invoke<number>("session_release", {
         id,

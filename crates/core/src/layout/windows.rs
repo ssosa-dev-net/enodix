@@ -55,6 +55,17 @@ pub struct Windows {
     /// What a session tab moved to a session window showed (#84), until
     /// the window's page takes it.
     snapshots: HashMap<Member, String>,
+    /// The session whose terminal was used last, in any window (#86).
+    last_used: Option<SessionId>,
+}
+
+/// The terminal used last (#86): where snippets from the main window's
+/// Snippets view go, whichever window it is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Used {
+    pub window: WindowId,
+    pub tab: TabId,
+    pub session: SessionId,
 }
 
 /// A session a window takes (#84): its tab there, and what the window that
@@ -148,6 +159,7 @@ impl Windows {
             next_window: WindowId::MAIN.0 + 1,
             group: Group::default(),
             snapshots: HashMap::new(),
+            last_used: None,
         }
     }
 
@@ -358,6 +370,38 @@ impl Windows {
                 (window, session)
             })
             .collect()
+    }
+
+    /// The session `window`'s tab `tab` shows, once known.
+    pub fn session_of(&self, window: WindowId, tab: TabId) -> Option<SessionId> {
+        self.group.sessions.get(&Member { window, tab }).copied()
+    }
+
+    /// Records that the terminal of `window`'s session tab `tab` was used
+    /// (it took the keyboard): it is the one used last (#86). A tab whose
+    /// session is not known yet changes nothing; a view tab or an unknown
+    /// window is refused.
+    pub fn use_tab(&mut self, window: WindowId, tab: TabId) -> Result<(), LayoutError> {
+        self.existing(window)?.find_session_tab(tab)?;
+        if let Some(session) = self.session_of(window, tab) {
+            self.last_used = Some(session);
+        }
+        Ok(())
+    }
+
+    /// The terminal used last, where its session is shown now (it follows
+    /// the session from window to window); `None` once no tab shows it.
+    pub fn last_used(&self) -> Option<Used> {
+        let used = self.last_used?;
+        self.group
+            .sessions
+            .iter()
+            .find(|(_, &session)| session == used)
+            .map(|(member, &session)| Used {
+                window: member.window,
+                tab: member.tab,
+                session,
+            })
     }
 
     /// Moves the session tab `tab` of the window `from` to the window `to`

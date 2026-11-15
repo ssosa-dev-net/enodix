@@ -40,8 +40,15 @@
     onBackUpHost,
     onDockConfigs,
     onDockRun,
+    MAIN_WINDOW_ID,
+    onMainWindowRequest,
     onSessionArrived,
+    onSnippetTarget,
     openSessionWindow,
+    sendSnippetTo,
+    snippetTarget as readSnippetTarget,
+    terminalUsed,
+    type SnippetTarget,
   } from "./lib/windows";
   import PythonSetup from "./lib/PythonSetup.svelte";
   import { refreshPython } from "./lib/python.svelte";
@@ -267,13 +274,30 @@
     const size = tab === null ? undefined : sizes[tab];
     return session && size ? { name: session.name, ...size } : null;
   });
+  /**
+   * The terminal used last (#86), when it is in a session window: the
+   * Snippets view and the palette send there instead.
+   */
+  let usedElsewhere = $state<SnippetTarget | null>(null);
+  const elsewhere = $derived(
+    usedElsewhere && usedElsewhere.window !== MAIN_WINDOW_ID
+      ? usedElsewhere
+      : null,
+  );
+  void readSnippetTarget().then(
+    (target) => (usedElsewhere = target),
+    () => {},
+  );
+  void onSnippetTarget((target) => (usedElsewhere = target));
   /** That tab's name, as the snippet panel and palette show it. */
   const snippetTarget = $derived(
-    snippetTab === null
-      ? null
-      : inGroup(snippetTab)
-        ? groupName()
-        : sessions[snippetTab].name,
+    elsewhere
+      ? elsewhere.name
+      : snippetTab === null
+        ? null
+        : inGroup(snippetTab)
+          ? groupName()
+          : sessions[snippetTab].name,
   );
   /** Where each tab is: its pane, and whether that pane shows it. */
   const placement = $derived(
@@ -1203,6 +1227,55 @@
   }
 
   /**
+   * Sends the snippet `name` from the Snippets view or the palette to the
+   * terminal used last (#86): one in a session window fills it in there,
+   * through that terminal's own paste path; else as `sendSnippet`.
+   */
+  async function sendSnippetFromView(name: string) {
+    const target = elsewhere;
+    if (!target) {
+      await sendSnippet(name);
+      return;
+    }
+    try {
+      await sendSnippetTo(target, name);
+    } catch (error) {
+      inventory.editError = `Cannot send ${name} to ${target.name}: ${error}`;
+    }
+  }
+
+  // A session window asks for something only this window has (#86): the
+  // details sheet on a session's host, or the password login after its
+  // SSH agent did not work. Only for a host of the open workspace.
+  void onMainWindowRequest(async (request) => {
+    const tree = inventory.workspace?.tree;
+    const host = tree ? findHost(tree, request.host) : null;
+    if (!host) {
+      inventory.editError = `${request.record?.name ?? "The session"}: its host is not in the open workspace.`;
+      return;
+    }
+    if (request.kind === "details") {
+      showDetails({ kind: "host", id: host.id });
+      return;
+    }
+    let username: string | null = null;
+    try {
+      const login = await hostLogin(host.id, "ssh");
+      if (login.kind === "profile") username = login.username;
+    } catch {
+      // The profiles cannot be read: log in by hand.
+    }
+    await showConnectView({
+      kind: "prompt",
+      host,
+      protocol: "ssh",
+      missingProfile: null,
+      fallback:
+        username === null ? undefined : { reason: request.reason, username },
+    });
+  });
+
+  /**
    * Sends the snippet `name` to the session of `tab` (the active pane's by
    * default): the core fills in its variables from the session's host and
    * `answers`; for any still without a value the user is asked first. The
@@ -1422,7 +1495,7 @@
         {:else if sideView === "snippets"}
           <SnippetsView
             target={snippetTarget}
-            onsend={(snippet) => void sendSnippet(snippet)}
+            onsend={(snippet) => void sendSnippetFromView(snippet)}
           />
         {:else if sideView === "jobs"}
           <JobsSideView />
@@ -1463,6 +1536,7 @@
               // over this pane): no focus request, which would hand the
               // keys back to the pane active until then.
               if (!focused && place) void edit({ kind: "activate", tab });
+              void terminalUsed(tab);
             }}
           >
             <TerminalSession
@@ -1725,7 +1799,7 @@
 {#if inventory.palette}
   <CommandPalette
     onconnect={prompt}
-    onsnippet={(snippet) => void sendSnippet(snippet)}
+    onsnippet={(snippet) => void sendSnippetFromView(snippet)}
     target={snippetTarget}
     actions={paletteActions}
     onclose={() => (inventory.palette = false)}

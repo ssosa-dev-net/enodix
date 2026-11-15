@@ -37,7 +37,7 @@ pub use algorithms::{
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
 pub use record::{SessionRecord, SessionRecords};
-pub use relay::{Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay};
+pub use relay::{Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay, Reported};
 pub use relays::SessionRelays;
 pub use serial::{
     SerialLine, SerialParameters, SerialPortInfo, SerialPortKind, SerialPorts, SerialTarget,

@@ -213,6 +213,22 @@ pub fn known_hosts() -> KnownHosts {
 }
 
 /// A session manager that trusts every test server's host key.
+/// A window's end of a session shown through a relay: each event it is
+/// delivered goes to the channel; gone once the receiver is dropped.
+#[allow(dead_code)]
+pub struct ToChannel(pub tokio::sync::mpsc::UnboundedSender<netterm_core::session::SessionEvent>);
+
+impl netterm_core::session::Consumer for ToChannel {
+    fn deliver(
+        &mut self,
+        event: netterm_core::session::SessionEvent,
+    ) -> Result<(), netterm_core::session::ConsumerGone> {
+        self.0
+            .send(event)
+            .map_err(|_| netterm_core::session::ConsumerGone)
+    }
+}
+
 pub fn manager() -> SessionManager {
     SessionManager::new(known_hosts())
 }

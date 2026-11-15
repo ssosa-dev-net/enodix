@@ -2256,6 +2256,8 @@ async function main() {
     step,
   });
 
+  await safetyInSessionWindows({ evaluate, devtools, screenshot, step });
+
   await webLinks({ evaluate, text, screenshot, step });
 
   await csvImport({
@@ -6920,6 +6922,313 @@ async function pasteSafety({
   } finally {
     writeClipboard(savedClipboard);
   }
+}
+
+/**
+ * What protects the engineer follows a session into its window (#86),
+ * after pasteSafety (its production prod-r1 and lab-r9 open, the paste
+ * confirmation preference off): the production marks, a multi-line paste
+ * confirmed over the pane with the host's line delay, snippets from the
+ * main window's Snippets view to the terminal used last (named first;
+ * the production question and the variables asked over that pane, in
+ * that window, which comes forward), a reconnect's host-key question
+ * asked and answered there, and Details opening the sheet in the main
+ * window. The session is docked back at the end.
+ */
+async function safetyInSessionWindows({
+  evaluate,
+  devtools,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const CTRL = 2;
+  const SHIFT = 8;
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) =>
+    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const tabs = () =>
+    evaluate(`[...document.querySelectorAll("[data-tab-bar] [role=tab]")].map((tab) => ({
+      id: Number(tab.dataset.tab),
+      name: tab.querySelector("[data-tab-name]")?.textContent ?? "",
+    }))`);
+  const press = (client, key, code, windowsVirtualKeyCode, modifiers = 0) =>
+    (async () => {
+      const event = { key, code, windowsVirtualKeyCode, modifiers };
+      await client.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        ...event,
+      });
+      await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+    })();
+  const typeIn = async (client, text) => {
+    for (const char of text) {
+      const key =
+        char === "\r"
+          ? { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }
+          : { key: char };
+      await client.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        text: char,
+        ...key,
+      });
+      await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+    }
+  };
+  const sessionLabels = async () => {
+    const labels = [];
+    for (const target of await pageTargets()) {
+      const client = await connectTarget(target);
+      const label = await evaluateIn(client)(
+        "window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? null",
+      ).catch(() => null);
+      client.close();
+      if (label?.startsWith("session-")) labels.push(label);
+    }
+    return labels;
+  };
+  const shown = SHOWN_SESSION;
+
+  const prod = (await tabs()).find((tab) => tab.name === "prod-r1");
+  if (!prod)
+    fail(`safetyInSessionWindows needs prod-r1: ${json(await tabs())}`);
+  await clickOn(`[data-tab-bar] [data-tab="${prod.id}"]`);
+  await until("prod-r1 shown", () =>
+    exists(`.slot[data-tab="${prod.id}"][data-active]`),
+  );
+  const before = new Set(await sessionLabels());
+  await sessionAction(evaluate, "open-in-window", shown);
+  const label = await until("the new session window", async () =>
+    (await sessionLabels()).find((each) => !before.has(each)),
+  );
+  const window = await connectWindow(label);
+  const there = window.evaluate;
+  await until("prod-r1 in its window", () =>
+    there(`!!document.querySelector(".slot[data-active] .terminal")`),
+  );
+
+  // Its production marks: the red edge, PROD on its tab, the badge.
+  const marks = await there(`(() => {
+    const tab = document.querySelector("[data-window-bar] [role=tab]");
+    const session = document.querySelector("${shown} .session");
+    const style = getComputedStyle(session);
+    return {
+      tab: tab?.dataset.environment,
+      label: !!tab?.querySelector("[data-tab-production]"),
+      badge: session.querySelector("[data-environment-badge]")?.dataset.environmentBadge,
+      border: style.borderTopWidth,
+      borderColor: style.borderTopColor,
+    };
+  })()`);
+  if (
+    marks.tab !== "production" ||
+    !marks.label ||
+    marks.badge !== "production" ||
+    marks.border !== "3px" ||
+    !/^rgb\((229, 72, 77|110, 15, 15)\)$/.test(marks.borderColor)
+  )
+    fail(`prod-r1 lost its production marks in its window: ${json(marks)}`);
+  step(`prod-r1 kept its red edge, PROD mark and badge in ${label}`);
+
+  const screenThere = () => screenOf(there, shown);
+  const ranThere = async (marker) =>
+    new RegExp(`(^|\\n|\\$ )${marker}\\s*(\\n|$)`).test(await screenThere());
+  const confirmation = () =>
+    there(`(() => {
+      const card = document.querySelector("${shown} [data-paste-confirm]");
+      return card && {
+        environment: card.dataset.pasteConfirm,
+        lines: card.querySelector("[data-paste-lines]").dataset.pasteLines,
+        text: card.querySelector("[data-paste-text]").textContent.replace(/\\r\\n/g, "\\n"),
+      };
+    })()`);
+  const focusThere = () =>
+    there(`document.querySelector("${shown} .terminal textarea").focus()`);
+
+  const savedClipboard = readClipboard();
+  const knownHosts = join(appData, "known_hosts");
+  const savedKnownHosts = readFileSync(knownHosts, "utf8");
+  const snippetsFile = join(workspace, "_snippets.yaml");
+  try {
+    // A multi-line paste there asks there, over the pane, then goes out
+    // with the folder's 400 ms between lines.
+    writeClipboard("later 0 win-one\nlater 0 win-two\n");
+    await focusThere();
+    await press(window.devtools, "V", "KeyV", 86, CTRL | SHIFT);
+    const asked = await until("the paste question in the window", confirmation);
+    if (
+      json(asked) !==
+      json({
+        environment: "production",
+        lines: "2",
+        text: "later 0 win-one\nlater 0 win-two\n",
+      })
+    )
+      fail(`the paste question in the window shows ${json(asked)}`);
+    if (await exists("[data-paste-confirm]"))
+      fail("the paste question showed in the main window");
+    const started = Date.now();
+    await there(`document.querySelector("${shown} [data-paste=send]").click()`);
+    await until(
+      "the pasted lines run there",
+      async () => (await ranThere("win-one")) && (await ranThere("win-two")),
+    );
+    const took = Date.now() - started;
+    if (took < 400) fail(`two lines 400 ms apart arrived in ${took} ms`);
+    step(
+      `a multi-line paste in the session window was confirmed over its pane (production) and sent ${took} ms apart (delay 400 ms)`,
+    );
+
+    // The Snippets view names the terminal used last, in that window.
+    writeFileSync(
+      snippetsFile,
+      'Win lines: "later 0 win-snip-1\\nlater 0 win-snip-2\\n"\nWin var: "later 0 win-{{word}}\\n"\n',
+    );
+    await showSideView(evaluate, "snippets");
+    await until("the snippets in the panel", () =>
+      exists('[data-snippet="Win var"]'),
+    );
+    const target = () =>
+      evaluate(
+        `document.querySelector("[data-snippet-target]")?.dataset.snippetTarget ?? null`,
+      );
+    await focusThere();
+    await until(
+      "the Snippets view naming prod-r1",
+      async () => (await target()) === "prod-r1",
+    );
+    await clickOn('[data-snippet="Win lines"]');
+    const snippetAsked = await until(
+      "the snippet's paste question in the window",
+      confirmation,
+    );
+    if (
+      snippetAsked.environment !== "production" ||
+      snippetAsked.lines !== "2" ||
+      snippetAsked.text !== "later 0 win-snip-1\nlater 0 win-snip-2\n"
+    )
+      fail(`the snippet's question in the window shows ${json(snippetAsked)}`);
+    if (await exists("[data-paste-confirm]"))
+      fail("the snippet's question showed in the main window");
+    // The shell asks for the focus; Windows may refuse it to a process
+    // that is not in the foreground (a user typing elsewhere): said, not
+    // failed.
+    const forward = await until(
+      "the session window forward",
+      () => there("document.hasFocus()"),
+      3000,
+    ).catch(() => false);
+    if (!forward)
+      step("(Windows did not let the session window take the focus)");
+    await there(`document.querySelector("${shown} [data-paste=send]").click()`);
+    await until(
+      "the snippet's lines run there",
+      async () =>
+        (await ranThere("win-snip-1")) && (await ranThere("win-snip-2")),
+    );
+    step(
+      "the Snippets view named prod-r1 in its window; a multi-line snippet was confirmed over that pane, in that window, which was asked to come forward",
+    );
+
+    // Its variables are asked there too.
+    await clickOn('[data-snippet="Win var"]');
+    const variables = await until("the variables asked in the window", () =>
+      there(`(() => {
+        const dialog = document.querySelector("${shown} [data-snippet-variables]");
+        return dialog && [...dialog.querySelectorAll("[data-variable]")].map((i) => i.dataset.variable);
+      })()`),
+    );
+    if (json(variables) !== json(["word"]))
+      fail(`the window asked for ${json(variables)}`);
+    if (await exists("[data-snippet-variables]"))
+      fail("the variables were asked in the main window");
+    await there(`(() => {
+      const form = document.querySelector("${shown} [data-snippet-variables] form");
+      const input = form.querySelector("[name=variable-0]");
+      input.value = "filled";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      form.requestSubmit();
+    })()`);
+    await until("the filled snippet run there", () => ranThere("win-filled"));
+    step(
+      "a snippet's variables were asked over the pane in the session window",
+    );
+
+    // The name follows the focus back to the main window (brought to the
+    // front first, as a click would: a page behind holds focus events).
+    await devtools.send("Page.bringToFront");
+    await evaluate(
+      `document.querySelector("${shown} .terminal textarea").focus()`,
+    );
+    // (The main window's shown session: whichever tab took prod-r1's place.)
+    const here = await evaluate(`(() => {
+      const tab = document.querySelector("${shown}")?.dataset.tab;
+      return document.querySelector('[data-tab-bar] [data-tab="' + tab + '"] [data-tab-name]')?.textContent ?? null;
+    })()`);
+    await until(
+      `the Snippets view naming ${here} (the main window's) again`,
+      async () => {
+        const now = await target();
+        if (now === here) return true;
+        throw new Error(
+          `${json(now)}; focus ${json(await evaluate("document.hasFocus() && document.activeElement?.className"))}`,
+        );
+      },
+    );
+    step("the snippet target followed the focus back to the main window");
+    rmSync(snippetsFile);
+    await showSideView(evaluate, "hosts");
+
+    // A reconnect there asks about the host key there (it was forgotten).
+    writeFileSync(knownHosts, "");
+    await focusThere();
+    await typeIn(window.devtools, "drop\r");
+    await until("the session closed there", () =>
+      there(`!!document.querySelector("${shown} [data-session-ended]")`),
+    );
+    await focusThere();
+    await press(window.devtools, "Enter", "Enter", 13);
+    await until("the host-key question in the window", () =>
+      there(`(() => {
+        const card = document.querySelector("${shown} [data-host-key=first-use]");
+        return !!card && !card.querySelector("button:disabled");
+      })()`),
+    );
+    if (await exists("[data-host-key]"))
+      fail("the host-key question showed in the main window");
+    await there(`document.querySelector("[data-decision=trustOnce]").click()`);
+    await until("reconnected there", () =>
+      there(`!!document.querySelector("[data-tab-state=connected]")`),
+    );
+    step(
+      "a reconnect in the session window asked about the host key there, and connected once answered",
+    );
+    if (screenshot) await screenshot("session-window-safety");
+
+    // Details from its header opens the sheet in the main window.
+    await sessionAction(there, "details", shown);
+    await until("the details sheet in the main window", () =>
+      exists("[data-side-view=hosts] [data-details-sheet]"),
+    );
+    const selected = await evaluate(
+      `document.querySelector("nav [data-item][aria-pressed=true], nav [data-item].selected")?.dataset.host ?? null`,
+    );
+    if (selected !== null && selected !== "Prod/prod-r1.yaml")
+      fail(`Details selected ${json(selected)}`);
+    step(
+      "Details on the session window's header opened the sheet in the main window",
+    );
+  } finally {
+    writeClipboard(savedClipboard);
+    writeFileSync(knownHosts, savedKnownHosts);
+    rmSync(snippetsFile, { force: true });
+  }
+
+  // Back to the main window, as it came.
+  await sessionAction(there, "dock", shown);
+  window.devtools.close();
+  await until(`${label} closed`, async () => !(await windowOpen(label)));
 }
 
 /** Reads the system clipboard's text (independently of the app). */

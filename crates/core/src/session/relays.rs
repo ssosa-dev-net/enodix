@@ -22,8 +22,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use super::{
-    Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay, SessionEvent,
-    SessionEvents, SessionId, SessionState,
+    Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay, Reported, SessionEvent,
+    SessionEvents, SessionId,
 };
 use crate::layout::WindowId;
 
@@ -182,9 +182,11 @@ impl SessionRelays {
         Some(self.relay(session).ok()?.let_go())
     }
 
-    /// The last state `session` showed a window, while it has a relay.
-    pub fn state(&self, session: SessionId) -> Option<SessionState> {
-        self.relay(session).ok()?.shown_state()
+    /// What `session` has reported to the windows shown it (#86): its
+    /// last state, agreed algorithms, log failure and backup outcome,
+    /// while it has a relay.
+    pub fn reported(&self, session: SessionId) -> Option<Reported> {
+        Some(self.relay(session).ok()?.reported())
     }
 
     fn relay(&self, session: SessionId) -> Result<Relay, HandoverError> {

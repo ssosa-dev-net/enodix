@@ -32,7 +32,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::Notify;
 
 use super::output::Flow;
-use super::{SessionEvent, SessionEvents, SessionState};
+use super::{NegotiatedAlgorithms, SessionEvent, SessionEvents, SessionState};
+use crate::job::LoginBackupOutcome;
+use crate::logging::LogFailure;
 
 /// Where a relay delivers a session's events: in the app, one window.
 pub trait Consumer: Send + 'static {
@@ -76,6 +78,36 @@ pub struct Attached {
     /// The output (in bytes) delivered to earlier consumers: the new one's
     /// share starts right after it.
     pub offset: u64,
+}
+
+/// What the relay has delivered of a session's standing, to whichever
+/// consumer (#86). These are reported once, as events, to the consumer
+/// shown the session then; one that takes the session later (it moved, or
+/// the window showing it died) must still show them, so it starts from
+/// these. Each relay starts with none: a reconnect reports afresh.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reported {
+    /// The last state delivered.
+    pub state: Option<SessionState>,
+    /// The algorithms each connection agreed on (the legacy-crypto marker).
+    pub algorithms: Option<Vec<NegotiatedAlgorithms>>,
+    /// Why the session's log could not be written.
+    pub log_failure: Option<LogFailure>,
+    /// How its backup on login ended.
+    pub backup: Option<LoginBackupOutcome>,
+}
+
+impl Reported {
+    /// Keeps what `event` reports, once delivered.
+    fn note(&mut self, event: &SessionEvent) {
+        match event {
+            SessionEvent::State(state) => self.state = Some(state.clone()),
+            SessionEvent::Algorithms(algorithms) => self.algorithms = Some(algorithms.clone()),
+            SessionEvent::LogFailed(failure) => self.log_failure = Some(failure.clone()),
+            SessionEvent::Backup(outcome) => self.backup = Some(outcome.clone()),
+            SessionEvent::Output(_) | SessionEvent::Prompt(_) | SessionEvent::HostKey(_) => {}
+        }
+    }
 }
 
 /// Why a handover was refused.
@@ -145,8 +177,9 @@ struct State {
     consumer: Option<Current>,
     /// Output delivered so far, to every consumer, in bytes.
     delivered: u64,
-    /// The last state delivered, to whichever consumer.
-    shown_state: Option<SessionState>,
+    /// What was delivered of the session's standing, to whichever
+    /// consumer.
+    reported: Reported,
     abandoned: bool,
 }
 
@@ -182,7 +215,7 @@ impl Relay {
             state: Mutex::new(State {
                 consumer: None,
                 delivered: 0,
-                shown_state: None,
+                reported: Reported::default(),
                 abandoned: false,
             }),
             wake: Notify::new(),
@@ -267,11 +300,11 @@ impl Relay {
         state.delivered
     }
 
-    /// The last state delivered to a consumer (any of them): where the
-    /// session stands for one taking it now, before the events that wait
-    /// for it. `None` until one was delivered.
-    pub fn shown_state(&self) -> Option<SessionState> {
-        self.shared().state().shown_state.clone()
+    /// What was delivered of the session's standing to a consumer (any of
+    /// them): where it stands for one taking it now, before the events
+    /// that wait for it.
+    pub fn reported(&self) -> Reported {
+        self.shared().state().reported.clone()
     }
 
     /// The consumer shown the session now, if any.
@@ -360,17 +393,11 @@ fn offer(shared: &Shared, event: SessionEvent) -> Offered {
         SessionEvent::Output(bytes) => bytes.len(),
         _ => 0,
     };
-    let shown_state = match &event {
-        SessionEvent::State(session_state) => Some(session_state.clone()),
-        _ => None,
-    };
     match current.consumer.deliver(event.clone()) {
         Ok(()) => {
             current.unacknowledged += bytes;
             state.delivered += bytes as u64;
-            if shown_state.is_some() {
-                state.shown_state = shown_state;
-            }
+            state.reported.note(&event);
             Offered::Delivered
         }
         Err(ConsumerGone) => {

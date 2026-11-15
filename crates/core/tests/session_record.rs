@@ -140,3 +140,22 @@ fn the_app_keeps_each_sessions_record_until_it_is_forgotten() {
     assert!(records.get(SessionId(1)).is_none());
     assert!(records.get(SessionId(2)).is_some());
 }
+
+#[test]
+fn a_records_host_counts_only_in_its_own_workspace_while_it_is_there() {
+    let (temp, workspace) = workspace();
+    let id = HostId::new("Prod/edge-fw.yaml");
+    let record =
+        SessionRecord::for_host(&workspace, &id, Transport::Ssh, "edge-fw", "edge-fw").unwrap();
+    let (_other_temp, other) = self::workspace();
+
+    assert_eq!(record.host_in(&workspace), Some(&id));
+    assert_eq!(record.host_in(&other), None);
+    assert_eq!(SessionRecord::new("a", "a").host_in(&workspace), None);
+
+    fs::remove_file(temp.path().join("Prod/edge-fw.yaml")).unwrap();
+    let reopened = Workspace::open(temp.path()).unwrap();
+    assert_eq!(record.host_in(&reopened), None);
+    // What it opened with stays: moving cannot weaken a safeguard.
+    assert_eq!(record.safety.environment, Some(Environment::Production));
+}

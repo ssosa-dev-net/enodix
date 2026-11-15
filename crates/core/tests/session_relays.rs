@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use netterm_core::layout::WindowId;
 use netterm_core::session::{
-    Consumer, ConsumerGone, ConsumerKey, OutputOptions, SessionEvent, SessionEvents, SessionId,
-    SessionManager, SessionRelays, SessionState, SessionTarget, TerminalSize,
+    Consumer, ConsumerGone, ConsumerKey, OutputOptions, Reported, SessionEvent, SessionEvents,
+    SessionId, SessionManager, SessionRelays, SessionState, SessionTarget, TerminalSize,
 };
 use support::{next_state, output_ending_with, TestSshServer, PROMPT, WAIT};
 use tokio::sync::mpsc;
@@ -391,10 +391,101 @@ async fn the_last_state_shown_is_kept_for_the_next_window() {
     .await
     .expect("the session did not connect");
 
-    assert_eq!(relays.state(id), Some(SessionState::Connected));
+    assert_eq!(
+        relays.reported(id).unwrap().state,
+        Some(SessionState::Connected)
+    );
 
     manager.close(id).unwrap();
     main.closed().await;
-    assert!(matches!(relays.state(id), Some(SessionState::Closed(_))));
-    assert_eq!(relays.state(SessionId(999)), None);
+    assert!(matches!(
+        relays.reported(id).unwrap().state,
+        Some(SessionState::Closed(_))
+    ));
+    assert_eq!(relays.reported(SessionId(999)), None);
+}
+
+// What a session reported, kept for a window taking it later (#86).
+
+/// Events until the session's log failure arrives, acknowledging output.
+async fn until_log_failure(window: &mut Window, relays: &SessionRelays, session: SessionId) {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            match window.events.recv().await {
+                Some(SessionEvent::LogFailed(_)) => return,
+                Some(SessionEvent::Output(bytes)) => {
+                    relays.acknowledge(session, window.key, bytes.len())
+                }
+                Some(_) => {}
+                None => panic!("the session ended before its log failed"),
+            }
+        }
+    })
+    .await
+    .expect("the log failure did not arrive");
+}
+
+#[tokio::test]
+async fn what_a_session_reported_is_kept_for_a_window_taking_it_later() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    // A file where the log folder should be: the log cannot be written.
+    let temp = tempfile::TempDir::new().unwrap();
+    let blocked = temp.path().join("logs");
+    std::fs::write(&blocked, "not a folder").unwrap();
+    let log = netterm_core::logging::LogFolder::new(&blocked).quick_log("127.0.0.1");
+    let (id, events) = manager.open_logged(SessionTarget::Ssh(server.target()), SIZE, Some(log));
+    assert!(relays.reported(id).is_none());
+    let mut main = show(&relays, id, events);
+    until_log_failure(&mut main, &relays, id).await;
+
+    relays.release(id, main.key).unwrap();
+    let moved = relays.reported(id).expect("the session has a relay");
+
+    assert_eq!(moved.state, Some(SessionState::Connected));
+    let algorithms = moved.algorithms.as_deref().expect("the algorithms agreed");
+    assert_eq!(algorithms.len(), 1);
+    let failure = moved.log_failure.as_ref().expect("the log failure");
+    assert!(
+        failure.path.starts_with(&blocked),
+        "{}",
+        failure.path.display()
+    );
+    assert_eq!(moved.backup, None);
+
+    // A session window takes it, then dies: the next window is told the same.
+    let (_dead, _) = attach(&relays, id, SESSION_WINDOW);
+    relays.let_go(id);
+    assert_eq!(relays.reported(id), Some(moved));
+    assert_eq!(relays.reported(SessionId(999)), None);
+}
+
+#[tokio::test]
+async fn a_reconnect_reports_afresh() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let (id, events) = manager.open(SessionTarget::Ssh(server.target()), SIZE);
+    let mut old = show(&relays, id, events);
+    tokio::time::timeout(WAIT, async {
+        while !matches!(
+            old.events.recv().await,
+            Some(SessionEvent::State(SessionState::Connected))
+        ) {}
+    })
+    .await
+    .expect("the session did not connect");
+    manager.close(id).unwrap();
+    old.closed().await;
+    assert!(relays.reported(id).unwrap().algorithms.is_some());
+
+    let events = manager.reconnect(id, SIZE).unwrap();
+    // Shown to a session window whose page is already gone: nothing of the
+    // new connection is delivered, and the session stays open.
+    let (consumer, receiver, _gone) = consumer();
+    drop(receiver);
+    relays.start(id, SESSION_WINDOW, events, consumer);
+
+    assert_eq!(relays.reported(id), Some(Reported::default()));
 }

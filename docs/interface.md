@@ -64,7 +64,16 @@ everything 0.2.0 could do, the app still does, reached differently.
   A session that moves leaves the multi-send group, and a session window
   takes no part in it (for now). If a session window goes away without
   docking back, the main window takes its sessions, saying their earlier
-  output was lost.
+  output was lost. Everything that protects you comes along (#86): the
+  production colour and PROD mark, the unencrypted, legacy-crypto,
+  logging-failed and backup markers, paste confirmation (over the pane
+  pasted in, with the host's line delay), host-key and login questions of
+  a reconnect there, and the password login offered after the SSH agent
+  failed (the main window then asks for the password). Snippets from the
+  main window's Snippets view or palette go to the terminal you used last,
+  whichever window it is in: the view names it, and its questions appear
+  over that pane, in that window, which comes forward. Details on a moved
+  session's header opens the details sheet in the main window.
 - **Status line** (foot of the window): the vault's state and the active
   session's size.
 - **Palette** (Ctrl+K): hosts, snippets (`>`), and every action that has
@@ -137,7 +146,7 @@ else. Each of its features, and where it is now:
 | Multi-send (join, leave, end, join a pane)       | Session menu, tab bar's join control, Ctrl+Shift+M; questions over the pane        |
 | Paste safety                                     | Paste confirmation over its pane                                                   |
 | Snippets (send, new, edit, delete, filter)       | Snippets view (the form opens in the view); palette `>`                            |
-| Snippet variables                                | Asked over the target terminal's pane                                              |
+| Snippet variables                                | Asked over the target terminal's pane (in its session window, if it is in one)     |
 | Keyword highlighting rules                       | Highlight rules tab (from Preferences or the palette)                              |
 | Credential profiles, named secrets               | Credentials view                                                                   |
 | Vault (turn on/off, change password)             | Preferences tab; Credentials view links to it; status line shows its state         |
