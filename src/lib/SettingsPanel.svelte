@@ -26,9 +26,15 @@
     /** Host ids a jump host can be chosen from. */
     hostIds: string[];
     onchange: (change: (current: Settings) => Settings) => Promise<void>;
+    /**
+     * Which settings: the device's (platform), or the connection's (with
+     * the serial line and web links). The details sheet puts each in its
+     * own section, under its own heading.
+     */
+    part: "device" | "connection";
   }
 
-  let { item, settings, effective, hostIds, onchange }: Props = $props();
+  let { item, settings, effective, hostIds, onchange, part }: Props = $props();
 
   type Options = readonly (readonly [string, string])[];
 
@@ -301,7 +307,10 @@
       portsError = `Cannot list the serial ports: ${error}`;
     }
   }
-  void refreshPorts();
+  // Only the connection part offers the serial ports.
+  $effect(() => {
+    if (part === "connection") void refreshPorts();
+  });
 
   const BAUD_RATES = [
     1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400,
@@ -418,8 +427,7 @@
   {/each}
 {/snippet}
 
-<section aria-label="Device settings">
-  <h3>Device</h3>
+{#if part === "device"}
   {@render rowsOf(device)}
   {#if platformMatch}
     <p
@@ -447,10 +455,7 @@
       <option value={name}></option>
     {/each}
   </datalist>
-</section>
-
-<section aria-label="Connection settings">
-  <h3>Connection</h3>
+{:else}
   {@render rowsOf(connection)}
   <datalist id="jump-hosts">
     {#each hostIds as id (id)}
@@ -462,90 +467,90 @@
       <option value={name}></option>
     {/each}
   </datalist>
-</section>
 
-<section aria-label="Serial line">
-  <h3>
-    Serial line
-    <button
-      class="small"
-      data-serial-refresh
-      title="Look for serial ports again"
-      onclick={refreshPorts}>Refresh ports</button
-    >
-  </h3>
-  {@render rowsOf(serial)}
-  {#if portsError}
-    <span class="origin" role="alert">{portsError}</span>
-  {/if}
-  <datalist id="serial-ports">
-    {#each ports as port (port.name)}
-      <option value={port.name}>{port.description || port.name}</option>
-    {/each}
-  </datalist>
-  <datalist id="baud-rates">
-    {#each BAUD_RATES as rate (rate)}
-      <option value={rate}></option>
-    {/each}
-  </datalist>
-</section>
+  <section aria-label="Serial line">
+    <h4>
+      Serial line
+      <button
+        class="small"
+        data-serial-refresh
+        title="Look for serial ports again"
+        onclick={refreshPorts}>Refresh ports</button
+      >
+    </h4>
+    {@render rowsOf(serial)}
+    {#if portsError}
+      <span class="origin" role="alert">{portsError}</span>
+    {/if}
+    <datalist id="serial-ports">
+      {#each ports as port (port.name)}
+        <option value={port.name}>{port.description || port.name}</option>
+      {/each}
+    </datalist>
+    <datalist id="baud-rates">
+      {#each BAUD_RATES as rate (rate)}
+        <option value={rate}></option>
+      {/each}
+    </datalist>
+  </section>
 
-<section aria-label="Web links">
-  <h3>Web links</h3>
-  {#each effective?.web_links ?? [] as link (link.value.name)}
-    {@const own = isOwn(link.origin, item)}
-    <div class="link" data-link={link.value.name}>
-      <span class="name">{link.value.name}</span>
-      {#if own}
-        <span class="row">
-          <input
-            aria-label="{link.value.name} URL"
-            value={link.value.url}
-            spellcheck="false"
-            onchange={async (event) => {
-              const input = event.currentTarget;
-              await changeLink(link.value.name, input.value);
-              input.value =
-                settings.web_links.find((l) => l.name === link.value.name)
-                  ?.url ?? "";
-            }}
-          />
-          <button
-            class="remove"
-            aria-label="Remove link {link.value.name}"
-            onclick={() => removeLink(link.value.name)}
-            ><X size={14} aria-hidden="true" /></button
-          >
-        </span>
-      {:else}
-        <span class="url">{link.value.url}</span>
-      {/if}
-      <span class="origin">{describeOrigin(link.origin, item)}</span>
-    </div>
-  {/each}
-  <form class="row" onsubmit={addLink}>
-    <input
-      class="link-name"
-      name="new-link-name"
-      placeholder="Name"
-      spellcheck="false"
-      bind:value={newLinkName}
-    />
-    <input
-      name="new-link-url"
-      placeholder={"https://{{address}}/"}
-      title={"http or https; {{address}}, {{name}} and other fields are filled in"}
-      spellcheck="false"
-      bind:value={newLinkUrl}
-    />
-    <button
-      type="submit"
-      class="small"
-      disabled={newLinkName.trim() === "" || newLinkUrl.trim() === ""}
-      >Add</button
-    >
-  </form>
-</section>
+  <section aria-label="Web links">
+    <h4>Web links</h4>
+    {#each effective?.web_links ?? [] as link (link.value.name)}
+      {@const own = isOwn(link.origin, item)}
+      <div class="link" data-link={link.value.name}>
+        <span class="name">{link.value.name}</span>
+        {#if own}
+          <span class="row">
+            <input
+              aria-label="{link.value.name} URL"
+              value={link.value.url}
+              spellcheck="false"
+              onchange={async (event) => {
+                const input = event.currentTarget;
+                await changeLink(link.value.name, input.value);
+                input.value =
+                  settings.web_links.find((l) => l.name === link.value.name)
+                    ?.url ?? "";
+              }}
+            />
+            <button
+              class="remove"
+              aria-label="Remove link {link.value.name}"
+              onclick={() => removeLink(link.value.name)}
+              ><X size={14} aria-hidden="true" /></button
+            >
+          </span>
+        {:else}
+          <span class="url">{link.value.url}</span>
+        {/if}
+        <span class="origin">{describeOrigin(link.origin, item)}</span>
+      </div>
+    {/each}
+    <form class="row" onsubmit={addLink}>
+      <input
+        class="link-name"
+        name="new-link-name"
+        placeholder="Name"
+        spellcheck="false"
+        bind:value={newLinkName}
+      />
+      <input
+        name="new-link-url"
+        placeholder={"https://{{address}}/"}
+        title={"http or https; {{address}}, {{name}} and other fields are filled in"}
+        spellcheck="false"
+        bind:value={newLinkUrl}
+      />
+      <button
+        type="submit"
+        class="small"
+        disabled={newLinkName.trim() === "" || newLinkUrl.trim() === ""}
+        >Add</button
+      >
+    </form>
+  </section>
+{/if}
 
 <style>
   section {
@@ -553,7 +558,7 @@
     gap: var(--space-1-5);
   }
 
-  h3 {
+  h4 {
     display: flex;
     align-items: center;
     justify-content: space-between;

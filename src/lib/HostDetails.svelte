@@ -5,6 +5,13 @@
   import RoleIcon from "./RoleIcon.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
   import TagEditor from "./TagEditor.svelte";
+  import { ENVIRONMENT_NAMES } from "./paste";
+  import {
+    jumpHostOf,
+    otherWays as waysBesides,
+    ownWayBlocked,
+    PROTOCOL_NAMES,
+  } from "./ways";
   import {
     effectiveSettings,
     hostRole,
@@ -51,39 +58,17 @@
       : [],
   );
 
-  const protocolNames: Record<Protocol, string> = {
-    ssh: "SSH",
-    telnet: "Telnet",
-    serial: "Serial",
-  };
   /** The ways in besides the host's own protocol. */
   const otherWays = $derived(
-    (["ssh", "telnet", "serial"] as const).filter(
-      (protocol) => protocol !== effective.current?.protocol.value,
-    ),
+    effective.current ? waysBesides(host.id, effective.current) : [],
   );
   const ownWay = $derived(
-    effective.current ? protocolNames[effective.current.protocol.value] : null,
+    effective.current ? PROTOCOL_NAMES[effective.current.protocol.value] : null,
   );
-  /**
-   * The jump host the host is reached through, which telnet cannot use
-   * (the core refuses it). A host that inherits itself as its jump host
-   * connects directly.
-   */
-  const jumpHost = $derived.by(() => {
-    const jump = effective.current?.jump_host?.value;
-    return jump && jump.toLowerCase() !== host.id.toLowerCase() ? jump : null;
-  });
-
-  /** Serial needs a port, which nothing sets by default. */
-  const noSerialPort = $derived(
-    effective.current !== null && effective.current.serial.port === null,
-  );
-
-  /** The host's own way in is serial, but no port is set. */
-  const serialWithoutPort = $derived(
-    noSerialPort && effective.current?.protocol.value === "serial",
-  );
+  /** Why the host's own way in cannot be used (serial without a port). */
+  const ownBlocked = $derived(ownWayBlocked(effective.current));
+  const jumpHost = $derived(jumpHostOf(host.id, effective.current));
+  const environment = $derived(effective.current?.environment?.value ?? null);
 
   /** The host's web links, filled from its fields by the core. */
   let webLinks = $state<HostWebLink[]>([]);
@@ -180,31 +165,38 @@
   <header>
     <h2>{host.name}</h2>
     <span class="file" title="The host's file in the workspace">{host.id}</span>
+    <span class="facts">
+      {#if environment}
+        <span
+          class="environment {environment}"
+          data-details-environment={environment}
+          >{ENVIRONMENT_NAMES[environment]}</span
+        >
+      {/if}
+      <span class="address">{host.address}</span>
+      {#if jumpHost}
+        <span class="via" title="Reached through this jump host"
+          >via {jumpHost}</span
+        >
+      {/if}
+    </span>
     <div class="actions" data-ways-in aria-label="Ways in">
       <button
+        class="primary"
         data-connect="default"
-        disabled={serialWithoutPort}
-        title={serialWithoutPort
-          ? "Choose the serial port in the serial line settings first"
-          : ownWay
-            ? `Connect by ${ownWay}, the host's protocol`
-            : "Connect"}
+        disabled={ownBlocked !== null}
+        title={ownBlocked ??
+          (ownWay ? `Connect by ${ownWay}, the host's protocol` : "Connect")}
         onclick={() => onconnect(host)}>Connect</button
       >
-      {#each otherWays as protocol (protocol)}
-        {@const blocked =
-          (protocol === "telnet" && jumpHost !== null) ||
-          (protocol === "serial" && noSerialPort)}
+      {#each otherWays as way (way.protocol)}
         <button
-          data-connect={protocol}
-          disabled={blocked}
-          title={!blocked
-            ? `Connect by ${protocolNames[protocol]} instead`
-            : protocol === "serial"
-              ? "Choose the serial port in the serial line settings first"
-              : `Telnet cannot go through the jump host ${jumpHost}`}
-          onclick={() => onconnect(host, protocol)}
-          >{protocolNames[protocol]}</button
+          data-connect={way.protocol}
+          disabled={way.blocked !== null}
+          title={way.blocked ??
+            `Connect by ${PROTOCOL_NAMES[way.protocol]} instead`}
+          onclick={() => onconnect(host, way.protocol)}
+          >{PROTOCOL_NAMES[way.protocol]}</button
         >
       {/each}
       {#each webLinks as link (link.name)}
@@ -226,7 +218,7 @@
         {webLinkError ?? webLinksUnavailable}
       </p>
     {/if}
-    <div class="actions">
+    <div class="actions more" aria-label="Actions">
       <button
         data-open-logs
         title="Show this host's session logs in the file manager"
@@ -269,7 +261,8 @@
     </div>
   </header>
 
-  <section>
+  <section aria-label="Device" data-details-section="device">
+    <h3>Device</h3>
     <label class="field">
       <span>Name</span>
       <span class="row">
@@ -284,23 +277,6 @@
           }}
         />
         <CopyButton value={host.name} what="name" />
-      </span>
-    </label>
-    <label class="field">
-      <span>Management address</span>
-      <span class="row">
-        <input
-          name="address"
-          value={host.address}
-          spellcheck="false"
-          onchange={(event) =>
-            commit(
-              event,
-              (address) => ({ address }),
-              () => host.address,
-            )}
-        />
-        <CopyButton value={host.address} what="management address" />
       </span>
     </label>
     <label class="field">
@@ -347,41 +323,57 @@
         </span>
       </label>
     {/each}
+    <SettingsPanel
+      part="device"
+      {item}
+      settings={host.settings}
+      effective={effective.current}
+      hostIds={otherHosts}
+      onchange={(change) =>
+        save((current) => ({ settings: change(current.settings) }))}
+    />
+  </section>
+
+  <section aria-label="Connection" data-details-section="connection">
+    <h3>Connection</h3>
     <label class="field">
-      <span>Description</span>
+      <span>Management address</span>
       <span class="row">
-        <textarea
-          name="description"
-          rows="3"
-          value={host.description ?? ""}
+        <input
+          name="address"
+          value={host.address}
+          spellcheck="false"
           onchange={(event) =>
             commit(
               event,
-              (description) => ({ description }),
-              () => host.description ?? "",
-            )}></textarea>
-        <CopyButton value={host.description ?? ""} what="description" />
+              (address) => ({ address }),
+              () => host.address,
+            )}
+        />
+        <CopyButton value={host.address} what="management address" />
       </span>
     </label>
+    <SettingsPanel
+      part="connection"
+      {item}
+      settings={host.settings}
+      effective={effective.current}
+      hostIds={otherHosts}
+      onchange={(change) =>
+        save((current) => ({ settings: change(current.settings) }))}
+    />
   </section>
 
-  <TagEditor
-    tags={host.tags}
-    effective={effective.current?.tags ?? null}
-    {item}
-    onchange={(change) => save((current) => ({ tags: change(current.tags) }))}
-  />
+  <div data-details-section="tags">
+    <TagEditor
+      tags={host.tags}
+      effective={effective.current?.tags ?? null}
+      {item}
+      onchange={(change) => save((current) => ({ tags: change(current.tags) }))}
+    />
+  </div>
 
-  <SettingsPanel
-    {item}
-    settings={host.settings}
-    effective={effective.current}
-    hostIds={otherHosts}
-    onchange={(change) =>
-      save((current) => ({ settings: change(current.settings) }))}
-  />
-
-  <section>
+  <section aria-label="Custom fields" data-details-section="custom">
     <h3>Custom fields</h3>
     {#each host.custom as field (field.key)}
       <div class="row custom">
@@ -441,6 +433,24 @@
       >
     </form>
   </section>
+
+  <section aria-label="Description" data-details-section="description">
+    <h3>Description</h3>
+    <span class="row">
+      <textarea
+        name="description"
+        aria-label="Description"
+        rows="3"
+        value={host.description ?? ""}
+        onchange={(event) =>
+          commit(
+            event,
+            (description) => ({ description }),
+            () => host.description ?? "",
+          )}></textarea>
+      <CopyButton value={host.description ?? ""} what="description" />
+    </span>
+  </section>
 </div>
 
 <style>
@@ -479,6 +489,48 @@
     color: var(--muted);
     font-size: var(--text-xs);
     overflow-wrap: anywhere;
+  }
+
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1-5);
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+
+  .facts .address {
+    font-family: var(--font-mono);
+  }
+
+  .environment {
+    padding: 0 var(--space-1-5);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-semibold);
+    line-height: 1.6;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .environment.production {
+    background: var(--env-production);
+    color: var(--on-env-production);
+  }
+
+  .environment.staging {
+    border: 1px solid var(--env-staging);
+    color: var(--text);
+  }
+
+  .environment.lab {
+    border: 1px dashed var(--env-lab);
+    color: var(--text);
+  }
+
+  .actions.more {
+    margin-top: var(--space-2);
   }
 
   .actions {

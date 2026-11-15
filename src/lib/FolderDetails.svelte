@@ -98,25 +98,59 @@
     </div>
   </header>
 
-  {#if !isRoot}
-    <label class="field">
-      <span>Name</span>
-      <span class="row">
-        <input
-          name="folder-name"
-          value={folder.name}
-          spellcheck="false"
-          onchange={(event) => renameTo(item, event.currentTarget.value)}
-        />
-        <CopyButton value={folder.name} what="name" />
-      </span>
-    </label>
-  {/if}
-  <label class="field">
-    <span>Description</span>
+  <section aria-label="Device" data-details-section="device">
+    <h3>Device</h3>
+    {#if !isRoot}
+      <label class="field">
+        <span>Name</span>
+        <span class="row">
+          <input
+            name="folder-name"
+            value={folder.name}
+            spellcheck="false"
+            onchange={(event) => renameTo(item, event.currentTarget.value)}
+          />
+          <CopyButton value={folder.name} what="name" />
+        </span>
+      </label>
+    {/if}
+    <SettingsPanel
+      part="device"
+      {item}
+      settings={folder.settings}
+      effective={effective.current}
+      {hostIds}
+      onchange={(change) => saveFolderSettings(folder.path, change)}
+    />
+  </section>
+
+  <section aria-label="Connection" data-details-section="connection">
+    <h3>Connection</h3>
+    <SettingsPanel
+      part="connection"
+      {item}
+      settings={folder.settings}
+      effective={effective.current}
+      {hostIds}
+      onchange={(change) => saveFolderSettings(folder.path, change)}
+    />
+  </section>
+
+  <div data-details-section="tags">
+    <TagEditor
+      tags={folder.tags}
+      effective={effective.current?.tags ?? null}
+      {item}
+      onchange={(change) => setFolderTags(folder.path, change)}
+    />
+  </div>
+
+  <section aria-label="Description" data-details-section="description">
+    <h3>Description</h3>
     <span class="row">
       <textarea
         name="folder-description"
+        aria-label="Description"
         rows="4"
         value={folder.description ?? ""}
         onchange={(event) =>
@@ -124,22 +158,7 @@
       ></textarea>
       <CopyButton value={folder.description ?? ""} what="description" />
     </span>
-  </label>
-
-  <TagEditor
-    tags={folder.tags}
-    effective={effective.current?.tags ?? null}
-    {item}
-    onchange={(change) => setFolderTags(folder.path, change)}
-  />
-
-  <SettingsPanel
-    {item}
-    settings={folder.settings}
-    effective={effective.current}
-    {hostIds}
-    onchange={(change) => saveFolderSettings(folder.path, change)}
-  />
+  </section>
 </div>
 
 <style>
@@ -166,6 +185,20 @@
     color: var(--muted);
     font-size: var(--text-xs);
     overflow-wrap: anywhere;
+  }
+
+  section {
+    display: grid;
+    gap: var(--space-1-5);
+  }
+
+  h3 {
+    margin: 0 0 var(--space-1-5);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
 
   .actions {

@@ -54,6 +54,11 @@ export const inventory = $state({
   /** Why the last edit failed, if it did. */
   editError: null as string | null,
   selected: null as Item | null,
+  /**
+   * Whether the details sheet is open over the side view (#64): it shows
+   * the selected host or folder, following the selection.
+   */
+  details: false,
   expanded: {} as Record<string, boolean>,
   dialog: null as DialogRequest | null,
   /** While dragging: the folder the item would be dropped into. */
@@ -317,6 +322,16 @@ export function targetFolder(): string {
   if (selected?.kind === "folder") return selected.path;
   if (selected?.kind === "host") return api.parentPath(selected.id);
   return "";
+}
+
+/** Opens the details sheet on `item` (selected, and shown in the tree). */
+export function openDetails(item: Item) {
+  if (item.kind === "host") revealHost(item.id);
+  else {
+    reveal(item.path);
+    inventory.selected = item;
+  }
+  inventory.details = true;
 }
 
 /** Expands every folder above `path` (and `path` itself, if `self`). */

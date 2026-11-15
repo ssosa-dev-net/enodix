@@ -28,6 +28,7 @@
     openJob,
     openScript,
     openNornirImport,
+    openConfigHistory,
     remove,
     removeFilter,
     rename,
@@ -35,15 +36,25 @@
     viewThrough,
     type Item,
   } from "./inventory.svelte";
-  import { findHost, type Host } from "./workspace";
+  import {
+    findHost,
+    openLogFolder,
+    resolveSettings,
+    type EffectiveSettings,
+    type Host,
+    type Protocol,
+  } from "./workspace";
+  import { otherWays, ownWayBlocked, PROTOCOL_NAMES } from "./ways";
 
   interface Props {
     /** Opens the workspace switcher. */
     onopen: () => void;
-    onconnect: (host: Host) => void;
+    onconnect: (host: Host, protocol?: Protocol) => void;
+    /** Opens the details sheet on an item. */
+    ondetails: (item: Item) => void;
   }
 
-  let { onopen, onconnect }: Props = $props();
+  let { onopen, onconnect, ondetails }: Props = $props();
 
   const workspace = $derived(inventory.workspace);
 
@@ -55,7 +66,16 @@
     null;
   /** Where the dragged item's label follows the pointer, once dragging. */
   let ghost = $state<{ label: string; x: number; y: number } | null>(null);
-  let menu = $state<{ item: Item; x: number; y: number } | null>(null);
+  let menu = $state<{
+    item: Item;
+    x: number;
+    y: number;
+    /** A host's settings, once the core gave them (for its ways in). */
+    settings: EffectiveSettings | null;
+  } | null>(null);
+  /** Counts the context menus opened, so that a late answer for an
+   * earlier one is dropped. */
+  let menus = 0;
   /** Where the add control's menu is open, if it is. */
   let adding = $state<{ x: number; y: number } | null>(null);
 
@@ -147,7 +167,17 @@
     event.preventDefault();
     const item = itemAt(event.target) ?? { kind: "folder", path: "" };
     inventory.selected = item;
-    menu = { item, x: event.clientX, y: event.clientY };
+    menu = { item, x: event.clientX, y: event.clientY, settings: null };
+    const opened = ++menus;
+    if (item.kind === "host") {
+      resolveSettings(item)
+        .then((settings) => {
+          if (menu && menus === opened) menu.settings = settings;
+        })
+        .catch(() => {
+          // The ways in stay offered; connecting says what is wrong.
+        });
+    }
   }
 
   function ontreekeydown(event: KeyboardEvent) {
@@ -162,12 +192,12 @@
     }
   }
 
-  function connect(item: Item) {
+  function connect(item: Item, protocol?: Protocol) {
     const host =
       item.kind === "host" && workspace
         ? findHost(workspace.tree, item.id)
         : null;
-    if (host) onconnect(host);
+    if (host) onconnect(host, protocol);
   }
 
   /** The name the run-snippet dialog gives a folder. */
@@ -191,87 +221,120 @@
     openBackup({ kind: "filter", name }, `the hosts of ${name}`);
   }
 
-  /** The menu's entries for an item. */
-  function entries(item: Item): [string, () => void][] {
+  /** An entry of the tree's context menu: `id` is its `data-menu`. */
+  interface Entry {
+    id: string;
+    label: string;
+    action: () => void;
+    /** Why it cannot be used now, if it cannot. */
+    blocked?: string | null;
+  }
+
+  /** The menu's entries for an item: every action of its details too. */
+  function entries(item: Item, settings: EffectiveSettings | null): Entry[] {
     if (item.kind === "host") {
       const host = workspace ? findHost(workspace.tree, item.id) : null;
+      const name = host?.name ?? item.id;
+      const target = { kind: "hosts" as const, ids: [item.id] };
       return [
-        ["Connect", () => connect(item)],
-        [
-          "Run snippet…",
-          () =>
-            openJob({ kind: "hosts", ids: [item.id] }, host?.name ?? item.id),
-        ],
-        [
-          "Run script…",
-          () =>
-            openScript(
-              { kind: "hosts", ids: [item.id] },
-              host?.name ?? item.id,
+        {
+          id: "connect",
+          label: "Connect",
+          action: () => connect(item),
+          blocked: ownWayBlocked(settings),
+        },
+        ...otherWays(item.id, settings).map((way) => ({
+          id: `connect-${way.protocol}`,
+          label: `Connect by ${PROTOCOL_NAMES[way.protocol]}`,
+          action: () => connect(item, way.protocol),
+          blocked: way.blocked,
+        })),
+        { id: "details", label: "Details", action: () => ondetails(item) },
+        {
+          id: "run-snippet",
+          label: "Run snippet…",
+          action: () => openJob(target, name),
+        },
+        {
+          id: "run-script",
+          label: "Run script…",
+          action: () => openScript(target, name),
+        },
+        {
+          id: "back-up",
+          label: "Back up config",
+          action: () => openBackup(target, name),
+        },
+        {
+          id: "enrich",
+          label: "Fill in from device…",
+          action: () => openEnrich(target, name),
+        },
+        {
+          id: "config-history",
+          label: "Config history",
+          action: () => openConfigHistory(item.id),
+        },
+        {
+          id: "log-folder",
+          label: "Open log folder",
+          action: () =>
+            openLogFolder(item.id).catch(
+              (error) => (inventory.editError = String(error)),
             ),
-        ],
-        [
-          "Back up config",
-          () =>
-            openBackup(
-              { kind: "hosts", ids: [item.id] },
-              host?.name ?? item.id,
-            ),
-        ],
-        [
-          "Fill in from device…",
-          () =>
-            openEnrich(
-              { kind: "hosts", ids: [item.id] },
-              host?.name ?? item.id,
-            ),
-        ],
-        ["Rename…", () => rename(item)],
-        ["Move to…", () => move(item)],
-        ["Delete…", () => remove(item)],
+        },
+        { id: "rename", label: "Rename…", action: () => rename(item) },
+        { id: "move", label: "Move to…", action: () => move(item) },
+        { id: "delete", label: "Delete…", action: () => remove(item) },
       ];
     }
-    const creating: [string, () => void][] = [
-      ["New folder…", () => newFolder(item.path)],
-      ["New host…", () => newHost(item.path)],
-      ["Import CSV…", () => openCsvImport(item.path)],
-      ["Import Nornir inventory…", () => openNornirImport(item.path)],
-      [
-        "Run snippet…",
-        () =>
-          openJob({ kind: "folder", path: item.path }, folderLabel(item.path)),
-      ],
-      [
-        "Run script…",
-        () =>
-          openScript(
-            { kind: "folder", path: item.path },
-            folderLabel(item.path),
-          ),
-      ],
-      [
-        "Back up configs",
-        () =>
-          openBackup(
-            { kind: "folder", path: item.path },
-            folderLabel(item.path),
-          ),
-      ],
-      [
-        "Fill in from devices…",
-        () =>
-          openEnrich(
-            { kind: "folder", path: item.path },
-            folderLabel(item.path),
-          ),
-      ],
+    const target = { kind: "folder" as const, path: item.path };
+    const label = folderLabel(item.path);
+    const creating: Entry[] = [
+      { id: "details", label: "Details", action: () => ondetails(item) },
+      {
+        id: "new-folder",
+        label: "New folder…",
+        action: () => newFolder(item.path),
+      },
+      { id: "new-host", label: "New host…", action: () => newHost(item.path) },
+      {
+        id: "import-csv",
+        label: "Import CSV…",
+        action: () => openCsvImport(item.path),
+      },
+      {
+        id: "import-nornir",
+        label: "Import Nornir inventory…",
+        action: () => openNornirImport(item.path),
+      },
+      {
+        id: "run-snippet",
+        label: "Run snippet…",
+        action: () => openJob(target, label),
+      },
+      {
+        id: "run-script",
+        label: "Run script…",
+        action: () => openScript(target, label),
+      },
+      {
+        id: "back-up",
+        label: "Back up configs",
+        action: () => openBackup(target, label),
+      },
+      {
+        id: "enrich",
+        label: "Fill in from devices…",
+        action: () => openEnrich(target, label),
+      },
     ];
     if (item.path === "") return creating;
     return [
       ...creating,
-      ["Rename…", () => rename(item)],
-      ["Move to…", () => move(item)],
-      ["Delete", () => remove(item)],
+      { id: "rename", label: "Rename…", action: () => rename(item) },
+      { id: "move", label: "Move to…", action: () => move(item) },
+      { id: "delete", label: "Delete", action: () => remove(item) },
     ];
   }
 </script>
@@ -480,7 +543,12 @@
       {oncontextmenu}
       onkeydown={ontreekeydown}
     >
-      <TreeFolder folder={workspace.tree} depth={0} {onconnect} />
+      <TreeFolder
+        folder={workspace.tree}
+        depth={0}
+        onconnect={(host) => onconnect(host)}
+        {ondetails}
+      />
       {#if inventory.filterView?.hosts.size === 0}
         <p class="hint">No host matches this filter.</p>
       {/if}
@@ -548,13 +616,16 @@
 
 {#if menu}
   <div class="menu" role="menu" style:left="{menu.x}px" style:top="{menu.y}px">
-    {#each entries(menu.item) as [label, action] (label)}
+    {#each entries(menu.item, menu.settings) as entry (entry.id)}
       <button
         role="menuitem"
+        data-menu={entry.id}
+        disabled={Boolean(entry.blocked)}
+        title={entry.blocked ?? undefined}
         onclick={() => {
           menu = null;
-          action();
-        }}>{label}</button
+          entry.action();
+        }}>{entry.label}</button
       >
     {/each}
   </div>

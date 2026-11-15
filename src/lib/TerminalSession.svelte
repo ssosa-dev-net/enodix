@@ -78,6 +78,11 @@
      * agent did not work; without it, that is not offered.
      */
     onpasswordlogin?: (reason: string) => void;
+    /**
+     * Opens the details sheet on the session's host; without it (quick
+     * connect, or a host no longer in the open workspace) there is none.
+     */
+    ondetails?: () => void;
   }
 
   let {
@@ -98,6 +103,7 @@
     ondismiss,
     onduplicate,
     onpasswordlogin,
+    ondetails,
   }: Props = $props();
 
   /** Output held for a hidden terminal, acknowledged at once (see `deliver`). */
@@ -832,6 +838,15 @@
     >
       {groupSize === null ? "Multi-send" : "Leave group"}
     </button>
+    {#if ondetails}
+      <button
+        data-session-details
+        onclick={ondetails}
+        title="Show this host's details beside the tree (Ctrl+Shift+D)"
+      >
+        Details
+      </button>
+    {/if}
     <button
       onclick={() => session && onduplicate(session.id)}
       disabled={!session}

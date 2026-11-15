@@ -9,9 +9,8 @@
   import ConfirmSwitch from "./lib/ConfirmSwitch.svelte";
   import CredentialsPrompt from "./lib/CredentialsPrompt.svelte";
   import Dialog from "./lib/Dialog.svelte";
-  import FolderDetails from "./lib/FolderDetails.svelte";
+  import DetailsSheet from "./lib/DetailsSheet.svelte";
   import HighlightRulesDialog from "./lib/HighlightRulesDialog.svelte";
-  import HostDetails from "./lib/HostDetails.svelte";
   import HostsView from "./lib/HostsView.svelte";
   import PaneView, {
     type PaneHandlers,
@@ -45,11 +44,13 @@
     hostRole,
     hostSafety,
     inventory,
+    openDetails,
     selectedFolder,
     selectedHost,
     setWorkspace,
     trackFilterView,
     workspaceChanged,
+    type Item,
   } from "./lib/inventory.svelte";
   import { hostLogin } from "./lib/credentials";
   import { highlighting, trackHighlightRules } from "./lib/highlight.svelte";
@@ -520,53 +521,63 @@
   const host = $derived(selectedHost());
   const folder = $derived(selectedFolder());
 
-  // The rail, the side view it selects (its width and whether it is
-  // folded are the left panel's preferences) and the details panel: widths
-  // from the preferences, or the one being dragged.
+  // The rail and the side view it selects (its width and whether it is
+  // folded are the left panel's preferences): the width from the
+  // preferences, or the one being dragged. There is no right column: host
+  // and folder details are a sheet over the Hosts view (#64).
   let liveLeft = $state<number | null>(null);
-  let liveRight = $state<number | null>(null);
   let windowWidth = $state(window.innerWidth);
-  /** The terminal area keeps at least this much when panels widen. */
+  /** The terminal area keeps at least this much when the side view widens. */
   const MIN_CENTRE = 320;
-  const REVEAL_STRIP = 14;
   /** The activity rail's width. */
   const RAIL = 48;
   const sideView = $derived(preferences.current.sideView);
   const leftShown = $derived(!preferences.current.leftPanelHidden);
-  const hasDetails = $derived(Boolean(host || folder));
-  const rightShown = $derived(
-    hasDetails && !preferences.current.rightPanelHidden,
-  );
   const leftWidth = $derived(liveLeft ?? preferences.current.leftPanelWidth);
-  const rightWidth = $derived(liveRight ?? preferences.current.rightPanelWidth);
-  const leftColumn = $derived(leftShown ? leftWidth : 0);
-  const rightColumn = $derived(
-    hasDetails ? (rightShown ? rightWidth : REVEAL_STRIP) : 0,
+  /** How wide the side view may get without squeezing the terminal. */
+  const widest = $derived(
+    Math.min(PANEL_WIDTHS.max, windowWidth - RAIL - MIN_CENTRE),
   );
-  /** How wide a panel may get without squeezing the terminal. */
-  const widest = (other: number) =>
-    Math.min(PANEL_WIDTHS.max, windowWidth - RAIL - other - MIN_CENTRE);
   const columns = $derived(
-    [
-      `${RAIL}px`,
-      leftShown ? `${leftColumn}px` : null,
-      "minmax(0, 1fr)",
-      hasDetails ? `${rightColumn}px` : null,
-    ]
+    [`${RAIL}px`, leftShown ? `${leftWidth}px` : null, "minmax(0, 1fr)"]
       .filter(Boolean)
       .join(" "),
   );
 
-  function togglePanel(side: "left" | "right") {
-    if (side === "left") {
-      void changePreferences({
-        leftPanelHidden: !preferences.current.leftPanelHidden,
-      });
-    } else {
-      void changePreferences({
-        rightPanelHidden: !preferences.current.rightPanelHidden,
-      });
+  function toggleSideView() {
+    void changePreferences({
+      leftPanelHidden: !preferences.current.leftPanelHidden,
+    });
+  }
+
+  /** The details sheet is shown: open, with something selected to show,
+   * over the Hosts view. */
+  const detailsShown = $derived(
+    inventory.details &&
+      Boolean(host || folder) &&
+      sideView === "hosts" &&
+      leftShown,
+  );
+
+  // The sheet closes with what it showed (deleted, say) and with the Hosts
+  // view (another view chosen, or the side view folded).
+  $effect(() => {
+    if (inventory.details && !detailsShown) inventory.details = false;
+  });
+
+  /** Opens the details sheet on `item` (the selection if none), bringing
+   * back the Hosts view it lies over. */
+  function showDetails(item: Item | null = inventory.selected) {
+    if (!item) return;
+    if (sideView !== "hosts" || !leftShown) {
+      void changePreferences({ sideView: "hosts", leftPanelHidden: false });
     }
+    openDetails(item);
+  }
+
+  function closeDetails() {
+    inventory.details = false;
+    focusRequest += 1;
   }
 
   /** What a rail icon (or its shortcut) does: shows `view`, or folds the
@@ -771,6 +782,14 @@
     }
   }
 
+  /** Opens the details sheet on the session's host, if it is in the open
+   * workspace. */
+  function detailsOf(session: OpenSession) {
+    const id = liveHost(session);
+    if (id === null || !inventory.workspace) return undefined;
+    return () => showDetails({ kind: "host", id });
+  }
+
   /**
    * For a session logging in with a profile: asks for a password instead,
    * after the profile (its SSH agent) could not log in.
@@ -909,7 +928,7 @@
     }
     // Not Ctrl+B: that is tmux's prefix, so it must reach devices.
     if (event.shiftKey && letter("B")) {
-      return () => togglePanel("left");
+      return () => toggleSideView();
     }
     // Each side view: Ctrl+Shift and a letter no terminal program needs.
     const chosen = event.shiftKey
@@ -919,8 +938,10 @@
     if (!event.shiftKey && (event.code === "Comma" || event.key === ",")) {
       return () => (preferences.dialog = true);
     }
+    // Opens or closes the details sheet on the selection.
     if (event.shiftKey && letter("D")) {
-      return hasDetails ? () => togglePanel("right") : null;
+      if (inventory.details) return closeDetails;
+      return inventory.selected ? () => showDetails() : null;
     }
     return null;
   }
@@ -992,7 +1013,21 @@
   {#if leftShown}
     <aside class="side-view" data-side-view={sideView}>
       {#if sideView === "hosts"}
-        <HostsView onopen={() => (switcher = true)} onconnect={prompt} />
+        <div class="hosts-area" class:under-sheet={detailsShown}>
+          <HostsView
+            onopen={() => (switcher = true)}
+            onconnect={prompt}
+            ondetails={showDetails}
+          />
+        </div>
+        {#if detailsShown}
+          <DetailsSheet
+            {host}
+            {folder}
+            onconnect={prompt}
+            onclose={closeDetails}
+          />
+        {/if}
       {:else if sideView === "snippets"}
         {#if inventory.workspace}
           <SnippetsPanel
@@ -1059,6 +1094,7 @@
             ondismiss={() => dismiss(tab)}
             onduplicate={(id) => duplicate(tab, id)}
             onpasswordlogin={passwordLogin(tab, session)}
+            ondetails={detailsOf(session)}
           />
           {#if groupPasteQuestion?.tab === tab}
             {@const question = groupPasteQuestion}
@@ -1125,51 +1161,18 @@
     {/if}
   </section>
 
-  {#if hasDetails && !rightShown}
-    <button
-      class="reveal"
-      data-reveal-panel="right"
-      title="Show the details panel (Ctrl+Shift+D)"
-      aria-label="Show the details panel"
-      onclick={() => togglePanel("right")}>‹</button
-    >
-  {:else if host}
-    <aside class="side">
-      <HostDetails {host} onconnect={prompt} />
-    </aside>
-  {:else if folder}
-    <aside class="side">
-      <FolderDetails {folder} />
-    </aside>
-  {/if}
-
   {#if leftShown}
     <div class="edge" style:left="{RAIL + leftWidth}px">
       <PanelResizer
         side="left"
         width={leftWidth}
         min={PANEL_WIDTHS.min}
-        max={widest(rightColumn)}
+        max={widest}
         onlive={(width) => (liveLeft = width)}
         oncommit={(width) => void changePreferences({ leftPanelWidth: width })}
         onreset={() =>
           void changePreferences({ leftPanelWidth: PANEL_WIDTHS.left })}
-        onhide={() => togglePanel("left")}
-      />
-    </div>
-  {/if}
-  {#if rightShown}
-    <div class="edge" style:right="{rightWidth}px">
-      <PanelResizer
-        side="right"
-        width={rightWidth}
-        min={PANEL_WIDTHS.min}
-        max={widest(leftColumn)}
-        onlive={(width) => (liveRight = width)}
-        oncommit={(width) => void changePreferences({ rightPanelWidth: width })}
-        onreset={() =>
-          void changePreferences({ rightPanelWidth: PANEL_WIDTHS.right })}
-        onhide={() => togglePanel("right")}
+        onhide={toggleSideView}
       />
     </div>
   {/if}
@@ -1425,25 +1428,21 @@
     font-size: var(--text-sm);
   }
 
-  /* A folded panel: a thin strip that brings it back. */
-  .reveal {
-    min-width: 0;
-    padding: 0;
-    border: none;
-    border-radius: 0;
-    background: var(--bg);
-    color: var(--muted);
-    font-size: var(--text-xs);
-    cursor: pointer;
+  .hosts-area {
+    display: flex;
+    flex-direction: column;
   }
 
-  .reveal[data-reveal-panel="right"] {
-    border-left: 1px solid var(--border);
+  .hosts-area > :global(*) {
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
-  .reveal:hover:not(:disabled) {
-    color: inherit;
-    background: var(--surface-raised);
+  /* With the details sheet open, the tree keeps the top of the side view
+     (so that selecting in it changes what the sheet shows). */
+  .side-view > .hosts-area.under-sheet {
+    flex: 0 0 38%;
+    min-height: 10rem;
   }
 
   .centre {
@@ -1464,12 +1463,5 @@
 
   .slot.connect {
     background: var(--bg);
-  }
-
-  .side {
-    min-height: 0;
-    overflow: auto;
-    background: var(--surface);
-    border-left: 1px solid var(--border);
   }
 </style>
