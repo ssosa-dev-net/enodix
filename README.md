@@ -34,7 +34,7 @@ open in a window of its own. [docs/interface.md](docs/interface.md)
 describes the window, lists the shortcuts and says where everything is.
 
 Releases up to 0.1.2 have the sessions and the inventory only; everything
-else in the list came with 0.2.0. Releases so far are pre-releases: not
+else in the list came with 0.2.0, and the redesigned interface with 0.3.0. Releases so far are pre-releases: not
 code-signed, and without the automatic updates described below (install
 the next version over the old one by hand). [CHANGELOG.md](CHANGELOG.md) lists what
 each release added, and [ROADMAP.md](ROADMAP.md) says what is built, what
