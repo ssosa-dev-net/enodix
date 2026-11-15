@@ -8,6 +8,7 @@
   import PasteConfirm, { type PasteMember } from "./lib/PasteConfirm.svelte";
   import ConfirmSwitch from "./lib/ConfirmSwitch.svelte";
   import CredentialsPrompt from "./lib/CredentialsPrompt.svelte";
+  import CredentialsView from "./lib/CredentialsView.svelte";
   import Dialog from "./lib/Dialog.svelte";
   import DetailsSheet from "./lib/DetailsSheet.svelte";
   import HighlightRulesDialog from "./lib/HighlightRulesDialog.svelte";
@@ -22,7 +23,6 @@
   import PythonSetupDialog from "./lib/PythonSetupDialog.svelte";
   import { python, refreshPython } from "./lib/python.svelte";
   import PlatformsDialog from "./lib/PlatformsDialog.svelte";
-  import ProfilesDialog from "./lib/ProfilesDialog.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
   import SnippetDialog from "./lib/SnippetDialog.svelte";
   import SnippetsView from "./lib/SnippetsView.svelte";
@@ -979,7 +979,6 @@
     if (vaultLocked) return;
     const busy =
       inventory.dialog ||
-      profiles.dialog ||
       preferences.dialog ||
       highlighting.dialog ||
       python.dialog ||
@@ -1033,6 +1032,8 @@
           target={snippetTarget}
           onsend={(snippet) => void sendSnippet(snippet)}
         />
+      {:else if sideView === "credentials"}
+        <CredentialsView />
       {:else}
         <PlaceholderViews view={sideView} />
       {/if}
@@ -1373,10 +1374,6 @@
       focusRequest += 1;
     }}
   />
-{/if}
-
-{#if profiles.dialog}
-  <ProfilesDialog onclose={() => (profiles.dialog = false)} />
 {/if}
 
 {#if inventory.dialog}

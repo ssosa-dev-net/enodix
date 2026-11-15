@@ -1,10 +1,11 @@
 // The open workspace's credential profiles and the names of its secrets,
-// as the interface shows them, and whether the profiles dialog is open.
-// Fetched again whenever the workspace changes, since the profiles it
-// names may change with it.
+// as the interface shows them, and the vault's state, for the Credentials
+// side view. Fetched again whenever the workspace changes, since the
+// profiles it names may change with it, and after every vault change.
 
 import * as api from "./credentials";
 import type { ProfileDraft, ProfilesView } from "./credentials";
+import { vaultStatus, type VaultStatus } from "./vault";
 
 export const profiles = $state({
   view: {
@@ -15,8 +16,8 @@ export const profiles = $state({
   } as ProfilesView,
   /** Why the profiles could not be read, if they could not. */
   error: null as string | null,
-  /** Whether the profiles dialog is open. */
-  dialog: false,
+  /** Whether the vault is off, locked or unlocked; null until known. */
+  vault: null as VaultStatus | null,
 });
 
 // Answers can arrive out of order; only the latest request's counts.
@@ -38,7 +39,20 @@ async function adopt(request: Promise<ProfilesView>): Promise<string | null> {
 }
 
 export async function refreshProfiles() {
-  profiles.error = await adopt(api.listProfiles());
+  const [error] = await Promise.all([
+    adopt(api.listProfiles()),
+    refreshVault(),
+  ]);
+  profiles.error = error;
+}
+
+/** Asks the core whether the vault is off, locked or unlocked. */
+async function refreshVault() {
+  try {
+    profiles.vault = await vaultStatus();
+  } catch {
+    profiles.vault = null;
+  }
 }
 
 /** Resolves to an error to show, or null once saved. */
