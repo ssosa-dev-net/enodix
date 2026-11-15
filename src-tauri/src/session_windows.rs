@@ -27,8 +27,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use netterm_core::layout::{
-    close_workspace_sessions, live_in_session_windows, take_over_dead_window, TabId, WindowId,
-    WindowView, Windows,
+    close_workspace_sessions, live_in_session_windows, place_session_window, take_over_dead_window,
+    Frame, PhysicalRect, TabId, WindowId, WindowView, Windows, SESSION_WINDOW_MIN_SIZE,
 };
 use netterm_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, SessionId, SessionManager, SessionRecord,
@@ -37,7 +37,10 @@ use netterm_core::session::{
 use netterm_core::workspace::{HostId, Workspace};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl,
+    WebviewWindowBuilder,
+};
 
 use super::{
     calling_window, focused_main, product_name, window_theme, window_view, Channels,
@@ -62,10 +65,6 @@ const SNIPPET_SEND_EVENT: &str = "snippet-send";
 const MAIN_WINDOW_REQUEST_EVENT: &str = "main-window-request";
 /// How long a new session window's page waits for its session.
 const TAKE_WAIT: Duration = Duration::from_secs(10);
-/// Where a session window opens, from the main window's corner.
-const OPEN_OFFSET: f64 = 40.0;
-const MIN_WIDTH: f64 = 420.0;
-const MIN_HEIGHT: f64 = 320.0;
 
 /// The session window labelled `label`, as the core names it.
 pub(super) fn window_of(label: &str) -> Option<WindowId> {
@@ -485,6 +484,10 @@ pub(super) fn main_window_request(
 
 /// Builds a session window near `main`, `size` (logical) or as much of it
 /// as the screen allows, with the app's own frame (#80); it has the focus.
+///
+/// Placed by physical position (#90): a logical one does not name one
+/// monitor when monitors have different scaling. The builder only takes a
+/// logical position, so the window is built hidden, placed, and shown.
 fn build(
     app: &AppHandle,
     main: &tauri::WebviewWindow,
@@ -493,44 +496,62 @@ fn build(
     theme: Option<tauri::Theme>,
     (width, height): (f64, f64),
 ) -> Result<tauri::WebviewWindow, String> {
-    let mut width = width.max(MIN_WIDTH);
-    let mut height = height.max(MIN_HEIGHT);
-    let scale = main.scale_factor().unwrap_or(1.0);
-    let (mut x, mut y) = main
-        .outer_position()
-        .map(|at| {
-            let at = at.to_logical::<f64>(scale);
-            (at.x + OPEN_OFFSET, at.y + OPEN_OFFSET)
-        })
-        .unwrap_or((OPEN_OFFSET, OPEN_OFFSET));
-    if let Ok(Some(monitor)) = main.current_monitor() {
+    let monitor = main.current_monitor().ok().flatten();
+    let scale = monitor
+        .as_ref()
+        .map(tauri::Monitor::scale_factor)
+        .or_else(|| main.scale_factor().ok())
+        .unwrap_or(1.0);
+    let work_area = monitor.as_ref().map(|monitor| {
         let area = monitor.work_area();
-        let scale = monitor.scale_factor();
-        let (left, top) = (
-            f64::from(area.position.x) / scale,
-            f64::from(area.position.y) / scale,
-        );
-        let (across, down) = (
-            f64::from(area.size.width) / scale,
-            f64::from(area.size.height) / scale,
-        );
-        width = width.min(across);
-        height = height.min(down);
-        x = x.min(left + across - width).max(left);
-        y = y.min(top + down - height).max(top);
-    }
-    WebviewWindowBuilder::new(app, label, WebviewUrl::default())
+        PhysicalRect {
+            x: area.position.x,
+            y: area.position.y,
+            width: area.size.width,
+            height: area.size.height,
+        }
+    });
+    let from = main.outer_position().ok().map(|at| (at.x, at.y));
+    let place = |frame| place_session_window(from, scale, work_area, (width, height), frame);
+    let first = place(Frame::default());
+    let (min_width, min_height) = SESSION_WINDOW_MIN_SIZE;
+    let built = WebviewWindowBuilder::new(app, label, WebviewUrl::default())
         .title(title)
-        .inner_size(width, height)
-        .position(x, y)
-        .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+        .inner_size(first.width, first.height)
+        .min_inner_size(min_width, min_height)
         .theme(theme)
         .decorations(false)
         .shadow(true)
-        .focused(true)
+        .visible(false)
         .build()
         .inspect(watch_page)
-        .map_err(|error| format!("the window could not be opened: {error}"))
+        .map_err(|error| format!("the window could not be opened: {error}"))?;
+    // Moved to its monitor first: on one of another scale its scale
+    // changes, so its size is set again at that scale. (This counts on
+    // the move taking the new scale before it returns: on Windows the
+    // move sends WM_DPICHANGED, which tao handles there and then, hidden
+    // or not; checked for #90 at 100% and 150%.) Its frame (the invisible
+    // border of a window with a shadow) is known there; it is then placed
+    // so that what is seen fits the work area.
+    let shown = built
+        .set_position(PhysicalPosition::new(first.x, first.y))
+        .and_then(|()| built.set_size(LogicalSize::new(first.width, first.height)))
+        .and_then(|()| Ok((built.outer_position()?, built.inner_position()?)))
+        .and_then(|(outer, inner)| {
+            let frame = Frame {
+                left: u32::try_from(inner.x - outer.x).unwrap_or(0),
+                top: u32::try_from(inner.y - outer.y).unwrap_or(0),
+            };
+            let fitted = place(frame);
+            built.set_position(PhysicalPosition::new(fitted.x, fitted.y))
+        })
+        .and_then(|()| built.show());
+    if let Err(error) = shown {
+        let _ = built.destroy();
+        return Err(format!("the window could not be placed: {error}"));
+    }
+    let _ = built.set_focus();
+    Ok(built)
 }
 
 /// A session a session window's page takes.

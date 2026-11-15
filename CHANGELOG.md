@@ -29,10 +29,15 @@ For troubleshooting across several monitors (spec #81, #83 to #88).
   the Task Manager) closes, and the main window takes its sessions, still
   connected, saying their earlier output was lost; a flood going on keeps
   flowing (#89).
-- Known limits: monitors with different display scaling are not checked
-  (#90); a session window whose page hangs without crashing, or the web
-  engine crashing as a whole, still leaves sessions stuck until the app is
-  closed; the crash handling is not yet tried on a Linux desktop (#58).
+- A new session window opens beside the window it came from on monitors
+  with different display scaling too; before, from a monitor scaled more
+  than the primary (a laptop screen at 150% beside an external monitor at
+  100%), it could open on the other monitor. Near a monitor's edges it is
+  fitted so that what is seen stays inside the screen (#90).
+- Known limits: a session window whose page hangs without crashing, or
+  the web engine crashing as a whole, still leaves sessions stuck until
+  the app is closed; the crash handling is not yet tried on a Linux
+  desktop (#58).
 
 ### Other changes
 

@@ -21,6 +21,7 @@
 
 mod closing;
 mod dead;
+mod placement;
 mod windows;
 
 use std::collections::BTreeMap;
@@ -30,6 +31,9 @@ use serde::{Deserialize, Serialize};
 
 pub use closing::{close_workspace_sessions, live_in_session_windows, WorkspaceClosed};
 pub use dead::take_over_dead_window;
+pub use placement::{
+    place_session_window, Frame, PhysicalRect, Placement, SESSION_WINDOW_MIN_SIZE,
+};
 pub use windows::{LayoutMut, Member, Taken, Used, WindowId, WindowView, Windows};
 
 /// A tab, unique for the life of its [`Layout`].
