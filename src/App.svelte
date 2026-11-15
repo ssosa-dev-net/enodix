@@ -19,7 +19,7 @@
     type TabInfo,
   } from "./lib/PaneView.svelte";
   import PanelResizer from "./lib/PanelResizer.svelte";
-  import PlaceholderViews from "./lib/PlaceholderViews.svelte";
+  import BackupsView from "./lib/BackupsView.svelte";
   import PreferencesView from "./lib/PreferencesView.svelte";
   import { setViewOpener, VIEWS } from "./lib/views";
   import PythonSetupDialog from "./lib/PythonSetupDialog.svelte";
@@ -640,16 +640,20 @@
     void edit({ kind: "closeTab", tab });
   }
 
-  // Job and run tabs belong to the workspace they were opened in (host ids
-  // and run ids mean nothing elsewhere): switching closes them. Their jobs
-  // go on running.
+  // Job, run and config history tabs belong to the workspace they were
+  // opened in (host ids and run ids mean nothing elsewhere): switching
+  // closes them. Their jobs go on running.
   let shownRoot: string | null | undefined = undefined;
   $effect(() => {
     const root = inventory.workspace?.root ?? null;
     untrack(() => {
       if (shownRoot !== undefined && root !== shownRoot) {
         for (const item of viewTabs) {
-          if (item.view === "job" || item.view === "run")
+          if (
+            item.view === "job" ||
+            item.view === "run" ||
+            item.view === "configs"
+          )
             void edit({ kind: "closeTab", tab: item.tab });
         }
       }
@@ -1200,7 +1204,7 @@
         {:else if sideView === "credentials"}
           <CredentialsView />
         {:else}
-          <PlaceholderViews view="backups" />
+          <BackupsView />
         {/if}
       </aside>
     {/if}
@@ -1311,6 +1315,8 @@
                 run={item.subject}
                 onclose={() => closeViewTab(item.tab, true)}
               />
+            {:else if item.view === "configs" && item.subject && inventory.workspace}
+              <ConfigHistory host={item.subject} />
             {/if}
           </div>
         {/each}
@@ -1432,16 +1438,6 @@
     run={inventory.enrichReview}
     onclose={() => {
       inventory.enrichReview = null;
-      focusRequest += 1;
-    }}
-  />
-{/if}
-
-{#if inventory.configHistory !== null && inventory.workspace}
-  <ConfigHistory
-    host={inventory.configHistory}
-    onclose={() => {
-      inventory.configHistory = null;
       focusRequest += 1;
     }}
   />

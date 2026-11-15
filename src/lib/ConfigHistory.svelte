@@ -1,4 +1,8 @@
 <script lang="ts">
+  // A host's config history, in its tab (#70; one tab per host): the kept
+  // versions, the text of one, a diff of any two, copy, save to a folder
+  // and back up now. It refetches whenever a backup keeps or checks a
+  // configuration.
   import { untrack } from "svelte";
   import {
     configVersion,
@@ -16,10 +20,9 @@
   interface Props {
     /** The host whose history is shown. */
     host: string;
-    onclose: () => void;
   }
 
-  let { host, onclose }: Props = $props();
+  let { host }: Props = $props();
 
   const name = $derived(
     (inventory.workspace && findHost(inventory.workspace.tree, host)?.name) ??
@@ -55,9 +58,9 @@
     }
   }
 
-  // Refetched when a job finishes (a backup may have added a version).
+  // Refetched when a backup kept or checked a configuration.
   $effect(() => {
-    void liveJobs.revision;
+    void liveJobs.configs;
     const id = host;
     configVersions(id).then(
       (list) => {
@@ -141,41 +144,19 @@
 
   function backUp() {
     openBackup({ kind: "hosts", ids: [host] }, name);
-    onclose();
   }
-
-  function onkeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && !busy) {
-      event.preventDefault();
-      onclose();
-    }
-  }
-
-  let firstButton = $state<HTMLElement>();
-  $effect(() => {
-    firstButton?.focus();
-  });
 </script>
 
-<svelte:window {onkeydown} />
-
-<div class="backdrop">
-  <div
-    class="dialog"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="config-history-title"
-    data-dialog="config-history"
-    data-host={host}
-  >
+<div class="history" data-view="config-history" data-host={host}>
+  <div class="inner">
     <header>
-      <h2 id="config-history-title">Config history of {name}</h2>
-      <button
-        type="button"
-        data-config-action="close"
-        bind:this={firstButton}
-        onclick={onclose}>Close</button
-      >
+      <h2>Config history of {name}</h2>
+      {#if versions !== null && versions.length > 0}
+        <span class="meta"
+          >{versions.length}
+          {versions.length === 1 ? "version" : "versions"}</span
+        >
+      {/if}
     </header>
     <p class="note" data-config-sensitive>
       Backups are kept on this computer, outside the workspace, unencrypted, and
@@ -318,36 +299,27 @@
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 21;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    padding: 4vh var(--space-4) var(--space-4);
-    background: var(--backdrop);
+  .history {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg);
+    font-size: var(--text-sm);
   }
 
-  .dialog {
-    width: min(70rem, 100%);
-    max-height: 92vh;
+  .inner {
+    height: 100%;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     padding: var(--space-3);
-    background: var(--dialog);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
-    overflow: hidden;
-    font-size: var(--text-sm);
   }
 
   header {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    gap: var(--space-2);
+    align-items: baseline;
   }
 
   h2 {
@@ -447,14 +419,14 @@
 
   .text {
     min-height: 6rem;
-    max-height: 22rem;
+    max-height: 40vh;
     overflow: auto;
   }
 
   .diff {
     font-family: var(--font-mono);
     font-size: var(--text-xs);
-    max-height: 22rem;
+    max-height: 40vh;
     overflow: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);

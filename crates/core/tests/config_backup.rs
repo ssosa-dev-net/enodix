@@ -7,7 +7,7 @@ mod support;
 
 use std::fs;
 
-use netterm_core::configs::{ConfigError, ConfigStore, SaveOutcome, VERSION_EXTENSION};
+use netterm_core::configs::{ConfigError, ConfigStore, LastBackup, SaveOutcome, VERSION_EXTENSION};
 use netterm_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
@@ -542,4 +542,66 @@ fn the_store_refuses_what_cannot_name_its_files() {
             format!("ws/r1/{}.txt", saved.version()),
         ]
     );
+}
+
+#[test]
+fn the_store_lists_the_hosts_backed_up_with_what_their_last_backup_did() {
+    let temp = TempDir::new().unwrap();
+    let configs = ConfigStore::new(temp.path());
+    let r1 = HostId::new("Site/r1.yaml");
+    let r2 = HostId::new("r2.yaml");
+    let r3 = HostId::new("r3.yaml");
+    let never = HostId::new("never.yaml");
+
+    // r1: two versions, the last backup changed something.
+    let first = configs.save("ws", &r1, "hostname r1\n", None).unwrap();
+    let changed = configs
+        .save("ws", &r1, "hostname r1\nntp server 10.0.0.1\n", None)
+        .unwrap();
+    // r2: one version, then a backup that found it unchanged.
+    let only = configs.save("ws", &r2, "hostname r2\n", None).unwrap();
+    assert!(matches!(
+        configs.save("ws", &r2, "hostname r2\n", None).unwrap(),
+        SaveOutcome::Unchanged { .. }
+    ));
+    // r3: its first backup.
+    let r3_first = configs.save("ws", &r3, "hostname r3\n", None).unwrap();
+    // A host of another workspace is not listed.
+    configs.save("other", &never, "x\n", None).unwrap();
+
+    let listed = configs
+        .backed_up("ws", &[never.clone(), r3.clone(), r1.clone(), r2.clone()])
+        .unwrap();
+    // In the order asked, hosts without versions left out.
+    let hosts: Vec<&HostId> = listed.iter().map(|h| &h.host).collect();
+    assert_eq!(hosts, [&r3, &r1, &r2]);
+
+    assert_eq!(listed[0].versions, 1);
+    assert_eq!(listed[0].newest, r3_first.version());
+    assert_eq!(listed[0].last, LastBackup::First);
+
+    assert_eq!(listed[1].versions, 2);
+    assert_eq!(listed[1].newest, changed.version());
+    assert_ne!(listed[1].newest, first.version());
+    assert_eq!(listed[1].last, LastBackup::Changed);
+    // When it was last backed up: its newest version's time.
+    assert_eq!(listed[1].last_backup, changed.version()[..19]);
+
+    assert_eq!(listed[2].versions, 1);
+    assert_eq!(listed[2].newest, only.version());
+    assert_eq!(listed[2].last, LastBackup::Unchanged);
+    assert!(listed[2].last_backup.as_str() >= &only.version()[..19]);
+
+    // A later change replaces the unchanged mark; the note is no version.
+    let again = configs.save("ws", &r2, "hostname r2b\n", None).unwrap();
+    let r2_now = &configs.backed_up("ws", std::slice::from_ref(&r2)).unwrap()[0];
+    assert_eq!(r2_now.last, LastBackup::Changed);
+    assert_eq!(r2_now.newest, again.version());
+    assert_eq!(configs.versions("ws", &r2).unwrap().len(), 2);
+
+    // A host id that cannot name a folder is refused, as everywhere.
+    assert!(matches!(
+        configs.backed_up("ws", &[HostId::new("../r1.yaml")]),
+        Err(ConfigError::BadHostId(_))
+    ));
 }

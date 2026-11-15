@@ -58,6 +58,38 @@ pub struct ConfigVersion {
     pub bytes: u64,
 }
 
+/// The name of the note, in a host's folder, of when a backup last found
+/// its configuration unchanged (removed when a version is saved). Not a
+/// version: versions end in [`VERSION_EXTENSION`].
+const UNCHANGED_NOTE: &str = ".unchanged";
+
+/// What a host's last backup did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LastBackup {
+    /// It kept the host's first version.
+    First,
+    /// It kept a version that differs from the one before.
+    Changed,
+    /// It found the configuration the same as the newest version.
+    Unchanged,
+}
+
+/// A host with kept configurations ([`ConfigStore::backed_up`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackedUpHost {
+    pub host: HostId,
+    /// How many versions are kept.
+    pub versions: usize,
+    /// The newest version's name.
+    pub newest: String,
+    /// When it was last backed up, local time `YYYY-MM-DD_HH-MM-SS`: the
+    /// newest version's time, or a later backup's that changed nothing.
+    pub last_backup: String,
+    pub last: LastBackup,
+}
+
 /// Why kept configurations cannot be used.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -154,11 +186,14 @@ impl ConfigStore {
             let kept = fs::read(&path).map_err(io_error(&path))?;
             let kept = String::from_utf8_lossy(&kept);
             if significant(&kept, ignored.as_ref()) == significant(text, ignored.as_ref()) {
+                // Only a note for the backups view: failing to write it
+                // does not fail the backup.
+                let _ = fs::write(folder.join(UNCHANGED_NOTE), now_stamp());
                 return Ok(SaveOutcome::Unchanged { version: latest });
             }
         }
         fs::create_dir_all(&folder).map_err(io_error(&folder))?;
-        let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+        let stamp = now_stamp();
         let version = (1..)
             .map(|n| match n {
                 1 => stamp.clone(),
@@ -173,7 +208,49 @@ impl ConfigStore {
         fs::write(&temporary, text)
             .and_then(|()| fs::rename(&temporary, &path))
             .map_err(io_error(&path))?;
+        match fs::remove_file(folder.join(UNCHANGED_NOTE)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                return Err(io_error(&folder.join(UNCHANGED_NOTE))(error))
+            }
+            _ => {}
+        }
         Ok(SaveOutcome::Saved { version })
+    }
+
+    /// Those of `hosts` (in that order) that have kept versions in
+    /// `workspace`, each with its newest version and what its last backup
+    /// did.
+    pub fn backed_up(
+        &self,
+        workspace: &str,
+        hosts: &[HostId],
+    ) -> Result<Vec<BackedUpHost>, ConfigError> {
+        let mut listed = Vec::new();
+        for host in hosts {
+            let folder = self.host_folder(workspace, host)?;
+            let ids = version_ids(&folder)?;
+            let Some(newest) = ids.first().cloned() else {
+                continue;
+            };
+            let newest_time = newest.get(..19).unwrap_or(&newest).to_string();
+            let note = fs::read_to_string(folder.join(UNCHANGED_NOTE))
+                .ok()
+                .map(|text| text.trim().to_string())
+                .filter(|stamp| stamp.len() == 19 && *stamp >= newest_time);
+            let (last, last_backup) = match note {
+                Some(stamp) => (LastBackup::Unchanged, stamp),
+                None if ids.len() == 1 => (LastBackup::First, newest_time),
+                None => (LastBackup::Changed, newest_time),
+            };
+            listed.push(BackedUpHost {
+                host: host.clone(),
+                versions: ids.len(),
+                newest,
+                last_backup,
+                last,
+            });
+        }
+        Ok(listed)
     }
 
     /// The versions of `host`'s configuration, newest first.
@@ -283,6 +360,11 @@ impl ConfigStore {
         }
         Ok(path)
     }
+}
+
+/// The local time now, as a version is named.
+fn now_stamp() -> String {
+    chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
 fn version_path(folder: &Path, version: &str) -> PathBuf {
