@@ -5,6 +5,35 @@ in the project's tracker.
 
 ## Unreleased
 
+### Terminals in windows of their own
+
+For troubleshooting across several monitors (spec #81, #83 to #88).
+
+- **Open in window** on a session's menu, its tab's menu and Ctrl+Shift+N
+  moves a session to a window of its own, still connected, with its
+  scrollback and screen. Output arriving during the move appears once and
+  in order (#84).
+- A session window holds several sessions in tabs and split panes; a
+  session can move into a window already open, and Dock back returns one
+  or all of them to the main window (#85).
+- What protects you follows the session: the production colour and mark,
+  the unencrypted and legacy-crypto markers, paste confirmation, host-key
+  and login questions, logging (#86).
+- Multi-send spans windows: one group for the app, shown in every window
+  (#87).
+- Closing a session window with live sessions asks whether to dock them
+  back or close them. Closing the main window now asks once when a session
+  is live in any window; before, it closed without asking (#88).
+- The palette (Ctrl+K) works in a session window (#88).
+- Known limits: a session window whose page crashes keeps its sessions
+  stuck until the app is closed (#89, not built yet); monitors with
+  different display scaling are not checked.
+
+### Other changes
+
+- The app draws its own window frame: the system title bar is gone, the
+  tab bar drags the window and holds Minimize, Maximize and Close (#80).
+  The Windows 11 snap-layouts flyout on the Maximize button is not kept.
 - The details sheet's actions are one row of icons with tooltips, in place
   of a block of text buttons.
 - With details open, the problems line no longer sits between the tree and
