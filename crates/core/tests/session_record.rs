@@ -159,3 +159,60 @@ fn a_records_host_counts_only_in_its_own_workspace_while_it_is_there() {
     // What it opened with stays: moving cannot weaken a safeguard.
     assert_eq!(record.safety.environment, Some(Environment::Production));
 }
+
+#[test]
+fn a_records_paste_safety_is_its_hosts_as_set_now_else_as_it_opened() {
+    let (temp, workspace) = workspace();
+    let id = HostId::new("Prod/edge-fw.yaml");
+    let record =
+        SessionRecord::for_host(&workspace, &id, Transport::Ssh, "edge-fw", "edge-fw").unwrap();
+    let opened = record.safety;
+    assert_eq!(record.safety_in(&workspace), opened);
+
+    // The workspace changed the host: its pastes follow the change.
+    fs::write(
+        temp.path().join("Prod/_folder.yaml"),
+        "environment: staging
+",
+    )
+    .unwrap();
+    let edited = Workspace::open(temp.path()).unwrap();
+    assert_eq!(
+        record.safety_in(&edited),
+        PasteSafety {
+            environment: Some(Environment::Staging),
+            ..PasteSafety::default()
+        }
+    );
+
+    // Open in another workspace (whose host of that id is production
+    // too): what it opened with, not that host's.
+    let (_other_temp, other) = self::workspace();
+    let mut opened_lax = record.clone();
+    opened_lax.safety = PasteSafety::default();
+    assert_eq!(opened_lax.safety_in(&other), PasteSafety::default());
+    // The host gone: as it opened.
+    fs::remove_file(temp.path().join("Prod/edge-fw.yaml")).unwrap();
+    let removed = Workspace::open(temp.path()).unwrap();
+    assert_eq!(record.safety_in(&removed), opened);
+}
+
+#[test]
+fn the_app_gives_each_sessions_paste_safety_with_or_without_a_workspace() {
+    let (_temp, workspace) = workspace();
+    let id = HostId::new("Prod/edge-fw.yaml");
+    let record =
+        SessionRecord::for_host(&workspace, &id, Transport::Ssh, "edge-fw", "edge-fw").unwrap();
+    let opened = record.safety;
+    let records = SessionRecords::new();
+    records.record(SessionId(1), record);
+
+    assert_eq!(records.paste_safety(SessionId(1), Some(&workspace)), opened);
+    // No workspace open: as it opened.
+    assert_eq!(records.paste_safety(SessionId(1), None), opened);
+    // A session the app has no record of: no safeguard to apply.
+    assert_eq!(
+        records.paste_safety(SessionId(2), Some(&workspace)),
+        PasteSafety::default()
+    );
+}

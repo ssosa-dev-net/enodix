@@ -59,6 +59,8 @@ export interface Layout {
    * in any window (the shell routes it).
    */
   group: TabId[];
+  /** How many members the group has, in every window (#87). */
+  groupSize: number;
   /** What each tab holds, by tab id. */
   kinds: Record<string, TabKind>;
   /** Raised by every change: an older layout is out of date. */

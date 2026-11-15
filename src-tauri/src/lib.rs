@@ -56,6 +56,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
+mod group;
 mod python;
 mod session_windows;
 
@@ -2249,11 +2250,22 @@ async fn session_duplicate(
 }
 
 /// Every window's tabs and panes, and the app's multi-send group (#83).
-struct Tabs(Mutex<Windows>);
+struct Tabs {
+    windows: Mutex<Windows>,
+    /// The group's revision the windows were last told (#87).
+    told: AtomicU64,
+}
 
 impl Tabs {
+    fn new() -> Self {
+        Self {
+            windows: Mutex::new(Windows::new()),
+            told: AtomicU64::new(0),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Windows> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.windows.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Records the session `window`'s `tab` shows. A tab closed while its
@@ -2337,19 +2349,29 @@ struct LayoutChanged {
 /// interface's sessions start afresh too when it loads); its tabs leave
 /// the multi-send group.
 #[tauri::command]
-fn layout_reset(window: tauri::WebviewWindow, tabs: State<'_, Tabs>) -> Result<WindowView, String> {
+fn layout_reset(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    tabs: State<'_, Tabs>,
+    records: State<'_, SessionRecords>,
+) -> Result<WindowView, String> {
     let window = calling_window(&window)?;
     if window != WindowId::MAIN {
         return Err("a session window's layout is its session's".into());
     }
-    let mut windows = tabs.lock();
-    windows.reset(window).map_err(|error| error.to_string())?;
-    window_view(&windows, window)
+    let view = {
+        let mut windows = tabs.lock();
+        windows.reset(window).map_err(|error| error.to_string())?;
+        window_view(&windows, window)?
+    };
+    // Its members left the group: the other windows show it.
+    group::tell_windows(&app, &tabs, &records);
+    Ok(view)
 }
 
-/// Edits the calling window's layout, or the app's multi-send group. A
-/// session window's edit may change the session it is named by: every
-/// window is told (#85).
+/// Edits the calling window's layout, or the app's multi-send group, from
+/// any window (#87). A session window's edit may change the session it is
+/// named by: every window is told (#85); so is a change to the group.
 #[tauri::command]
 fn layout_edit(
     app: AppHandle,
@@ -2359,18 +2381,6 @@ fn layout_edit(
     edit: LayoutEdit,
 ) -> Result<LayoutChanged, String> {
     let window = calling_window(&window)?;
-    // The group spans windows in the core, but only the main window shows
-    // its markers until #87: a session window takes no part in it.
-    let group_edit = matches!(
-        edit,
-        LayoutEdit::JoinGroup { .. }
-            | LayoutEdit::JoinPane { .. }
-            | LayoutEdit::LeaveGroup { .. }
-            | LayoutEdit::EndGroup
-    );
-    if group_edit && window != WindowId::MAIN {
-        return Err("a session window takes no part in multi-send".into());
-    }
     let changed = {
         let mut windows = tabs.lock();
         let created =
@@ -2383,6 +2393,7 @@ fn layout_edit(
     if window != WindowId::MAIN {
         session_windows::announce(&app, &tabs, &records);
     }
+    group::tell_windows(&app, &tabs, &records);
     Ok(changed)
 }
 
@@ -2984,7 +2995,7 @@ pub fn run() {
             app.manage(SessionManager::new(KnownHosts::in_data_folder(
                 &data_folder,
             )));
-            app.manage(Tabs(Mutex::new(Windows::new())));
+            app.manage(Tabs::new());
             app.manage(SessionRelays::new());
             app.manage(SessionRecords::new());
             app.manage(CsvFile(Mutex::new(None)));
@@ -3189,6 +3200,9 @@ pub fn run() {
             paste_plan,
             paste_plan_group,
             group_join_check,
+            group::group_members,
+            group::group_paste_send,
+            group::session_safety,
             update_build,
             update_check_automatic,
             update_check_now,

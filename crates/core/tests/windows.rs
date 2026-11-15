@@ -178,6 +178,7 @@ fn the_interface_sees_its_windows_layout_with_that_windows_members() {
             },
             "activePane": right.0,
             "group": [b.0],
+            "groupSize": 2,
             "kinds": {
                 a.0.to_string(): { "kind": "session" },
                 b.0.to_string(): { "kind": "session" },
@@ -619,7 +620,7 @@ fn a_tab_whose_session_is_not_known_yet_moves_without_one() {
 }
 
 #[test]
-fn moving_a_member_takes_it_out_of_the_group_and_raises_every_revision() {
+fn moving_a_member_keeps_it_in_the_group_in_its_place() {
     let mut windows = Windows::new();
     let session_window = windows.open_session_window();
     let [a, b, c] = open(&mut windows, MAIN, 3)[..] else {
@@ -631,20 +632,156 @@ fn moving_a_member_takes_it_out_of_the_group_and_raises_every_revision() {
             .unwrap();
         windows.join_group(MAIN, tab).unwrap();
     }
-    let before = (revision(&windows, MAIN), revision(&windows, session_window));
+    let group_revision = windows.group_revision();
 
     let moved = windows.move_session(MAIN, b, session_window).unwrap();
 
-    assert_eq!(windows.group(), &[member(MAIN, a), member(MAIN, c)]);
-    assert!(!windows.in_group(session_window, moved));
-    assert!(revision(&windows, MAIN) > before.0);
-    assert!(revision(&windows, session_window) > before.1);
-    // Its input goes to itself only, and the others' no longer reaches it.
-    assert_eq!(windows.input_targets(SessionId(2)), vec![SessionId(2)]);
     assert_eq!(
-        windows.input_targets(SessionId(1)),
-        vec![SessionId(1), SessionId(3)]
+        windows.group(),
+        &[
+            member(MAIN, a),
+            member(session_window, moved),
+            member(MAIN, c)
+        ]
     );
+    assert_eq!(windows.window_group(MAIN), vec![a, c]);
+    assert_eq!(windows.window_group(session_window), vec![moved]);
+    assert_eq!(windows.view(session_window).unwrap().group_size, 3);
+    // Typing in it, or in another member, still reaches all three.
+    let all = vec![SessionId(1), SessionId(2), SessionId(3)];
+    assert_eq!(windows.input_targets(SessionId(2)), all);
+    assert_eq!(windows.input_targets(SessionId(3)), all);
+    // The same sessions are members: the group itself did not change.
+    assert_eq!(windows.group_revision(), group_revision);
+
+    let back = windows.move_session(session_window, moved, MAIN).unwrap();
+    assert_eq!(windows.window_group(MAIN), vec![a, back, c]);
+    assert_eq!(windows.input_targets(SessionId(1)), all);
+}
+
+#[test]
+fn a_member_handed_to_the_main_window_stays_in_the_group() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let [a, b] = open(&mut windows, MAIN, 2)[..] else {
+        unreachable!()
+    };
+    windows.attach_session(MAIN, a, SessionId(1)).unwrap();
+    windows.attach_session(MAIN, b, SessionId(2)).unwrap();
+    windows.join_group(MAIN, a).unwrap();
+    windows.join_group(MAIN, b).unwrap();
+    windows.move_session(MAIN, a, session_window).unwrap();
+
+    let handed = windows.hand_to_main(session_window).unwrap();
+
+    assert_eq!(windows.window_group(MAIN), vec![handed[0].tab, b]);
+    assert_eq!(
+        windows.input_targets(SessionId(2)),
+        vec![SessionId(1), SessionId(2)]
+    );
+}
+
+#[test]
+fn the_group_revision_rises_whenever_the_group_changes_and_only_then() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let [a, b] = open(&mut windows, MAIN, 2)[..] else {
+        unreachable!()
+    };
+    let c = open(&mut windows, session_window, 1)[0];
+    let mut last = windows.group_revision();
+    let mut rose = |windows: &Windows| {
+        let now = windows.group_revision();
+        let rose = now > last;
+        last = now;
+        rose
+    };
+
+    windows.join_group(MAIN, a).unwrap();
+    assert!(rose(&windows), "a tab joined");
+    windows.join_group(session_window, c).unwrap();
+    assert!(rose(&windows), "a session window's tab joined");
+    windows.join_group(MAIN, a).unwrap();
+    windows.leave_group(MAIN, b).unwrap();
+    open(&mut windows, MAIN, 1);
+    windows.attach_session(MAIN, b, SessionId(2)).unwrap();
+    assert!(!rose(&windows), "nothing changed the group");
+    windows.join_group(MAIN, b).unwrap();
+    assert!(rose(&windows));
+    windows.leave_group(MAIN, b).unwrap();
+    assert!(rose(&windows), "a tab left");
+    windows.layout_mut(MAIN).unwrap().close_tab(a).unwrap();
+    assert!(rose(&windows), "a member's tab closed");
+    windows.close_window(session_window).unwrap();
+    assert!(rose(&windows), "a member's window closed");
+    windows.join_group(MAIN, b).unwrap();
+    rose(&windows);
+    windows.end_group();
+    assert!(rose(&windows), "the group ended");
+    windows.end_group();
+    assert!(!rose(&windows), "ending no group changes nothing");
+}
+
+#[test]
+fn a_paste_goes_to_the_members_of_every_window_the_one_pasted_in_first() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let [a, b, c, d] = open(&mut windows, MAIN, 4)[..] else {
+        unreachable!()
+    };
+    for (tab, session) in [(a, 1), (b, 2), (c, 3)] {
+        windows
+            .attach_session(MAIN, tab, SessionId(session))
+            .unwrap();
+    }
+    for tab in [a, b, c, d] {
+        windows.join_group(MAIN, tab).unwrap();
+    }
+    let there = windows.move_session(MAIN, b, session_window).unwrap();
+
+    // The one pasted in first, then the others in the order they joined;
+    // a member whose session is not known yet (d) gets nothing.
+    assert_eq!(
+        windows.paste_members(MAIN, c),
+        vec![
+            (member(MAIN, c), SessionId(3)),
+            (member(MAIN, a), SessionId(1)),
+            (member(session_window, there), SessionId(2)),
+        ]
+    );
+    assert_eq!(
+        windows.paste_members(session_window, there),
+        vec![
+            (member(session_window, there), SessionId(2)),
+            (member(MAIN, a), SessionId(1)),
+            (member(MAIN, c), SessionId(3)),
+        ]
+    );
+    // A tab outside the group pastes into its own session only.
+    windows.leave_group(MAIN, a).unwrap();
+    assert_eq!(windows.paste_members(MAIN, a), vec![]);
+}
+
+#[test]
+fn a_members_lines_go_to_the_tab_showing_its_session_now() {
+    let mut windows = Windows::new();
+    let session_window = windows.open_session_window();
+    let [a, b] = open(&mut windows, MAIN, 2)[..] else {
+        unreachable!()
+    };
+    windows.attach_session(MAIN, a, SessionId(1)).unwrap();
+    windows.attach_session(MAIN, b, SessionId(2)).unwrap();
+    windows.join_group(MAIN, a).unwrap();
+
+    assert_eq!(windows.member_showing(SessionId(1)), Some(member(MAIN, a)));
+    let there = windows.move_session(MAIN, a, session_window).unwrap();
+    assert_eq!(
+        windows.member_showing(SessionId(1)),
+        Some(member(session_window, there))
+    );
+    // Not a member, or unknown: nobody.
+    assert_eq!(windows.member_showing(SessionId(2)), None);
+    assert_eq!(windows.member_showing(SessionId(9)), None);
 }
 
 #[test]

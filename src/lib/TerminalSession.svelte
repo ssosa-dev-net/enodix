@@ -54,7 +54,7 @@
     groupSize: number | null;
     /**
      * Adds this session's tab to the multi-send group, or takes it out;
-     * without it (a session window, until #87) multi-send is not offered.
+     * without it multi-send is not offered.
      */
     ontogglegroup?: () => void;
     /** Ends the multi-send group. */

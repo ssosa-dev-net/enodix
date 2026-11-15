@@ -2,9 +2,12 @@
   // A session window (#84, #85): sessions moved out of the main window, on
   // any monitor. The app's own frame (#80) with tabs and split panes, as
   // in the main window, each session with its header and terminal, and
-  // the status line; no rail, side views, connect view or view tabs, and
-  // no multi-send until #87. What it shows of each session comes from the
-  // app's record of it, not from the window that gave it up. Dock back
+  // the status line; no rail, side views, connect view or view tabs. Its
+  // sessions take part in the app's multi-send group (#87): they join and
+  // leave here, show its marker and size, and a paste in a member is
+  // planned and asked here for every member, wherever it is. What it
+  // shows of each session comes from the app's record of it, not from
+  // the window that gave it up. Dock back
   // (its menu, Ctrl+Shift+N) returns a session to a tab of the main
   // window; Dock all back, or closing the window, returns them all. The
   // window closes itself once its last tab has gone.
@@ -12,6 +15,8 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen } from "@tauri-apps/api/event";
   import ConfirmClose from "./lib/ConfirmClose.svelte";
+  import ConfirmJoin from "./lib/ConfirmJoin.svelte";
+  import PasteConfirm, { type PasteMember } from "./lib/PasteConfirm.svelte";
   import PaneView, {
     type PaneHandlers,
     type TabInfo,
@@ -31,7 +36,14 @@
     type TabId,
   } from "./lib/layout";
   import { PaneRects, sessionWindowSize } from "./lib/paneRects.svelte";
-  import { NO_SAFETY } from "./lib/paste";
+  import { joinConfirmations, NO_SAFETY } from "./lib/paste";
+  import {
+    expandForMembers,
+    GroupPaste,
+    onLayoutChanged,
+    sessionSafety,
+  } from "./lib/groupPaste";
+  import type { Environment } from "./lib/workspace";
   import {
     fontStack,
     isDark,
@@ -98,6 +110,22 @@
   let asking = $state<{ tab: TabId; name: string; names: string[] } | null>(
     null,
   );
+  /** A production tab waiting for the user's yes before joining (#87). */
+  let joining = $state<{
+    tab: TabId;
+    production: string[];
+    answer: (join: boolean) => void;
+  } | null>(null);
+  /** A paste to the multi-send group waiting for the user's yes (#87). */
+  let groupPasteQuestion = $state<{
+    /** The tab pasted in, over whose terminal the question is shown. */
+    tab: TabId;
+    text: string;
+    lineCount: number;
+    environment: Environment | null;
+    members: PasteMember[];
+    answer: (send: boolean) => void;
+  } | null>(null);
 
   void loadPreferences();
   // Changed in another window (zoom, theme): shown here too.
@@ -161,6 +189,9 @@
       error = `A session could not move here: ${reason}`;
     }
   });
+
+  // The group changed in another window: its markers and size here too.
+  void onLayoutChanged((next) => adopt(next));
 
   takeSessions().then(
     (taken) => {
@@ -390,6 +421,89 @@
     }
   }
 
+  /** Whether `tab` is in the multi-send group. */
+  function inGroup(tab: TabId): boolean {
+    return layout?.group.includes(tab) ?? false;
+  }
+
+  /** The group, as the snippet question names it. */
+  function groupName(): string {
+    return `the multi-send group (${layout?.groupSize ?? 0})`;
+  }
+
+  /** Adds `tab` to the multi-send group, or takes it out; a production
+   * session joins once the user agrees, asked over its pane. */
+  async function toggleGroup(tab: TabId) {
+    const id = terminals[tab]?.sessionId() ?? null;
+    if (!sessions[tab] || joining) return;
+    if (inGroup(tab)) {
+      await edit({ kind: "leaveGroup", tab });
+      return;
+    }
+    let production: TabId[] = [];
+    try {
+      // What applies to its pastes, as any window pasting to it sees it.
+      const safety =
+        id === null ? sessions[tab].record.safety : await sessionSafety(id);
+      production = await joinConfirmations([{ tab, safety }]);
+    } catch {
+      return;
+    }
+    if (production.length > 0) {
+      const agreed = await new Promise<boolean>((answer) => {
+        joining = {
+          tab,
+          production: [sessions[tab]?.record.name ?? ""],
+          answer,
+        };
+      });
+      joining = null;
+      focusRequest += 1;
+      if (!agreed || !sessions[tab]) return;
+    }
+    await edit({ kind: "joinGroup", tab });
+  }
+
+  /** This window's group pastes (#87): planned for every member wherever
+   * it is, asked once over the tab pasted in, then each member's lines
+   * through its own terminal. */
+  const groupPaste = new GroupPaste({
+    terminals,
+    ready: (tab) => !!sessions[tab] && states[tab] === "connected",
+    ask: async (tab, question) => {
+      const send = await new Promise<boolean>((answer) => {
+        groupPasteQuestion = { tab, ...question, answer };
+      });
+      groupPasteQuestion = null;
+      focusRequest += 1;
+      return send;
+    },
+    failed: (reason) => {
+      error = `Cannot paste to the multi-send group: ${reason}`;
+    },
+  });
+
+  // The group's paste question is shown over the tab pasted in, and the
+  // join question over the joining one: if that tab goes or is hidden,
+  // nothing is pasted, and it does not join.
+  $effect(() => {
+    const question = groupPasteQuestion;
+    if (question && !placement.get(question.tab)?.shown) question.answer(false);
+  });
+  $effect(() => {
+    const question = joining;
+    if (question && !placement.get(question.tab)?.shown) question.answer(false);
+  });
+
+  /** What this window holds about `tab`'s session that a move would lose. */
+  function windowQuestionOf(tab: TabId): string | null {
+    if (asking?.tab === tab)
+      return "Not while the snippet's variables are asked";
+    if (groupPasteQuestion?.tab === tab || joining?.tab === tab)
+      return "Not while a question about the session is open";
+    return null;
+  }
+
   // The variables question is shown over its tab: hidden or closed, the
   // snippet is not sent.
   $effect(() => {
@@ -415,6 +529,10 @@
       return;
     }
     if (activeTab !== tab) await edit({ kind: "activate", tab });
+    if (inGroup(tab)) {
+      await sendSnippetToGroup(name, answers, tab);
+      return;
+    }
     let expansion;
     try {
       expansion = await expandSnippetForSession(id, name, answers);
@@ -431,6 +549,34 @@
       error = `Cannot send ${name}: the session is no longer connected.`;
       return;
     }
+    focusRequest += 1;
+  }
+
+  /**
+   * Sends the snippet `name` to every connected member of the multi-send
+   * group, as sent from `tab` (#87): filled per member from its own host,
+   * wherever it is; variables some member lacks are asked once, over this
+   * pane. Then it takes the group's paste path.
+   */
+  async function sendSnippetToGroup(
+    name: string,
+    answers: Record<string, string>,
+    tab: TabId,
+  ) {
+    let members;
+    let expansion;
+    try {
+      members = await groupPaste.receiving(tab);
+      expansion = await expandForMembers(name, members, answers);
+    } catch (reason) {
+      error = `Cannot send ${name}: ${reason}`;
+      return;
+    }
+    if (expansion.kind === "missing") {
+      asking = { tab, name, names: expansion.names };
+      return;
+    }
+    groupPaste.pasteEach(tab, members, expansion.texts);
     focusRequest += 1;
   }
 
@@ -518,7 +664,7 @@
         role: session.record.role,
         environment: session.record.safety.environment,
         state: tabState(tab),
-        member: false,
+        member: inGroup(tab),
       };
     },
     activate: (tab) => {
@@ -597,6 +743,8 @@
     }
     if (event.shiftKey && letter("W"))
       return tab === null ? null : () => closeTab(tab);
+    if (event.shiftKey && letter("M"))
+      return tab === null ? null : () => void toggleGroup(tab);
     // A refused dock says nothing (the menu entry gives the reason).
     if (event.shiftKey && letter("N"))
       return tab === null ? null : () => void dock(tab);
@@ -651,8 +799,10 @@
             bind:this={terminals[tab]}
             source={session.source}
             {tab}
-            groupSize={null}
-            ongrouppaste={() => {}}
+            groupSize={inGroup(tab) ? layout.groupSize : null}
+            ontogglegroup={() => void toggleGroup(tab)}
+            onendgroup={() => void edit({ kind: "endGroup" })}
+            ongrouppaste={(text) => groupPaste.paste(tab, text)}
             title={record.title}
             address={record.address}
             jumpHost={record.jumpHost}
@@ -677,15 +827,26 @@
                     closeNow(tab);
                 }}
             moves={movesOf(tab)}
-            windowQuestion={asking?.tab === tab
-              ? "Not while the snippet's variables are asked"
-              : null}
+            windowQuestion={windowQuestionOf(tab)}
           />
+          {#if groupPasteQuestion?.tab === tab}
+            {@const question = groupPasteQuestion}
+            <PasteConfirm
+              text={question.text}
+              lineCount={question.lineCount}
+              target={record.name}
+              environment={question.environment}
+              lineDelayMs={0}
+              members={question.members}
+              onsend={() => question.answer(true)}
+              oncancel={() => question.answer(false)}
+            />
+          {/if}
           {#if asking?.tab === tab}
             {@const { name: snippet, names } = asking}
             <SnippetVariables
               {snippet}
-              target={record.name}
+              target={inGroup(tab) ? groupName() : record.name}
               {names}
               onsend={(answers) => {
                 const send = { snippet, tab };
@@ -700,6 +861,26 @@
           {/if}
         </div>
       {/each}
+      {#if joining}
+        {@const question = joining}
+        {@const pane = placement.get(question.tab)?.pane}
+        {@const rect = pane === undefined ? undefined : rects[pane]}
+        <div
+          class="question"
+          data-pane-dialog={pane}
+          style:left={rect ? `${rect.left}px` : "0"}
+          style:top={rect ? `${rect.top}px` : "0"}
+          style:width={rect ? `${rect.width}px` : "100%"}
+          style:height={rect ? `${rect.height}px` : "100%"}
+        >
+          <ConfirmJoin
+            production={question.production}
+            joining={1}
+            onjoin={() => question.answer(true)}
+            oncancel={() => question.answer(false)}
+          />
+        </div>
+      {/if}
       {#if closing !== null && sessions[closing]}
         {@const tab = closing}
         {@const state = tabState(tab)}

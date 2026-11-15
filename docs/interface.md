@@ -52,7 +52,7 @@ everything 0.2.0 could do, the app still does, reached differently.
   window has tabs and split panes like the main window (split right or
   down, close pane, drag tabs between panes; the tab shortcuts work on
   its own tabs), each session with its header and terminal, and the
-  status line; no rail, side views, new-tab button or multi-send. Its
+  status line; no rail, side views or new-tab button. Its
   title names the session of its active tab. Duplicate there opens the
   new session beside the original, in that window. "Dock back" (its
   menu, Ctrl+Shift+N) returns one session to a tab of the main window;
@@ -61,8 +61,14 @@ everything 0.2.0 could do, the app still does, reached differently.
   asked about). A window whose last tab moves out, docks back or closes
   closes itself. A move is not offered while the session is connecting,
   while a question is open on it, or while a paste is still being sent.
-  A session that moves leaves the multi-send group, and a session window
-  takes no part in it (for now). If a session window goes away without
+  The multi-send group spans windows (#87): a member stays in it when it
+  moves; every member, in every window, shows the marker and the group's
+  size; typing in one reaches the connected members in every window; you
+  join, leave and end the group from a session window as from the main
+  window (the production question asked there). A group paste or group
+  snippet is asked once, over the pane pasted in, naming the members
+  wherever they are; each then gets its lines through its own terminal,
+  with its own line delay. If a session window goes away without
   docking back, the main window takes its sessions, saying their earlier
   output was lost. Everything that protects you comes along (#86): the
   production colour and PROD mark, the unencrypted, legacy-crypto,
@@ -143,7 +149,7 @@ else. Each of its features, and where it is now:
 | Host key and login questions                     | Over their terminal                                                                |
 | Legacy crypto failure advice                     | Over the closed terminal                                                           |
 | Session logs                                     | Unchanged; "Not logging" marker in the header                                      |
-| Multi-send (join, leave, end, join a pane)       | Session menu, tab bar's join control, Ctrl+Shift+M; questions over the pane        |
+| Multi-send (join, leave, end, join a pane)       | Session menu, tab bar's join control, Ctrl+Shift+M (any window); questions over the pane |
 | Paste safety                                     | Paste confirmation over its pane                                                   |
 | Snippets (send, new, edit, delete, filter)       | Snippets view (the form opens in the view); palette `>`                            |
 | Snippet variables                                | Asked over the target terminal's pane (in its session window, if it is in one)     |
