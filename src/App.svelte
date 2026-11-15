@@ -38,6 +38,7 @@
   import { startUpdates } from "./lib/updates.svelte";
   import { vaultStatus } from "./lib/vault";
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
+  import Welcome from "./lib/Welcome.svelte";
   import CsvImport from "./lib/CsvImport.svelte";
   import NornirImport from "./lib/NornirImport.svelte";
   import JobTab from "./lib/JobTab.svelte";
@@ -77,6 +78,8 @@
   import {
     appName,
     type ConnectTarget,
+    type QuickConnectTarget,
+    type SerialParameters,
     type SessionSource,
     type SessionState,
   } from "./lib/session";
@@ -846,6 +849,24 @@
     return null;
   }
 
+  /** Quick connect over SSH, without an inventory host. */
+  function quickConnect(target: QuickConnectTarget) {
+    connect(
+      { kind: "quick", ...target },
+      target.host,
+      `${target.username}@${target.host}:${target.port}`,
+    );
+  }
+
+  /** A serial console on `port`, without an inventory host. */
+  function quickSerial(port: string, parameters: SerialParameters) {
+    connect(
+      { kind: "quickSerial", port, parameters },
+      port,
+      `${port} (${parameters.baudRate} ${parameters.dataBits}${parameters.parity[0].toUpperCase()}${parameters.stopBits})`,
+    );
+  }
+
   /** Opens a session in a new tab of the active pane. */
   function connect(
     target: ConnectTarget,
@@ -1423,21 +1444,19 @@
                   onprofile={() => prompt(host, protocol)}
                 />
               {/key}
+            {:else if !inventory.workspace}
+              <Welcome
+                {name}
+                onswitch={switchWorkspace}
+                onconnect={quickConnect}
+                onserial={quickSerial}
+              />
             {:else}
               <QuickConnect
                 {name}
-                onconnect={(target) =>
-                  connect(
-                    { kind: "quick", ...target },
-                    target.host,
-                    `${target.username}@${target.host}:${target.port}`,
-                  )}
-                onserial={(port, parameters) =>
-                  connect(
-                    { kind: "quickSerial", port, parameters },
-                    port,
-                    `${port} (${parameters.baudRate} ${parameters.dataBits}${parameters.parity[0].toUpperCase()}${parameters.stopBits})`,
-                  )}
+                onpalette={() => (inventory.palette = true)}
+                onconnect={quickConnect}
+                onserial={quickSerial}
               />
             {/if}
           </div>

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import LockKeyhole from "@lucide/svelte/icons/lock-keyhole";
+  import TriangleAlert from "@lucide/svelte/icons/triangle-exclamation-point";
   import {
     quitApp,
     startVaultOver,
@@ -81,6 +83,9 @@
 >
   {#if startingOver}
     <div class="panel" data-start-over>
+      <div class="mark danger-mark" data-unlock-mark>
+        <TriangleAlert size={22} aria-hidden="true" />
+      </div>
       <h1 id="unlock-title">Start over?</h1>
       <p data-start-over-warning>
         Starting over deletes the vault. All stored credential profiles and
@@ -109,8 +114,14 @@
     </div>
   {:else}
     <form class="panel" onsubmit={submit}>
+      <div class="mark" data-unlock-mark>
+        <LockKeyhole size={22} aria-hidden="true" />
+      </div>
       <h1 id="unlock-title">{name}</h1>
-      <p>Your credential profiles and secrets are in the vault.</p>
+      <p class="lead">
+        Your credential profiles and secrets are in the vault. Unlock it to open
+        your workspace.
+      </p>
       <label>
         Master password
         <input
@@ -171,34 +182,55 @@
   }
 
   .panel {
-    width: min(24rem, 100%);
+    width: min(26rem, 100%);
     display: grid;
-    gap: var(--space-3);
-    padding: var(--space-6);
-    background: var(--dialog);
-    border: 1px solid var(--border-strong);
+    gap: var(--space-4);
+    padding: var(--space-8) var(--space-6) var(--space-6);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow);
   }
 
+  .mark {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--radius-full);
+    color: var(--accent);
+    background: var(--surface-raised);
+    border: 1px solid var(--border-strong);
+  }
+
+  [data-start-over-warning] {
+    color: var(--text);
+  }
+
+  .danger-mark {
+    color: var(--danger);
+  }
+
   h1 {
     margin: 0;
-    font-size: var(--text-lg);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
   p {
     margin: 0;
     font-size: var(--text-sm);
+    color: var(--muted);
   }
 
   label {
     display: grid;
     gap: var(--space-1);
-    font-size: var(--text-sm);
+    font-size: var(--text-xs);
+    color: var(--muted);
   }
 
-  .error {
+  .panel .error {
     color: var(--danger);
     overflow-wrap: anywhere;
   }
@@ -212,6 +244,15 @@
 
   .forgot {
     margin-right: auto;
+    background: transparent;
+    border-color: transparent;
+    color: var(--muted);
+    padding-inline: 0;
+  }
+
+  .forgot:hover:not(:disabled) {
+    color: var(--text);
+    background: transparent;
   }
 
   .danger {

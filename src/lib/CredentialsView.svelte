@@ -91,7 +91,10 @@
   </header>
 
   {#if !workspace}
-    <p class="hint">Open a workspace to see its credentials.</p>
+    <p class="hint" data-needs-workspace>
+      Credential profiles belong to a workspace: open or create one to see them
+      here.
+    </p>
   {:else if mode.kind === "edit"}
     <div class="form">
       <h3 class="title" data-credentials-form="profile">
