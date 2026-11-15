@@ -344,7 +344,7 @@ async fn acknowledgements_from_a_window_the_session_left_are_ignored() {
 }
 
 #[tokio::test]
-async fn a_window_that_goes_away_lets_go_of_the_session_without_closing_it() {
+async fn a_window_found_gone_on_delivery_lets_go_of_the_session_without_closing_it() {
     let server = TestSshServer::start().await;
     let window = 64 * 1024;
     let manager = support::manager_with_output_options(OutputOptions {
@@ -440,6 +440,19 @@ async fn a_session_is_shown_to_one_window_at_a_time() {
     );
 }
 
+/// Waits until the session no longer takes input. Like dropping its
+/// `SessionEvents`, dropping the relay closes a session once it next has
+/// something to report: the echo of what is typed here.
+async fn closes(manager: &SessionManager, id: SessionId) {
+    tokio::time::timeout(WAIT, async {
+        while manager.write(id, b"x".to_vec()).is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the session stayed open");
+}
+
 #[tokio::test]
 async fn dropping_the_relay_while_nobody_is_shown_the_session_closes_it() {
     let server = TestSshServer::start().await;
@@ -449,13 +462,18 @@ async fn dropping_the_relay_while_nobody_is_shown_the_session_closes_it() {
     relay.release(first.key).unwrap();
     drop(relay);
 
-    tokio::time::timeout(WAIT, async {
-        while manager.write(id, b"x".to_vec()).is_ok() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the session stayed open");
+    closes(&manager, id).await;
+}
+
+#[tokio::test]
+async fn dropping_the_relay_while_a_window_is_shown_the_session_closes_it() {
+    let server = TestSshServer::start().await;
+    let manager = support::manager();
+    let (id, relay, _window) = connected_shell(&manager, &server).await;
+
+    drop(relay);
+
+    closes(&manager, id).await;
 }
 
 #[tokio::test]
