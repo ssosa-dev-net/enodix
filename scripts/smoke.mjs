@@ -619,6 +619,62 @@ async function until(description, probe, timeout = TIMEOUT_MS) {
   fail(`timed out waiting for ${description} (last: ${String(last)})`);
 }
 
+/** The ids of the open session menu's entries (header or tab, #67). */
+const menuEntries = (evaluate) =>
+  evaluate(
+    `[...document.querySelectorAll("[data-session-actions] [data-session-action]")].map((b) => b.dataset.sessionAction)`,
+  );
+
+/**
+ * Runs one of a session's actions (`data-session-action`: duplicate,
+ * disconnect, reconnect, new-connection, multi-send, end-group,
+ * send-break, details) from the menu on its header line (#67). Throws if
+ * the session does not offer it now (the menu is closed again).
+ */
+async function sessionAction(evaluate, action, session = SHOWN_SESSION) {
+  await evaluate(
+    `document.querySelector(${JSON.stringify(`${session} [data-session-menu]`)}).click()`,
+  );
+  await until("the session's menu", () =>
+    evaluate(`!!document.querySelector("[data-session-actions]")`),
+  );
+  const ran = await evaluate(`(() => {
+    const entry = document.querySelector("[data-session-actions] [data-session-action=${action}]");
+    if (!entry || entry.disabled) return false;
+    entry.click();
+    return true;
+  })()`);
+  if (!ran) {
+    await evaluate(
+      `document.querySelector(${JSON.stringify(`${session} [data-session-menu]`)}).click()`,
+    );
+    throw new Error(`the session offers no ${action} now`);
+  }
+  await until("the session's menu closed", async () =>
+    evaluate(`!document.querySelector("[data-session-actions]")`),
+  );
+}
+
+/**
+ * Fails unless the session's header is still one line of its own height,
+ * whatever markers it shows (`expected`: selectors that must be in it).
+ */
+async function checkHeaderLine(evaluate, session, expected = []) {
+  const line = await evaluate(`(() => {
+    const header = document.querySelector(${JSON.stringify(`${session} .session header`)});
+    const box = header.getBoundingClientRect();
+    const outside = [...header.children].filter((child) => {
+      const each = child.getBoundingClientRect();
+      return each.width > 0 && (each.top < box.top - 0.5 || each.bottom > box.bottom + 0.5);
+    }).length;
+    const missing = ${JSON.stringify(expected)}.filter((selector) => !header.querySelector(selector));
+    return { height: box.height, outside, missing };
+  })()`);
+  if (line.height !== 30 || line.outside > 0 || line.missing.length > 0) {
+    fail(`the session header is not one line: ${JSON.stringify(line)}`);
+  }
+}
+
 function startServer() {
   const build = spawnSync(
     "cargo",
@@ -1089,11 +1145,94 @@ async function main() {
   }
   step("a dropped session said why and reconnected in place with Enter");
 
+  // The session's header is one quiet line; its actions are in a menu
+  // there and on the tab's context menu (#67).
+  await checkHeaderLine(evaluate, shownSession, [
+    "[data-session-protocol=ssh]",
+    "[data-session-menu]",
+  ]);
+  if (
+    (await evaluate(
+      `document.querySelectorAll(${JSON.stringify(`${shownSession} .session header button`)}).length`,
+    )) !== 1
+  ) {
+    fail("the session header has buttons besides its menu");
+  }
+  await evaluate(
+    `document.querySelector(${JSON.stringify(`${shownSession} [data-session-menu]`)}).click()`,
+  );
+  await until("the header's menu", () => menuEntries(evaluate));
+  const headerEntries = await menuEntries(evaluate);
+  if (
+    JSON.stringify(headerEntries) !==
+    JSON.stringify(["duplicate", "disconnect", "multi-send"])
+  ) {
+    fail(`the header's menu offers ${JSON.stringify(headerEntries)}`);
+  }
+  for (const type of ["keyDown", "keyUp"]) {
+    await devtools.send("Input.dispatchKeyEvent", {
+      type,
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+  }
+  await until(
+    "the header's menu closed",
+    async () => (await menuEntries(evaluate)).length === 0,
+  );
+  // The status line: the vault and the active terminal's size.
+  const sizesBefore = [...(await screen()).matchAll(/size\s*\d+x\d+/g)].length;
+  await type("size\r");
+  const reported = await until("the terminal's size", async () => {
+    const all = [...(await screen()).matchAll(/size\s*(\d+)x(\d+)/g)];
+    return all.length > sizesBefore ? all.at(-1) : null;
+  });
+  const statusLine = await evaluate(`(() => {
+    const size = document.querySelector("[data-status-line] [data-status-size]");
+    return {
+      vault: document.querySelector("[data-status-line] [data-status-vault]")?.dataset.statusVault,
+      cols: size?.dataset.cols,
+      rows: size?.dataset.rows,
+    };
+  })()`);
+  if (
+    statusLine.vault !== "off" ||
+    statusLine.cols !== reported[1] ||
+    statusLine.rows !== reported[2]
+  ) {
+    fail(
+      `the status line shows ${JSON.stringify(statusLine)}, the terminal is ${reported[1]}x${reported[2]}`,
+    );
+  }
+  step(
+    `the session header is one line with its actions in a menu; the status line shows the vault (off) and ${reported[1]}x${reported[2]}`,
+  );
+
   // Duplicate opens a second session to the same host in a tab beside the
   // first.
   const switchTo = (index) =>
     evaluate(`document.querySelectorAll("[role=tab]")[${index}].click()`);
-  await click("Duplicate");
+  // From the tab's context menu: the header's actions, then Close tab.
+  await evaluate(`(() => {
+    const tab = document.querySelector("[role=tab][aria-selected=true]");
+    const box = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true, button: 2,
+      clientX: box.x + 10, clientY: box.y + box.height / 2,
+    }));
+  })()`);
+  await until("the tab's context menu", () => menuEntries(evaluate));
+  const tabEntries = await menuEntries(evaluate);
+  if (
+    JSON.stringify(tabEntries) !==
+    JSON.stringify([...headerEntries, "close-tab"])
+  ) {
+    fail(`the tab's context menu offers ${JSON.stringify(tabEntries)}`);
+  }
+  await evaluate(
+    `document.querySelector("[data-session-actions] [data-session-action=duplicate]").click()`,
+  );
   await until("two sessions", () =>
     evaluate(`document.querySelectorAll(".slot[data-tab]").length === 2`),
   );
@@ -1130,7 +1269,7 @@ async function main() {
     evaluate(
       `[...document.querySelectorAll("${shownSession} button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)}).click()`,
     );
-  await clickShown("Disconnect");
+  await sessionAction(evaluate, "disconnect");
   await until("the duplicate closed", async () =>
     (await status()).startsWith("Closed"),
   );
@@ -1145,7 +1284,7 @@ async function main() {
   );
   step("Duplicate opened a second session to the same host, each on its own");
 
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
   await until(
     "the closed status",
     async () => (await status()) === "Closed: session closed",
@@ -1212,7 +1351,7 @@ async function main() {
   if (readFileSync(knownHosts, "utf8") !== realKeyLine) {
     fail("replacing the key did not store the server's key alone");
   }
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
   await until("the closed status", async () =>
     (await status()).startsWith("Closed"),
   );
@@ -1789,6 +1928,9 @@ async function vault({ app, devtools, evaluate, step }) {
   await click("Close");
   await until("the vault unlocked in the Credentials view", () =>
     exists(`${profilesDialog} [data-credentials-vault=unlocked]`),
+  );
+  await until("the vault unlocked on the status line", () =>
+    exists("[data-status-line] [data-status-vault=unlocked]"),
   );
   await showSideView(evaluate, "hosts");
   step(
@@ -4195,7 +4337,7 @@ async function jobs({
     await until("the device's prompt", async () =>
       (await screen()).includes("lab-r1#"),
     );
-    await click("Disconnect");
+    await sessionAction(evaluate, "disconnect");
     await until(
       "the device session closed",
       async () => (await status()) !== "Connected",
@@ -4615,6 +4757,9 @@ async function jobs({
     if (unchanged.kind !== "unchanged" || unchanged.version !== third.version) {
       fail(`the backup on login of an unchanged device: ${json(unchanged)}`);
     }
+    await checkHeaderLine(evaluate, SHOWN_SESSION, [
+      "[data-login-backup=unchanged]",
+    ]);
     if ((await screen()).includes("running-config")) {
       fail("the backup on login showed in the terminal");
     }
@@ -4643,7 +4788,7 @@ async function jobs({
     step(
       "back up on login: unchanged on connecting, a new version after a change and a reconnect, nothing in the terminal",
     );
-    await click("Disconnect");
+    await sessionAction(evaluate, "disconnect");
     await until(
       "the backed-up session closed",
       async () => (await status()) !== "Connected",
@@ -5267,6 +5412,9 @@ async function pasteSafety({
     ) {
       fail(`the production session is not marked: ${json(marks)}`);
     }
+    await checkHeaderLine(evaluate, SHOWN_SESSION, [
+      "[data-environment-badge=production]",
+    ]);
     await screenshot("production-session");
     step("a production session has a red tab (PROD) and a red border");
 
@@ -6127,7 +6275,7 @@ async function credentialProfiles({
 
   // A profile the workspace names but this computer lacks is asked for by
   // name, saved, and used.
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
   await changeField("[name=setting-credential_profile]", "team-login");
   await until("the new profile name in the host file", () =>
     readFileSync(hostFile, "utf8").includes("credential_profile: team-login\n"),
@@ -6146,7 +6294,7 @@ async function credentialProfiles({
 
   // Profiles are edited, renamed and deleted in the Credentials view; a
   // profile the workspace names that is no longer stored shows as missing.
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
   await openProfiles(evaluate);
   await until(
     "both profiles listed",
@@ -6330,7 +6478,7 @@ async function agentAndKeyboardInteractive({
 
   // Keyboard-interactive: after the password, the server asks for a code,
   // which the user is shown and answers.
-  await click("Disconnect").catch(() => {});
+  await sessionAction(evaluate, "disconnect").catch(() => {});
   await click("New connection").catch(() => {});
   await until("the quick-connect form", () => exists("input[name=host]"));
   await fillForm(
@@ -6353,7 +6501,7 @@ async function agentAndKeyboardInteractive({
   await connected();
   if (await exists(loginPrompt)) fail("the question stayed on screen");
   step("a one-time code the server asked for was shown and answered");
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
 
   // Profiles that log in with the SSH agent.
   const createAgentProfile = async (name, username) => {
@@ -6399,7 +6547,7 @@ async function agentAndKeyboardInteractive({
     fail("the agent session is not titled with the profile's username");
   }
   step("a profile using the SSH agent logged in with the agent's key");
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
 
   // The server takes none of the agent's keys for this user: the user is
   // told why and logs in with a password instead.
@@ -6428,7 +6576,7 @@ async function agentAndKeyboardInteractive({
   await fillForm({ username: USERNAME, password: PASSWORD }, "main form");
   await connected();
   step("an agent without an accepted key fell back to a password prompt");
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
 
   await changeField("[name=setting-credential_profile]", "");
   await until(
@@ -6481,7 +6629,7 @@ async function legacyCrypto({
     await fillForm({ username: USERNAME, password: PASSWORD }, "main form");
   };
 
-  await click("Disconnect").catch(() => {});
+  await sessionAction(evaluate, "disconnect").catch(() => {});
   await click("New connection").catch(() => {});
   writeFileSync(
     hostFile,
@@ -6544,9 +6692,10 @@ async function legacyCrypto({
   if ((await text(marker)).trim() !== "Legacy crypto") {
     fail(`the marker reads "${await text(marker)}"`);
   }
+  await checkHeaderLine(evaluate, SHOWN_SESSION, ["[data-legacy-crypto]"]);
   await screenshot("legacy-crypto");
   step("with the switch on, the old device connected, marked legacy crypto");
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
 
   // A modern device is not marked.
   await newConnection();
@@ -6569,7 +6718,7 @@ async function legacyCrypto({
     fail("an SSH session is marked unencrypted");
   }
   step("a modern session is not marked");
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
   await newConnection();
 
   rmSync(hostFile);
@@ -6617,7 +6766,7 @@ async function telnet({
     );
   };
 
-  await click("Disconnect").catch(() => {});
+  await sessionAction(evaluate, "disconnect").catch(() => {});
   await click("New connection").catch(() => {});
   writeFileSync(
     hostFile,
@@ -6653,6 +6802,10 @@ async function telnet({
   if (size.startsWith("0x") || size.endsWith("x0")) {
     fail(`the telnet device was not told the window size: ${size}`);
   }
+  await checkHeaderLine(evaluate, SHOWN_SESSION, [
+    "[data-unencrypted]",
+    "[data-session-protocol=telnet]",
+  ]);
   await screenshot("telnet-session");
   step(
     `double-clicking a telnet host logged in in the terminal (${size}), marked unencrypted`,
@@ -6662,9 +6815,7 @@ async function telnet({
   // Hosts view if another one is shown.
   await evaluate(`document.querySelector("[data-rail=snippets]").click()`);
   await until("the snippets view", () => exists("[data-side-view=snippets]"));
-  await evaluate(
-    `document.querySelector("${SHOWN_SESSION} [data-session-details]").click()`,
-  );
+  await sessionAction(evaluate, "details");
   await until("the telnet host's details from its session", async () =>
     (
       await text("[data-side-view=hosts] [data-details-sheet=host] h2")
@@ -6673,7 +6824,7 @@ async function telnet({
   step("a session's Details opened its host's sheet over the Hosts view");
 
   // The side panel offers SSH for the telnet host, and telnet for an SSH one.
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
   await newConnection();
   await evaluate(`document.querySelector(${JSON.stringify(hostRow)}).click()`);
   await showDetails(evaluate);
@@ -6698,7 +6849,7 @@ async function telnet({
   step(
     "the side panel opened a telnet session to a host whose protocol is SSH",
   );
-  await click("Disconnect");
+  await sessionAction(evaluate, "disconnect");
   await newConnection();
 
   rmSync(hostFile);
@@ -7741,7 +7892,7 @@ async function multiSend({
   // The session header's button adds its tab; Ctrl+Shift+M (with the
   // terminal focused) adds the next one.
   await show(a);
-  await clickOn(`${slot(a)} [data-multi-send-toggle=join]`);
+  await sessionAction(evaluate, "multi-send", slot(a));
   await until("the first member's marker", async () => {
     const tab = await tabOf(a);
     return tab.member === "receiving" && tab.label;
@@ -7781,15 +7932,16 @@ async function multiSend({
 
   // A disconnected member is marked and skipped; reconnected, it receives.
   await show(a);
-  await evaluate(
-    `[...document.querySelectorAll(${json(`${slot(a)} header button`)})].find((b) => b.textContent.trim() === "Disconnect").click()`,
-  );
+  await sessionAction(evaluate, "disconnect", slot(a));
   await until(
     "the disconnected member marked",
     async () =>
       (await tabOf(a)).member === "not-receiving" &&
       (await exists(`${slot(a)} [data-not-receiving]`)),
   );
+  await checkHeaderLine(evaluate, slot(a), [
+    "[data-multi-send-bar] [data-not-receiving]",
+  ]);
   await screenshot("multi-send-not-receiving");
   await show(b);
   await type("multisend2\r");
@@ -7874,7 +8026,7 @@ async function multiSend({
     if ((await groupSize()) !== 2)
       fail("a cancelled pane join changed the group");
 
-    await clickOn(`${slot(d)} [data-multi-send-toggle=join]`);
+    await sessionAction(evaluate, "multi-send", slot(d));
     const asked = await until("the production join question", joinQuestion);
     if (
       json(asked) !==
@@ -7887,7 +8039,7 @@ async function multiSend({
     await until("the question gone", async () => !(await joinQuestion()));
     if ((await tabOf(d)).member !== null)
       fail("Cancel added the production tab");
-    await clickOn(`${slot(d)} [data-multi-send-toggle=join]`);
+    await sessionAction(evaluate, "multi-send", slot(d));
     await until("the production join question", joinQuestion);
     await clickOn("[data-join=join]");
     await until(
@@ -8014,7 +8166,7 @@ async function multiSend({
   }
 
   // Ending the group: no markers, typing is local again.
-  await clickOn(`${slot(b)} [data-end-group]`);
+  await sessionAction(evaluate, "end-group", slot(b));
   await until(
     "the group ended",
     async () =>

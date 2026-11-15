@@ -35,6 +35,8 @@
     closePane: (pane: PaneId) => void;
     /** Adds every tab of the pane to the multi-send group. */
     joinPane: (pane: PaneId) => void;
+    /** Opens the tab's context menu (its session's actions) at x, y. */
+    menu: (tab: TabId, x: number, y: number) => void;
     /** Attaches to each pane's body, where its terminal is placed. */
     body: (pane: PaneId) => Attachment<HTMLElement>;
   }
@@ -171,6 +173,10 @@
               onclick={() => onclick(tab)}
               onauxclick={(event) => {
                 if (event.button === 1) handlers.close(tab);
+              }}
+              oncontextmenu={(event) => {
+                event.preventDefault();
+                handlers.menu(tab, event.clientX, event.clientY);
               }}
               onkeydown={(event) => {
                 if (event.key === "Enter" || event.key === " ")
