@@ -10,6 +10,8 @@ import {
   type JobTarget,
   type SavedJob,
 } from "./jobs";
+import { kindOf } from "./jobTabs.svelte";
+import { openJobTab } from "./views";
 import * as api from "./workspace";
 import type {
   Edited,
@@ -81,19 +83,6 @@ export const inventory = $state({
   nornirImport: null as string | null,
   /** Whether the platform definitions dialog is open. */
   platforms: false,
-  /**
-   * While the job dialog is open: the hosts it runs on, the plan it starts
-   * from ("Run again"), if any, and whether it backs up configs or runs a
-   * script (else it runs a snippet).
-   */
-  job: null as {
-    target: JobTarget;
-    label: string;
-    planned?: JobPlan | null;
-    backup?: boolean;
-    script?: boolean;
-    enrich?: boolean;
-  } | null,
   /** While the review of a "Fill in from devices" run is open: its id. */
   enrichReview: null as string | null,
   /** While the config history is open: the host it shows. */
@@ -101,43 +90,41 @@ export const inventory = $state({
 });
 
 /**
- * Opens the run-snippet dialog for `target`, called `label`; at the
- * pre-flight of `planned` if given.
+ * Opens a job tab running a snippet on `target`, called `label`; at the
+ * pre-flight of `planned` if given (whatever its step).
  */
 export function openJob(
   target: JobTarget,
   label: string,
   planned: JobPlan | null = null,
 ) {
-  inventory.job = {
+  openJobTab({
+    kind: planned ? kindOf(planned) : "snippet",
     target,
     label,
     planned,
-    backup: planned?.step.kind === "configBackup",
-    script: planned?.step.kind === "script",
-    enrich: planned?.step.kind === "enrich",
-  };
+  });
 }
 
 /**
- * Opens the job dialog filling in vendor, model, serial number and OS
- * version of `target`'s hosts from their devices.
+ * Opens a job tab filling in vendor, model, serial number and OS version
+ * of `target`'s hosts from their devices.
  */
 export function openEnrich(target: JobTarget, label: string) {
-  inventory.job = { target, label, planned: null, enrich: true };
+  openJobTab({ kind: "enrich", target, label, planned: null });
 }
 
-/** Opens the job dialog running a Python script for `target`'s hosts. */
+/** Opens a job tab running a Python script for `target`'s hosts. */
 export function openScript(target: JobTarget, label: string) {
-  inventory.job = { target, label, planned: null, script: true };
+  openJobTab({ kind: "script", target, label, planned: null });
 }
 
-/** Opens the job dialog backing up the configs of `target`'s hosts. */
+/** Opens a job tab backing up the configs of `target`'s hosts. */
 export function openBackup(target: JobTarget, label: string) {
-  inventory.job = { target, label, planned: null, backup: true };
+  openJobTab({ kind: "backup", target, label, planned: null });
 }
 
-/** What the job dialog calls `target` (a folder, a saved filter, a host). */
+/** What a job tab calls `target` (a folder, a saved filter, a host). */
 export function jobTargetLabel(target: JobTarget): string {
   const workspace = inventory.workspace;
   if (target.kind === "folder") {
@@ -199,7 +186,7 @@ export function removeJob(name: string) {
 }
 
 /**
- * Plans the saved job `name` and opens the job dialog at its pre-flight
+ * Plans the saved job `name` and opens a job tab at its pre-flight
  * (or the variables it still needs). Rejects, saying what is gone, if its
  * step or target no longer exists.
  */
@@ -268,7 +255,6 @@ export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.filterView = null;
   inventory.csvImport = null;
   inventory.nornirImport = null;
-  inventory.job = null;
 }
 
 // Under a filter, the selected item (one just created, say, or edited out

@@ -1,28 +1,23 @@
 <script lang="ts">
-  // The Jobs and Config backups side views until their own views exist:
-  // each says what it is about and opens what the app has for it today
-  // (the saved jobs and the jobs view, config history and backups).
-  import SavedJobsPanel from "./SavedJobsPanel.svelte";
+  // The Config backups side view until its own view exists: it says what
+  // it is about and opens what the app has for it today (config history
+  // and backups).
   import {
     inventory,
     openBackup,
     openConfigHistory,
     selectedHost,
   } from "./inventory.svelte";
-  import { openJobsView, runningCount } from "./jobs.svelte";
 
   interface Props {
-    view: "jobs" | "backups";
+    view: "backups";
   }
 
   let { view }: Props = $props();
 
   const workspace = $derived(inventory.workspace);
   const host = $derived(selectedHost());
-  const running = $derived(runningCount());
-
   const TITLES = {
-    jobs: "Jobs",
     backups: "Config backups",
   };
 </script>
@@ -34,22 +29,6 @@
     <p class="hint">
       Open a workspace to see its {TITLES[view].toLowerCase()}.
     </p>
-  {:else if view === "jobs"}
-    <div class="body">
-      <p class="hint">
-        {running > 0
-          ? `${running} job${running === 1 ? "" : "s"} running.`
-          : "Runs of snippets, scripts and backups on many hosts at once."}
-      </p>
-      <button
-        data-open-jobs
-        data-jobs-running={running}
-        title="Past runs, their output, search, compare and save"
-        onclick={() => openJobsView()}
-        >{running > 0 ? `${running} running: open runs` : "Past runs…"}</button
-      >
-    </div>
-    <SavedJobsPanel />
   {:else}
     <div class="body">
       <p class="hint">

@@ -43,6 +43,13 @@ const TIMEOUT_MS = 15000;
 const SHOWN_SESSION = ".slot[data-active]";
 /** The Preferences view, which opens as a tab (#68). */
 const PREFERENCES = "[data-view=preferences]";
+/** The job tab on screen (#69): a job from its choice of snippet or script
+ * to its results. */
+const JOB_TAB = ".slot.view:not([hidden]) [data-view=job]";
+/** The kept run's tab on screen (#69). */
+const RUN_TAB = ".slot.view:not([hidden]) [data-view=run]";
+/** The Jobs side view (#69): running jobs, saved jobs, past runs. */
+const JOBS_SIDE = "[data-side-view=jobs]";
 
 /** Opens Preferences from the rail (a tab; its own if open) and waits for
  * it to be on screen. */
@@ -285,12 +292,43 @@ async function showDetails(evaluate) {
   await until("the details sheet", () => evaluate(open));
 }
 
-/** Opens the jobs view (past runs) from the Jobs side view, then shows the
- * Hosts view again. */
-async function openRuns(evaluate) {
+/** Opens the run `id` (else the first listed) from the Jobs side view in
+ * its tab, then shows the Hosts view again; resolves to the run's id. */
+async function openRun(evaluate, id = null) {
   await showSideView(evaluate, "jobs");
-  await evaluate(`document.querySelector("[data-open-jobs]").click()`);
+  const row = id
+    ? `${JOBS_SIDE} [data-run="${id}"]`
+    : `${JOBS_SIDE} [data-run]`;
+  const run = await until("the run listed", () =>
+    evaluate(
+      `document.querySelector(${JSON.stringify(row)})?.dataset.run ?? null`,
+    ),
+  );
+  await evaluate(`document.querySelector(${JSON.stringify(row)}).click()`);
+  await until("the run's tab", () =>
+    evaluate(
+      `!!document.querySelector(${JSON.stringify(`${RUN_TAB} [data-run-details="${run}"]`)})`,
+    ),
+  );
   await showSideView(evaluate, "hosts");
+  return run;
+}
+
+/** Closes, by its tab's close button, the tab whose slot holds (or is)
+ * `selector`. */
+async function closeTabOf(evaluate, selector) {
+  const tab = await evaluate(
+    `document.querySelector(${JSON.stringify(selector)})?.closest(".slot")?.dataset.tab ?? null`,
+  );
+  if (tab === null) fail(`no tab holds ${selector}`);
+  await evaluate(
+    `document.querySelector('[data-tab-bar] [data-tab="${tab}"] [data-tab-close]').click()`,
+  );
+  await until(
+    `the tab of ${selector} closed`,
+    async () =>
+      !(await evaluate(`!!document.querySelector('.slot[data-tab="${tab}"]')`)),
+  );
 }
 
 /** The Credentials side view (profiles, secrets, the vault's state). */
@@ -2474,8 +2512,8 @@ async function openScriptJob(evaluate) {
   await evaluate(
     `document.querySelector(".side [data-folder-run-script]").click()`,
   );
-  await until("the run-script dialog", () =>
-    exists("[data-dialog=job][data-step=script]"),
+  await until("the run-script tab", () =>
+    exists(`${JOB_TAB}[data-step=script]`),
   );
 }
 
@@ -2485,7 +2523,7 @@ async function openScriptJob(evaluate) {
  */
 async function scriptJobWithoutPython({ evaluate, screenshot, step }) {
   const json = (value) => JSON.stringify(value);
-  const dialog = "[data-dialog=job]";
+  const dialog = JOB_TAB;
   writeFileSync(join(workspace, BRIDGE_SCRIPT), BRIDGE_SCRIPT_TEXT);
   await openScriptJob(evaluate);
   const shown = await until("the scripts listed, Python off", () =>
@@ -2523,7 +2561,7 @@ async function scriptJobWithoutPython({ evaluate, screenshot, step }) {
  * script runs for the Jobs folder's hosts (pre-flight and the production
  * confirmation as for snippets), sees only them, reaches the example
  * server and gets a login from the app; its output streams into the
- * dialog and the jobs view (searchable) and it ends by exit status. A
+ * job tab and the run tab (searchable) and it ends by exit status. A
  * second, slow script is cancelled, keeping its output. Skipped without a
  * Python 3.10+.
  */
@@ -2533,7 +2571,7 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
     evaluate(`!!document.querySelector(${json(selector)})`);
   const clickOn = (selector) =>
     evaluate(`document.querySelector(${json(selector)}).click()`);
-  const dialog = "[data-dialog=job]";
+  const dialog = JOB_TAB;
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const pickScript = (path) =>
     evaluate(`(() => {
@@ -2627,14 +2665,15 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
       "the script saw only the job's hosts, reached the example server, got its login, and succeeded by exit status",
     );
 
-    // The jobs view keeps it: one output, its exit status, searchable.
+    // The run's tab keeps it: one output, its exit status, searchable.
     await clickOn(`${dialog} [data-job=view]`);
-    await until("the script run in the jobs view", () =>
-      exists('[data-dialog=jobs] [data-run-host="script"]'),
+    await until("the script run in its tab", () =>
+      exists(`${RUN_TAB} [data-run-host="script"]`),
     );
+    if (await exists(dialog)) fail("Open run left the job tab open");
     const kept = await until("the kept script output", () =>
       evaluate(`(() => {
-        const view = document.querySelector("[data-dialog=jobs]");
+        const view = document.querySelector("${RUN_TAB}");
         const output = view.querySelector('[data-run-output="script"]')?.textContent ?? "";
         return output.includes("finished on stderr") && {
           exit: view.querySelector('[data-run-host="script"] [data-run-exit-status]')?.dataset.runExitStatus,
@@ -2645,14 +2684,14 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
     if (kept.exit !== "0" || json(kept.targets) !== json(targets))
       fail(`the kept script run: ${json(kept)}`);
     await evaluate(`(() => {
-      const input = document.querySelector("[data-dialog=jobs] [name=run-search]");
+      const input = document.querySelector("${RUN_TAB} [name=run-search]");
       input.value = "banner";
       input.dispatchEvent(new Event("input", { bubbles: true }));
-      document.querySelector("[data-dialog=jobs] [data-run-action=search]").click();
+      document.querySelector("${RUN_TAB} [data-run-action=search]").click();
     })()`);
     const hit = await until("the search in the script's output", () =>
       evaluate(
-        `document.querySelector('[data-dialog=jobs] [data-search-hit="script"]')?.dataset.count ?? null`,
+        `document.querySelector('${RUN_TAB} [data-search-hit="script"]')?.dataset.count ?? null`,
       ),
     );
     // jobs-r1 and jobs-odd are SSH hosts; jobs-telnet is not.
@@ -2662,7 +2701,7 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
       "the script run is kept: its output, exit status and targets, searchable",
     );
     // Run again plans the same script for the same target.
-    await clickOn("[data-dialog=jobs] [data-run-action=again]");
+    await clickOn(`${RUN_TAB} [data-run-action=again]`);
     const again = await until("the script planned again", () =>
       evaluate(`(() => {
         const d = document.querySelector("${dialog}[data-step=preflight]");
@@ -2676,18 +2715,8 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
       fail(`Run again of the script run: ${json(again)}`);
     step("Run again plans the same script for the same hosts");
     await clickOn(`${dialog} [data-job=dismiss]`);
-    await until("the job dialog closed", async () => !(await exists(dialog)));
-    if (!(await exists("[data-dialog=jobs]"))) {
-      await openRuns(evaluate);
-      await until("the jobs view", () => exists("[data-dialog=jobs]"));
-    }
-    await evaluate(
-      `[...document.querySelectorAll("[data-dialog=jobs] button")].find((b) => b.textContent.trim() === "Close").click()`,
-    );
-    await until(
-      "the jobs view closed",
-      async () => !(await exists("[data-dialog=jobs]")),
-    );
+    await until("the job tab closed", async () => !(await exists(dialog)));
+    await closeTabOf(evaluate, ".slot[data-view-slot=run]");
 
     // A script that does not end is cancelled, keeping its output.
     await openScriptJob(evaluate);
@@ -2729,7 +2758,7 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
       fail(`the cancelled script: ${json(cancelled)}`);
     step("cancelling a script job stops it and keeps its output");
     await clickOn(`${dialog} [data-job=close]`);
-    await until("the job dialog closed", async () => !(await exists(dialog)));
+    await until("the job tab closed", async () => !(await exists(dialog)));
   } finally {
     rmSync(join(workspace, BRIDGE_SCRIPT), { force: true });
     rmSync(slowFile, { force: true });
@@ -2779,7 +2808,7 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
     evaluate(`!!document.querySelector(${json(selector)})`);
   const clickOn = (selector) =>
     evaluate(`document.querySelector(${json(selector)}).click()`);
-  const dialog = "[data-dialog=job]";
+  const dialog = JOB_TAB;
   const review = "[data-dialog=enrich]";
   const folder = join(workspace, "Enrich");
   if (!ready) {
@@ -2985,20 +3014,21 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
     step("filling in one ticked host from its panel replaces its typed vendor");
     await closeReview("close");
 
-    // The run stays reviewable from the jobs view.
-    await openRuns(evaluate);
-    await until("the review action in the jobs view", () =>
-      exists("[data-dialog=jobs] [data-run-action=review]"),
+    // The run stays reviewable from its tab, opened in the Jobs view.
+    await openRun(evaluate);
+    await until("the review action in the run's tab", () =>
+      exists(`${RUN_TAB} [data-run-action=review]`),
     );
-    await clickOn("[data-dialog=jobs] [data-run-action=review]");
-    await until("the review from the jobs view", () =>
+    await clickOn(`${RUN_TAB} [data-run-action=review]`);
+    await until("the review from the run tab", () =>
       exists(`${review}[data-step=preview]`),
     );
     const later = await rows();
     if (later["Enrich/enrich-r1.yaml"]?.outcome !== "unchanged")
-      fail(`the review from the jobs view: ${json(later)}`);
-    step("a kept fill-in run can be reviewed again from the jobs view");
+      fail(`the review from the run tab: ${json(later)}`);
+    step("a kept fill-in run can be reviewed again from its tab");
     await closeReview("cancel");
+    await closeTabOf(evaluate, ".slot[data-view-slot=run]");
   } finally {
     rmSync(fakeNapalm, { recursive: true, force: true });
     rmSync(folder, { recursive: true, force: true });
@@ -4195,7 +4225,7 @@ async function jobs({
     evaluate(`!!document.querySelector(${json(selector)})`);
   const clickOn = (selector) =>
     evaluate(`document.querySelector(${json(selector)}).click()`);
-  const dialog = "[data-dialog=job]";
+  const dialog = JOB_TAB;
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const profilesDialog = CREDENTIALS;
   const folder = join(workspace, "Jobs");
@@ -4258,7 +4288,7 @@ async function jobs({
       exists(".side [data-folder-run-snippet]"),
     );
     await clickOn(".side [data-folder-run-snippet]");
-    await until("the run-snippet dialog", () => atStep("snippet"));
+    await until("the run-snippet tab", () => atStep("snippet"));
   };
   const pickSnippet = (name) =>
     evaluate(`(() => {
@@ -4354,7 +4384,7 @@ async function jobs({
     }
     step("a host whose key is not trusted yet fails the job, naming the key");
     await clickOn(`${dialog} [data-job=close]`);
-    await until("the job dialog closed", async () => !(await exists(dialog)));
+    await until("the job tab closed", async () => !(await exists(dialog)));
 
     // Trusted once in a terminal, the key lets the job in.
     await evaluate(`(() => {
@@ -4383,7 +4413,7 @@ async function jobs({
       exists(".side [data-host-run-snippet]"),
     );
     await clickOn(".side [data-host-run-snippet]");
-    await until("the run-snippet dialog for the host", () => atStep("snippet"));
+    await until("the run-snippet tab for the host", () => atStep("snippet"));
     await preflight({});
     // Hosts at once: 1 to 50.
     for (const refused of ["0", "51"]) {
@@ -4414,11 +4444,11 @@ async function jobs({
       "the job turned paging off, logged in by itself and showed the device's plain output",
     );
     await clickOn(`${dialog} [data-job=close]`);
-    await until("the job dialog closed", async () => !(await exists(dialog)));
+    await until("the job tab closed", async () => !(await exists(dialog)));
 
     // A command that never returns: cancelled, its output kept.
     await clickOn(".side [data-host-run-snippet]");
-    await until("the run-snippet dialog again", () => atStep("snippet"));
+    await until("the run-snippet tab again", () => atStep("snippet"));
     await pickSnippet("Job hang");
     await until("the hang snippet shown", async () =>
       (await text(`${dialog} [data-job-snippet-text]`)).includes("hang"),
@@ -4435,22 +4465,26 @@ async function jobs({
     await until("the hang command sent", async () =>
       (await text(hostOutput)).includes("lab-r1# hang"),
     );
-    // Hidden, the job goes on; the workspace header shows it running.
+    // Its tab closed, the job goes on: a notice says so, the rail counts it.
     await clickOn(`${dialog} [data-job=close]`);
-    await until("the job dialog hidden", async () => !(await exists(dialog)));
-    await until("the header shows one job running", () =>
+    await until("the job tab closed", async () => !(await exists(dialog)));
+    await until("the notice that the job goes on", () =>
+      exists("[data-job-still-running]"),
+    );
+    await until("the rail shows one job running", () =>
       exists('[data-rail=jobs][data-jobs-running="1"]'),
     );
     await screenshot("job-running-indicator");
-    step("a hidden job keeps running, with an indicator in the header");
+    step(
+      "closing a running job's tab leaves it running, says so, and the rail counts it",
+    );
+    await clickOn("[data-job-notice=dismiss]");
 
-    // The jobs view: every run, newest first, the running one cancelled
-    // there, its output kept.
-    const view = "[data-dialog=jobs]";
-    await openRuns(evaluate);
-    await until("the jobs view", () => exists(`${view} [data-runs]`));
+    // The Jobs side view: every run, the running one at the top.
+    await showSideView(evaluate, "jobs");
+    await until("the runs listed", () => exists(`${JOBS_SIDE} [data-runs]`));
     const listed = () =>
-      evaluate(`[...document.querySelectorAll("${view} [data-run]")].map((r) => ({
+      evaluate(`[...document.querySelectorAll("${JOBS_SIDE} [data-run]")].map((r) => ({
         id: r.dataset.run,
         state: r.dataset.runState,
         title: r.querySelector(".title").textContent,
@@ -4468,27 +4502,93 @@ async function jobs({
       fail(`the runs listed: ${json(runs)}`);
     }
     const [hangRun, doneRun, refusedRun] = runs.map((r) => r.id);
-    const runRow = (id) => `${view} [data-run="${id}"]`;
+    const view = RUN_TAB;
+    const runRow = (id) => `${JOBS_SIDE} [data-run="${id}"]`;
     const hostState = (state) =>
       `${view} [data-run-host="Jobs/jobs-r1.yaml"][data-host-state=${state}]`;
     const runOutputText = () => text(`${view} [data-run-output]`);
-    await until("the running run selected", () =>
+
+    // Reopened from there, in its run's tab, still running.
+    await clickOn(runRow(hangRun));
+    await until("the running run's tab", () =>
       exists(`${view} [data-run-details="${hangRun}"]`),
     );
-    await clickOn(`${view} [data-run-action=cancel]`);
+    await until("its host still running", () => exists(hostState("running")));
+    const runTab = await evaluate(
+      `document.querySelector('${view} [data-run-details="${hangRun}"]').closest(".slot").dataset.tab`,
+    );
+
+    // A terminal to the device, and the run's tab in a pane of its own
+    // beside it: the job's progress shows there while the user types.
+    await showSideView(evaluate, "hosts");
+    await doubleClick(hostRow);
+    await until("a terminal on jobs-r1", async () =>
+      (await screen()).includes("lab-r1#"),
+    );
+    const sessionTab = await evaluate(
+      `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
+    );
+    const tabBarOf = (tab) =>
+      `document.querySelector('[data-tab-bar] [data-tab="${tab}"]').closest("[data-tab-bar]")`;
+    await evaluate(
+      `document.querySelector('[data-tab-bar] [data-tab="${runTab}"]').click()`,
+    );
+    await until("the run's tab shown again", () =>
+      exists(`${view} [data-run-details="${hangRun}"]`),
+    );
+    await evaluate(
+      `${tabBarOf(runTab)}.querySelector("[data-split=right]").click()`,
+    );
+    await until("the run's tab in a pane of its own", () =>
+      evaluate(
+        `${tabBarOf(runTab)}.querySelectorAll("[data-tab]").length === 1`,
+      ),
+    );
+    await evaluate(
+      `document.querySelector('[data-tab-bar] [data-tab="${sessionTab}"]').click()`,
+    );
+    await until("the terminal shown beside the run's tab", () =>
+      evaluate(`(() => {
+        const run = document.querySelector('.slot[data-tab="${runTab}"]');
+        const session = document.querySelector('.slot[data-tab="${sessionTab}"]');
+        return !run.hidden && session.matches("[data-active]") &&
+          run.dataset.pane !== session.dataset.pane;
+      })()`),
+    );
+    await type("echo beside\r");
+    await until("the terminal answering beside the run's tab", async () =>
+      /echo beside\s+beside\s+lab-r1#/.test(await screen()),
+    );
+    // Cancelled from the Jobs view, its tab beside shows it at once; the
+    // terminal still takes the keys.
+    await showSideView(evaluate, "jobs");
+    await clickOn(`${JOBS_SIDE} [data-run-cancel="${hangRun}"]`);
+    await until("the cancelled host, in the tab beside", () =>
+      exists(hostState("cancelled")),
+    );
     await until("the hang run ended", () =>
       exists(`${runRow(hangRun)}[data-run-state=ended]`),
     );
-    await until("the cancelled host", () => exists(hostState("cancelled")));
     await until("the cancelled host's output kept", async () =>
       (await runOutputText()).includes("lab-r1# hang"),
     );
-    await until("the header shows no job running", () =>
+    await until("the rail shows no job running", () =>
       exists('[data-rail=jobs][data-jobs-running="0"]'),
     );
-    step(
-      "the jobs view lists the runs newest first and cancelled the running one, keeping its output",
+    await type("echo still\r");
+    await until("the terminal still answering", async () =>
+      /echo still\s+still\s+lab-r1#/.test(await screen()),
     );
+    await screenshot("job-run-beside-terminal");
+    step(
+      "the Jobs view lists the runs, running first; a run's tab in its own pane kept updating beside a terminal in use, and the job was cancelled from the Jobs view, keeping its output",
+    );
+    await sessionAction(evaluate, "disconnect");
+    await until(
+      "the terminal beside closed",
+      async () => (await status()) !== "Connected",
+    );
+    await closeTabOf(evaluate, `.slot[data-tab="${runTab}"]`);
 
     // The finished run: its output, and search across it.
     await clickOn(runRow(doneRun));
@@ -4596,7 +4696,9 @@ async function jobs({
     }
     step("Run again planned the same step and target and showed pre-flight");
     await clickOn(`${dialog} [data-job=dismiss]`);
-    await until("the job dialog closed", async () => !(await exists(dialog)));
+    await until("the job tab closed", async () => !(await exists(dialog)));
+    await closeTabOf(evaluate, `.slot[data-tab] [data-run-tab="${doneRun}"]`);
+    await showSideView(evaluate, "hosts");
 
     // Config backup: a host driven by eos (which ignores the device's
     // changing `! Time:` line), backed up twice for one version, then
@@ -4639,7 +4741,7 @@ async function jobs({
         };
       })()`);
       await clickOn(`${dialog} [data-job=close]`);
-      await until("the job dialog closed", async () => !(await exists(dialog)));
+      await until("the job tab closed", async () => !(await exists(dialog)));
       if (result.state !== "done") fail(`the backup failed: ${json(result)}`);
       return result;
     };
@@ -4666,7 +4768,7 @@ async function jobs({
     // The device's configuration changes (a snippet job), and the next
     // backup keeps a second version.
     await clickOn(".side [data-host-run-snippet]");
-    await until("the run-snippet dialog on jobs-b1", () => atStep("snippet"));
+    await until("the run-snippet tab on jobs-b1", () => atStep("snippet"));
     await pickSnippet("Job configure");
     await until("the configure snippet shown", async () =>
       (await text(`${dialog} [data-job-snippet-text]`)).includes(
@@ -4687,7 +4789,7 @@ async function jobs({
       fail("the configure snippet did not run");
     }
     await clickOn(`${dialog} [data-job=close]`);
-    await until("the job dialog closed", async () => !(await exists(dialog)));
+    await until("the job tab closed", async () => !(await exists(dialog)));
     const third = await backUp();
     if (third.backup !== "saved" || third.version === first.version) {
       fail(`a backup of a changed device: ${json(third)}`);
@@ -4846,9 +4948,9 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     evaluate(`!!document.querySelector(${json(selector)})`);
   const clickOn = (selector) =>
     evaluate(`document.querySelector(${json(selector)}).click()`);
-  const dialog = "[data-dialog=job]";
+  const dialog = JOB_TAB;
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
-  const view = "[data-dialog=jobs]";
+  const view = RUN_TAB;
   const jobsFile = join(workspace, "_jobs.yaml");
   const jobsText = () =>
     existsSync(jobsFile) ? readFileSync(jobsFile, "utf8") : "";
@@ -4884,7 +4986,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
       exists(".side [data-folder-run-snippet]"),
     );
     await clickOn(".side [data-folder-run-snippet]");
-    await until("the run-snippet dialog", () => atStep("snippet"));
+    await until("the run-snippet tab", () => atStep("snippet"));
     await evaluate(`(() => {
       const select = document.querySelector("${dialog} [name=job-snippet]");
       select.value = "Saved check";
@@ -4915,7 +5017,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
       fail(`the jobs file holds ${json(jobsText())}`);
     }
     await clickOn(`${dialog} [data-job=dismiss]`);
-    await until("the job dialog closed", async () => !(await exists(dialog)));
+    await until("the job tab closed", async () => !(await exists(dialog)));
     step("a job was saved from its pre-flight list into the workspace");
 
     // One click in the panel: pre-flight first, then it runs.
@@ -4957,13 +5059,13 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     }
     step("a saved job started from the panel showed pre-flight, then ran");
 
-    // Saved from the past run, in the jobs view.
+    // Saved from the past run, in its tab.
     await clickOn(`${dialog} [data-job=view]`);
-    await until("the run in the jobs view", () =>
+    await until("the run in its tab", () =>
       exists(`${view} [data-run-details] [data-save-job=open]`),
     );
     await clickOn(`${view} [data-save-job=open]`);
-    await until("the jobs view's save form", () =>
+    await until("the run tab's save form", () =>
       exists(`${view} [data-save-job-form]`),
     );
     await fillForm(
@@ -4973,8 +5075,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     await until("the run saved as a job", () =>
       exists(`${view} [data-save-job-saved="From a run"]`),
     );
-    await clickOn(`${view} [data-jobs=close]`);
-    await until("the jobs view closed", async () => !(await exists(view)));
+    await closeTabOf(evaluate, ".slot[data-view-slot=run]");
     await until("the job saved from a run listed", () =>
       exists(savedJob("From a run")),
     );
@@ -4985,7 +5086,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     ) {
       fail(`the jobs file holds ${json(jobsText())}`);
     }
-    step("a past run was saved as a job from the jobs view");
+    step("a past run was saved as a job from its tab");
 
     // Renamed and deleted from the panel.
     await clickOn('[data-saved-job-rename="From a run"]');

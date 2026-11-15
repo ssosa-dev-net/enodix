@@ -2,8 +2,8 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import X from "@lucide/svelte/icons/x";
-  // The workspace's saved jobs (`_jobs.yaml`): one click plans one and opens
-  // the job dialog at its pre-flight. A job whose snippet, script, folder,
+  // The workspace's saved jobs (`_jobs.yaml`), in the Jobs side view: one
+  // click plans one and opens a job tab at its pre-flight. A job whose snippet, script, folder,
   // filter or host is gone says so instead of running.
 
   import { stepTitle, type ListedSavedJob } from "./jobs";
@@ -120,7 +120,7 @@
 
 <style>
   .saved-jobs {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-height: 0;
     display: flex;
     flex-direction: column;

@@ -1,6 +1,6 @@
 <script lang="ts">
   // "Save as job…": saves a step and its target under a name in the
-  // workspace's jobs file, from the job dialog's pre-flight or a past run.
+  // workspace's jobs file, from a job tab's pre-flight or a past run's tab.
 
   import { unsaveable, type JobStep, type JobTarget } from "./jobs";
   import { saveJobAs } from "./inventory.svelte";
