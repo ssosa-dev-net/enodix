@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
+  import X from "@lucide/svelte/icons/x";
   import type { Attachment } from "svelte/attachments";
   import ActivityRail, { SIDE_VIEWS } from "./lib/ActivityRail.svelte";
   import CommandPalette from "./lib/CommandPalette.svelte";
@@ -39,11 +40,14 @@
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
   import CsvImportDialog from "./lib/CsvImportDialog.svelte";
   import NornirImportDialog from "./lib/NornirImportDialog.svelte";
-  import JobDialog from "./lib/JobDialog.svelte";
+  import JobTab from "./lib/JobTab.svelte";
+  import JobsSideView from "./lib/JobsSideView.svelte";
+  import RunView from "./lib/RunView.svelte";
   import EnrichReview from "./lib/EnrichReview.svelte";
-  import JobsView from "./lib/JobsView.svelte";
   import ConfigHistory from "./lib/ConfigHistory.svelte";
-  import { liveJobs } from "./lib/jobs.svelte";
+  import { stepTitle } from "./lib/jobs";
+  import { liveJob, type LiveJob } from "./lib/jobs.svelte";
+  import { forgetClosedDrafts, jobDrafts } from "./lib/jobTabs.svelte";
   import {
     hostRole,
     hostSafety,
@@ -291,8 +295,16 @@
       : [],
   );
 
-  /** Drops the sessions of tabs no longer in the layout (their terminals go). */
+  /** Drops the sessions of tabs no longer in the layout (their terminals go),
+   * and the drafts of closed job tabs. */
   function forgetClosedTabs() {
+    forgetClosedDrafts(
+      new Set(
+        viewTabs.flatMap((item) =>
+          item.view === "job" && item.subject ? [item.subject] : [],
+        ),
+      ),
+    );
     for (const key of Object.keys(sessions)) {
       const tab = Number(key);
       if (!placement.has(tab)) {
@@ -577,7 +589,7 @@
   /** Closes `tab`, first asking if its session is still live. */
   function closeTab(tab: TabId) {
     if (layout && viewOf(layout, tab)) {
-      void edit({ kind: "closeTab", tab });
+      closeViewTab(tab);
       return;
     }
     if (!sessions[tab]) return;
@@ -592,6 +604,57 @@
   $effect(() => {
     if (closing !== null && tabState(closing) === "disconnected")
       confirmClose();
+  });
+
+  /** The job still running that the view tab `tab` shows (a job tab once
+   * started, or a run's tab), if any. */
+  function runningJobOf(tab: TabId): LiveJob | undefined {
+    const shows = layout ? viewOf(layout, tab) : null;
+    if (!shows?.subject) return undefined;
+    const run =
+      shows.view === "job"
+        ? jobDrafts[shows.subject]?.run
+        : shows.view === "run"
+          ? shows.subject
+          : null;
+    const job = run ? liveJob(run) : undefined;
+    return job && !job.finished ? job : undefined;
+  }
+
+  /** What closing a running job's tab says: the job goes on. */
+  let jobNotice = $state<{ run: string; text: string } | null>(null);
+  let jobNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /** Closes the view tab `tab`, never asking. A job it shows goes on
+   * running, and (unless `quiet`) a notice says so. */
+  function closeViewTab(tab: TabId, quiet = false) {
+    const job = quiet ? undefined : runningJobOf(tab);
+    if (job) {
+      jobNotice = {
+        run: job.run,
+        text: `${stepTitle(job.plan.step)} on ${job.label} goes on running.`,
+      };
+      clearTimeout(jobNoticeTimer);
+      jobNoticeTimer = setTimeout(() => (jobNotice = null), 10000);
+    }
+    void edit({ kind: "closeTab", tab });
+  }
+
+  // Job and run tabs belong to the workspace they were opened in (host ids
+  // and run ids mean nothing elsewhere): switching closes them. Their jobs
+  // go on running.
+  let shownRoot: string | null | undefined = undefined;
+  $effect(() => {
+    const root = inventory.workspace?.root ?? null;
+    untrack(() => {
+      if (shownRoot !== undefined && root !== shownRoot) {
+        for (const item of viewTabs) {
+          if (item.view === "job" || item.view === "run")
+            void edit({ kind: "closeTab", tab: item.tab });
+        }
+      }
+      shownRoot = root;
+    });
   });
 
   function confirmClose() {
@@ -1132,10 +1195,12 @@
             target={snippetTarget}
             onsend={(snippet) => void sendSnippet(snippet)}
           />
+        {:else if sideView === "jobs"}
+          <JobsSideView />
         {:else if sideView === "credentials"}
           <CredentialsView />
         {:else}
-          <PlaceholderViews view={sideView} />
+          <PlaceholderViews view="backups" />
         {/if}
       </aside>
     {/if}
@@ -1236,6 +1301,16 @@
           >
             {#if item.view === "preferences"}
               <PreferencesView />
+            {:else if item.view === "job" && item.subject && jobDrafts[item.subject] && inventory.workspace}
+              <JobTab
+                subject={item.subject}
+                onclose={(quiet) => closeViewTab(item.tab, quiet)}
+              />
+            {:else if item.view === "run" && item.subject && inventory.workspace}
+              <RunView
+                run={item.subject}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
             {/if}
           </div>
         {/each}
@@ -1352,21 +1427,6 @@
   />
 {/if}
 
-{#if inventory.job !== null && inventory.workspace}
-  <JobDialog
-    target={inventory.job.target}
-    label={inventory.job.label}
-    planned={inventory.job.planned ?? null}
-    backup={inventory.job.backup ?? false}
-    script={inventory.job.script ?? false}
-    enrich={inventory.job.enrich ?? false}
-    onclose={() => {
-      inventory.job = null;
-      focusRequest += 1;
-    }}
-  />
-{/if}
-
 {#if inventory.enrichReview !== null && inventory.workspace}
   <EnrichReview
     run={inventory.enrichReview}
@@ -1387,14 +1447,27 @@
   />
 {/if}
 
-{#if liveJobs.view && inventory.workspace}
-  <JobsView
-    onclose={() => {
-      liveJobs.view = false;
-      liveJobs.select = null;
-      focusRequest += 1;
-    }}
-  />
+{#if jobNotice}
+  {@const notice = jobNotice}
+  <div class="job-notice" role="status" data-job-still-running={notice.run}>
+    <span>{notice.text} Find it in Jobs.</span>
+    <button
+      type="button"
+      data-job-notice="show"
+      onclick={() => {
+        jobNotice = null;
+        void changePreferences({ sideView: "jobs", leftPanelHidden: false });
+      }}>Show in Jobs</button
+    >
+    <button
+      type="button"
+      class="dismiss"
+      data-job-notice="dismiss"
+      aria-label="Dismiss"
+      onclick={() => (jobNotice = null)}
+      ><X size={14} aria-hidden="true" /></button
+    >
+  </div>
 {/if}
 
 {#if switcher}
@@ -1588,6 +1661,31 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .job-notice {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--space-4) + 1.75rem);
+    transform: translateX(-50%);
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    max-width: min(36rem, calc(100vw - 2 * var(--space-4)));
+    padding: var(--space-1-5) var(--space-2) var(--space-1-5) var(--space-3);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow);
+    font-size: var(--text-sm);
+  }
+
+  .job-notice .dismiss {
+    border-color: transparent;
+    background: none;
+    padding: var(--space-0-5);
+    color: var(--muted);
   }
 
   .slot.view {

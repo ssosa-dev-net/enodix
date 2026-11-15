@@ -1,7 +1,7 @@
 // The jobs this window started, with their progress, kept apart from the
-// dialogs that show them: closing the run-snippet dialog or the jobs view
-// leaves a job running (the shell drives it and keeps its run on disk),
-// and the workspace header counts the running ones.
+// tabs that show them: closing a job's tab leaves it running (the shell
+// drives it and keeps its run on disk), and the rail's Jobs icon counts the
+// running ones.
 
 import { inventory } from "./inventory.svelte";
 import {
@@ -35,11 +35,8 @@ export interface LiveJob {
 
 export const liveJobs = $state({
   jobs: [] as LiveJob[],
-  /** Whether the jobs view is open. */
-  view: false,
-  /** The run the jobs view shows when it opens. */
-  select: null as string | null,
-  /** +1 whenever a job starts or finishes (the jobs view refetches). */
+  /** +1 whenever a job starts or finishes, or a run is deleted (the run
+   * lists refetch). */
   revision: 0,
 });
 
@@ -63,12 +60,6 @@ export function liveJob(run: string): LiveJob | undefined {
   return liveJobs.jobs.find(
     (job) => job.run === run && job.workspace === openRoot(),
   );
-}
-
-/** Opens the jobs view, showing the run `run` if given. */
-export function openJobsView(run: string | null = null) {
-  liveJobs.select = run;
-  liveJobs.view = true;
 }
 
 function apply(job: LiveJob, event: JobEvent) {

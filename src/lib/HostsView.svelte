@@ -200,7 +200,7 @@
     if (host) onconnect(host, protocol);
   }
 
-  /** The name the run-snippet dialog gives a folder. */
+  /** The name a job tab gives a folder. */
   function folderLabel(path: string): string {
     if (path === "") return workspace?.tree.name ?? "the workspace";
     return path.split("/").pop() ?? path;

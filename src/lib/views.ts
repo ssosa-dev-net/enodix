@@ -7,9 +7,18 @@
 // Adding a view: its name in `ViewName` (`layout.ts`), an entry in `VIEWS`
 // (title, icon), and a branch in `App.svelte`'s view slot.
 
+import FileClock from "@lucide/svelte/icons/file-clock";
+import ListChecks from "@lucide/svelte/icons/list-checks";
 import Settings from "@lucide/svelte/icons/settings";
 import type { Component } from "svelte";
 import type { ViewName, ViewRef } from "./layout";
+import {
+  addDraft,
+  draftOfRun,
+  draftTitle,
+  runTitle,
+  type JobDraft,
+} from "./jobTabs.svelte";
 
 export interface ViewInfo {
   /** The tab's name. */
@@ -20,6 +29,10 @@ export interface ViewInfo {
 
 export const VIEWS: Record<ViewName, ViewInfo> = {
   preferences: { title: () => "Preferences", icon: Settings },
+  /** A job from its start: choice, pre-flight, running, results (#69). */
+  job: { title: draftTitle, icon: ListChecks },
+  /** A kept run: output, search, compare, save, delete, run again (#69). */
+  run: { title: runTitle, icon: FileClock },
 };
 
 let opener: ((view: ViewRef) => void) | null = null;
@@ -33,4 +46,17 @@ export function setViewOpener(open: (view: ViewRef) => void) {
  * active pane. */
 export function openView(view: ViewName, subject: string | null = null) {
   opener?.({ view, subject });
+}
+
+/** Opens a new job tab for `draft`'s job. */
+export function openJobTab(draft: Omit<JobDraft, "run" | "opened">) {
+  openView("job", addDraft(draft));
+}
+
+/** Shows the run `run`: the job tab that started it if it is open, else
+ * the run's own tab. */
+export function openRunTab(run: string) {
+  const draft = draftOfRun(run);
+  if (draft) openView("job", draft);
+  else openView("run", run);
 }
