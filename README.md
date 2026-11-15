@@ -30,7 +30,8 @@ Config backups, Credentials, and Preferences at its foot), one side view
 that it switches and folds, and the terminals in tabs and split panes.
 Job runs, config history, Preferences, the imports and the other tools
 open as tabs beside the terminals, and a job run or a config history can
-open in a window of its own. [docs/interface.md](docs/interface.md)
+open in a window of its own. So can a terminal, still connected and with
+its scrollback, for a second monitor (not yet in a release). [docs/interface.md](docs/interface.md)
 describes the window, lists the shortcuts and says where everything is.
 
 Releases up to 0.1.2 have the sessions and the inventory only; everything
