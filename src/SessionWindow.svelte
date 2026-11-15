@@ -9,12 +9,17 @@
   // shows of each session comes from the app's record of it, not from
   // the window that gave it up. Dock back
   // (its menu, Ctrl+Shift+N) returns a session to a tab of the main
-  // window; Dock all back, or closing the window, returns them all. The
-  // window closes itself once its last tab has gone.
+  // window; Dock all back returns them all. Closing the window with live
+  // sessions asks: dock them back, close them, or cancel (#88). The
+  // window closes itself once its last tab has gone. Its palette (Ctrl+K)
+  // connects a host into this window and sends a snippet to its active
+  // terminal (#88).
   import { tick } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen } from "@tauri-apps/api/event";
+  import CommandPalette from "./lib/CommandPalette.svelte";
   import ConfirmClose from "./lib/ConfirmClose.svelte";
+  import ConfirmCloseWindow from "./lib/ConfirmCloseWindow.svelte";
   import ConfirmJoin from "./lib/ConfirmJoin.svelte";
   import PasteConfirm, { type PasteMember } from "./lib/PasteConfirm.svelte";
   import PaneView, {
@@ -43,7 +48,20 @@
     onLayoutChanged,
     sessionSafety,
   } from "./lib/groupPaste";
-  import type { Environment } from "./lib/workspace";
+  import {
+    currentWorkspace,
+    onWorkspaceChanged,
+    type Environment,
+    type Host,
+  } from "./lib/workspace";
+  import { addressBesides, hostConnection } from "./lib/hostConnect";
+  import { hostLogin } from "./lib/credentials";
+  import {
+    hostRole,
+    hostSafety,
+    inventory,
+    setWorkspace,
+  } from "./lib/inventory.svelte";
   import {
     fontStack,
     isDark,
@@ -54,6 +72,7 @@
   } from "./lib/preferences.svelte";
   import {
     appName,
+    sessionRecord,
     type SessionRecord,
     type SessionSource,
     type SessionState,
@@ -66,6 +85,7 @@
   import {
     askMainWindow,
     closeSessionWindow,
+    connectFromMain,
     dockAll,
     dockSession,
     onSnippetSend,
@@ -116,6 +136,15 @@
     production: string[];
     answer: (join: boolean) => void;
   } | null>(null);
+  /** Closing the window, waiting for the user to dock back, close or
+   * cancel (#88): the names of its live sessions. */
+  let closingWindow = $state<{ live: string[]; production: boolean } | null>(
+    null,
+  );
+  /** Whether the palette is open (#88). */
+  let palette = $state(false);
+  /** Tabs opened here whose record was fetched from the app (#88). */
+  const recordsFetched = new Set<TabId>();
   /** A paste to the multi-send group waiting for the user's yes (#87). */
   let groupPasteQuestion = $state<{
     /** The tab pasted in, over whose terminal the question is shown. */
@@ -597,21 +626,145 @@
     }
   }
 
-  // Closing the window (its Close button, Alt+F4, the taskbar) docks its
-  // sessions back first; one that cannot move now is asked about (#88
-  // brings the real question).
+  // Closing the window (its Close button, Alt+F4, the taskbar): with a
+  // session opening or connected, the user docks them back, closes them or
+  // cancels (#88); otherwise it closes, with its closed sessions.
   void getCurrentWindow().onCloseRequested(async (event) => {
     event.preventDefault();
-    if (tabOrder.length === 0) {
+    if (closingWindow || moving) return;
+    const live = tabOrder.filter((tab) => tabState(tab) !== "disconnected");
+    if (live.length === 0) {
       await closeSessionWindow();
       return;
     }
+    tabMenu = null;
+    palette = false;
+    closingWindow = {
+      live: live.map((tab) => sessions[tab]?.record.name ?? "A session"),
+      production: live.some(
+        (tab) => sessions[tab]?.record.safety.environment === "production",
+      ),
+    };
+  });
+
+  /** Closing the window, its sessions docked back: this window's own
+   * questions are dropped first (they would hold a session here); a
+   * session that still cannot move stays, and the window says why. */
+  async function closeByDocking() {
+    closingWindow = null;
+    asking = null;
+    groupPasteQuestion?.answer(false);
+    joining?.answer(false);
+    closing = null;
+    await tick();
+    const reasons = tabOrder
+      .map((tab) => {
+        const terminal = terminals[tab];
+        // (moveRefusal's null means it may move: not `??`.)
+        const refusal = terminal ? terminal.moveRefusal() : "Not yet";
+        return refusal === null
+          ? null
+          : `${sessions[tab]?.record.name ?? "A session"}: ${refusal}`;
+      })
+      .filter((reason) => reason !== null);
     const left = await dockEvery(true);
     if (left.length > 0) {
+      const count = left.length === 1 ? "A session" : `${left.length} sessions`;
+      error = `${count} could not dock back, so the window stays open. ${reasons.join("; ")}`;
       void edit({ kind: "activate", tab: left[0] });
-      closeTab(left[0]);
+      focusRequest += 1;
     }
+  }
+
+  /** Closing the window and every session in it. */
+  function closeWithSessions() {
+    closingWindow = null;
+    void closeSessionWindow().catch((reason) => (error = String(reason)));
+  }
+
+  /** The palette's snippets go to the active terminal, while connected. */
+  const snippetTarget = $derived(
+    activeTab !== null && states[activeTab] === "connected"
+      ? (sessions[activeTab]?.record.name ?? null)
+      : null,
+  );
+
+  // The workspace the palette finds hosts in follows changes on disk, as
+  // the main window's does (a host just written is found and connected).
+  void onWorkspaceChanged((changed) => {
+    if (inventory.workspace?.root === changed.root)
+      inventory.workspace = changed;
   });
+
+  /** Opens the palette with the workspace open now (read afresh: this
+   * window is not told when the main window switches workspace). */
+  async function openPalette() {
+    try {
+      const open = await currentWorkspace();
+      if (open === null || open.root !== inventory.workspace?.root)
+        setWorkspace(open);
+      else inventory.workspace = open;
+    } catch (reason) {
+      error = `Cannot read the workspace: ${reason}`;
+      return;
+    }
+    palette = true;
+  }
+
+  /**
+   * Connects `host` from the palette into a new tab of this window's
+   * active pane (#88), as the main window does: over telnet or serial at
+   * once, else with its credential profile. A host whose credentials must
+   * be asked is connected by the main window, which has the prompt; it
+   * comes forward.
+   */
+  async function connectHost(host: Host) {
+    let connection;
+    try {
+      connection = hostConnection(host, await hostLogin(host.id));
+    } catch {
+      // The profiles cannot be read: the main window says so, and asks.
+      connection = null;
+    }
+    if (!connection) {
+      try {
+        await connectFromMain(host.id);
+      } catch (reason) {
+        error = `Cannot connect ${host.name}: ${reason}`;
+      }
+      return;
+    }
+    const { target, title } = connection;
+    const record: SessionRecord = {
+      name: host.name,
+      title,
+      address: addressBesides(host, title),
+      jumpHost: null,
+      host: host.id,
+      workspace: inventory.workspace?.root ?? null,
+      safety: hostSafety(host.id) ?? NO_SAFETY,
+      role: hostRole(host.id),
+    };
+    await edit({ kind: "openTab" }, (tab) => {
+      sessions[tab] = {
+        source: { kind: "target", target, name: host.name, title },
+        record,
+      };
+    });
+    focusRequest += 1;
+  }
+
+  /** A session opened here: once it is open, its header shows what the app
+   * recorded of it (its jump host, say), fetched once. */
+  function fetchRecordOnce(tab: TabId) {
+    const id = terminals[tab]?.sessionId() ?? null;
+    if (id === null || recordsFetched.has(tab)) return;
+    if (sessions[tab]?.source.kind !== "target") return;
+    recordsFetched.add(tab);
+    void sessionRecord(id).then((record) => {
+      if (record && sessions[tab]) sessions[tab].record = record;
+    });
+  }
 
   /** The moves offered for `tab`'s session. */
   function movesOf(tab: TabId): SessionMove[] {
@@ -724,8 +877,9 @@
       (event.code === "Digit0" || event.code === "Numpad0")
     )
       return () => void zoomFont("reset");
-    if (closing !== null) return null;
+    if (closing !== null || closingWindow !== null || palette) return null;
     const tab = activeTab;
+    if (!event.shiftKey && letter("K")) return () => void openPalette();
     if (
       event.key === "Tab" ||
       event.key === "PageDown" ||
@@ -813,7 +967,10 @@
             {focused}
             {focusRequest}
             onsize={(next) => (sizes[tab] = next)}
-            onstate={(next) => (states[tab] = next.state)}
+            onstate={(next) => {
+              states[tab] = next.state;
+              fetchRecordOnce(tab);
+            }}
             ondismiss={() => closeTab(tab)}
             onduplicate={(id) => duplicate(tab, id)}
             ondetails={record.host === null
@@ -915,6 +1072,36 @@
   </div>
   <StatusLine vault={null} session={statusSession} />
 </div>
+
+{#if palette}
+  <CommandPalette
+    onconnect={(host) => void connectHost(host)}
+    onsnippet={(name) => {
+      if (activeTab !== null) void sendSnippet(activeTab, name);
+    }}
+    target={snippetTarget}
+    actions={[]}
+    reveals={false}
+    onclose={() => {
+      palette = false;
+      focusRequest += 1;
+    }}
+  />
+{/if}
+
+{#if closingWindow}
+  {@const question = closingWindow}
+  <ConfirmCloseWindow
+    live={question.live}
+    production={question.production}
+    ondock={() => void closeByDocking()}
+    onclosesessions={closeWithSessions}
+    oncancel={() => {
+      closingWindow = null;
+      focusRequest += 1;
+    }}
+  />
+{/if}
 
 {#if tabMenu}
   <SessionMenu

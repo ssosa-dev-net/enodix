@@ -19,6 +19,7 @@
 //! The app's windows each have a layout, kept together in [`Windows`] with
 //! the one multi-send group that spans them (#83).
 
+mod closing;
 mod windows;
 
 use std::collections::BTreeMap;
@@ -26,6 +27,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub use closing::{close_workspace_sessions, live_in_session_windows, WorkspaceClosed};
 pub use windows::{LayoutMut, Member, Taken, Used, WindowId, WindowView, Windows};
 
 /// A tab, unique for the life of its [`Layout`].

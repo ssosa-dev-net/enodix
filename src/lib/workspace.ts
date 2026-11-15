@@ -424,6 +424,11 @@ export function onWorkspaceChanged(
   );
 }
 
+/** The workspace open now, if any (a session window's palette, #88). */
+export function currentWorkspace(): Promise<WorkspaceView | null> {
+  return invoke<WorkspaceView | null>("workspace_current");
+}
+
 /** Reopens the last opened workspace, if any. */
 export function restoreWorkspace(): Promise<WorkspaceView | null> {
   return invoke<WorkspaceView | null>("workspace_restore");

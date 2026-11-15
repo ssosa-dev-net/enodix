@@ -270,7 +270,9 @@ export function onSnippetSend(
 /** What a session window asks of the main window for one of its
  * sessions (#86). */
 export type MainRequest =
-  { kind: "details" } | { kind: "passwordLogin"; reason: string };
+  | { kind: "details" }
+  | { kind: "passwordLogin"; reason: string }
+  | { kind: "connect" };
 
 /** Asks the main window to do `request` for the session of this session
  * window's tab `tab`; the main window comes forward. */
@@ -293,6 +295,46 @@ export function onMainWindowRequest(
     "main-window-request",
     (event) => handler(event.payload),
   );
+}
+
+/** Asks the main window to connect the host `host`, asking its
+ * credentials there (#88: from a session window's palette, for a host
+ * without a profile); it comes forward. */
+export function connectFromMain(host: string) {
+  return invoke<void>("main_window_connect", { host });
+}
+
+/** How many sessions of the session windows are live (#88), only those
+ * to hosts of the workspace at `workspace` when given; 0 if it cannot be
+ * told (then only the main window's own are asked about). */
+export async function liveInSessionWindows(
+  workspace: string | null = null,
+): Promise<number> {
+  try {
+    return await invoke<number>("session_windows_live", { workspace });
+  } catch {
+    return 0;
+  }
+}
+
+/** Where `live` sessions are, `elsewhere` of them in session windows, as
+ * the closing questions add it after their count (#88). */
+export function inSessionWindows(live: number, elsewhere: number): string {
+  if (elsewhere === 0) return "";
+  if (elsewhere === live)
+    return live === 1 ? ", in a session window" : ", in session windows";
+  return ` (${elsewhere} in session windows)`;
+}
+
+/** Closes, in every session window, the sessions to hosts of the
+ * workspace at `workspace` (#88: switched away from, closing them). */
+export function closeWorkspaceSessionsElsewhere(workspace: string) {
+  return invoke<void>("session_windows_close_workspace", { workspace });
+}
+
+/** Closes the main window, and so every window (#88). */
+export function closeMainWindow() {
+  return invoke<void>("main_window_close");
 }
 
 /** The core's id for the main window. */

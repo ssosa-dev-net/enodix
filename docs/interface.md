@@ -44,6 +44,10 @@ everything 0.2.0 could do, the app still does, reached differently.
 - **Real windows**: a job run and a host's config history can open in a
   window of their own ("Open in window") and dock back. Closing the main
   window closes them; closing a run's window leaves its job running.
+- **Closing the main window** closes every window, session windows
+  included, and ends every session (#88). If a session is connecting or
+  connected in any window, you are asked once first ("Close all" or
+  Cancel, which has the focus); otherwise it closes at once.
 - **Session windows** (#84, #85): a session can move to a window of its
   own, live, with its scrollback and screen: "Open in new window" in its
   menu or its tab's context menu (or Ctrl+Shift+N), or "Open in the
@@ -56,10 +60,22 @@ everything 0.2.0 could do, the app still does, reached differently.
   title names the session of its active tab. Duplicate there opens the
   new session beside the original, in that window. "Dock back" (its
   menu, Ctrl+Shift+N) returns one session to a tab of the main window;
-  "Dock all back" (its menu, with more than one tab) returns them all,
-  and so does closing the window (a session that cannot move then is
-  asked about). A window whose last tab moves out, docks back or closes
-  closes itself. A move is not offered while the session is connecting,
+  "Dock all back" (its menu, with more than one tab) returns them all.
+  Closing a session window (its Close button, Alt+F4, the taskbar) with a
+  session connecting or connected asks (#88): "Dock back" (the default)
+  returns them all to the main window, still connected; "Close them" ends
+  them with the window; Cancel keeps it open (and has the focus when one
+  of them is a production host). A session that cannot move just then (a
+  login, host-key or paste question open on it) stays, and the window
+  says why. With no live session, closing it closes it and its closed
+  sessions at once. A window whose last tab moves out, docks back or
+  closes closes itself. Its palette (Ctrl+K) connects a host into that
+  window (Shift+Enter connects too: there is no tree to show it in); a
+  host whose credentials must be typed is connected by the main window,
+  which comes forward to ask. A snippet found there with `>` goes to that
+  window's active terminal. Switching workspace asks about the sessions
+  in session windows as about those of the main window, and keeps or
+  closes them alike. A move is not offered while the session is connecting,
   while a question is open on it, or while a paste is still being sent.
   The multi-send group spans windows (#87): a member stays in it when it
   moves; every member, in every window, shows the marker and the group's
@@ -91,7 +107,9 @@ everything 0.2.0 could do, the app still does, reached differently.
   multi-send) cover only that terminal's pane; the other panes stay usable.
   Those about the whole app stay window-modal: delete, rename, new host or
   folder, switching workspace (and keeping or closing its sessions), the
-  workspace switcher, the vault's forms, the unlock and start-over screen.
+  workspace switcher, the vault's forms, the unlock and start-over screen,
+  closing the main window, and closing a session window with live
+  sessions (over that window).
 - **First window**: with no workspace open, the active pane shows the
   welcome view (recent workspaces, open a folder, create a workspace,
   quick connect); side views that need a workspace say so.
@@ -100,7 +118,7 @@ everything 0.2.0 could do, the app still does, reached differently.
 
 | Keys                                  | What                                |
 | ------------------------------------- | ----------------------------------- |
-| Ctrl+K                                | Palette                             |
+| Ctrl+K                                | Palette (in a session window too)   |
 | Ctrl+Shift+H / S / J / G / L          | Hosts / Snippets / Jobs / Config backups / Credentials (again: fold) |
 | Ctrl+Shift+B                          | Fold or unfold the side view        |
 | Ctrl+Shift+D                          | Open or close the details sheet     |

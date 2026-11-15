@@ -491,13 +491,7 @@ impl Windows {
         self.layout_mut(from)
             .expect("checked above")
             .close_tab(tab)?;
-        let emptied = self.layout(from).is_some_and(|layout| {
-            layout
-                .panes()
-                .iter()
-                .all(|&pane| layout.pane(pane).is_some_and(|pane| pane.tabs.is_empty()))
-        });
-        if from != WindowId::MAIN && emptied {
+        if from != WindowId::MAIN && self.emptied(from) {
             self.close_window(from)?;
         }
         Ok(moved)
@@ -564,6 +558,62 @@ impl Windows {
             self.close_window(window)?;
         }
         Ok(handed)
+    }
+
+    /// Every session window's session tabs whose session is known, window
+    /// by window in the order they opened, each in reading order (#88):
+    /// what closing the main window or switching workspace asks about,
+    /// besides the main window's own.
+    pub fn session_window_sessions(&self) -> Vec<(Member, SessionId)> {
+        self.layouts
+            .keys()
+            .filter(|&&window| window != WindowId::MAIN)
+            .flat_map(|&window| {
+                self.session_tabs(window)
+                    .into_iter()
+                    .map(move |(tab, session)| (Member { window, tab }, session))
+            })
+            .collect()
+    }
+
+    /// Closes, in the session windows, every tab showing one of `sessions`
+    /// (#88: their workspace was switched away from); a member leaves the
+    /// group. A session window left without a tab closes: those are
+    /// returned, in order. The main window's tabs are left alone (its page
+    /// closes its own).
+    pub fn close_sessions(&mut self, sessions: &[SessionId]) -> Vec<WindowId> {
+        let closing: Vec<Member> = self
+            .session_window_sessions()
+            .into_iter()
+            .filter(|(_, session)| sessions.contains(session))
+            .map(|(member, _)| member)
+            .collect();
+        let mut closed = Vec::new();
+        for member in closing {
+            let Some(mut layout) = self.layout_mut(member.window) else {
+                continue;
+            };
+            // Dropping the edit forgets the closed tab's session.
+            if layout.close_tab(member.tab).is_err() {
+                continue;
+            }
+            drop(layout);
+            self.snapshots.remove(&member);
+            if self.emptied(member.window) && self.close_window(member.window).is_ok() {
+                closed.push(member.window);
+            }
+        }
+        closed
+    }
+
+    /// Whether every pane of `window` is without a tab.
+    fn emptied(&self, window: WindowId) -> bool {
+        self.layout(window).is_some_and(|layout| {
+            layout
+                .panes()
+                .iter()
+                .all(|&pane| layout.pane(pane).is_some_and(|pane| pane.tabs.is_empty()))
+        })
     }
 
     /// Drops every member and session of `window`.

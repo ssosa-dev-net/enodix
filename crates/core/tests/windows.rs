@@ -1151,3 +1151,74 @@ fn using_a_view_tab_a_tab_without_a_session_or_an_unknown_window_changes_nothing
 
     assert_eq!(windows.last_used().map(|used| used.tab), Some(tab));
 }
+
+// Closing rules (#88).
+
+#[test]
+fn every_session_windows_sessions_are_listed_window_by_window() {
+    let mut windows = Windows::new();
+    let main_tab = open(&mut windows, MAIN, 1)[0];
+    windows
+        .attach_session(MAIN, main_tab, SessionId(9))
+        .unwrap();
+    let first = windows.open_session_window();
+    let second = windows.open_session_window();
+    let [b] = move_into(&mut windows, second, &[3])[..] else {
+        unreachable!()
+    };
+    let [a1, a2] = move_into(&mut windows, first, &[1, 2])[..] else {
+        unreachable!()
+    };
+
+    // The main window's own are not listed: its page knows them.
+    assert_eq!(
+        windows.session_window_sessions(),
+        vec![
+            (member(first, a1), SessionId(1)),
+            (member(first, a2), SessionId(2)),
+            (member(second, b), SessionId(3)),
+        ]
+    );
+}
+
+#[test]
+fn closing_sessions_closes_their_tabs_in_session_windows_and_the_windows_left_empty() {
+    let mut windows = Windows::new();
+    let main_tab = open(&mut windows, MAIN, 1)[0];
+    windows
+        .attach_session(MAIN, main_tab, SessionId(9))
+        .unwrap();
+    let first = windows.open_session_window();
+    let second = windows.open_session_window();
+    let [_, kept] = move_into(&mut windows, first, &[1, 2])[..] else {
+        unreachable!()
+    };
+    move_into(&mut windows, second, &[3]);
+    let before = revision(&windows, first);
+
+    let closed = windows.close_sessions(&[SessionId(1), SessionId(3), SessionId(9)]);
+
+    assert_eq!(closed, vec![second]);
+    assert_eq!(windows.session_tabs(first), vec![(kept, SessionId(2))]);
+    assert!(revision(&windows, first) > before);
+    assert!(windows.layout(second).is_none());
+    // The main window's tabs are its page's to close.
+    assert_eq!(windows.session_tabs(MAIN), vec![(main_tab, SessionId(9))]);
+}
+
+#[test]
+fn closing_a_member_in_a_session_window_drops_it_from_the_group() {
+    let mut windows = Windows::new();
+    let window = windows.open_session_window();
+    let [a, b] = move_into(&mut windows, window, &[1, 2])[..] else {
+        unreachable!()
+    };
+    windows.join_group(window, a).unwrap();
+    windows.join_group(window, b).unwrap();
+    let group = windows.group_revision();
+
+    windows.close_sessions(&[SessionId(1)]);
+
+    assert_eq!(windows.window_group(window), vec![b]);
+    assert!(windows.group_revision() > group);
+}

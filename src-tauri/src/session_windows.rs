@@ -22,9 +22,12 @@
 //! answer) has its sessions let go of and handed to the main window
 //! without their scrollback (`destroyed`).
 
+use std::path::PathBuf;
 use std::time::Duration;
 
-use netterm_core::layout::{TabId, WindowId, WindowView, Windows};
+use netterm_core::layout::{
+    close_workspace_sessions, live_in_session_windows, TabId, WindowId, WindowView, Windows,
+};
 use netterm_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, SessionId, SessionManager, SessionRecord,
     SessionRecords, SessionRelays, SessionState, Transport,
@@ -418,6 +421,9 @@ pub(super) enum MainRequest {
     Details,
     /// Log in to its host with a password: its SSH agent did not work.
     PasswordLogin { reason: String },
+    /// Connect to the host, asking its credentials (#88: from a session
+    /// window's palette, `main_window_connect`).
+    Connect,
 }
 
 /// A request, with the session's record, as the main window is told it.
@@ -448,6 +454,9 @@ pub(super) fn main_window_request(
     let from = calling_window(&window)?;
     if from == WindowId::MAIN {
         return Err("not a session window".into());
+    }
+    if matches!(request, MainRequest::Connect) {
+        return Err("a host is connected with main_window_connect".into());
     }
     let session = tabs
         .lock()
@@ -841,6 +850,111 @@ pub(super) async fn session_window_close(
     }
     announce(&app, &tabs, &records);
     window.destroy().map_err(|error| error.to_string())
+}
+
+/// How many sessions of the session windows are live, only those to hosts
+/// of the workspace at `workspace` when given (#88, the core's
+/// `live_in_session_windows`): closing the main window asks about every
+/// window's, switching workspace about those of the workspace left. The
+/// main window counts its own.
+#[tauri::command]
+pub(super) fn session_windows_live(
+    tabs: State<'_, Tabs>,
+    relays: State<'_, SessionRelays>,
+    records: State<'_, SessionRecords>,
+    workspace: Option<PathBuf>,
+) -> usize {
+    live_in_session_windows(&tabs.lock(), &relays, &records, workspace.as_deref())
+}
+
+/// The main window switched away from the workspace at `workspace`, and
+/// the user chose to close its sessions (#88): in every session window,
+/// each session to one of its hosts closes (the core's
+/// `close_workspace_sessions`); the windows left without a tab are
+/// destroyed, the others told their layout. Main only: it closes its own
+/// tabs.
+#[tauri::command]
+pub(super) fn session_windows_close_workspace(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    manager: State<'_, SessionManager>,
+    tabs: State<'_, Tabs>,
+    relays: State<'_, SessionRelays>,
+    records: State<'_, SessionRecords>,
+    workspace: PathBuf,
+) -> Result<(), String> {
+    if calling_window(&window)? != WindowId::MAIN {
+        return Err("only the main window switches workspace".into());
+    }
+    let (closed, views) = {
+        let mut windows = tabs.lock();
+        let done = close_workspace_sessions(&mut windows, &manager, &relays, &records, &workspace);
+        let views: Vec<_> = done
+            .changed
+            .into_iter()
+            .filter_map(|window| Some((window, windows.view(window)?)))
+            .collect();
+        (done.closed, views)
+    };
+    for (window, view) in views {
+        let _ = app.emit_to(
+            label_of(window).as_str(),
+            super::group::LAYOUT_CHANGED_EVENT,
+            view,
+        );
+    }
+    for window in closed {
+        if let Some(webview) = app.get_webview_window(&label_of(window)) {
+            let _ = webview.destroy();
+        }
+    }
+    announce(&app, &tabs, &records);
+    Ok(())
+}
+
+/// The main window closes (#88), its question answered or none needed:
+/// every window goes, and their sessions with them (`close_detached`, on
+/// its `Destroyed`).
+#[tauri::command]
+pub(super) fn main_window_close(window: tauri::WebviewWindow) -> Result<(), String> {
+    if calling_window(&window)? != WindowId::MAIN {
+        return Err("not the main window".into());
+    }
+    window.destroy().map_err(|error| error.to_string())
+}
+
+/// From a session window's palette (#88): the host `host` needs its
+/// credentials asked, which only the main window does (it has the
+/// credentials prompt), so the main window is asked to connect it and comes
+/// forward. The session opens there.
+#[tauri::command]
+pub(super) fn main_window_connect(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
+    host: HostId,
+) -> Result<(), String> {
+    if calling_window(&window)? == WindowId::MAIN {
+        return Err("not a session window".into());
+    }
+    let known = shell
+        .workspace()
+        .as_ref()
+        .is_some_and(|workspace| workspace.resolve_host(&host).is_some());
+    if !known {
+        return Err("that host is not in the open workspace".into());
+    }
+    let main = focused_main(&app)?;
+    main.emit_to(
+        MAIN_WINDOW,
+        MAIN_WINDOW_REQUEST_EVENT,
+        MainRequested {
+            request: MainRequest::Connect,
+            record: None,
+            host,
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// The session window labelled `label` was destroyed. If it still showed

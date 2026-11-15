@@ -2258,6 +2258,8 @@ async function main() {
 
   await safetyInSessionWindows({ evaluate, devtools, screenshot, step });
 
+  await closingSessionWindows({ evaluate, screenshot, step });
+
   await webLinks({ evaluate, text, screenshot, step });
 
   await csvImport({
@@ -2323,6 +2325,8 @@ async function main() {
   await enrichment({ evaluate, screenshot, step, ready: pythonInterpreter });
 
   await sidePanels({ evaluate, mouse, centreOf, devtools, screenshot, step });
+
+  await quittingWithLiveSessions({ app, evaluate, devtools, step });
 
   devtools.close();
 
@@ -5163,6 +5167,326 @@ async function closingTheMainWindow({ app, evaluate, step }) {
 }
 
 /**
+ * Runs the shell command `command` with `args` in the page `evaluate`
+ * reaches, and resolves to its answer (an error fails the smoke).
+ */
+async function invokeIn(evaluate, command, args = {}) {
+  const key = `__smokeInvoke_${command}`;
+  await evaluate(`(() => {
+    window.${key} = null;
+    window.__TAURI_INTERNALS__
+      .invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})
+      .then((value) => (window.${key} = { value }), (error) => (window.${key} = { error: String(error) }));
+  })()`);
+  const answer = await until(`the answer to ${command}`, () =>
+    evaluate(`window.${key}`),
+  );
+  if (answer.error !== undefined) fail(`${command}: ${answer.error}`);
+  return answer.value;
+}
+
+/** The labels of the open session windows. */
+async function sessionWindowLabels() {
+  const labels = [];
+  for (const target of await pageTargets()) {
+    const client = await connectTarget(target);
+    const label = await evaluateIn(client)(
+      "window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? null",
+    ).catch(() => null);
+    client.close();
+    if (label?.startsWith("session-")) labels.push(label);
+  }
+  return labels;
+}
+
+/** The tabs a window shows: id, state and name. */
+function tabsIn(evaluate) {
+  return evaluate(`[...document.querySelectorAll("[data-tab-bar] [role=tab]")].map((tab) => ({
+    id: Number(tab.dataset.tab),
+    state: tab.dataset.tabState,
+    name: tab.querySelector("[data-tab-name]")?.textContent ?? "",
+  }))`);
+}
+
+/** Presses `key` (with `modifiers`) through `client`. */
+async function pressIn(client, key, code, windowsVirtualKeyCode, modifiers) {
+  const event = { key, code, windowsVirtualKeyCode, modifiers };
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+}
+
+/**
+ * Moves the connected session `name` of the main window to a new session
+ * window, and resolves to that window (`label`, `devtools`, `evaluate`)
+ * once it shows the session connected.
+ */
+async function moveToNewWindow(evaluate, name) {
+  const tab = (await tabsIn(evaluate)).find(
+    (each) => each.name === name && each.state === "connected",
+  );
+  if (!tab)
+    fail(
+      `no connected ${name} to move: ${JSON.stringify(await tabsIn(evaluate))}`,
+    );
+  await evaluate(
+    `document.querySelector('[data-tab-bar] [data-tab="${tab.id}"]').click()`,
+  );
+  await until(`${name} shown`, () =>
+    evaluate(
+      `!!document.querySelector('.slot[data-tab="${tab.id}"][data-active]')`,
+    ),
+  );
+  const before = new Set(await sessionWindowLabels());
+  await sessionAction(evaluate, "open-in-window", SHOWN_SESSION);
+  const label = await until("the new session window", async () =>
+    (await sessionWindowLabels()).find((each) => !before.has(each)),
+  );
+  const window = await connectWindow(label);
+  await until(`${name} connected in its window`, async () =>
+    (await tabsIn(window.evaluate)).some(
+      (each) => each.name === name && each.state === "connected",
+    ),
+  );
+  return { label, ...window };
+}
+
+/**
+ * Searches the palette open in `evaluate`'s window for `query` until
+ * `selector` is listed (the workspace may still be reloading a file just
+ * written), then chooses it.
+ */
+async function paletteChoose(evaluate, query, selector) {
+  const set = (value) =>
+    evaluate(`(() => {
+      const input = document.querySelector("input[name=palette-query]");
+      input.value = ${JSON.stringify(value)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+  await until(`${selector} in the palette`, async () => {
+    if (await evaluate(`!!document.querySelector(${JSON.stringify(selector)})`))
+      return true;
+    await set("");
+    await set(query);
+    await sleep(200);
+    return evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  });
+  // Clicked: another hit may rank first, and Enter takes that one.
+  await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+}
+
+/** Closes the window `evaluate` reaches with its own Close button. */
+function closeWithButton(evaluate) {
+  return evaluate(
+    `document.querySelector("[data-window-control=close]").click()`,
+  ).catch(() => {});
+}
+
+/**
+ * The palette in a session window and closing session windows (#88): after
+ * safetyInSessionWindows (lab-r9 open and connected in the main window).
+ * Ctrl+K there connects a telnet host into that window, and a snippet
+ * found with > goes to that window's active terminal. Closing the window
+ * with live sessions asks: Cancel keeps it, Dock back brings both back
+ * connected, and Close them (another window) ends its session.
+ */
+async function closingSessionWindows({ evaluate, screenshot, step }) {
+  const CTRL = 2;
+  const writeHost = () =>
+    writeFileSync(
+      join(workspace, "win-telnet.yaml"),
+      `address: 127.0.0.1\nport: ${TELNET_PORT}\nprotocol: telnet\n`,
+    );
+  writeHost();
+  const window = await moveToNewWindow(evaluate, "lab-r9");
+  const there = window.evaluate;
+  const openPalette = async () => {
+    await pressIn(window.devtools, "k", "KeyK", 75, CTRL);
+    await until("the palette in the session window", () =>
+      there(`!!document.querySelector("input[name=palette-query]")`),
+    );
+  };
+
+  // The palette connects a host into this window.
+  await openPalette();
+  await paletteChoose(there, "win-telnet", '[data-hit="win-telnet.yaml"]');
+  await until("win-telnet connected in the session window", async () =>
+    (await tabsIn(there)).some(
+      (each) => each.name === "win-telnet" && each.state === "connected",
+    ),
+  );
+  if ((await tabsIn(evaluate)).some((each) => each.name === "win-telnet"))
+    fail("the session window's palette opened win-telnet in the main window");
+  step(
+    "Ctrl+K in a session window found win-telnet and connected it into that window",
+  );
+
+  // A snippet found there goes to that window's active terminal.
+  const snippetsFile = join(workspace, "_snippets.yaml");
+  const savedSnippets = existsSync(snippetsFile)
+    ? readFileSync(snippetsFile, "utf8")
+    : null;
+  writeFileSync(snippetsFile, "Window check: later 0 window-snippet-ok\n");
+  try {
+    const lab = (await tabsIn(there)).find((each) => each.name === "lab-r9");
+    await there(
+      `document.querySelector('[data-tab-bar] [data-tab="${lab.id}"]').click()`,
+    );
+    await until("lab-r9 active in its window", () =>
+      there(
+        `!!document.querySelector('.slot[data-tab="${lab.id}"][data-active]')`,
+      ),
+    );
+    await openPalette();
+    await paletteChoose(
+      there,
+      ">window check",
+      '[data-snippet-hit="Window check"]',
+    );
+    await until("the snippet ran in lab-r9, in the session window", async () =>
+      /(^|\n|\$ )window-snippet-ok\s*(\n|$)/.test(
+        await screenOf(there, `.slot[data-tab="${lab.id}"]`),
+      ),
+    );
+  } finally {
+    if (savedSnippets === null) rmSync(snippetsFile, { force: true });
+    else writeFileSync(snippetsFile, savedSnippets);
+  }
+  step(
+    "a snippet found with > in the session window's palette ran in its active terminal",
+  );
+
+  // Closing asks; Cancel keeps the window and its sessions.
+  const question = () =>
+    there(
+      `document.querySelector("[data-confirm-close-window]")?.textContent ?? null`,
+    );
+  await closeWithButton(there);
+  const asked = await until("the session window's close question", question);
+  if (!/lab-r9/.test(asked) || !/win-telnet/.test(asked))
+    fail(`the close question names: ${asked}`);
+  if (screenshot) await screenshot("session-window-close-question");
+  await there(`document.querySelector("[data-close-window=cancel]").click()`);
+  await until(
+    "the close question gone",
+    async () => (await question()) === null,
+  );
+  await sleep(500);
+  if (!(await windowOpen(window.label)))
+    fail("Cancel closed the session window");
+  const kept = await tabsIn(there);
+  if (
+    !["lab-r9", "win-telnet"].every((name) =>
+      kept.some((each) => each.name === name && each.state === "connected"),
+    )
+  )
+    fail(`after Cancel the window shows ${JSON.stringify(kept)}`);
+  step(
+    "closing a session window with live sessions asked; Cancel kept it and both sessions",
+  );
+
+  // Dock back: both reach the main window, still connected.
+  await closeWithButton(there);
+  await until("the close question again", question);
+  await there(
+    `document.querySelector("[data-close-window=dock]").click()`,
+  ).catch(() => {});
+  window.devtools.close();
+  await until(
+    "the session window closed",
+    async () => !(await windowOpen(window.label)),
+  );
+  await until("both sessions docked back, connected", async () => {
+    const shown = await tabsIn(evaluate);
+    return ["lab-r9", "win-telnet"].every((name) =>
+      shown.some((each) => each.name === name && each.state === "connected"),
+    );
+  });
+  step(
+    "Dock back closed the window and returned both sessions to the main window, connected",
+  );
+
+  // Close them: the window goes and its session ends.
+  const second = await moveToNewWindow(evaluate, "win-telnet");
+  await closeWithButton(second.evaluate);
+  await until("the second window's close question", () =>
+    second.evaluate(`!!document.querySelector("[data-confirm-close-window]")`),
+  );
+  await second
+    .evaluate(`document.querySelector("[data-close-window=close]").click()`)
+    .catch(() => {});
+  second.devtools.close();
+  await until(
+    "the second session window closed",
+    async () => !(await windowOpen(second.label)),
+  );
+  await sleep(500);
+  if ((await tabsIn(evaluate)).some((each) => each.name === "win-telnet"))
+    fail("Close them docked win-telnet back");
+  const live = await invokeIn(evaluate, "session_windows_live", {
+    workspace: null,
+  });
+  if (live !== 0) fail(`after Close them, ${live} live in session windows`);
+  step("Close them closed the session window and ended its session");
+}
+
+/**
+ * Closing the main window with a live session in a session window (#88),
+ * at the end of the first run: asked once (Cancel keeps everything open),
+ * then Close all ends the app and every window. The session is a telnet
+ * host found with the palette (it asks for nothing).
+ */
+async function quittingWithLiveSessions({ app, evaluate, devtools, step }) {
+  writeFileSync(
+    join(workspace, "win-telnet.yaml"),
+    `address: 127.0.0.1\nport: ${TELNET_PORT}\nprotocol: telnet\n`,
+  );
+  await pressIn(devtools, "k", "KeyK", 75, 2);
+  await until("the palette", () =>
+    evaluate(`!!document.querySelector("input[name=palette-query]")`),
+  );
+  await paletteChoose(evaluate, "win-telnet", '[data-hit="win-telnet.yaml"]');
+  await until("win-telnet connected", async () =>
+    (await tabsIn(evaluate)).some(
+      (each) => each.name === "win-telnet" && each.state === "connected",
+    ),
+  );
+  const window = await moveToNewWindow(evaluate, "win-telnet");
+  window.devtools.close();
+  const question = () =>
+    evaluate(
+      `document.querySelector("[data-confirm-quit]")?.textContent ?? null`,
+    );
+  await closeWithButton(evaluate);
+  const asked = await until("the quit question", question);
+  if (!/session window/.test(asked))
+    fail(`the quit question does not count the session window's: ${asked}`);
+  await evaluate(`document.querySelector("[data-quit=cancel]").click()`);
+  await until(
+    "the quit question gone",
+    async () => (await question()) === null,
+  );
+  await sleep(500);
+  if (app.exitCode !== null) fail("Cancel ended the app");
+  if (!(await windowOpen(window.label)))
+    fail("Cancel closed the session window");
+  step(
+    "closing the main window with a live session in a session window asked once; Cancel kept every window",
+  );
+
+  await closeWithButton(evaluate);
+  await until("the quit question again", question);
+  await evaluate(`document.querySelector("[data-quit=close]").click()`).catch(
+    () => {},
+  );
+  await until(
+    "the app ended with every window",
+    () => app.exitCode !== null,
+    15_000,
+  );
+  step("Close all ended the app, the session window with it");
+}
+
+/**
  * Jobs (#42): a snippet run on a folder whose platform is set there,
  * against the example server's device-mode shell. Pre-flight lists the
  * skipped hosts with their reasons and asks once for the production host;
@@ -6477,6 +6801,29 @@ async function workspaces({
     `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
   );
   const slot = `.slot[data-tab="${tab}"]`;
+  // A second one, moved to a session window (#88): switching treats it
+  // as those of the main window.
+  writeFileSync(
+    join(workspace, "ws-r2.yaml"),
+    `address: 127.0.0.1\nport: ${SSH_PORT}\n`,
+  );
+  const secondHost = '[data-host="ws-r2.yaml"]';
+  await until("the second host in the tree", () => exists(secondHost));
+  await doubleClick(secondHost);
+  await until("the credentials prompt", async () =>
+    (await text("main h2")).includes("ws-r2"),
+  );
+  await fillForm({ username: USERNAME, password: PASSWORD });
+  await until(
+    "the second Connected status",
+    async () => (await status()) === "Connected",
+  );
+  const away = await moveToNewWindow(evaluate, "ws-r2");
+  away.devtools.close();
+  await evaluate(
+    `document.querySelector('[data-tab-bar] [data-tab="${tab}"]').click()`,
+  );
+  await until("ws-r1 shown again", () => exists(`${slot}[data-active]`));
   const sessionRole = () =>
     evaluate(
       `document.querySelector(${json(slot + " .session header [data-role-icon]")})?.dataset.roleIcon ?? null`,
@@ -6500,9 +6847,10 @@ async function workspaces({
   await until("the keep-or-close question", () =>
     exists("[data-confirm-switch]"),
   );
-  // Earlier parts left sessions to its hosts open too.
+  // Earlier parts left sessions to its hosts open too; one is in a
+  // session window (#88).
   if (
-    !/\d+ sessions? to hosts of smoke-workspace/.test(
+    !/\d+ sessions? to hosts of smoke-workspace[\s\S]*\(1 in session windows\)/.test(
       await text("[data-confirm-switch]"),
     )
   ) {
@@ -6550,8 +6898,17 @@ async function workspaces({
   if ((await sessionRole()) !== "router") {
     fail(`the kept session's role icon is ${await sessionRole()}`);
   }
+  const keptAway = await connectWindow(away.label);
+  const keptThere = await tabsIn(keptAway.evaluate);
+  keptAway.devtools.close();
+  if (
+    !keptThere.some(
+      (each) => each.name === "ws-r2" && each.state === "connected",
+    )
+  )
+    fail(`the kept session window shows ${JSON.stringify(keptThere)}`);
   step(
-    "a new empty workspace was created and opened; the live session was kept",
+    "a new empty workspace was created and opened; the live sessions were kept, one in a session window",
   );
 
   // Back by typing in the switcher: nothing of customer-b is open, so
@@ -6597,7 +6954,13 @@ async function workspaces({
     async () => (await openName()) === "customer-b",
   );
   await until("the session's tab closed", async () => !(await exists(slot)));
-  step("switching with a live session closed it when asked to");
+  await until(
+    "the session window closed with its session",
+    async () => !(await windowOpen(away.label)),
+  );
+  step(
+    "switching with live sessions closed them when asked to, the session window's too",
+  );
 
   // Removed from the list, the smoke workspace keeps its folder; added
   // again as an existing folder, it opens.
@@ -10890,9 +11253,15 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
     "a reloaded session window took its session again, connected, saying earlier output was lost",
   );
 
-  // Its Close button docks the session back first.
+  // Its Close button asks (#88): Dock back returns the session.
   await window
     .evaluate(`document.querySelector("[data-window-control=close]").click()`)
+    .catch(() => {});
+  await until("the close question", () =>
+    window.evaluate(`!!document.querySelector("[data-confirm-close-window]")`),
+  );
+  await window
+    .evaluate(`document.querySelector("[data-close-window=dock]").click()`)
     .catch(() => {});
   window.devtools.close();
   await gone("session-3");
@@ -10912,7 +11281,7 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
   if (!(await echoed(evaluate, slot(back.id))))
     fail("closing the window lost the session's scrollback");
   step(
-    "closing the session window docked its session back, with its scrollback",
+    "closing the session window asked, and Dock back returned its session, with its scrollback",
   );
 
   // The group as multiSend left it: ended (in the session window, above).
