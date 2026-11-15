@@ -98,7 +98,12 @@
   import { hostLogin } from "./lib/credentials";
   import { trackHighlightRules } from "./lib/highlight.svelte";
   import { profiles, refreshProfiles } from "./lib/profiles.svelte";
-  import { joinConfirmations, NO_SAFETY, planGroupPaste } from "./lib/paste";
+  import { joinConfirmations, NO_SAFETY } from "./lib/paste";
+  import {
+    expandForMembers,
+    GroupPaste,
+    onLayoutChanged,
+  } from "./lib/groupPaste";
   import {
     changePreferences,
     fontStack,
@@ -130,7 +135,6 @@
   } from "./lib/layout";
   import {
     expandSnippet,
-    expandSnippetForGroup,
     findHost,
     onWorkspaceChanged,
     resolveSettings,
@@ -238,8 +242,6 @@
     members: PasteMember[];
     answer: (send: boolean) => void;
   } | null>(null);
-  /** Group pastes go one at a time, in order. */
-  let groupPasting: Promise<void> = Promise.resolve();
 
   // The group's paste question is shown over the tab pasted in: if that
   // tab goes or is hidden, the paste is cancelled (nothing waits on it).
@@ -292,7 +294,9 @@
   /** That tab's name, as the snippet panel and palette show it. */
   const snippetTarget = $derived(
     elsewhere
-      ? elsewhere.name
+      ? elsewhere.member
+        ? groupName()
+        : elsewhere.name
       : snippetTab === null
         ? null
         : inGroup(snippetTab)
@@ -416,7 +420,7 @@
 
   /** The group, as the snippet panel and questions name it. */
   function groupName(): string {
-    return `the multi-send group (${layout?.group.length ?? 0})`;
+    return `the multi-send group (${layout?.groupSize ?? 0})`;
   }
 
   /** Adds `tab` to the multi-send group, or takes it out. View tabs never
@@ -482,75 +486,31 @@
   }
 
   /**
-   * The multi-send group's members that take a paste now, the tab pasted
-   * in first: those whose session is connected.
+   * Pastes into every member of the multi-send group, in any window, as
+   * pasted in a member of this one (#36, #87): the core plans it once for
+   * all; if any member's own rules would ask, one question over the tab
+   * pasted in shows the text, the line count and the members (as for
+   * production if one is). Then each member gets its lines through its
+   * own terminal, with its own delay; one that ends stops, the rest go on.
    */
-  function receivingMembers(from: TabId): TabId[] {
-    const members = layout?.group ?? [];
-    return [from, ...members.filter((tab) => tab !== from)].filter(
-      (tab) => sessions[tab] && states[tab] === "connected" && terminals[tab],
-    );
-  }
-
-  /**
-   * Pastes into every member of the multi-send group, as pasted in `from`
-   * (#36): `texts` gives each member's text (the same for a paste; a
-   * snippet is filled per member). The core plans it once for all: if any
-   * member's own rules would ask, one question shows the text, the line
-   * count and the members (as for production if one is). Then each member
-   * gets its lines with its own delay; one that ends stops, the rest go on.
-   */
-  function pasteToGroup(from: TabId, texts: Map<TabId, string>) {
-    groupPasting = groupPasting
-      .then(() => sendToGroup(from, texts))
-      .catch((error) => {
-        inventory.editError = `Cannot paste to the multi-send group: ${error}`;
-      });
-  }
-
-  async function sendToGroup(from: TabId, texts: Map<TabId, string>) {
-    const members = receivingMembers(from).filter((tab) => texts.has(tab));
-    if (members.length === 0) return;
-    const plan = await planGroupPaste(
-      members.map((tab) => ({
-        text: texts.get(tab) ?? "",
-        safety: safetyOf(sessions[tab]),
-      })),
-    );
-    if (plan.confirm) {
-      // The text pasted in; a member filled differently shows its own.
-      const shown = plan.members[0].lines.join("");
+  const groupPaste = new GroupPaste({
+    terminals,
+    ready: (tab) => !!sessions[tab] && states[tab] === "connected",
+    ask: async (tab, question) => {
       const send = await new Promise<boolean>((answer) => {
-        groupPasteQuestion = {
-          tab: members[0],
-          text: shown,
-          lineCount: plan.members[0].lines.length,
-          environment: plan.environment,
-          members: members.map((tab, index) => {
-            const text = plan.members[index].lines.join("");
-            return {
-              name: sessions[tab]?.name ?? "",
-              environment: safetyOf(sessions[tab]).environment,
-              lineDelayMs: plan.members[index].lineDelayMs,
-              text: text === shown ? null : text,
-            };
-          }),
-          answer,
-        };
+        groupPasteQuestion = { tab, ...question, answer };
       });
       groupPasteQuestion = null;
       focusRequest += 1;
-      if (!send) return;
-    }
-    await Promise.all(
-      members.map((tab, index) =>
-        terminals[tab]?.pasteLines(
-          plan.members[index].lines,
-          plan.members[index].lineDelayMs,
-        ),
-      ),
-    );
-  }
+      return send;
+    },
+    failed: (error) => {
+      inventory.editError = `Cannot paste to the multi-send group: ${error}`;
+    },
+  });
+
+  // The group changed in another window: its markers and size here too.
+  void onLayoutChanged((next) => adopt(next));
 
   function tabState(tab: TabId): TabInfo["state"] {
     const state = states[tab] ?? "connecting";
@@ -1327,14 +1287,11 @@
     answers: Record<string, string>,
     tab: TabId,
   ) {
-    const members = receivingMembers(tab);
+    let members;
     let expansion;
     try {
-      expansion = await expandSnippetForGroup(
-        name,
-        members.map((member) => liveHost(sessions[member])),
-        answers,
-      );
+      members = await groupPaste.receiving(tab);
+      expansion = await expandForMembers(name, members, answers);
     } catch (error) {
       inventory.editError = `Cannot send ${name}: ${error}`;
       return;
@@ -1343,14 +1300,7 @@
       asking = { tab, name, names: expansion.names };
       return;
     }
-    const filled = expansion.members;
-    const texts = new Map(
-      members.map((member, index) => [
-        member,
-        filled[index].map((line) => `${line}\n`).join(""),
-      ]),
-    );
-    pasteToGroup(tab, texts);
+    groupPaste.pasteEach(tab, members, expansion.texts);
     focusRequest += 1;
   }
 
@@ -1543,16 +1493,10 @@
               bind:this={terminals[tab]}
               source={session.source}
               {tab}
-              groupSize={inGroup(tab) ? layout.group.length : null}
+              groupSize={inGroup(tab) ? layout.groupSize : null}
               ontogglegroup={() => toggleGroup(tab)}
               onendgroup={() => void edit({ kind: "endGroup" })}
-              ongrouppaste={(text) =>
-                pasteToGroup(
-                  tab,
-                  new Map(
-                    receivingMembers(tab).map((member) => [member, text]),
-                  ),
-                )}
+              ongrouppaste={(text) => groupPaste.paste(tab, text)}
               title={session.title}
               address={session.address}
               jumpHost={session.jumpHost}

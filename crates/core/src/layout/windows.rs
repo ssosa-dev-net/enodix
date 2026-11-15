@@ -11,8 +11,11 @@
 //! ([`Windows::input_targets`]). View tabs never join, new and duplicated
 //! tabs start outside, a tab can join before its session is known (it
 //! receives once [`Windows::attach_session`] names it), and closing a tab
-//! (or its window) drops it. Every change to the group raises every
-//! window's revision, since what each window is sent includes its members.
+//! (or its window) drops it; moving it to another window keeps it, in its
+//! place (#87). Every change to the group raises every window's revision,
+//! since what each window is sent includes its members and the group's
+//! size, and the group's own revision ([`Windows::group_revision`]), by
+//! which the shell knows to tell every window.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -57,6 +60,8 @@ pub struct Windows {
     snapshots: HashMap<Member, String>,
     /// The session whose terminal was used last, in any window (#86).
     last_used: Option<SessionId>,
+    /// Raised by every change to the group's members (#87).
+    group_revision: u64,
 }
 
 /// The terminal used last (#86): where snippets from the main window's
@@ -98,13 +103,16 @@ impl Group {
     }
 }
 
-/// What a window's interface is sent: its layout, and which of its tabs
-/// are in the multi-send group (in the order they joined).
+/// What a window's interface is sent: its layout, which of its tabs are
+/// in the multi-send group (in the order they joined), and how many
+/// members the group has in every window (#87).
 #[derive(Clone, Debug, Serialize)]
 pub struct WindowView {
     #[serde(flatten)]
     pub layout: Layout,
     pub group: Vec<TabId>,
+    #[serde(rename = "groupSize")]
+    pub group_size: usize,
 }
 
 /// A window's layout, open for editing. Once it is dropped, the
@@ -158,6 +166,7 @@ impl Windows {
             layouts: BTreeMap::from([(WindowId::MAIN, Layout::new())]),
             next_window: WindowId::MAIN.0 + 1,
             group: Group::default(),
+            group_revision: 0,
             snapshots: HashMap::new(),
             last_used: None,
         }
@@ -225,12 +234,46 @@ impl Windows {
         Some(WindowView {
             layout: self.layout(window)?.clone(),
             group: self.window_group(window),
+            group_size: self.group.members.len(),
         })
     }
 
     /// The multi-send group's members, in the order they joined.
     pub fn group(&self) -> &[Member] {
         &self.group.members
+    }
+
+    /// Raised by every change to the group's members: a tab joining or
+    /// leaving, its tab or window closing, the group ending. A member
+    /// moving to another window keeps it (#87).
+    pub fn group_revision(&self) -> u64 {
+        self.group_revision
+    }
+
+    /// Where a paste in `window`'s tab `tab` goes when it is a member
+    /// (#87): every member whose session is known, with it, the one pasted
+    /// in first, then the others in the order they joined, whichever
+    /// window each is in. Empty when the tab is not a member (it pastes
+    /// into its own session only).
+    pub fn paste_members(&self, window: WindowId, tab: TabId) -> Vec<(Member, SessionId)> {
+        let from = Member { window, tab };
+        if !self.group.members.contains(&from) {
+            return Vec::new();
+        }
+        std::iter::once(from)
+            .chain(self.group.members.iter().copied().filter(|&m| m != from))
+            .filter_map(|member| Some((member, *self.group.sessions.get(&member)?)))
+            .collect()
+    }
+
+    /// The member that shows `session` now, wherever it moved (#87): where
+    /// its lines of a group paste go. `None` if no member shows it.
+    pub fn member_showing(&self, session: SessionId) -> Option<Member> {
+        self.group
+            .members
+            .iter()
+            .copied()
+            .find(|member| self.group.sessions.get(member) == Some(&session))
     }
 
     /// The members that are tabs of `window`, in the order they joined.
@@ -406,10 +449,9 @@ impl Windows {
 
     /// Moves the session tab `tab` of the window `from` to the window `to`
     /// (#84), where it becomes a new tab at the end of the active pane,
-    /// shown; returns its id there. Its session goes with it. Until the
-    /// group spans windows in the interface (#87), a member leaves the
-    /// group (raising every revision). A session window left without a
-    /// tab closes (#85). A view tab, the same window or an unknown one is
+    /// shown; returns its id there. Its session goes with it, and a member
+    /// stays in the group, in its place (#87; the group's revision stays).
+    /// A session window left without a tab closes (#85). A view tab, the same window or an unknown one is
     /// refused, changing nothing.
     pub fn move_session(
         &mut self,
@@ -437,7 +479,15 @@ impl Windows {
                 session,
             );
         }
-        // Dropping the edit forgets the closed tab's membership and session.
+        let old = Member { window: from, tab };
+        let new = Member {
+            window: to,
+            tab: moved,
+        };
+        if let Some(place) = self.group.members.iter_mut().find(|m| **m == old) {
+            *place = new;
+        }
+        // Dropping the edit forgets the closed tab's session.
         self.layout_mut(from)
             .expect("checked above")
             .close_tab(tab)?;
@@ -528,8 +578,10 @@ impl Windows {
         self.layout(window).ok_or(LayoutError::NoSuchWindow(window))
     }
 
-    /// Every window is sent its members, so every revision rises.
+    /// Every window is sent its members and the group's size, so every
+    /// revision rises, and the group's own.
     fn group_changed(&mut self) {
+        self.group_revision += 1;
         for layout in self.layouts.values_mut() {
             layout.changed();
         }

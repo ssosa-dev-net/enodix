@@ -72,6 +72,15 @@ fn label_of(window: WindowId) -> String {
     format!("{SESSION_WINDOW_PREFIX}{window}")
 }
 
+/// The label of `window`, the main one's included.
+pub(super) fn label_for(window: WindowId) -> String {
+    if window == WindowId::MAIN {
+        MAIN_WINDOW.to_owned()
+    } else {
+        label_of(window)
+    }
+}
+
 /// Whether `window` shows `session`, and in which tab.
 fn tab_showing(windows: &Windows, window: WindowId, session: SessionId) -> Option<TabId> {
     windows
@@ -251,9 +260,16 @@ pub(super) fn session_windows_list(
 /// Tells every window which session windows are open now (one opened or
 /// closed, or its active tab changed), with `session-windows`; and the
 /// main window the terminal used last (`snippet-target`), which may have
-/// moved or gone with it.
+/// moved or gone with it. If the multi-send group changed (a member's
+/// window closed), every window is told its layout (#87).
 pub(super) fn announce(app: &AppHandle, tabs: &Tabs, records: &SessionRecords) {
+    super::group::tell_windows(app, tabs, records);
     let _ = app.emit(SESSION_WINDOWS_EVENT, listed(tabs, records));
+    tell_snippet_target(app, tabs, records);
+}
+
+/// Tells the main window the terminal used last (`snippet-target`).
+pub(super) fn tell_snippet_target(app: &AppHandle, tabs: &Tabs, records: &SessionRecords) {
     let _ = app.emit_to(
         MAIN_WINDOW,
         SNIPPET_TARGET_EVENT,
@@ -269,14 +285,22 @@ pub(super) struct SnippetTarget {
     session: u64,
     /// Its session's name, as its tab shows it.
     name: String,
+    /// Whether it is in the multi-send group (#87): a snippet sent to it
+    /// goes to every member.
+    member: bool,
 }
 
 fn snippet_target_of(tabs: &Tabs, records: &SessionRecords) -> Option<SnippetTarget> {
-    let used = tabs.lock().last_used()?;
+    let (used, member) = {
+        let windows = tabs.lock();
+        let used = windows.last_used()?;
+        (used, windows.in_group(used.window, used.tab))
+    };
     Some(SnippetTarget {
         window: used.window,
         tab: used.tab,
         session: used.session.0,
+        member,
         name: records
             .get(used.session)
             .map(|record| record.name)

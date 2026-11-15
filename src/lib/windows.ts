@@ -220,6 +220,8 @@ export interface SnippetTarget {
   tab: TabId;
   session: number;
   name: string;
+  /** In the multi-send group (#87): a snippet goes to every member. */
+  member: boolean;
 }
 
 /** Tells the app that this window's terminal in `tab` took the keyboard. */

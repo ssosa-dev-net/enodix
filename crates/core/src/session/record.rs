@@ -96,6 +96,17 @@ impl SessionRecord {
             && workspace.resolve_host(host).is_some())
         .then_some(host)
     }
+
+    /// What applies to the session's pastes (#87): its host's paste safety
+    /// as `workspace` sets it now, while that is the workspace it came from
+    /// and has the host; otherwise what it opened with, so a host removed
+    /// keeps its safeguard. How a window pastes into a group member
+    /// wherever the member is.
+    pub fn safety_in(&self, workspace: &Workspace) -> PasteSafety {
+        self.host_in(workspace)
+            .and_then(|host| workspace.resolve_host(host))
+            .map_or(self.safety, |resolved| resolved.paste_safety())
+    }
 }
 
 /// Every session's record, by session id, until it is forgotten.
@@ -129,6 +140,16 @@ impl SessionRecords {
         };
         records.insert(copy, record);
         true
+    }
+
+    /// What applies to `session`'s pastes (#87): its record's
+    /// [`SessionRecord::safety_in`] the open `workspace`, or what it opened
+    /// with when none is open; none for a session without a record.
+    pub fn paste_safety(&self, session: SessionId, workspace: Option<&Workspace>) -> PasteSafety {
+        let Some(record) = self.get(session) else {
+            return PasteSafety::default();
+        };
+        workspace.map_or(record.safety, |workspace| record.safety_in(workspace))
     }
 
     /// Forgets `session`'s record: the session was discarded.

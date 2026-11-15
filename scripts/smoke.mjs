@@ -7219,6 +7219,44 @@ async function safetyInSessionWindows({
     step(
       "Details on the session window's header opened the sheet in the main window",
     );
+
+    // Joining the group there asks the production question there (#87).
+    await sessionAction(there, "multi-send", shown);
+    const joinAsked = await until(
+      "the join question in the session window",
+      () =>
+        there(`(() => {
+        const question = document.querySelector("[data-confirm-join]");
+        return question && [...question.querySelectorAll("[data-join-production]")].map((each) => each.dataset.joinProduction);
+      })()`),
+    );
+    if (json(joinAsked) !== json(["prod-r1"]))
+      fail(`the join question named ${json(joinAsked)}`);
+    if (await exists("[data-confirm-join]"))
+      fail("the join question was asked in the main window");
+    await there(`document.querySelector("[data-join=cancel]").click()`);
+    await sleep(300);
+    if (await there(`!!document.querySelector("[data-multi-send-bar]")`))
+      fail("prod-r1 joined though the question was cancelled");
+    await sessionAction(there, "multi-send", shown);
+    await until("the join question again", () =>
+      there(`!!document.querySelector("[data-confirm-join]")`),
+    );
+    await there(`document.querySelector("[data-join=join]").click()`);
+    await until("prod-r1 in the group", () =>
+      there(
+        `document.querySelector("[data-multi-send-bar]")?.dataset.groupSize === "1"`,
+      ),
+    );
+    await sessionAction(there, "multi-send", shown);
+    await until(
+      "prod-r1 out of the group",
+      async () =>
+        !(await there(`!!document.querySelector("[data-multi-send-bar]")`)),
+    );
+    step(
+      "joining the group in the session window asked the production question there; Cancel kept it out, Add to group put it in",
+    );
   } finally {
     writeClipboard(savedClipboard);
     writeFileSync(knownHosts, savedKnownHosts);
@@ -10311,8 +10349,11 @@ async function multiSend({
 /**
  * Session windows (#84), on the sessions `multiSend` leaves (three, put
  * in the group again here). A member moved to a window of its own (from
- * its menu) leaves the group and keeps its header, colours and size
- * there; typing reaches its device only; Dock back returns it. Moved
+ * its menu) keeps its header, colours and size there, and stays in the
+ * group (#87): typing in it reaches the members in the main window and
+ * the other way round, a two-line group paste there is asked once there
+ * and arrives whole, once, in each member, and leaving, joining and
+ * ending the group there show in both windows. Dock back returns it. Moved
  * again by the shortcut while a numbered listing arrives, the listing is
  * unbroken; a full-screen program's modes survive Dock back. A question
  * open stops a move. A closed session moves and reconnects there; a
@@ -10490,7 +10531,6 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
     "[data-welcome]",
     "[data-new-tab]",
     "[data-join-pane]",
-    "[data-multi-send-bar]",
   ]) {
     if (await window.evaluate(`!!document.querySelector(${json(selector)})`))
       fail(`the session window shows ${selector}`);
@@ -10513,14 +10553,36 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
   await checkContrast(window.evaluate, "session window");
   await checkOwnFrame(window.evaluate, "the session window");
 
-  // It left the group: the others count two.
-  await until("the group of two", async () => {
-    const sizes = await groupSizes();
-    return sizes.length === 2 && sizes.every((size) => size === "2");
-  });
-  step("the member that moved left the group; the others count two");
+  // It stays in the group (#87): every member, in both windows, counts
+  // three.
+  const windowSizes = () =>
+    window.evaluate(
+      `[...document.querySelectorAll("[data-multi-send-bar]")].map((bar) => bar.dataset.groupSize)`,
+    );
+  const sizesAre = (description, inMain, inWindow) =>
+    until(description, async () => {
+      const here = await groupSizes();
+      const there = await windowSizes();
+      return (
+        json(here) === json(inMain) && json(there) === json(inWindow) && true
+      );
+    }).catch(async (error) =>
+      fail(
+        `${error.message}: main ${json(await groupSizes())}, window ${json(await windowSizes())}`,
+      ),
+    );
+  await sizesAre("the group of three in both windows", ["3", "3"], ["3"]);
+  if (
+    !(await window.evaluate(
+      `!!document.querySelector("[data-tab][data-multi-send]")`,
+    ))
+  )
+    fail("the moved member's tab has no multi-send marker");
+  step(
+    "the member that moved stayed in the group: its window and the main window show Multi-send 3",
+  );
 
-  // Typing reaches its device without a click, and no group member.
+  // Typing in it reaches the members in the main window, without a click.
   const keys = keysOn(window.devtools);
   await until("the session window's terminal focused", () =>
     window.evaluate(
@@ -10531,12 +10593,146 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
   await until("the typing echoed in the session window", () =>
     ran(window.evaluate, shown, "winmoved"),
   );
-  await show(a);
-  await sleep(300);
-  if (await ranAnywhere(evaluate, slot(a), "winmoved"))
-    fail("typing in the session window reached the group");
-  step("typing in the session window reached its device, and no group member");
+  for (const tab of [a, c]) {
+    await show(tab);
+    await until(`the typing in member ${tab} of the main window`, () =>
+      ranAnywhere(evaluate, slot(tab), "winmoved"),
+    );
+  }
+  // And typing in the main window reaches the session window's member.
+  await focusTerminal(evaluate, slot(c));
+  await main.type("frommain\r");
+  await until("the main window's typing in the session window", () =>
+    ranAnywhere(window.evaluate, shown, "frommain"),
+  );
+  step(
+    "typing in a member in either window reached the members in the other window",
+  );
   if (screenshot) await screenshot("session-window");
+
+  // A two-line paste there: asked once, there, naming every member;
+  // each gets both lines once.
+  const countOf = async (target, selector, word) =>
+    (await lines(target, selector)).filter((line) =>
+      new RegExp(`\\$ ${word}\\s*$`).test(line),
+    ).length;
+  const pastedClipboard = readClipboard();
+  try {
+    writeClipboard("grpone\ngrptwo\n");
+    await focusTerminal(window.evaluate, shown);
+    await keys.press("V", "KeyV", 86, CTRL | SHIFT);
+    const question = await until("the group paste question there", () =>
+      window.evaluate(`(() => {
+        const question = document.querySelector(".slot[data-active] [data-paste-confirm]");
+        return question && {
+          members: question.dataset.pasteMembers,
+          names: [...question.querySelectorAll("[data-paste-member]")].map((member) => member.dataset.pasteMember),
+        };
+      })()`),
+    );
+    if (question.members !== "3")
+      fail(`the group paste question named ${json(question)}`);
+    if (await exists("[data-paste-confirm]"))
+      fail("the group paste was asked in the main window too");
+    await window.evaluate(
+      `document.querySelector("[data-paste=send]").click()`,
+    );
+    const targets = [
+      [window.evaluate, shown, "the session window's member"],
+      [evaluate, slot(a), `member ${a}`],
+      [evaluate, slot(c), `member ${c}`],
+    ];
+    for (const [target, selector, where] of targets) {
+      if (selector !== shown) await show(Number(/\d+/.exec(selector)[0]));
+      await until(
+        `the paste whole in ${where}`,
+        async () => (await countOf(target, selector, "grptwo")) >= 1,
+      );
+    }
+    await sleep(500);
+    for (const [target, selector, where] of targets) {
+      const once = [
+        await countOf(target, selector, "grpone"),
+        await countOf(target, selector, "grptwo"),
+      ];
+      if (json(once) !== json([1, 1]))
+        fail(`${where} got the paste's lines ${json(once)} times`);
+    }
+  } finally {
+    writeClipboard(pastedClipboard);
+  }
+  step(
+    "a two-line paste in the session window was asked once there, naming 3 members, and arrived whole, once, in each member of both windows",
+  );
+
+  // From the main window: a cancelled paste reaches nobody; a confirmed
+  // one reaches the session window's member once.
+  const fromMain = readClipboard();
+  try {
+    writeClipboard("grpnone\ngrpnone2\n");
+    await show(c);
+    await focusTerminal(evaluate, slot(c));
+    await main.press("V", "KeyV", 86, CTRL | SHIFT);
+    const asked = await until(
+      "the group paste question in the main window",
+      () =>
+        evaluate(
+          `document.querySelector(${json(`${slot(c)} [data-paste-confirm]`)})?.dataset.pasteMembers ?? null`,
+        ),
+    );
+    if (asked !== "3")
+      fail(`the main window's question named ${asked} members`);
+    if (
+      await window.evaluate(`!!document.querySelector("[data-paste-confirm]")`)
+    )
+      fail("the main window's group paste was asked in the session window too");
+    await clickOn(`${slot(c)} [data-paste=cancel]`);
+    await sleep(800);
+    for (const [target, selector, where] of [
+      [window.evaluate, shown, "the session window's member"],
+      [evaluate, slot(c), `member ${c}`],
+    ]) {
+      if ((await countOf(target, selector, "grpnone")) > 0)
+        fail(`a cancelled group paste reached ${where}`);
+    }
+    writeClipboard("grpmain\ngrpmain2\n");
+    await focusTerminal(evaluate, slot(c));
+    await main.press("V", "KeyV", 86, CTRL | SHIFT);
+    await until("the second group paste question", () =>
+      exists(`${slot(c)} [data-paste-confirm]`),
+    );
+    await clickOn(`${slot(c)} [data-paste=send]`);
+    await until(
+      "the main window's paste in the session window",
+      async () => (await countOf(window.evaluate, shown, "grpmain2")) >= 1,
+    );
+    await sleep(500);
+    const once = [
+      await countOf(window.evaluate, shown, "grpmain"),
+      await countOf(window.evaluate, shown, "grpmain2"),
+      await countOf(window.evaluate, shown, "grpnone"),
+    ];
+    if (json(once) !== json([1, 1, 0]))
+      fail(`the session window's member got ${json(once)}`);
+  } finally {
+    writeClipboard(fromMain);
+  }
+  step(
+    "from the main window, a cancelled group paste reached nobody, and a confirmed one reached the session window's member once",
+  );
+
+  // Leave, join and end the group from the session window.
+  await sessionAction(window.evaluate, "multi-send", shown);
+  await sizesAre("the group of two after leaving there", ["2", "2"], []);
+  await sessionAction(window.evaluate, "multi-send", shown);
+  await sizesAre("the group of three after joining there", ["3", "3"], ["3"]);
+  await sessionAction(window.evaluate, "end-group", shown);
+  await sizesAre("no group after ending it there", [], []);
+  if ((await members()).length > 0)
+    fail(`the main window still shows members: ${json(await members())}`);
+  step(
+    "leaving, joining and ending the group in the session window showed in both windows",
+  );
 
   // Dock back from its menu: a tab here, the window gone.
   await sessionAction(window.evaluate, "dock", shown);
@@ -10719,9 +10915,7 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
     "closing the session window docked its session back, with its scrollback",
   );
 
-  // The group as multiSend left it: ended.
-  await show(a);
-  await sessionAction(evaluate, "end-group", slot(a));
+  // The group as multiSend left it: ended (in the session window, above).
 
   await severalInAWindow({
     evaluate,
