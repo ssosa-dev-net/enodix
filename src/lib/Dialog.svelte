@@ -94,31 +94,31 @@
     z-index: 20;
     display: grid;
     place-items: center;
-    padding: 1rem;
-    background: rgb(0 0 0 / 0.45);
+    padding: var(--space-4);
+    background: var(--backdrop);
   }
 
   form {
     width: min(24rem, 100%);
     display: grid;
-    gap: 0.8rem;
-    padding: 1.2rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+    gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
   }
 
   h2 {
     margin: 0;
-    font-size: 1.05rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
   }
 
   p {
     margin: 0;
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
     overflow-wrap: anywhere;
   }
 
@@ -128,23 +128,25 @@
 
   label {
     display: grid;
-    gap: 0.3rem;
-    font-size: 0.8rem;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
 
   .actions button[type="submit"] {
-    padding: 0.35rem 1.1rem;
+    padding: var(--space-1-5) var(--space-4);
   }
 
-  .danger {
-    background: #b62324;
-    border-color: #b62324;
+  .danger,
+  .danger:hover:not(:disabled) {
+    color: var(--on-danger);
+    background: var(--danger-fill);
+    border-color: var(--danger-fill);
   }
 </style>

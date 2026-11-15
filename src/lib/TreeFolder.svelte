@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import RoleIcon from "./RoleIcon.svelte";
   import TreeFolder from "./TreeFolder.svelte";
   import {
@@ -44,7 +46,7 @@
      folder something dropped on them goes into); WorkspacePanel handles
      dragging and the context menu for the whole tree. -->
 <!-- Under a saved filter, only its hosts and the folders holding them show. -->
-<ul>
+<ul class:top={depth === 0}>
   {#each folder.folders.filter( (child) => folderShown(child.path) ) as child (child.path)}
     <li>
       <button
@@ -60,7 +62,11 @@
         data-label={child.name}
         onclick={() => clickFolder(child)}
       >
-        <span class="twisty">{inventory.expanded[child.path] ? "▾" : "▸"}</span>
+        <span class="twisty" aria-hidden="true"
+          >{#if inventory.expanded[child.path]}<ChevronDown
+              size={14}
+            />{:else}<ChevronRight size={14} />{/if}</span
+        >
         <span class="label">{child.name}</span>
       </button>
       {#if inventory.expanded[child.path]}
@@ -104,31 +110,36 @@
     padding: 0;
   }
 
+  ul.top {
+    padding: 0 var(--space-1-5);
+  }
+
   button {
     display: flex;
-    align-items: baseline;
-    gap: 0.35rem;
+    align-items: center;
+    gap: var(--space-1-5);
     width: 100%;
+    min-height: 28px;
     border: 0;
-    border-radius: 0;
+    border-radius: var(--radius-md);
     background: none;
-    padding: 0.2rem 0.6rem;
+    padding: var(--space-0-5) var(--space-2);
     text-align: left;
     white-space: nowrap;
     user-select: none;
   }
 
   button:hover:not(:disabled) {
-    filter: none;
-    background: var(--surface);
+    background: var(--surface-raised);
   }
 
   button:focus-visible {
     outline-offset: -2px;
   }
 
-  .selected {
-    background: var(--surface);
+  .selected,
+  .selected:hover:not(:disabled) {
+    background: var(--selected);
     box-shadow: inset 2px 0 var(--accent);
   }
 
@@ -138,8 +149,9 @@
   }
 
   .twisty {
-    width: 0.8rem;
+    width: 14px;
     flex: none;
+    display: inline-flex;
     color: var(--muted);
   }
 
@@ -149,13 +161,15 @@
   }
 
   .folder .label {
-    font-weight: 600;
+    font-weight: var(--weight-medium);
+    color: var(--muted);
   }
 
   .address {
     margin-left: auto;
-    padding-left: 0.5rem;
+    padding-left: var(--space-2);
     color: var(--muted);
-    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
   }
 </style>

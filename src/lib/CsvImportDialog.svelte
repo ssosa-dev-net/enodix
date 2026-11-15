@@ -440,8 +440,8 @@
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    padding: 6vh 1rem 1rem;
-    background: rgb(0 0 0 / 0.35);
+    padding: 6vh var(--space-4) var(--space-4);
+    background: var(--backdrop);
   }
 
   .dialog {
@@ -449,35 +449,35 @@
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    padding: 0.8rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+    gap: var(--space-2);
+    padding: var(--space-3);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
     overflow: hidden;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   h2 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
   }
 
   h3 {
-    margin: 0.4rem 0 0.2rem;
-    font-size: 0.9rem;
+    margin: var(--space-1-5) 0 var(--space-0-5);
+    font-size: var(--text-sm);
   }
 
   form {
     display: grid;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .row {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
     align-items: center;
   }
 
@@ -488,14 +488,14 @@
 
   input,
   select {
-    padding: 0.3rem 0.5rem;
+    padding: var(--space-1) var(--space-2);
   }
 
   .scroll {
     overflow: auto;
     min-height: 0;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   table {
@@ -506,7 +506,7 @@
   th,
   td {
     text-align: left;
-    padding: 0.25rem 0.5rem;
+    padding: var(--space-1) var(--space-2);
     border-bottom: 1px solid var(--border);
     vertical-align: middle;
   }
@@ -515,11 +515,11 @@
     position: sticky;
     top: 0;
     background: var(--surface);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   .header {
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
     white-space: nowrap;
   }
 
@@ -547,7 +547,7 @@
 
   .target {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
     align-items: center;
   }
 
@@ -562,18 +562,18 @@
 
   section ul {
     margin: 0;
-    padding: 0 0.5rem 0.3rem 1.4rem;
+    padding: 0 var(--space-2) var(--space-1) var(--space-5);
   }
 
   section {
-    padding: 0 0.5rem;
+    padding: 0 var(--space-2);
   }
 
   .actions,
   footer {
     display: flex;
     justify-content: flex-end;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .error {

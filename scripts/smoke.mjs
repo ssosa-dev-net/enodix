@@ -586,6 +586,29 @@ async function main() {
   await screenshot("quick-connect");
   step(`app launched, named "${name}"`);
 
+  // The interface typeface and icons ship inside the app: the font is
+  // loaded, and nothing was requested from anywhere but the app itself.
+  const fontLoaded = () =>
+    evaluate(
+      `[...document.fonts].some((f) => f.family.includes("Inter") && f.status === "loaded")`,
+    );
+  await until("the bundled interface typeface", fontLoaded);
+  const assets = await evaluate(`(() => {
+    return {
+      font: [...document.fonts].some((f) => f.family.includes("Inter") && f.status === "loaded"),
+      icons: document.querySelectorAll("svg.lucide-icon").length,
+      outside: performance.getEntriesByType("resource")
+        .map((r) => r.name)
+        .filter((n) => new URL(n).origin !== location.origin && !/^(ipc|asset):/.test(n) && !/\\/\\/ipc\\.localhost\\//.test(n)),
+    };
+  })()`);
+  if (!assets.font || assets.icons === 0 || assets.outside.length > 0) {
+    fail(
+      `the bundled font and icons are not what is shown: ${JSON.stringify(assets)}`,
+    );
+  }
+  step("the interface typeface and icons are bundled: no request left the app");
+
   // The last opened workspace reopens: its tree is shown, and the malformed
   // file is reported by name without stopping the rest from loading.
   await until("the reopened workspace's tree", () =>
@@ -4850,7 +4873,7 @@ async function pasteSafety({
       !marks.label ||
       marks.badge !== "production" ||
       marks.border !== "3px" ||
-      !/^rgb\((255, 77, 77|196, 22, 28)\)$/.test(marks.borderColor) ||
+      !/^rgb\((229, 72, 77|110, 15, 15)\)$/.test(marks.borderColor) ||
       marks.tabBackground === "rgba(0, 0, 0, 0)"
     ) {
       fail(`the production session is not marked: ${json(marks)}`);
@@ -5146,7 +5169,7 @@ async function terminalComforts({
       "the dark theme from the system",
       async () =>
         (await pageTheme()) === "dark" &&
-        (await option("theme.background")) === "#0e1116",
+        (await option("theme.background")) === "#0b0d10",
     );
     step("the theme followed the system setting, live");
 

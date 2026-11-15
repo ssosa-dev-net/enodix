@@ -276,8 +276,8 @@
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    padding: 12vh 1rem 1rem;
-    background: rgb(0 0 0 / 0.35);
+    padding: 12vh var(--space-4) var(--space-4);
+    background: var(--backdrop);
   }
 
   .palette {
@@ -285,23 +285,23 @@
     max-height: 70vh;
     display: flex;
     flex-direction: column;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
     overflow: hidden;
   }
 
   input {
-    margin: 0.6rem;
-    padding: 0.45rem 0.6rem;
-    font-size: 0.95rem;
+    margin: var(--space-2);
+    padding: var(--space-1-5) var(--space-2);
+    font-size: var(--text-md);
   }
 
   ul {
     list-style: none;
     margin: 0;
-    padding: 0 0 0.3rem;
+    padding: 0 0 var(--space-1);
     overflow: auto;
     min-height: 0;
   }
@@ -309,9 +309,9 @@
   li {
     display: flex;
     align-items: baseline;
-    gap: 0.5rem;
-    padding: 0.3rem 0.8rem;
-    font-size: 0.85rem;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-sm);
     cursor: pointer;
     white-space: nowrap;
   }
@@ -327,37 +327,37 @@
   }
 
   .name {
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   .address,
   .detail,
   .folder {
     color: var(--muted);
-    font-size: 0.78rem;
+    font-size: var(--text-xs);
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .folder {
     margin-left: auto;
-    padding-left: 0.5rem;
+    padding-left: var(--space-2);
   }
 
   .empty {
-    margin: 0 0.8rem 0.6rem;
+    margin: 0 var(--space-3) var(--space-2);
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   footer {
     display: flex;
     justify-content: space-between;
-    gap: 1rem;
-    padding: 0.35rem 0.8rem;
+    gap: var(--space-4);
+    padding: var(--space-1-5) var(--space-3);
     border-top: 1px solid var(--border);
     color: var(--muted);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   kbd {

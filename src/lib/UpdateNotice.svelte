@@ -101,14 +101,14 @@
     z-index: 12;
     width: min(22rem, calc(100% - 2rem));
     display: grid;
-    gap: 0.4rem;
-    padding: 0.8rem 0.9rem;
+    gap: var(--space-1-5);
+    padding: var(--space-3) var(--space-3);
     background: var(--surface);
     border: 1px solid var(--border);
     border-left: 3px solid var(--accent);
-    border-radius: 6px;
-    box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
-    font-size: 0.85rem;
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow);
+    font-size: var(--text-sm);
   }
 
   p {
@@ -117,7 +117,7 @@
   }
 
   .title {
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   .detail,
@@ -143,6 +143,6 @@
     display: flex;
     justify-content: flex-end;
     flex-wrap: wrap;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
   }
 </style>

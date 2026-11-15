@@ -199,7 +199,7 @@
     height: 100%;
     display: grid;
     place-items: center;
-    padding: 1.5rem;
+    padding: var(--space-6);
     overflow: auto;
   }
 
@@ -207,63 +207,63 @@
   form {
     width: min(26rem, 100%);
     display: grid;
-    gap: 0.9rem;
+    gap: var(--space-3);
   }
 
   h1 {
     margin: 0;
-    font-size: 1.5rem;
-    font-weight: 600;
+    font-size: var(--text-xl);
+    font-weight: var(--weight-semibold);
   }
 
   .modes {
     display: flex;
-    gap: 0.3rem;
+    gap: var(--space-1);
   }
 
   .modes button {
-    padding: 0.2rem 0.8rem;
-    font-size: 0.85rem;
+    padding: var(--space-0-5) var(--space-3);
+    font-size: var(--text-sm);
   }
 
   .modes button[aria-pressed="true"] {
     border-color: var(--accent, var(--border));
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   p {
-    margin: 0 0 0.2rem;
+    margin: 0 0 var(--space-0-5);
     color: var(--muted);
   }
 
   .row {
     display: grid;
     grid-template-columns: 1fr 6rem;
-    gap: 0.75rem;
+    gap: var(--space-3);
   }
 
   .line {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
-    gap: 0.75rem;
+    gap: var(--space-3);
   }
 
   label {
     display: grid;
-    gap: 0.3rem;
-    font-size: 0.8rem;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   input,
   select {
     font: inherit;
-    font-size: 0.95rem;
+    font-size: var(--text-md);
     color: var(--text);
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0.5rem 0.6rem;
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-2);
     min-width: 0;
   }
 
@@ -274,7 +274,7 @@
   }
 
   button[type="submit"] {
-    margin-top: 0.4rem;
+    margin-top: var(--space-1-5);
     justify-self: start;
   }
 </style>

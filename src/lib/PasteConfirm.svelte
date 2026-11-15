@@ -135,8 +135,8 @@
     z-index: 3;
     display: grid;
     place-items: center;
-    padding: 1rem;
-    background: rgb(0 0 0 / 0.45);
+    padding: var(--space-4);
+    background: var(--backdrop);
     overflow: auto;
   }
 
@@ -145,11 +145,11 @@
     max-height: 100%;
     display: grid;
     grid-template-rows: auto auto minmax(0, 1fr) auto auto;
-    gap: 0.7rem;
-    padding: 1.1rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    gap: var(--space-2-5);
+    padding: var(--space-4);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
   }
 
   .card.production {
@@ -158,19 +158,19 @@
 
   h2 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
     overflow-wrap: anywhere;
   }
 
   p {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   .warning {
     color: var(--env-production);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   .muted {
@@ -179,27 +179,27 @@
 
   .members {
     margin: 0;
-    padding-left: 1.2rem;
+    padding-left: var(--space-4);
     max-height: 8rem;
     overflow: auto;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   .member-text {
     min-height: 0;
     max-height: 5rem;
-    margin-top: 0.2rem;
+    margin-top: var(--space-0-5);
   }
 
   .environment {
-    margin-left: 0.4rem;
-    font-size: 0.75rem;
+    margin-left: var(--space-1-5);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .members li[data-environment="production"] .environment {
     color: var(--env-production);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   pre {
@@ -207,12 +207,12 @@
     min-height: 2.5rem;
     max-height: 16rem;
     overflow: auto;
-    padding: 0.5rem 0.6rem;
+    padding: var(--space-2) var(--space-2);
     background: var(--terminal);
     border: 1px solid var(--border);
-    border-radius: 4px;
-    font-family: "Cascadia Mono", Consolas, monospace;
-    font-size: 0.8rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
     white-space: pre;
     tab-size: 8;
   }
@@ -220,6 +220,6 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
 </style>

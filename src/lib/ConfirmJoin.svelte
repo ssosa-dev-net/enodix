@@ -82,41 +82,41 @@
     z-index: 20;
     display: grid;
     place-items: center;
-    padding: 1.5rem;
-    background: rgb(0 0 0 / 0.5);
+    padding: var(--space-6);
+    background: var(--backdrop);
   }
 
   form {
     width: min(26rem, 100%);
     display: grid;
-    gap: 0.8rem;
-    padding: 1.2rem;
-    background: var(--bg);
+    gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--dialog);
     border: 2px solid var(--env-production);
-    border-radius: 6px;
+    border-radius: var(--radius-lg);
   }
 
   h2 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
     overflow-wrap: anywhere;
   }
 
   p {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   .warning {
     color: var(--env-production);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   ul {
     margin: 0;
-    padding-left: 1.2rem;
-    font-size: 0.85rem;
+    padding-left: var(--space-4);
+    font-size: var(--text-sm);
     max-height: 10rem;
     overflow: auto;
   }
@@ -124,6 +124,6 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
 </style>

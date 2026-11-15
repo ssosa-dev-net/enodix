@@ -73,8 +73,8 @@
 <style>
   .ports {
     display: grid;
-    gap: 0.3rem;
-    font-size: 0.8rem;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -82,12 +82,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .small {
-    padding: 0.1rem 0.5rem;
-    font-size: 0.75rem;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--text-xs);
   }
 
   ul {
@@ -95,16 +95,16 @@
     padding: 0;
     list-style: none;
     display: grid;
-    gap: 0.2rem;
+    gap: var(--space-0-5);
   }
 
   li button {
     width: 100%;
     display: flex;
-    gap: 0.6rem;
+    gap: var(--space-2);
     align-items: baseline;
     text-align: left;
-    padding: 0.3rem 0.5rem;
+    padding: var(--space-1) var(--space-2);
   }
 
   li button[aria-pressed="true"] {
@@ -112,7 +112,7 @@
   }
 
   .name {
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
     color: var(--text);
     white-space: nowrap;
   }

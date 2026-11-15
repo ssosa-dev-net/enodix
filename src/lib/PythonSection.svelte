@@ -125,16 +125,16 @@
 <style>
   .python {
     display: grid;
-    gap: 0.5rem;
-    padding-top: 0.6rem;
+    gap: var(--space-2);
+    padding-top: var(--space-2);
     border-top: 1px solid var(--border);
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   h3 {
     margin: 0;
-    font-size: 0.9rem;
-    font-weight: 600;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
   }
 
   p {
@@ -149,20 +149,20 @@
   .interpreter,
   .hint {
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
   }
 
   .own {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
-    gap: 0.4rem 0.8rem;
+    gap: var(--space-1-5) var(--space-3);
   }
 
   .buttons {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
   }
 
   .error {

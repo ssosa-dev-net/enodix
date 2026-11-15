@@ -1,4 +1,7 @@
 <script lang="ts">
+  import Check from "@lucide/svelte/icons/check";
+  import Copy from "@lucide/svelte/icons/copy";
+  import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
   interface Props {
     value: string;
     /** What is copied, for the button's label. */
@@ -34,14 +37,23 @@
   title={failed ? "Could not copy" : `Copy ${what}`}
   aria-label="Copy {what}"
   disabled={value === ""}
-  onclick={copy}>{copied ? "✓" : failed ? "!" : "⧉"}</button
+  onclick={copy}
+  >{#if copied}<Check
+      size={14}
+      aria-hidden="true"
+    />{:else if failed}<TriangleAlert
+      size={14}
+      aria-hidden="true"
+    />{:else}<Copy size={14} aria-hidden="true" />{/if}</button
 >
 
 <style>
   .copy {
     flex: none;
+    display: inline-grid;
+    place-items: center;
     width: 1.8rem;
-    padding: 0.2rem 0;
+    padding: var(--space-0-5) 0;
     color: var(--muted);
     background: none;
     border-color: transparent;

@@ -145,39 +145,39 @@
 <style>
   .details {
     display: grid;
-    gap: 1rem;
-    padding: 0.8rem;
-    font-size: 0.85rem;
+    gap: var(--space-4);
+    padding: var(--space-3);
+    font-size: var(--text-sm);
   }
 
   header {
     display: grid;
-    gap: 0.3rem;
+    gap: var(--space-1);
   }
 
   h2 {
     margin: 0;
-    font-size: 1.05rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
     overflow-wrap: anywhere;
   }
 
   .file {
     color: var(--muted);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     overflow-wrap: anywhere;
   }
 
   .actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-top: 0.3rem;
+    gap: var(--space-1-5);
+    margin-top: var(--space-1);
   }
 
   .actions button {
-    padding: 0.2rem 0.6rem;
-    font-size: 0.8rem;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--text-xs);
   }
 
   .danger:hover:not(:disabled) {
@@ -186,15 +186,15 @@
 
   .field {
     display: grid;
-    gap: 0.15rem;
-    font-size: 0.75rem;
+    gap: var(--space-0-5);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .row {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .row input,

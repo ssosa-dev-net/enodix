@@ -109,19 +109,19 @@
     inset: 0;
     display: grid;
     place-items: center;
-    padding: 1.5rem;
-    background: rgb(0 0 0 / 0.45);
+    padding: var(--space-6);
+    background: var(--backdrop);
     overflow: auto;
   }
 
   .card {
     width: min(30rem, 100%);
     display: grid;
-    gap: 0.8rem;
-    padding: 1.2rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
   }
 
   .card.changed {
@@ -130,8 +130,8 @@
 
   h2 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
     overflow-wrap: anywhere;
   }
 
@@ -141,14 +141,14 @@
 
   p {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   dl {
     margin: 0;
     display: grid;
-    gap: 0.3rem;
-    font-size: 0.8rem;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
   }
 
   dt {
@@ -156,15 +156,15 @@
   }
 
   dd {
-    margin: 0 0 0.3rem;
+    margin: 0 0 var(--space-1);
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: var(--space-2);
     align-items: baseline;
   }
 
   code {
-    font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+    font-family: var(--font-mono);
     overflow-wrap: anywhere;
   }
 
@@ -172,7 +172,7 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
 
   button.danger {

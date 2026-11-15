@@ -709,8 +709,8 @@
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    padding: 6vh 1rem 1rem;
-    background: rgb(0 0 0 / 0.35);
+    padding: 6vh var(--space-4) var(--space-4);
+    background: var(--backdrop);
   }
 
   .dialog {
@@ -718,46 +718,46 @@
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    padding: 0.8rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+    gap: var(--space-2);
+    padding: var(--space-3);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
     overflow: hidden;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   h2 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
   }
 
   form {
     display: grid;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
   }
 
   label {
     display: grid;
-    gap: 0.2rem;
+    gap: var(--space-0-5);
   }
 
   input,
   select {
-    padding: 0.3rem 0.5rem;
+    padding: var(--space-1) var(--space-2);
   }
 
   pre {
     margin: 0;
-    padding: 0.4rem 0.5rem;
-    font-family: var(--mono, monospace);
-    font-size: 0.8rem;
+    padding: var(--space-1-5) var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     background: var(--surface);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   .text {
@@ -769,7 +769,7 @@
     overflow: auto;
     min-height: 0;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   table {
@@ -780,7 +780,7 @@
   th,
   td {
     text-align: left;
-    padding: 0.25rem 0.5rem;
+    padding: var(--space-1) var(--space-2);
     border-bottom: 1px solid var(--border);
     vertical-align: middle;
   }
@@ -789,7 +789,7 @@
     position: sticky;
     top: 0;
     background: var(--surface);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   .details {
@@ -806,15 +806,15 @@
   }
 
   tr.production .outcome {
-    color: var(--env-production, var(--danger));
-    font-weight: 600;
+    color: var(--env-production);
+    font-weight: var(--weight-semibold);
   }
 
   .parallel {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
   .parallel input {
     width: 5rem;
@@ -824,15 +824,15 @@
   }
   .parallel .hint {
     color: var(--muted, inherit);
-    font-size: 0.9em;
+    font-size: var(--text-sm);
   }
   .production-confirm {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
     align-items: center;
-    padding: 0.4rem 0.5rem;
-    border: 1px solid var(--env-production, var(--danger));
-    border-radius: 4px;
+    padding: var(--space-1-5) var(--space-2);
+    border: 1px solid var(--env-production);
+    border-radius: var(--radius-sm);
   }
 
   .results details {
@@ -841,25 +841,25 @@
 
   .results summary {
     display: flex;
-    gap: 0.6rem;
+    gap: var(--space-2);
     align-items: baseline;
-    padding: 0.3rem 0.5rem;
+    padding: var(--space-1) var(--space-2);
     cursor: pointer;
   }
 
   .results pre {
-    margin: 0 0.5rem 0.4rem;
+    margin: 0 var(--space-2) var(--space-1-5);
     max-height: 20rem;
     overflow: auto;
   }
 
   .state {
     min-width: 6rem;
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   .state.done {
-    color: var(--success, inherit);
+    color: var(--ok);
   }
 
   .state.failed,
@@ -883,12 +883,12 @@
   .python-off {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: var(--space-2);
     align-items: center;
     justify-content: space-between;
-    padding: 0.4rem 0.5rem;
+    padding: var(--space-1-5) var(--space-2);
     border: 1px solid var(--warning, var(--border));
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   .python-off p {
@@ -899,7 +899,7 @@
   .save-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: var(--space-2);
     align-items: center;
   }
 
@@ -907,7 +907,7 @@
   footer {
     display: flex;
     justify-content: flex-end;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .error {

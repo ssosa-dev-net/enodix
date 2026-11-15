@@ -105,13 +105,13 @@
 <style>
   form {
     display: grid;
-    gap: 0.5rem;
-    font-size: 0.85rem;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
   }
 
   label {
     display: grid;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   p {
@@ -119,9 +119,9 @@
   }
 
   .warning {
-    padding: 0.5rem 0.6rem;
+    padding: var(--space-2) var(--space-2);
     border: 1px solid var(--danger);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   .note {
@@ -136,6 +136,6 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 </style>

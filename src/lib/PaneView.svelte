@@ -1,4 +1,10 @@
 <script lang="ts" module>
+  import Columns2 from "@lucide/svelte/icons/columns-2";
+  import Plus from "@lucide/svelte/icons/plus";
+  import Rows2 from "@lucide/svelte/icons/rows-2";
+  import SquareX from "@lucide/svelte/icons/square-x";
+  import UsersRound from "@lucide/svelte/icons/users-round";
+  import X from "@lucide/svelte/icons/x";
   import type { Attachment } from "svelte/attachments";
   import type { LayoutNode, PaneId, SplitDirection, TabId } from "./layout";
   import type { Environment, Role } from "./workspace";
@@ -196,7 +202,7 @@
                 onclick={(event) => {
                   event.stopPropagation();
                   handlers.close(tab);
-                }}>×</button
+                }}><X size={13} aria-hidden="true" /></button
               >
             </div>
           {/if}
@@ -207,7 +213,8 @@
         data-new-tab
         aria-label="New connection in this pane"
         title="New connection in this pane"
-        onclick={() => handlers.newTab(pane.id)}>+</button
+        onclick={() => handlers.newTab(pane.id)}
+        ><Plus size={16} aria-hidden="true" /></button
       >
       <span class="spacer"></span>
       {#if pane.tabs.some((tab) => handlers.tab(tab)?.member === false)}
@@ -218,11 +225,7 @@
           title="Add this pane's tabs to the multi-send group"
           onclick={() => handlers.joinPane(pane.id)}
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true"
-            ><rect x="1.5" y="4.5" width="8" height="7" rx="1" /><path
-              d="M3.5 2.5h8a1 1 0 0 1 1 1v6M12.5 11v4M10.5 13h4"
-            /></svg
-          >
+          <UsersRound size={15} aria-hidden="true" />
         </button>
       {/if}
       <button
@@ -232,11 +235,7 @@
         title="Split right"
         onclick={() => handlers.split(pane.id, "right")}
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true"
-          ><rect x="1.5" y="2.5" width="13" height="11" rx="1" /><path
-            d="M8 2.5v11"
-          /></svg
-        >
+        <Columns2 size={15} aria-hidden="true" />
       </button>
       <button
         class="icon"
@@ -245,11 +244,7 @@
         title="Split down"
         onclick={() => handlers.split(pane.id, "down")}
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true"
-          ><rect x="1.5" y="2.5" width="13" height="11" rx="1" /><path
-            d="M1.5 8h13"
-          /></svg
-        >
+        <Rows2 size={15} aria-hidden="true" />
       </button>
       {#if several}
         <button
@@ -259,9 +254,7 @@
           title="Close pane (its tabs move to the pane next to it)"
           onclick={() => handlers.closePane(pane.id)}
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true"
-            ><path d="M4 4l8 8M12 4l-8 8" /></svg
-          >
+          <SquareX size={15} aria-hidden="true" />
         </button>
       {/if}
     </div>
@@ -307,16 +300,20 @@
 
   .bar {
     display: flex;
-    align-items: stretch;
+    align-items: center;
+    gap: var(--space-0-5);
     min-width: 0;
-    background: var(--bg);
+    min-height: 38px;
+    padding: 0 var(--space-1-5);
+    background: var(--surface);
     border-bottom: 1px solid var(--border);
   }
 
   .tabs {
     display: flex;
-    align-items: stretch;
-    gap: 1px;
+    align-items: center;
+    gap: var(--space-0-5);
+    padding: var(--space-1) 0;
     min-width: 0;
     flex: 0 1 auto;
     overflow-x: auto;
@@ -330,14 +327,15 @@
   .tab {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: var(--space-1-5);
     flex: 0 0 auto;
     max-width: 14rem;
-    padding: 0.25rem 0.3rem 0.25rem 0.6rem;
-    font-size: 0.8rem;
+    min-height: 28px;
+    padding: var(--space-0-5) var(--space-1) var(--space-0-5) var(--space-2-5);
+    font-size: var(--text-sm);
     color: var(--muted);
-    background: var(--bg);
-    border-right: 1px solid var(--border);
+    background: transparent;
+    border-radius: var(--radius-md);
     box-shadow:
       inset 0 2px var(--role-color, transparent),
       inset 0 -3px var(--env-color, transparent);
@@ -346,9 +344,13 @@
     touch-action: none;
   }
 
+  .tab:hover {
+    color: var(--text);
+  }
+
   .tab[aria-selected="true"] {
     color: var(--text);
-    background: var(--surface);
+    background: var(--surface-raised);
   }
 
   .tab[data-environment="lab"] {
@@ -373,24 +375,25 @@
 
   .production {
     flex: 0 0 auto;
-    padding: 0 0.3rem;
-    border-radius: 3px;
-    color: #fff;
+    padding: 0 var(--space-1-5);
+    border-radius: var(--radius-sm);
+    color: var(--on-env-production);
     background: var(--env-production);
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+    letter-spacing: 0.06em;
   }
 
   .member {
     flex: 0 0 auto;
-    padding: 0 0.3rem;
+    padding: 0 var(--space-1-5);
     border: 1px solid var(--multi-send);
-    border-radius: 3px;
-    color: var(--multi-send);
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    border-radius: var(--radius-sm);
+    color: var(--multi-send-text);
+    background: var(--multi-send-bg);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-bold);
+    letter-spacing: 0.06em;
   }
 
   .tab[data-multi-send] {
@@ -419,61 +422,61 @@
     color: var(--role-color);
   }
 
+  /* The session state: hollow while connecting, filled once connected,
+     darker once closed (lightness differs, not only hue). */
   .state {
     flex: 0 0 auto;
-    width: 0.5rem;
-    height: 0.5rem;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-    background: var(--muted);
+    background: var(--state-connecting);
   }
 
   .state.connecting {
     background: transparent;
-    border: 1.5px solid var(--warning);
+    border: 1.5px solid var(--state-connecting);
   }
 
   .state.connected {
-    background: var(--ok);
+    background: var(--state-connected);
   }
 
   .state.disconnected {
-    background: var(--danger);
+    background: var(--state-disconnected);
   }
 
   .close {
-    padding: 0 0.3rem;
-    font-size: 0.9rem;
-    line-height: 1.2;
+    display: inline-grid;
+    place-items: center;
+    min-height: 0;
+    padding: var(--space-0-5);
     color: var(--muted);
     background: none;
     border: none;
+    border-radius: var(--radius-sm);
   }
 
-  .close:hover {
+  .close:hover:not(:disabled) {
     color: var(--text);
+    background: var(--border-strong);
   }
 
   .icon {
     flex: 0 0 auto;
     display: inline-grid;
     place-items: center;
-    padding: 0 0.5rem;
+    width: 28px;
+    height: 28px;
+    padding: 0;
     color: var(--muted);
     background: none;
     border: none;
-    border-radius: 0;
+    border-radius: var(--radius-md);
   }
 
-  .icon:hover {
+  .icon:hover:not(:disabled) {
     color: var(--text);
-  }
-
-  .icon svg {
-    width: 0.95rem;
-    height: 0.95rem;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.3;
+    background: var(--surface-raised);
   }
 
   .spacer {
@@ -491,9 +494,9 @@
     display: grid;
     place-content: center;
     justify-items: center;
-    gap: 0.5rem;
+    gap: var(--space-2);
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   .empty p {

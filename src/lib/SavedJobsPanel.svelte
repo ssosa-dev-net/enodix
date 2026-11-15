@@ -1,4 +1,7 @@
 <script lang="ts">
+  import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import X from "@lucide/svelte/icons/x";
   // The workspace's saved jobs (`_jobs.yaml`): one click plans one and opens
   // the job dialog at its pre-flight. A job whose snippet, script, folder,
   // filter or host is gone says so instead of running.
@@ -51,7 +54,11 @@
       data-saved-jobs-toggle
       onclick={() => (open = !open)}
     >
-      <span class="caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      <span class="caret" aria-hidden="true"
+        >{#if open}<ChevronDown size={14} />{:else}<ChevronRight
+            size={14}
+          />{/if}</span
+      >
       Saved jobs
       {#if list.length > 0}<span class="count">{list.length}</span>{/if}
     </button>
@@ -97,7 +104,8 @@
                 data-saved-job-delete={job.name}
                 title="Delete"
                 aria-label={`Delete ${job.name}`}
-                onclick={() => removeJob(job.name)}>×</button
+                onclick={() => removeJob(job.name)}
+                ><X size={13} aria-hidden="true" /></button
               >
             </li>
           {/each}
@@ -122,8 +130,8 @@
   header {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.3rem 0.6rem;
+    gap: var(--space-1-5);
+    padding: var(--space-1) var(--space-2);
     background: var(--surface);
   }
 
@@ -131,11 +139,11 @@
     flex: 1;
     display: flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: var(--space-1-5);
     border-color: transparent;
     background: none;
-    padding: 0.1rem 0.2rem;
-    font-weight: 600;
+    padding: var(--space-0-5) var(--space-0-5);
+    font-weight: var(--weight-semibold);
     text-align: left;
   }
 
@@ -147,19 +155,19 @@
   .count {
     color: var(--muted);
     font-weight: normal;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .body {
     min-height: 0;
     overflow: auto;
-    padding: 0.2rem 0 0.4rem;
+    padding: var(--space-0-5) 0 var(--space-1-5);
   }
 
   .hint {
-    margin: 0.4rem 0.6rem;
+    margin: var(--space-1-5) var(--space-2);
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
   }
 
   ul {
@@ -171,8 +179,8 @@
   li {
     display: flex;
     align-items: center;
-    gap: 0.2rem;
-    padding: 0 0.6rem 0 0.4rem;
+    gap: var(--space-0-5);
+    padding: 0 var(--space-2) 0 var(--space-1-5);
   }
 
   .run {
@@ -184,12 +192,11 @@
     text-align: left;
     border-color: transparent;
     background: none;
-    padding: 0.2rem 0.4rem;
+    padding: var(--space-0-5) var(--space-1-5);
   }
 
   .run:not(:disabled):hover {
-    filter: none;
-    background: var(--surface);
+    background: var(--surface-raised);
   }
 
   .run span {
@@ -201,12 +208,12 @@
 
   .meta {
     color: var(--muted);
-    font-size: 0.72rem;
+    font-size: var(--text-2xs);
   }
 
   .problem {
     color: var(--danger);
-    font-size: 0.72rem;
+    font-size: var(--text-2xs);
   }
 
   li.broken .name {
@@ -215,8 +222,8 @@
 
   .small {
     flex: none;
-    padding: 0.05rem 0.35rem;
-    font-size: 0.72rem;
+    padding: var(--space-0-5) var(--space-1-5);
+    font-size: var(--text-2xs);
     border-color: transparent;
     background: none;
     color: var(--muted);
@@ -229,9 +236,9 @@
   }
 
   .error {
-    margin: 0.4rem 0.6rem;
+    margin: var(--space-1-5) var(--space-2);
     color: var(--danger);
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
     overflow-wrap: anywhere;
   }
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import X from "@lucide/svelte/icons/x";
   import {
     describeOrigin,
     inventory,
@@ -395,7 +396,8 @@
               class="remove"
               aria-label="Clear {row.label}"
               title="Clear: inherit from above"
-              onclick={() => commit(row, "")}>×</button
+              onclick={() => commit(row, "")}
+              ><X size={14} aria-hidden="true" /></button
             >
           {/if}
         </span>
@@ -511,7 +513,8 @@
           <button
             class="remove"
             aria-label="Remove link {link.value.name}"
-            onclick={() => removeLink(link.value.name)}>×</button
+            onclick={() => removeLink(link.value.name)}
+            ><X size={14} aria-hidden="true" /></button
           >
         </span>
       {:else}
@@ -547,16 +550,16 @@
 <style>
   section {
     display: grid;
-    gap: 0.45rem;
+    gap: var(--space-1-5);
   }
 
   h3 {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin: 0 0 0.4rem;
-    font-size: 0.8rem;
-    font-weight: 600;
+    margin: 0 0 var(--space-1-5);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
     color: var(--muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -565,20 +568,20 @@
   .setting,
   .link {
     display: grid;
-    gap: 0.1rem;
+    gap: var(--space-0-5);
   }
 
   .field {
     display: grid;
-    gap: 0.15rem;
-    font-size: 0.75rem;
+    gap: var(--space-0-5);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .row {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .row input,
@@ -588,16 +591,16 @@
   }
 
   .origin {
-    font-size: 0.7rem;
+    font-size: var(--text-2xs);
     color: var(--muted);
     overflow-wrap: anywhere;
   }
 
   .note {
-    margin: 0.1rem 0 0;
-    padding: 0.3rem 0.45rem;
+    margin: var(--space-0-5) 0 0;
+    padding: var(--space-1) var(--space-1-5);
     border-left: 2px solid var(--warning);
-    font-size: 0.7rem;
+    font-size: var(--text-2xs);
     color: var(--text);
   }
 
@@ -605,9 +608,9 @@
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: 0.2rem 0.5rem;
+    gap: var(--space-0-5) var(--space-2);
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -620,11 +623,11 @@
     border: 0;
     background: none;
     color: var(--accent);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .link .name {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
@@ -637,12 +640,12 @@
   }
 
   .small {
-    padding: 0.2rem 0.6rem;
-    font-size: 0.8rem;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--text-xs);
   }
 
   .remove {
-    padding: 0 0.45rem;
+    padding: 0 var(--space-1-5);
     border: 0;
     background: none;
     color: var(--muted);

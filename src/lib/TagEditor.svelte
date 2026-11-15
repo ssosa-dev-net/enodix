@@ -1,4 +1,5 @@
 <script lang="ts">
+  import X from "@lucide/svelte/icons/x";
   import CopyButton from "./CopyButton.svelte";
   import { describeOrigin, isOwn, type Item } from "./inventory.svelte";
   import type { Effective } from "./workspace";
@@ -58,7 +59,8 @@
             class="remove"
             aria-label="Remove tag {tag}"
             onclick={() =>
-              onchange((current) => current.filter((t) => t !== tag))}>×</button
+              onchange((current) => current.filter((t) => t !== tag))}
+            ><X size={12} aria-hidden="true" /></button
           >
         </li>
       {/each}
@@ -80,16 +82,16 @@
 <style>
   section {
     display: grid;
-    gap: 0.45rem;
+    gap: var(--space-1-5);
   }
 
   h3 {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin: 0 0 0.4rem;
-    font-size: 0.8rem;
-    font-weight: 600;
+    margin: 0 0 var(--space-1-5);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
     color: var(--muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -98,7 +100,7 @@
   .row {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .row input {
@@ -107,14 +109,14 @@
   }
 
   .small {
-    padding: 0.2rem 0.6rem;
-    font-size: 0.8rem;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--text-xs);
   }
 
   .tags {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.3rem;
+    gap: var(--space-1);
     margin: 0;
     padding: 0;
     list-style: none;
@@ -123,21 +125,21 @@
   .tag {
     display: flex;
     align-items: center;
-    padding: 0.05rem 0 0.05rem 0.5rem;
+    padding: var(--space-0-5) 0 var(--space-0-5) var(--space-2);
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     background: var(--surface);
   }
 
   .tag.inherited {
-    padding-right: 0.5rem;
+    padding-right: var(--space-2);
     border-style: dashed;
     background: none;
     color: var(--muted);
   }
 
   .remove {
-    padding: 0 0.45rem;
+    padding: 0 var(--space-1-5);
     border: 0;
     background: none;
     color: var(--muted);
