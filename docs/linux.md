@@ -116,3 +116,9 @@ desktop (for example Ubuntu and Fedora, X11 and Wayland), check by hand:
    only offers the release page, never an install.
 8. Log folders and "Open log folder" open the file manager; web links open
    the browser.
+9. The app's own window frame (#80, not checked on Linux yet): no title
+   bar from the desktop on the main window, a run window or a config
+   history window; dragging the top bar's empty part moves the window and
+   a double click maximizes and restores it; Minimize, Maximize/Restore
+   and Close work; the window resizes from every edge and corner, and the
+   desktop's edge tiling still works (X11 and Wayland).

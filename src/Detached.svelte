@@ -25,6 +25,7 @@
   import { appName } from "./lib/session";
   import { dockBack, type DetachedView } from "./lib/windows";
   import { findHost } from "./lib/workspace";
+  import WindowControls from "./lib/WindowControls.svelte";
 
   interface Props {
     /** What it shows. */
@@ -62,12 +63,12 @@
 
   let name = $state("");
   appName().then((value) => (name = value));
+  /** The window's title: in its own bar (#80) and on the task bar. */
+  const title = $derived(
+    `${name ? `${name} - ` : ""}${view.kind === "run" ? `run ${view.run}` : `config history ${hostName(view.host)}`}`,
+  );
   $effect(() => {
-    if (!name) return;
-    document.title =
-      view.kind === "run"
-        ? `${name} - run ${view.run}`
-        : `${name} - config history ${hostName(view.host)}`;
+    if (name) document.title = title;
   });
 
   function hostName(id: string): string {
@@ -76,34 +77,68 @@
   }
 </script>
 
-<main
-  class="detached"
-  data-detached={view.kind}
-  data-detached-run={view.kind === "run" ? view.run : undefined}
-  data-detached-host={view.kind === "configs" ? view.host : undefined}
->
-  {#if error}
-    <p class="note" role="alert">{error}</p>
-  {:else if !loaded}
-    <p class="note">Loading…</p>
-  {:else if !inventory.workspace}
-    <p class="note" data-detached-no-workspace>
-      No workspace is open in the main window.
-      <button type="button" data-run-action="dock" onclick={() => dockBack()}
-        >Dock back</button
-      >
-    </p>
-  {:else if view.kind === "run"}
-    <RunView run={view.run} detached onclose={() => dockBack()} />
-  {:else}
-    <ConfigHistory host={view.host} detached />
-  {/if}
-</main>
+<div class="window">
+  <!-- The window's own frame (#80): its empty part drags the window and a
+     double click maximizes it. -->
+  <header class="frame" data-window-bar data-tauri-drag-region="deep">
+    <span class="title" data-window-title>{title}</span>
+    <WindowControls />
+  </header>
+  <main
+    class="detached"
+    data-detached={view.kind}
+    data-detached-run={view.kind === "run" ? view.run : undefined}
+    data-detached-host={view.kind === "configs" ? view.host : undefined}
+  >
+    {#if error}
+      <p class="note" role="alert">{error}</p>
+    {:else if !loaded}
+      <p class="note">Loading…</p>
+    {:else if !inventory.workspace}
+      <p class="note" data-detached-no-workspace>
+        No workspace is open in the main window.
+        <button type="button" data-run-action="dock" onclick={() => dockBack()}
+          >Dock back</button
+        >
+      </p>
+    {:else if view.kind === "run"}
+      <RunView run={view.run} detached onclose={() => dockBack()} />
+    {:else}
+      <ConfigHistory host={view.host} detached />
+    {/if}
+  </main>
+</div>
 
 <style>
-  .detached {
+  .window {
     position: fixed;
     inset: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    background: var(--bg);
+  }
+
+  .frame {
+    display: flex;
+    align-items: center;
+    min-height: 38px;
+    padding-left: var(--space-3);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+    color: var(--muted);
+  }
+
+  .detached {
+    min-height: 0;
     display: flex;
     flex-direction: column;
     background: var(--bg);

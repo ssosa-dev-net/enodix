@@ -1102,6 +1102,150 @@ async function connectTarget(page) {
   return { send, close: () => socket.close() };
 }
 
+/** The answer to the window command `command` about the page's own
+ * window (`evaluate` does not wait for promises: the answer is kept on the
+ * page and read back). */
+async function windowCommand(evaluate, command) {
+  const key = `__smokeWindow_${command}`;
+  await evaluate(`(() => {
+    window.${key} = null;
+    const internals = window.__TAURI_INTERNALS__;
+    internals
+      .invoke("plugin:window|${command}", { label: internals.metadata.currentWindow.label })
+      .then((value) => (window.${key} = { value }));
+  })()`);
+  const answer = await until(`the window's answer to ${command}`, () =>
+    evaluate(`window.${key}`),
+  );
+  return answer.value;
+}
+
+/**
+ * The window's buttons (#80), in the order shown: their marker, accessible
+ * name, tooltip, and whether they sit in a bar marked as the window's top
+ * bar, flush with the window's top right corner.
+ */
+function windowButtons(evaluate) {
+  return evaluate(`[...document.querySelectorAll("[data-window-control]")]
+    .filter((button) => button.checkVisibility())
+    .map((button) => {
+      const box = button.getBoundingClientRect();
+      return {
+        control: button.dataset.windowControl,
+        name: button.getAttribute("aria-label"),
+        title: button.title,
+        inBar: !!button.closest("[data-window-bar]"),
+        top: Math.round(box.top),
+        right: Math.round(window.innerWidth - box.right),
+      };
+    })`);
+}
+
+/** Checks the window has no system frame and its own three buttons, at
+ * its top right corner, named and with tooltips (#80). */
+async function checkOwnFrame(evaluate, where, maximizeName = "Maximize") {
+  const json = (value) => JSON.stringify(value);
+  if ((await windowCommand(evaluate, "is_decorated")) !== false)
+    fail(`${where} has the system's title bar`);
+  const buttons = await windowButtons(evaluate);
+  const expected = [
+    ["minimize", "Minimize"],
+    ["maximize", maximizeName],
+    ["close", "Close"],
+  ];
+  const ok =
+    buttons.length === 3 &&
+    expected.every(
+      ([control, name], at) =>
+        buttons[at].control === control &&
+        buttons[at].name === name &&
+        buttons[at].title === name &&
+        buttons[at].inBar &&
+        buttons[at].top === 0,
+    ) &&
+    buttons[2].right === 0;
+  if (!ok) fail(`${where}'s window buttons are ${json(buttons)}`);
+}
+
+/**
+ * The app's own frame (#80): no system title bar; the top bar's buttons
+ * minimize (not clicked: a minimized window is hard to bring back from
+ * here), maximize and restore; a double click on the bar's empty part
+ * maximizes and restores; the bar's empty part is a drag region, its tabs
+ * and buttons are not.
+ */
+async function windowFrame({ evaluate, mouse, step }) {
+  const maximized = () => windowCommand(evaluate, "is_maximized");
+  const label = () =>
+    evaluate(
+      `document.querySelector("[data-window-control=maximize]").getAttribute("aria-label")`,
+    );
+  await checkOwnFrame(evaluate, "the main window");
+  const regions = await evaluate(`(() => {
+    const bar = document.querySelector("[data-tab-bar]");
+    return {
+      bar: bar?.dataset.tauriDragRegion ?? null,
+      inside: [...bar.querySelectorAll("[data-tauri-drag-region]")].length,
+      side: document.querySelector("[data-side-view] [data-window-bar]")?.dataset.tauriDragRegion ?? null,
+    };
+  })()`);
+  if (regions.bar !== "deep" || regions.inside !== 0 || regions.side !== "deep")
+    fail(`the top bar's drag regions are ${JSON.stringify(regions)}`);
+  step(
+    "no system title bar: the app's top bar (tabs and side view heading) drags the window and holds Minimize, Maximize and Close, named, with tooltips",
+  );
+
+  if (await maximized()) fail("the window starts maximized");
+  await evaluate(
+    `document.querySelector("[data-window-control=maximize]").click()`,
+  );
+  await until("the window maximized by its button", maximized);
+  await until(
+    "the button offers Restore",
+    async () => (await label()) === "Restore",
+  );
+  await checkOwnFrame(evaluate, "the maximized window", "Restore");
+  await evaluate(
+    `document.querySelector("[data-window-control=maximize]").click()`,
+  );
+  await until(
+    "the window restored by its button",
+    async () => !(await maximized()),
+  );
+  await until(
+    "the button offers Maximize",
+    async () => (await label()) === "Maximize",
+  );
+  step("Maximize maximized the window and became Restore, which restored it");
+
+  // A double click on the bar's empty part (right of the new-tab button).
+  const empty = await evaluate(`(() => {
+    const plus = document.querySelector("[data-tab-bar] [data-new-tab]").getBoundingClientRect();
+    return { x: Math.round(plus.right + 24), y: Math.round(plus.top + plus.height / 2) };
+  })()`);
+  const hit = await evaluate(
+    `document.elementFromPoint(${empty.x}, ${empty.y})?.closest("[data-tauri-drag-region]")?.matches("[data-tab-bar]") ?? false`,
+  );
+  if (!hit) fail("the bar's empty part is not where the smoke looked");
+  const doubleClickAt = async () => {
+    for (const clickCount of [1, 2]) {
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await mouse(type, empty, { button: "left", clickCount });
+      }
+    }
+  };
+  await doubleClickAt();
+  await until("the window maximized by a double click on the bar", maximized);
+  await doubleClickAt();
+  await until(
+    "the window restored by a double click on the bar",
+    async () => !(await maximized()),
+  );
+  step(
+    "a double click on the top bar's empty part maximized and restored the window",
+  );
+}
+
 /**
  * The first window, with no workspace open: the welcome view lists the
  * known workspaces (the gone one marked, and removed from the list), offers
@@ -1362,6 +1506,9 @@ async function main() {
     );
   }
   step("the interface typeface and icons are bundled: no request left the app");
+
+  // The app draws its own frame (#80).
+  await windowFrame({ evaluate, mouse, step });
 
   // With no workspace to reopen, the first window is the welcome view: the
   // known workspaces (a gone folder marked), open, create and quick
@@ -2479,6 +2626,14 @@ async function vault({ app, devtools, evaluate, step }) {
     ))
   )
     fail("the unlock screen lacks its mark and title");
+  // It covers the top bar, so it has the window's buttons and a strip
+  // that drags the window of its own (#80).
+  if (
+    (await again(
+      `[...document.querySelectorAll("[data-unlock-screen] [data-window-bar][data-tauri-drag-region] [data-window-control]")].map((b) => b.getAttribute("aria-label")).join()`,
+    )) !== "Minimize,Maximize,Close"
+  )
+    fail("the unlock screen lacks the window's buttons");
   await checkContrast(again, "unlock screen");
   const whileLocked = headlessCredentials("vault-r1.yaml");
   if (
@@ -4887,6 +5042,15 @@ async function detachedRunWindow({ evaluate, exists, clickOn, run, step }) {
   let window = await connectWindow(label);
   await showing(window, "opened");
   await checkContrast(window.evaluate, "run window");
+  // Its own frame too (#80), with its title in the bar.
+  await checkOwnFrame(window.evaluate, "the run's window");
+  const titled = await until("the run's window title", () =>
+    window.evaluate(`(() => {
+      const bar = document.querySelector("[data-window-bar] [data-window-title]")?.textContent;
+      return bar && bar === document.title && document.title.endsWith(${json(`run ${run}`)}) && bar;
+    })()`),
+  );
+  step(`the run's window has the app's own frame, titled "${titled}"`);
   const main = await look(evaluate);
   const detached = await look(window.evaluate);
   if (json(main) !== json(detached) || !main.font.includes("Cascadia Mono"))
@@ -4910,11 +5074,9 @@ async function detachedRunWindow({ evaluate, exists, clickOn, run, step }) {
   await showing(window, "reloaded");
   step("the run's window, reloaded, still shows the running job");
 
-  // Closed: the job goes on.
+  // Closed by its own Close button (#80): the job goes on.
   await window
-    .evaluate(
-      `window.__TAURI_INTERNALS__.invoke("plugin:window|close", { label: ${json(label)} })`,
-    )
+    .evaluate(`document.querySelector("[data-window-control=close]").click()`)
     .catch(() => {});
   window.devtools.close();
   await until(
@@ -4975,9 +5137,16 @@ async function closingTheMainWindow({ app, evaluate, step }) {
       `!!document.querySelector("[data-detached=configs]")`,
     ),
   );
+  await checkOwnFrame(configWindow.evaluate, "the config history's window");
+  const titled = await configWindow.evaluate(
+    `document.querySelector("[data-window-bar] [data-window-title]")?.textContent ?? ""`,
+  );
+  if (!titled.includes("config history"))
+    fail(`the config history's window bar says "${titled}"`);
   configWindow.devtools.close();
+  // The main window's own Close button (#80) ends the app.
   await evaluate(
-    `window.__TAURI_INTERNALS__.invoke("plugin:window|close", { label: "main" })`,
+    `document.querySelector("[data-window-control=close]").click()`,
   ).catch(() => {});
   await until(
     "the app ended with its main window",
@@ -4985,7 +5154,7 @@ async function closingTheMainWindow({ app, evaluate, step }) {
     15_000,
   );
   step(
-    "closing the main window closed the run and config history windows and ended the app",
+    "the config history's window has the app's own frame; the main window's Close button closed the run and config history windows and ended the app",
   );
 }
 
@@ -9237,6 +9406,47 @@ async function tabsAndPanes({
   }
   await screenshot("split-panes");
   step("the window split right and down, each pane showing its own session");
+
+  // The window's buttons (#80) end the top-right pane's bar, cover no tab,
+  // and only the bars at the window's top drag it.
+  const frame = await evaluate(`(() => {
+    const bar = (pane) => document.querySelector('[data-tab-bar="' + pane + '"]');
+    const controls = [...document.querySelectorAll("[data-window-control]")];
+    // What shows of each tab: clipped by its tab strip, which scrolls.
+    const tabs = [...document.querySelectorAll("[data-tab-bar] [data-tab]")]
+      .map((tab) => {
+        const box = tab.getBoundingClientRect();
+        const strip = tab.closest("[role=tablist]").getBoundingClientRect();
+        const left = Math.max(box.left, strip.left);
+        const right = Math.min(box.right, strip.right);
+        return { left, right, top: box.top, bottom: box.bottom, width: Math.max(0, right - left) };
+      });
+    const overlaps = controls.some((control) => {
+      const box = control.getBoundingClientRect();
+      return tabs.some((tab) => tab.left < box.right && box.left < tab.right && tab.top < box.bottom && box.top < tab.bottom);
+    });
+    return {
+      where: controls.map((control) => Number(control.closest("[data-tab-bar]")?.dataset.tabBar)),
+      overlaps,
+      // Each pane's shown tab stays readable, and the buttons stay inside
+      // the window, however narrow the pane.
+      narrowest: Math.min(...tabs.map((tab) => Math.round(tab.width))),
+      outside: controls.filter((control) => control.getBoundingClientRect().right > window.innerWidth + 0.5).length,
+      drag: ${json(panes.map((p) => p.pane))}.map((pane) => bar(pane).dataset.tauriDragRegion ?? null),
+    };
+  })()`);
+  if (
+    json(frame.where) !== json([panes[1].pane, panes[1].pane, panes[1].pane]) ||
+    frame.overlaps ||
+    frame.narrowest < 45 ||
+    frame.outside > 0 ||
+    json(frame.drag) !== json(["deep", "deep", null])
+  ) {
+    fail(`the window's frame over split panes: ${json(frame)}`);
+  }
+  step(
+    "with panes side by side, the window's buttons end the top-right pane's bar, cover no tab, and the pane below has neither buttons nor a drag region",
+  );
 
   // A tab dragged into another pane moves there; its old pane, now empty,
   // goes. The terminal (and its session) move with it.

@@ -365,7 +365,7 @@
 />
 
 <div class="hosts">
-  <header>
+  <header data-window-bar data-tauri-drag-region="deep">
     <button
       class="name"
       data-open-workspaces

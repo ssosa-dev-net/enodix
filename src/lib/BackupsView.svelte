@@ -70,7 +70,9 @@
 </script>
 
 <div class="backups" data-backups-view>
-  <header><h2>Config backups</h2></header>
+  <header data-window-bar data-tauri-drag-region="deep">
+    <h2>Config backups</h2>
+  </header>
 
   {#if !workspace}
     <p class="hint" data-needs-workspace>

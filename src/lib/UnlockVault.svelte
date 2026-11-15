@@ -8,6 +8,7 @@
     vaultFailure,
     type VaultFailure,
   } from "./vault";
+  import WindowControls from "./WindowControls.svelte";
 
   interface Props {
     /** The app's name, for the title. */
@@ -81,6 +82,11 @@
   data-unlock-screen
   {onkeydown}
 >
+  <!-- The screen covers the window's top bar: a strip of its own moves
+       the window and holds its buttons (#80). -->
+  <div class="frame" data-window-bar data-tauri-drag-region>
+    <WindowControls />
+  </div>
   {#if startingOver}
     <div class="panel" data-start-over>
       <div class="mark danger-mark" data-unlock-mark>
@@ -179,6 +185,16 @@
     place-items: center;
     padding: var(--space-4);
     background: var(--bg);
+  }
+
+  .frame {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 38px;
+    display: flex;
+    justify-content: flex-end;
   }
 
   .panel {

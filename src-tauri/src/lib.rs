@@ -2650,14 +2650,32 @@ async fn window_detach_run(
         return window.set_focus().map_err(|error| error.to_string());
     }
     let theme = window_theme(preferred.lock().theme);
-    WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
-        .title(format!("{} - run {run}", product_name(&app)))
+    open_detached(
+        &app,
+        label,
+        format!("{} - run {run}", product_name(&app)),
+        theme,
+    )
+}
+
+/// Opens a detached window: no system frame, the page draws its own
+/// (#80), with the shadow that keeps its edge and Windows 11's corners.
+fn open_detached(
+    app: &AppHandle,
+    label: String,
+    title: String,
+    theme: Option<tauri::Theme>,
+) -> Result<(), String> {
+    WebviewWindowBuilder::new(app, label, WebviewUrl::default())
+        .title(title)
         .inner_size(900.0, 640.0)
         .min_inner_size(420.0, 320.0)
         .theme(theme)
+        .decorations(false)
+        .shadow(true)
         .build()
-        .map_err(|error| format!("the window could not be opened: {error}"))?;
-    Ok(())
+        .map(drop)
+        .map_err(|error| format!("the window could not be opened: {error}"))
 }
 
 /// The label of the window showing the host `host`'s config history.
@@ -2696,14 +2714,12 @@ async fn window_detach_configs(
         return window.set_focus().map_err(|error| error.to_string());
     }
     let theme = window_theme(preferred.lock().theme);
-    WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
-        .title(format!("{} - config history {host}", product_name(&app)))
-        .inner_size(900.0, 640.0)
-        .min_inner_size(420.0, 320.0)
-        .theme(theme)
-        .build()
-        .map_err(|error| format!("the window could not be opened: {error}"))?;
-    Ok(())
+    open_detached(
+        &app,
+        label,
+        format!("{} - config history {host}", product_name(&app)),
+        theme,
+    )
 }
 
 /// The main window, brought forward.
@@ -2876,6 +2892,11 @@ pub fn run() {
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(480.0, 320.0)
                 .theme(theme)
+                // The app draws its own frame (#80): its top bar drags the
+                // window and holds the window's buttons. The shadow keeps
+                // the frame's edge, and on Windows 11 its rounded corners.
+                .decorations(false)
+                .shadow(true)
                 .build()?;
             Ok(())
         })
