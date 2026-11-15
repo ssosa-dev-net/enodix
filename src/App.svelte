@@ -12,7 +12,7 @@
   import CredentialsView from "./lib/CredentialsView.svelte";
   import Dialog from "./lib/Dialog.svelte";
   import DetailsSheet from "./lib/DetailsSheet.svelte";
-  import HighlightRulesDialog from "./lib/HighlightRulesDialog.svelte";
+  import HighlightRules from "./lib/HighlightRules.svelte";
   import HostsView from "./lib/HostsView.svelte";
   import PaneView, {
     type PaneHandlers,
@@ -24,7 +24,7 @@
   import { setViewOpener, VIEWS } from "./lib/views";
   import PythonSetupDialog from "./lib/PythonSetupDialog.svelte";
   import { python, refreshPython } from "./lib/python.svelte";
-  import PlatformsDialog from "./lib/PlatformsDialog.svelte";
+  import Platforms from "./lib/Platforms.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
   import SnippetDialog from "./lib/SnippetDialog.svelte";
   import SnippetsView from "./lib/SnippetsView.svelte";
@@ -61,7 +61,7 @@
     type Item,
   } from "./lib/inventory.svelte";
   import { hostLogin } from "./lib/credentials";
-  import { highlighting, trackHighlightRules } from "./lib/highlight.svelte";
+  import { trackHighlightRules } from "./lib/highlight.svelte";
   import { profiles, refreshProfiles } from "./lib/profiles.svelte";
   import { snippets } from "./lib/snippets.svelte";
   import { joinConfirmations, NO_SAFETY, planGroupPaste } from "./lib/paste";
@@ -1148,7 +1148,6 @@
     if (vaultLocked) return;
     const busy =
       inventory.dialog ||
-      highlighting.dialog ||
       python.dialog ||
       inventory.palette ||
       switcher ||
@@ -1329,6 +1328,10 @@
                 folder={inventory.nornirImport ?? ""}
                 onclose={() => closeViewTab(item.tab, true)}
               />
+            {:else if item.view === "platforms" && inventory.workspace}
+              <Platforms onclose={() => closeViewTab(item.tab, true)} />
+            {:else if item.view === "highlights"}
+              <HighlightRules onclose={() => closeViewTab(item.tab, true)} />
             {/if}
           </div>
         {/each}
@@ -1525,15 +1528,6 @@
   />
 {/if}
 
-{#if highlighting.dialog}
-  <HighlightRulesDialog
-    onclose={() => {
-      highlighting.dialog = false;
-      focusRequest += 1;
-    }}
-  />
-{/if}
-
 {#if snippets.editing}
   {@const editing = snippets.editing}
   <SnippetDialog
@@ -1560,15 +1554,6 @@
     }}
     oncancel={() => {
       asking = null;
-      focusRequest += 1;
-    }}
-  />
-{/if}
-
-{#if inventory.platforms && inventory.workspace}
-  <PlatformsDialog
-    onclose={() => {
-      inventory.platforms = false;
       focusRequest += 1;
     }}
   />

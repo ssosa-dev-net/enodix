@@ -3306,11 +3306,17 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
   const rulesFile = join(workspace, "_highlights.yaml");
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
+  // The session tried on: once the rules' tab is beside it, the other
+  // pane may be the active one.
+  const sessionTab = await evaluate(
+    `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
+  );
+  const sessionSlot = `.slot[data-tab="${sessionTab}"]`;
   // The last row holding `mark`, its text, the cells coloured on it, and
   // the terminal's palette colours the rules below name.
   const row = (mark) =>
     evaluate(`(() => {
-      const slot = document.querySelector("${SHOWN_SESSION} .terminal");
+      const slot = document.querySelector('${sessionSlot} .terminal');
       const terminal = slot.xterm;
       const buffer = terminal.buffer.active;
       const theme = terminal.options.theme;
@@ -3353,30 +3359,66 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
       field.checked = ${json(value)};
       field.dispatchEvent(new Event("change", { bubbles: true }));
     })()`);
-  const closeDialog = async (dialog) => {
-    await evaluate(
-      `[...document.querySelectorAll("[data-dialog=${dialog}] button")].find((b) => b.textContent.trim() === "Close").click()`,
-    );
-    await until(
-      `the ${dialog} dialog closed`,
-      async () => !(await exists(`[data-dialog=${dialog}]`)),
-    );
-  };
-  const openRules = async () => {
-    // From the preferences, which name the rules beside the switch.
+  const RULES = "[data-view=highlights]";
+  /** Opens the rules' tab from the preferences (which name the rules
+   * beside the switch) and splits it into a pane of its own, below the
+   * terminal the rules are tried on (down, so long lines do not wrap). */
+  const openRulesBeside = async () => {
     await openPreferences(evaluate);
     await evaluate(
       `document.querySelector("[data-view=preferences] [data-open-highlights]").click()`,
     );
-    await until("the highlights dialog", () =>
-      exists("[data-dialog=highlights]"),
+    await until("the highlight rules tab", () =>
+      evaluate(`(() => {
+        const view = document.querySelector("${RULES}");
+        return !!view && !view.closest("[hidden]");
+      })()`),
     );
-    // The Preferences tab would hide the terminal the rules are tried on.
-    await closePreferences(evaluate);
+    // The Preferences tab would sit over the terminal.
+    await evaluate(
+      `document.querySelector("[data-tab-view=preferences] [data-tab-close]").click()`,
+    );
+    await until(
+      "the Preferences tab closed",
+      async () => !(await exists("[data-tab-view=preferences]")),
+    );
+    await evaluate(
+      `document.querySelector("[data-tab-view=highlights]").click()`,
+    );
+    await evaluate(`(() => {
+      const tab = document.querySelector("[data-tab-view=highlights]");
+      tab.closest("[data-tab-bar]").querySelector("[data-split=down]").click();
+    })()`);
+    await until("the rules' tab in a pane of its own", () =>
+      evaluate(
+        `document.querySelector("[data-tab-view=highlights]").closest("[data-tab-bar]").querySelectorAll("[data-tab]").length === 1`,
+      ),
+    );
+    await evaluate(
+      `document.querySelector('[data-tab-bar] [data-tab="${sessionTab}"]').click()`,
+    );
+    await until("the rules' tab beside the terminal", () =>
+      evaluate(`(() => {
+        const view = document.querySelector(".slot[data-view-slot=highlights]");
+        const session = document.querySelector('${sessionSlot}');
+        return !!view && !view.hidden && !session.hidden &&
+          view.dataset.pane !== session.dataset.pane;
+      })()`),
+    );
+  };
+  const closeRules = async () => {
+    await evaluate(
+      `document.querySelector("${RULES} [data-rule=close]").click()`,
+    );
+    await until(
+      "the highlight rules tab closed",
+      async () =>
+        !(await exists(RULES)) && !(await exists("[data-tab-view=highlights]")),
+    );
   };
   const focusTerminal = () =>
     evaluate(
-      `document.querySelector("${SHOWN_SESSION} .xterm textarea").focus()`,
+      `document.querySelector('${sessionSlot} .xterm textarea').focus()`,
     );
 
   // Built-in rules: an interface, a state, IPv4 and IPv6 addresses. The
@@ -3440,8 +3482,9 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
   await until("the highlights back", () => coloured("hlcheck", builtIn));
   step("the preference turned highlighting off and on again");
 
-  // A workspace rule, added in the app, is saved to the workspace.
-  await openRules();
+  // A workspace rule, added in the rules' tab beside the terminal, is
+  // saved to the workspace and shows on that terminal.
+  await openRulesBeside();
   await evaluate(`document.querySelector("[data-rule=new]").click()`);
   await until("the rule form", () => exists("[data-rule-form]"));
   await evaluate(`(() => {
@@ -3463,16 +3506,16 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
   await until("the rule listed", () =>
     exists("[data-highlight-rule=smoke-word][data-highlight-source=workspace]"),
   );
-  await closeDialog("highlights");
   await focusTerminal();
   await type("hlrule SMOKEWORD\r");
   await until("the workspace rule's highlight", () =>
     coloured("hlrule", [["SMOKEWORD", "magenta"]]),
   );
-  step("a rule added in the app was saved to the workspace and applied");
+  step(
+    "a rule added in the rules' tab was saved to the workspace and applied to the terminal beside it",
+  );
 
   // One rule turned off: only its highlights go.
-  await openRules();
   await evaluate(`(() => {
     const box = document.querySelector("[data-highlight-rule=smoke-word] [name=rule-enabled]");
     box.checked = false;
@@ -3501,7 +3544,7 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
     coloured("hlcheck", builtIn),
   );
   await screenshot("highlight-rules");
-  await closeDialog("highlights");
+  await closeRules();
   rmSync(rulesFile);
   step("a broken pattern was reported and skipped; the other rules work");
 }
@@ -7703,11 +7746,12 @@ async function editInventory({
   await shows("platform", "none");
   step("a setting on a folder was written to its settings file");
 
-  // Platform definitions: the folder's platform finds none yet; one is
-  // created in the dialog, a built-in changed and reset, a bad pattern
+  // Platform definitions, in their tab (opened from the details sheet's
+  // platform setting, then from the palette): the folder's platform finds
+  // none yet; one is created, a built-in changed and reset, a bad pattern
   // refused, and an external edit of the file picked up.
   const platformsFile = "_platforms.yaml";
-  const platformsDialog = "[data-dialog=platforms]";
+  const platformsDialog = "[data-view=platforms]";
   const platformMatch = () =>
     evaluate(
       `document.querySelector(".side [data-platform-match]")?.getAttribute("data-platform-match") ?? null`,
@@ -7717,20 +7761,45 @@ async function editInventory({
     evaluate(
       `document.querySelector(${JSON.stringify(platformRow(name))})?.getAttribute("data-platform-source") ?? null`,
     );
-  const openPlatforms = async () => {
-    await clickOn("[data-side-view=hosts] [data-open-platforms]");
-    await until("the platforms dialog", () =>
-      evaluate(`!!document.querySelector("${platformsDialog}")`),
-    );
+  const platformsShown = () =>
+    evaluate(`(() => {
+      const view = document.querySelector("${platformsDialog}");
+      return !!view && !view.closest("[hidden]") &&
+        !!document.querySelector("[data-tab-view=platforms]");
+    })()`);
+  const openPlatforms = async (from) => {
+    if (from === "sheet") {
+      await clickOn(".side [data-open-platforms]");
+    } else {
+      // Ctrl+K, then the palette's command.
+      await evaluate(
+        `window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", code: "KeyK", ctrlKey: true, bubbles: true }))`,
+      );
+      await until("the palette", () =>
+        evaluate(`!!document.querySelector("input[name=palette-query]")`),
+      );
+      await evaluate(`(() => {
+        const input = document.querySelector("input[name=palette-query]");
+        input.value = "platform definitions";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      })()`);
+      await until("the platforms command in the palette", () =>
+        evaluate(
+          `!!document.querySelector("[data-palette-command=platforms]")`,
+        ),
+      );
+      await clickOn("[data-palette-command=platforms]");
+    }
+    await until(`the platforms tab (from the ${from})`, platformsShown);
   };
   const closePlatforms = async () => {
-    await evaluate(
-      `[...document.querySelectorAll("${platformsDialog} button")].find((b) => b.textContent.trim() === "Close").click()`,
-    );
+    await clickOn(`${platformsDialog} [data-platform-action=close]`);
     await until(
-      "the platforms dialog closed",
+      "the platforms tab closed",
       async () =>
-        !(await evaluate(`!!document.querySelector("${platformsDialog}")`)),
+        !(await evaluate(
+          `!!document.querySelector("${platformsDialog}") || !!document.querySelector("[data-tab-view=platforms]")`,
+        )),
     );
   };
   const platformForm = `${platformsDialog} [data-platform-form]`;
@@ -7742,7 +7811,11 @@ async function editInventory({
     "the folder's platform finds no definition",
     async () => (await platformMatch()) === "",
   );
-  await openPlatforms();
+  await openPlatforms("sheet");
+  if (
+    !(await evaluate(`!!document.querySelector(".side [data-platform-match]")`))
+  )
+    fail("the details sheet is not in view beside the platforms tab");
   for (const name of ["srlinux", "eos", "frr", "ios", "nxos", "junos"]) {
     if ((await platformSource(name)) !== "builtIn") {
       fail(`the built-in platform ${name} is not listed as built in`);
@@ -7815,7 +7888,9 @@ async function editInventory({
   }
   await clickOn(`${platformsDialog} [data-platform-action=cancel]`);
   await closePlatforms();
-  step("platform definitions were created, changed, reset and refused");
+  step(
+    "platform definitions in a tab opened from the details sheet were created, changed, reset and refused",
+  );
 
   // The folder's platform (another name of the new definition) finds it,
   // and the platform field offers the defined platforms.
@@ -7841,7 +7916,7 @@ async function editInventory({
     "the external edit picked up",
     async () => (await platformMatch()) === "",
   );
-  await openPlatforms();
+  await openPlatforms("palette");
   await until("the broken pattern shown with its definition", () =>
     evaluate(
       `!!document.querySelector(${JSON.stringify(`${platformRow("mikrotik")} [data-platform-error]`)})`,
@@ -7861,7 +7936,7 @@ async function editInventory({
       "description: Edge routers\nenvironment: lab\n",
   );
   step(
-    "a folder's platform found its definition, and an external edit was picked up",
+    "a folder's platform found its definition, and an external edit was picked up in the platforms tab opened from the palette",
   );
 
   // Moving a folder from its context menu.

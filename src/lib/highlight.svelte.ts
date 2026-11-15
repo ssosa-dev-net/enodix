@@ -17,8 +17,6 @@ import {
 } from "./workspace";
 
 export const highlighting = $state({
-  /** Whether the highlight rules dialog is open. */
-  dialog: false,
   /** The built-in rules, for when no workspace is open. */
   builtIn: [] as ListedRule[],
   /** Raised whenever the rules that apply change. */

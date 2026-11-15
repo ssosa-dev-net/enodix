@@ -7,7 +7,7 @@
     SUGGESTED_FONTS,
     type Theme,
   } from "./preferences.svelte";
-  import { highlighting } from "./highlight.svelte";
+  import { openView } from "./views";
   import { checkNow, describeStatus, updates } from "./updates.svelte";
   import VaultSection from "./VaultSection.svelte";
   import PythonSection from "./PythonSection.svelte";
@@ -153,7 +153,7 @@
         <button
           type="button"
           data-open-highlights
-          onclick={() => (highlighting.dialog = true)}>Rules…</button
+          onclick={() => openView("highlights")}>Rules…</button
         >
       </span>
 

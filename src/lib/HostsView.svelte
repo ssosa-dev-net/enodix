@@ -14,6 +14,7 @@
   import TriangleAlert from "@lucide/svelte/icons/triangle-exclamation-point";
   import X from "@lucide/svelte/icons/x";
   import TreeFolder from "./TreeFolder.svelte";
+  import { openView } from "./views";
   import {
     canMoveInto,
     inventory,
@@ -395,7 +396,7 @@
       aria-label="Platform definitions"
       title="Platform definitions: how jobs drive each kind of device"
       disabled={!workspace}
-      onclick={() => (inventory.platforms = true)}
+      onclick={() => openView("platforms")}
       ><Cpu size={16} aria-hidden="true" /></button
     >
     <button

@@ -8,9 +8,11 @@
 // (title, icon), and a branch in `App.svelte`'s view slot.
 
 import Archive from "@lucide/svelte/icons/archive";
+import Cpu from "@lucide/svelte/icons/cpu";
 import FileClock from "@lucide/svelte/icons/file-clock";
 import FileInput from "@lucide/svelte/icons/file-input";
 import FileSpreadsheet from "@lucide/svelte/icons/file-spreadsheet";
+import Highlighter from "@lucide/svelte/icons/highlighter";
 import ListChecks from "@lucide/svelte/icons/list-checks";
 import Settings from "@lucide/svelte/icons/settings";
 import type { Component } from "svelte";
@@ -47,6 +49,10 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
   "csv-import": { title: () => "Import CSV", icon: FileSpreadsheet },
   /** The Nornir import: files, preview, report (#71; one tab). */
   "nornir-import": { title: () => "Import Nornir", icon: FileInput },
+  /** The open workspace's platform definitions (#72; one tab). */
+  platforms: { title: () => "Platforms", icon: Cpu },
+  /** The highlight rules and the switch (#72; one tab). */
+  highlights: { title: () => "Highlight rules", icon: Highlighter },
 };
 
 /** The open workspace's name for the host `id` (else the id). */

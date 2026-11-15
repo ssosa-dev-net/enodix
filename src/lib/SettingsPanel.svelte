@@ -8,6 +8,7 @@
     type Item,
   } from "./inventory.svelte";
   import { profileNames } from "./profiles.svelte";
+  import { openView } from "./views";
   import { serialPorts, type SerialPortInfo } from "./session";
   import {
     MAX_PASTE_LINE_DELAY_MS,
@@ -446,7 +447,7 @@
       <button
         class="definitions"
         data-open-platforms
-        onclick={() => (inventory.platforms = true)}>Definitions…</button
+        onclick={() => openView("platforms")}>Definitions…</button
       >
     </p>
   {/if}

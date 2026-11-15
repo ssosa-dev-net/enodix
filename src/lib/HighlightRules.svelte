@@ -1,4 +1,6 @@
 <script lang="ts">
+  // The highlight rules and the highlighting switch, in their tab (#72; one
+  // at a time), so a pattern can be tried on a terminal beside it.
   import { currentRules } from "./highlight.svelte";
   import {
     deleteHighlightRule,
@@ -18,6 +20,7 @@
   } from "./workspace";
 
   interface Props {
+    /** Closes the tab. */
     onclose: () => void;
   }
 
@@ -92,25 +95,18 @@
     };
   }
 
+  // Escape leaves the form; the tab closes as any tab does.
   function onkeydown(event: KeyboardEvent) {
-    if (event.key !== "Escape") return;
-    if (editing) {
+    if (event.key === "Escape" && editing) {
       editing = null;
       error = null;
-    } else onclose();
+    }
   }
 </script>
 
-<svelte:window {onkeydown} />
-
-<div
-  class="backdrop"
-  role="dialog"
-  aria-modal="true"
-  aria-labelledby="highlights-title"
-  data-dialog="highlights"
->
-  <section>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="view" data-view="highlights" {onkeydown}>
+  <section class="inner" aria-labelledby="highlights-title">
     <h2 id="highlights-title">Highlighting</h2>
     <label class="check">
       <input
@@ -265,35 +261,26 @@
         {#if editable}
           <button data-rule="new" onclick={add}>New rule…</button>
         {/if}
-        <!-- svelte-ignore a11y_autofocus -->
-        <button autofocus onclick={onclose}>Close</button>
+        <button data-rule="close" onclick={onclose}>Close</button>
       </div>
     {/if}
   </section>
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 15;
-    display: grid;
-    place-items: center;
-    padding: var(--space-4);
-    background: var(--backdrop);
+  .view {
+    height: 100%;
+    min-height: 0;
+    overflow: auto;
+    background: var(--bg);
   }
 
-  section {
-    width: min(40rem, 100%);
-    max-height: 100%;
-    overflow: auto;
+  .inner {
+    max-width: 48rem;
     display: grid;
+    align-content: start;
     gap: var(--space-3);
-    padding: var(--space-4);
-    background: var(--dialog);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
+    padding: var(--space-3);
   }
 
   h2 {

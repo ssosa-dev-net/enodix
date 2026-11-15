@@ -1,8 +1,11 @@
 <script lang="ts">
+  // The open workspace's platform definitions, in their tab (#72; one at a
+  // time), so a prompt pattern can be edited next to a live terminal.
   import { deletePlatform, inventory, savePlatform } from "./inventory.svelte";
   import type { ListedPlatform, PlatformDefinition } from "./workspace";
 
   interface Props {
+    /** Closes the tab. */
     onclose: () => void;
   }
 
@@ -158,10 +161,9 @@
     error = null;
   }
 
+  // Escape leaves the form; the tab closes as any tab does.
   function onkeydown(event: KeyboardEvent) {
-    if (event.key !== "Escape") return;
-    if (editing) cancel();
-    else onclose();
+    if (event.key === "Escape" && editing) cancel();
   }
 
   function focusFirst(element: HTMLInputElement) {
@@ -169,16 +171,9 @@
   }
 </script>
 
-<svelte:window {onkeydown} />
-
-<div
-  class="backdrop"
-  role="dialog"
-  aria-modal="true"
-  aria-labelledby="platforms-title"
-  data-dialog="platforms"
->
-  <section>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="view" data-view="platforms" {onkeydown}>
+  <section class="inner" aria-labelledby="platforms-title">
     <h2 id="platforms-title">Platform definitions</h2>
     <p>
       How jobs drive each kind of device. A host's platform finds a definition
@@ -297,35 +292,26 @@
       </ul>
       <div class="actions">
         <button data-platform-action="new" onclick={add}>New platform…</button>
-        <!-- svelte-ignore a11y_autofocus -->
-        <button autofocus onclick={onclose}>Close</button>
+        <button data-platform-action="close" onclick={onclose}>Close</button>
       </div>
     {/if}
   </section>
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 15;
-    display: grid;
-    place-items: center;
-    padding: var(--space-4);
-    background: var(--backdrop);
+  .view {
+    height: 100%;
+    min-height: 0;
+    overflow: auto;
+    background: var(--bg);
   }
 
-  section {
-    width: min(42rem, 100%);
-    max-height: 100%;
-    overflow: auto;
+  .inner {
+    max-width: 48rem;
     display: grid;
+    align-content: start;
     gap: var(--space-3);
-    padding: var(--space-4);
-    background: var(--dialog);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
+    padding: var(--space-3);
   }
 
   h2 {
