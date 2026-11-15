@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The Preferences dialog's Python section: which interpreter the Python
+  // The Preferences view's Python section: which interpreter the Python
   // features use, and the two ways to choose one (the app's own
   // environment, set up in its own dialog, or the user's interpreter).
   import {
@@ -12,7 +12,7 @@
   } from "./python.svelte";
 
   interface Props {
-    /** Opens the setup dialog (the Preferences dialog closes for it). */
+    /** Opens the setup dialog. */
     onsetup: () => void;
   }
 

@@ -28,7 +28,7 @@ use netterm_core::job::{
     LoginBackupOutcome, SessionLogin,
 };
 use netterm_core::known_hosts::KnownHosts;
-use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId};
+use netterm_core::layout::{Layout, LayoutError, PaneId, Split, TabId, View};
 use netterm_core::logging::{LogFolder, SessionLog};
 use netterm_core::paste::{
     confirm_joining, plan_group_paste, plan_paste, GroupPastePlan, PastePlan, PasteSafety,
@@ -2056,6 +2056,11 @@ impl Tabs {
 )]
 enum LayoutEdit {
     OpenTab,
+    /// Shows a view: its tab if open, else a new one (#68).
+    OpenView {
+        view: String,
+        subject: Option<String>,
+    },
     OpenTabBeside {
         tab: TabId,
     },
@@ -2133,6 +2138,9 @@ fn layout_edit(tabs: State<'_, Tabs>, edit: LayoutEdit) -> Result<LayoutChanged,
 fn apply_layout_edit(layout: &mut Layout, edit: LayoutEdit) -> Result<Option<u64>, LayoutError> {
     Ok(match edit {
         LayoutEdit::OpenTab => Some(layout.open_tab().0),
+        LayoutEdit::OpenView { view, subject } => {
+            Some(layout.open_view(View::new(view, subject)).0)
+        }
         LayoutEdit::OpenTabBeside { tab } => Some(layout.open_tab_beside(tab).map(|t| t.0)?),
         LayoutEdit::Activate { tab } => layout.activate(tab).map(|()| None)?,
         LayoutEdit::ActivatePane { pane } => layout.activate_pane(pane).map(|()| None)?,

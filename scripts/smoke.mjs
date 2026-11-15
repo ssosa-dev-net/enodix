@@ -41,6 +41,57 @@ const AGENT_PIPE = String.raw`\\.\pipe\netterm-smoke-agent-${process.pid}`;
 const TIMEOUT_MS = 15000;
 /** The session the keyboard goes to: the one the active pane shows. */
 const SHOWN_SESSION = ".slot[data-active]";
+/** The Preferences view, which opens as a tab (#68). */
+const PREFERENCES = "[data-view=preferences]";
+
+/** Opens Preferences from the rail (a tab; its own if open) and waits for
+ * it to be on screen. */
+async function openPreferences(evaluate) {
+  // The tab shown before, which closing Preferences shows again (else the
+  // pane would show the tab beside it).
+  await evaluate(`(() => {
+    const shown = document.querySelector("${SHOWN_SESSION}");
+    if (shown && !document.querySelector("[data-view=preferences]"))
+      window.smokeBeforePreferences = shown.dataset.tab;
+  })()`);
+  await evaluate(`document.querySelector("[data-open-preferences]").click()`);
+  await until("the Preferences tab", () =>
+    evaluate(`(() => {
+      const view = document.querySelector(${JSON.stringify(PREFERENCES)});
+      return !!view && !view.closest("[hidden]");
+    })()`),
+  );
+}
+
+/** Closes the Preferences tab and shows again the session shown before
+ * it opened (the core shows the closed tab's neighbour). */
+async function closePreferences(evaluate) {
+  await evaluate(
+    `document.querySelector("[data-tab-view=preferences] [data-tab-close]")?.click()`,
+  );
+  await until(
+    "the Preferences tab closed",
+    async () =>
+      !(await evaluate(
+        `!!document.querySelector(${JSON.stringify(PREFERENCES)})`,
+      )),
+  );
+  const before = await evaluate(`(() => {
+    const before = window.smokeBeforePreferences;
+    window.smokeBeforePreferences = undefined;
+    return before ?? null;
+  })()`);
+  if (before === null) return;
+  const tab = `[data-tab-bar] [data-tab="${before}"]`;
+  await evaluate(`document.querySelector('${tab}')?.click()`);
+  await until("the tab shown before Preferences", () =>
+    evaluate(`(() => {
+      const tab = document.querySelector('${tab}');
+      return !tab || tab.getAttribute("aria-selected") === "true";
+    })()`),
+  );
+}
+
 // A public key the test server does not have: stored as the server's key,
 // it makes the server's real key look changed.
 const OTHER_KEY_FILE = "crates/core/tests/fixtures/keys/rsa_client.pub";
@@ -1680,9 +1731,7 @@ async function main() {
   await until("the light theme after a restart", () =>
     evaluateAgain(`document.documentElement.dataset.theme === "light"`),
   );
-  await evaluateAgain(
-    `document.querySelector("[data-open-preferences]").click()`,
-  );
+  await openPreferences(evaluateAgain);
   const expected = {
     theme: "light",
     family: "Consolas",
@@ -1692,11 +1741,9 @@ async function main() {
     rightClickPaste: true,
     confirmMultiLinePaste: false,
   };
-  const kept = await until(
-    "the preferences dialog after a restart",
-    async () => {
-      const shown = await evaluateAgain(`(() => {
-      const dialog = document.querySelector("[data-dialog=preferences]");
+  const kept = await until("the Preferences tab after a restart", async () => {
+    const shown = await evaluateAgain(`(() => {
+      const dialog = document.querySelector("[data-view=preferences]");
       const field = (name) => dialog?.querySelector("[name=" + name + "]");
       return dialog && {
         theme: field("preference-theme").value,
@@ -1708,10 +1755,9 @@ async function main() {
         confirmMultiLinePaste: field("preference-confirm-multi-line-paste").checked,
       };
     })()`);
-      // The dialog shows the defaults until the core's answer arrives.
-      return JSON.stringify(shown) === JSON.stringify(expected) ? shown : null;
-    },
-  );
+    // The dialog shows the defaults until the core's answer arrives.
+    return JSON.stringify(shown) === JSON.stringify(expected) ? shown : null;
+  });
   if (JSON.stringify(kept) !== JSON.stringify(expected)) {
     fail(`preferences after a restart: ${JSON.stringify(kept)}`);
   }
@@ -1925,7 +1971,7 @@ async function vault({ app, devtools, evaluate, step }) {
   for (const secret of [MASTER_PASSWORD, PASSWORD]) {
     if (everyFile.includes(secret)) fail("a secret is in the data folder");
   }
-  await click("Close");
+  await closePreferences(evaluate);
   await until("the vault unlocked in the Credentials view", () =>
     exists(`${profilesDialog} [data-credentials-vault=unlocked]`),
   );
@@ -2049,10 +2095,7 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
       }
       form.requestSubmit();
     })()`);
-  const closeDialog = () =>
-    ev(
-      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Close" && b.checkVisibility()).click()`,
-    );
+  const closeDialog = () => closePreferences(ev);
   const openSecurity = async (status) => {
     await clickOn("[data-open-preferences]");
     await until(`the vault ${status} in Preferences`, () =>
@@ -2230,10 +2273,7 @@ async function noKeychain({ current, vaultFile, step }) {
       }
       form.requestSubmit();
     })()`);
-  const closeDialog = () =>
-    ev(
-      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Close" && b.checkVisibility()).click()`,
-    );
+  const closeDialog = () => closePreferences(ev);
   const profilesDialog = CREDENTIALS;
 
   await until("the workspace without a keychain", () =>
@@ -2363,7 +2403,7 @@ async function updateCheck({ evaluate, text, screenshot, step }) {
     evaluate(`!document.querySelector("[data-update]")`),
   );
 
-  await evaluate(`document.querySelector("[data-open-preferences]").click()`);
+  await openPreferences(evaluate);
   const before = await until("the update preference", () =>
     evaluate(`(() => {
       const box = document.querySelector("[name=preference-check-for-updates]");
@@ -2382,12 +2422,7 @@ async function updateCheck({ evaluate, text, screenshot, step }) {
       "check_for_updates: false",
     ),
   );
-  await evaluate(
-    `document.querySelector("[data-dialog=preferences] .actions button").click()`,
-  );
-  await until("the preferences closed", () =>
-    evaluate(`!document.querySelector("[data-dialog=preferences]")`),
-  );
+  await closePreferences(evaluate);
   step("the update check was turned off in the preferences");
 }
 
@@ -3138,11 +3173,11 @@ async function pythonSetup({ evaluate, fillForm, screenshot, step }) {
   if (!ready.interpreter?.startsWith(environment))
     fail(`the environment's interpreter: ${json(ready)}`);
   step(`the app's environment was created: ${ready.interpreter}`);
-  await clickButton("[data-dialog=preferences]", "Close");
+  await closePreferences(evaluate);
   return ready.interpreter;
 }
 
-/** The Python choice survives a restart (the preferences dialog is open). */
+/** The Python choice survives a restart (the Preferences tab is open). */
 async function pythonAfterRestart({ evaluate, expected, step }) {
   if (!expected) return;
   const status = await until("the Python status after a restart", () =>
@@ -3161,7 +3196,7 @@ async function pythonAfterRestart({ evaluate, expected, step }) {
 
 async function portableUpdateCheck({ evaluate, requestsBeforeRestart, step }) {
   await evaluate(`(() => {
-    if (!document.querySelector("[data-dialog=preferences]"))
+    if (!document.querySelector("[data-view=preferences]"))
       document.querySelector("[data-open-preferences]").click();
   })()`);
   const status = await until("the update status after a restart", () =>
@@ -3266,7 +3301,7 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
   };
   const setPreference = (name, value) =>
     evaluate(`(() => {
-      const field = document.querySelector("[data-dialog=preferences] [name=${name}]");
+      const field = document.querySelector("[data-view=preferences] [name=${name}]");
       field.checked = ${json(value)};
       field.dispatchEvent(new Event("change", { bubbles: true }));
     })()`);
@@ -3281,16 +3316,15 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
   };
   const openRules = async () => {
     // From the preferences, which name the rules beside the switch.
-    await evaluate(`document.querySelector("[data-open-preferences]").click()`);
-    await until("the preferences dialog", () =>
-      exists("[data-dialog=preferences]"),
-    );
+    await openPreferences(evaluate);
     await evaluate(
-      `document.querySelector("[data-dialog=preferences] [data-open-highlights]").click()`,
+      `document.querySelector("[data-view=preferences] [data-open-highlights]").click()`,
     );
     await until("the highlights dialog", () =>
       exists("[data-dialog=highlights]"),
     );
+    // The Preferences tab would hide the terminal the rules are tried on.
+    await closePreferences(evaluate);
   };
   const focusTerminal = () =>
     evaluate(
@@ -3342,20 +3376,20 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
   step("the session log holds the line unchanged");
 
   // Turned off in the preferences: nothing is coloured; on again: back.
-  await evaluate(`document.querySelector("[data-open-preferences]").click()`);
-  await until("the preferences dialog", () =>
-    exists("[data-dialog=preferences]"),
-  );
+  // (The Preferences tab hides the terminal, so it is closed to look.)
+  await openPreferences(evaluate);
   await setPreference("preference-highlighting", false);
-  await until("no highlights", () => coloured("hlcheck", []));
   await until("highlighting off saved", () =>
     readFileSync(join(appData, "preferences.yaml"), "utf8").includes(
       "highlighting: false",
     ),
   );
+  await closePreferences(evaluate);
+  await until("no highlights", () => coloured("hlcheck", []));
+  await openPreferences(evaluate);
   await setPreference("preference-highlighting", true);
+  await closePreferences(evaluate);
   await until("the highlights back", () => coloured("hlcheck", builtIn));
-  await closeDialog("preferences");
   step("the preference turned highlighting off and on again");
 
   // A workspace rule, added in the app, is saved to the workspace.
@@ -5365,12 +5399,9 @@ async function pasteSafety({
     );
     step("the tree shows each host's environment");
     // Turned off: from now on only production hosts ask.
-    await evaluate(`document.querySelector("[data-open-preferences]").click()`);
-    await until("the preferences dialog", () =>
-      exists("[data-dialog=preferences]"),
-    );
+    await openPreferences(evaluate);
     await evaluate(`(() => {
-      const field = document.querySelector("[data-dialog=preferences] [name=preference-confirm-multi-line-paste]");
+      const field = document.querySelector("[data-view=preferences] [name=preference-confirm-multi-line-paste]");
       field.checked = false;
       field.dispatchEvent(new Event("change", { bubbles: true }));
     })()`);
@@ -5379,9 +5410,7 @@ async function pasteSafety({
         readFileSync(preferencesFile, "utf8"),
       ),
     );
-    await evaluate(
-      `[...document.querySelectorAll("[data-dialog=preferences] button")].find((b) => b.textContent.trim() === "Close").click()`,
-    );
+    await closePreferences(evaluate);
     step("the multi-line paste confirmation was turned off in the preferences");
 
     // A production session: a red tab with its PROD label, a red frame.
@@ -5653,7 +5682,11 @@ async function terminalComforts({
     });
     await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
   };
-  const terminal = `document.querySelector("${SHOWN_SESSION} .terminal").xterm`;
+  // This session's terminal, also while the Preferences pane is active.
+  const sessionTab = await evaluate(
+    `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
+  );
+  const terminal = `document.querySelector('.slot[data-tab="${sessionTab}"] .terminal').xterm`;
   const option = (name) => evaluate(`${terminal}.options.${name}`);
   const pageTheme = () => evaluate("document.documentElement.dataset.theme");
   const preferencesFile = () =>
@@ -5664,31 +5697,111 @@ async function terminalComforts({
     devtools.send("Emulation.setEmulatedMedia", {
       features: [{ name: "prefers-color-scheme", value: scheme }],
     });
-  const openPreferences = async () => {
-    await evaluate(`document.querySelector("[data-open-preferences]").click()`);
-    await until("the preferences dialog", () =>
-      evaluate(`!!document.querySelector("[data-dialog=preferences]")`),
+  // Preferences open as a tab (#68), dragged here into a pane of its own
+  // beside the terminal, so that each change shows on that terminal at once.
+  const openPreferencesBeside = async ({ shortcuts = false } = {}) => {
+    await openPreferences(evaluate);
+    if (shortcuts) {
+      // A view tab: its icon, no connection dot or state.
+      const look = await evaluate(`(() => {
+        const tab = document.querySelector("[data-tab-view=preferences]");
+        return {
+          state: tab.dataset.tabState ?? null,
+          icon: !!tab.querySelector(".view-icon svg"),
+          dot: !!tab.querySelector(".state"),
+          name: tab.querySelector("[data-tab-name]").textContent,
+        };
+      })()`);
+      if (
+        look.state !== null ||
+        !look.icon ||
+        look.dot ||
+        look.name !== "Preferences"
+      )
+        fail(`the Preferences tab looks like a session's: ${json(look)}`);
+      // The tab shortcuts work on it: move, next, previous.
+      const order = () =>
+        evaluate(`(() => {
+          const bar = document.querySelector("[data-tab-view=preferences]").closest("[data-tab-bar]");
+          return [...bar.querySelectorAll("[data-tab]")].map((tab) => tab.dataset.tabView ?? tab.dataset.tab);
+        })()`);
+      const before = (await order()).indexOf("preferences");
+      if (before < 1)
+        fail("the Preferences tab did not open after the sessions");
+      await press("PageUp", "PageUp", 33, CTRL | SHIFT);
+      await until(
+        "the Preferences tab moved left (Ctrl+Shift+PageUp)",
+        async () => (await order()).indexOf("preferences") === before - 1,
+      );
+      const viewShown = () =>
+        evaluate(
+          `!!document.querySelector(".slot[data-view-slot=preferences][data-view-active]")`,
+        );
+      await press("PageDown", "PageDown", 34, CTRL);
+      await until(
+        "the next tab (Ctrl+PageDown)",
+        async () => !(await viewShown()),
+      );
+      await press("PageUp", "PageUp", 33, CTRL);
+      await until("back to Preferences (Ctrl+PageUp)", viewShown);
+      await press("PageDown", "PageDown", 34, CTRL | SHIFT);
+      await until(
+        "the Preferences tab moved back (Ctrl+Shift+PageDown)",
+        async () => (await order()).indexOf("preferences") === before,
+      );
+    }
+    await evaluate(`(() => {
+      const tab = document.querySelector("[data-tab-view=preferences]");
+      const pane = tab.closest("[data-tab-bar]");
+      pane.querySelector("[data-split=right]").click();
+    })()`);
+    await until("Preferences split into a pane of their own", () =>
+      evaluate(
+        `document.querySelector("[data-tab-view=preferences]").closest("[data-tab-bar]").querySelectorAll("[data-tab]").length === 1`,
+      ),
+    );
+    // The terminal's tab, shown again in its own pane (beside).
+    await evaluate(
+      `document.querySelector('[data-tab-bar] [data-tab="${sessionTab}"]').click()`,
+    );
+    await until("Preferences in a pane of their own, beside the terminal", () =>
+      evaluate(`(() => {
+        const view = document.querySelector(".slot[data-view-slot=preferences]");
+        const session = document.querySelector('.slot[data-tab="${sessionTab}"]');
+        return !!view && !view.hidden && !session.hidden &&
+          view.dataset.pane !== session.dataset.pane;
+      })()`),
     );
   };
   // Sets a preferences field as the user does, then leaves it (change).
   const setPreference = (name, value) =>
     evaluate(`(() => {
-      const field = document.querySelector("[data-dialog=preferences] [name=${name}]");
+      const field = document.querySelector("[data-view=preferences] [name=${name}]");
       if (field.type === "checkbox") field.checked = ${json(value)};
       else field.value = ${json(value)};
       field.dispatchEvent(new Event("input", { bubbles: true }));
       field.dispatchEvent(new Event("change", { bubbles: true }));
     })()`);
-  const closePreferences = async () => {
-    await evaluate(
-      `[...document.querySelectorAll("[data-dialog=preferences] button")].find((b) => b.textContent.trim() === "Close").click()`,
-    );
-    await until(
-      "the preferences dialog closed",
-      async () =>
-        !(await evaluate(
-          `!!document.querySelector("[data-dialog=preferences]")`,
-        )),
+  /** Closes the Preferences tab; its pane goes, and the terminal's pane is
+   * active again. */
+  const closePreferencesBeside = async ({ shortcut = false } = {}) => {
+    if (shortcut) {
+      // Ctrl+Shift+W closes it like any tab.
+      await evaluate(
+        `document.querySelector("[data-tab-view=preferences]").click()`,
+      );
+      await until("the Preferences pane active", () =>
+        evaluate(
+          `!!document.querySelector(".slot[data-view-slot=preferences][data-view-active]")`,
+        ),
+      );
+      await press("W", "KeyW", 87, CTRL | SHIFT);
+    }
+    await closePreferences(evaluate);
+    await until("the terminal's pane active again", () =>
+      evaluate(
+        `!!document.querySelector('${SHOWN_SESSION}[data-tab="${sessionTab}"]')`,
+      ),
     );
   };
   const savedClipboard = readClipboard();
@@ -5713,12 +5826,13 @@ async function terminalComforts({
     step("the theme followed the system setting, live");
 
     // A chosen theme wins over the system's, and is saved.
-    await openPreferences();
+    await openPreferencesBeside({ shortcuts: true });
     await setPreference("preference-theme", "light");
     await until(
-      "the light theme chosen",
+      "the light theme chosen, on the terminal beside",
       async () =>
         (await pageTheme()) === "light" &&
+        (await option("theme.background")) === "#fbfbfc" &&
         /theme: light/.test(preferencesFile()),
     );
     const colours = await evaluate(
@@ -5729,7 +5843,7 @@ async function terminalComforts({
     }
     step("choosing the light theme applied it to the whole app and saved it");
 
-    // The terminal's font, size and scrollback, from the dialog.
+    // The terminal's font, size and scrollback, from Preferences.
     const columnsBefore = await evaluate(`${terminal}.cols`);
     await setPreference("preference-font-family", "Consolas");
     await setPreference("preference-font-size", "18");
@@ -5750,8 +5864,10 @@ async function terminalComforts({
         preferencesFile(),
       ),
     );
-    await closePreferences();
-    step("the terminal font, its size and the scrollback length are set");
+    await closePreferencesBeside({ shortcut: true });
+    step(
+      "Preferences in a tab beside the terminal: theme, font, size and scrollback showed on it at once; tab shortcuts worked on the view tab",
+    );
 
     // Shortcuts and Ctrl+scroll size the font.
     await press("=", "Equal", 187, CTRL);
@@ -5940,7 +6056,7 @@ async function terminalComforts({
       fail(`selecting copied while copy-on-select is off: ${readClipboard()}`);
     }
 
-    await openPreferences();
+    await openPreferencesBeside();
     await setPreference("preference-copy-on-select", true);
     await setPreference("preference-right-click-paste", true);
     await until("the copy and paste options saved", () =>
@@ -5948,7 +6064,7 @@ async function terminalComforts({
         preferencesFile(),
       ),
     );
-    await closePreferences();
+    await closePreferencesBeside();
     await dragSelect();
     const selection = await evaluate(`${terminal}.getSelection()`);
     if (!selection.trim()) fail("dragging selected nothing");

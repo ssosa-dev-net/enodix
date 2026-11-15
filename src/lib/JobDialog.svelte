@@ -23,7 +23,7 @@
   } from "./jobs.svelte";
   import { inventory } from "./inventory.svelte";
   import SaveJobForm from "./SaveJobForm.svelte";
-  import { preferences } from "./preferences.svelte";
+  import { openView } from "./views";
   import { python, pythonOff, refreshPython } from "./python.svelte";
 
   interface Props {
@@ -108,7 +108,7 @@
   /** Closes the dialog and opens Preferences (its Python section). */
   function openPreferences() {
     close();
-    preferences.dialog = true;
+    openView("preferences");
   }
   let snippet = $state(
     untrack(() => initialStep?.name ?? snippets[0]?.name ?? ""),

@@ -1,6 +1,6 @@
 // The user's preferences (theme, terminal font, scrollback, copy and
-// paste, the update check), as the core keeps them in the data folder, and whether the
-// preferences dialog is open. The interface applies them: the theme to the
+// paste, the update check), as the core keeps them in the data folder
+// (edited in the Preferences view tab, #68). The interface applies them: the theme to the
 // whole page, the rest to every terminal.
 
 import { invoke } from "@tauri-apps/api/core";
@@ -78,8 +78,6 @@ export const preferences = $state({
   systemDark: systemDark.matches,
   /** Why the last change could not be saved, if it could not. */
   error: null as string | null,
-  /** Whether the preferences dialog is open. */
-  dialog: false,
 });
 
 // The system setting is followed live, not only at launch.

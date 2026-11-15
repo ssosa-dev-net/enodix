@@ -6,11 +6,20 @@
   import UsersRound from "@lucide/svelte/icons/users-round";
   import X from "@lucide/svelte/icons/x";
   import type { Attachment } from "svelte/attachments";
-  import type { LayoutNode, PaneId, SplitDirection, TabId } from "./layout";
+  import type {
+    LayoutNode,
+    PaneId,
+    SplitDirection,
+    TabId,
+    ViewName,
+  } from "./layout";
   import type { Environment, Role } from "./workspace";
 
-  /** What a tab shows about its session. */
+  /** What a tab shows about its session, or about its view (#68). */
   export interface TabInfo {
+    /** The view the tab shows; null for a session's tab. A view tab has
+     * the view's icon and no connection state, and is never a member. */
+    view: ViewName | null;
     /** The host name (or address, or serial port). */
     name: string;
     /** More detail, for the tooltip (`user@host:port`). */
@@ -46,6 +55,7 @@
   import PaneView from "./PaneView.svelte";
   import { panesOf } from "./layout";
   import RoleIcon from "./RoleIcon.svelte";
+  import { VIEWS } from "./views";
   import { ENVIRONMENT_NAMES } from "./paste";
 
   interface Props {
@@ -133,7 +143,7 @@
   {@const pane = node}
   <div class="pane" class:active={pane.id === activePane} data-pane={pane.id}>
     <div class="bar" data-tab-bar={pane.id} data-pane={pane.id}>
-      <div class="tabs" role="tablist" aria-label="Sessions">
+      <div class="tabs" role="tablist" aria-label="Tabs">
         {#each pane.tabs as tab (tab)}
           {@const info = handlers.tab(tab)}
           {#if info}
@@ -144,14 +154,17 @@
               tabindex="-1"
               aria-selected={pane.active === tab}
               data-tab={tab}
-              data-tab-state={info.state}
+              data-tab-view={info.view ?? undefined}
+              data-tab-state={info.view ? undefined : info.state}
               data-environment={info.environment}
               data-multi-send={info.member
                 ? info.state === "connected"
                   ? "receiving"
                   : "not-receiving"
                 : undefined}
-              title={`${info.title} (${STATE_TEXT[info.state]}${info.environment ? `, ${ENVIRONMENT_NAMES[info.environment]}` : ""}${info.member ? ", in the multi-send group" : ""})`}
+              title={info.view
+                ? info.title
+                : `${info.title} (${STATE_TEXT[info.state]}${info.environment ? `, ${ENVIRONMENT_NAMES[info.environment]}` : ""}${info.member ? ", in the multi-send group" : ""})`}
               style:--role-color={info.role?.color}
               {@attach (element) => {
                 // The shown tab stays in sight when the tabs overflow.
@@ -183,7 +196,14 @@
                   handlers.activate(tab);
               }}
             >
-              <span class="state {info.state}" aria-hidden="true"></span>
+              {#if info.view}
+                {@const Icon = VIEWS[info.view].icon}
+                <span class="view-icon"
+                  ><Icon size={14} aria-hidden="true" /></span
+                >
+              {:else}
+                <span class="state {info.state}" aria-hidden="true"></span>
+              {/if}
               {#if info.role}
                 <span class="role"><RoleIcon role={info.role} /></span>
               {/if}
@@ -199,7 +219,9 @@
                   >{ENVIRONMENT_NAMES[info.environment]}</span
                 >
               {/if}
-              <span class="visually-hidden">{STATE_TEXT[info.state]}</span>
+              {#if !info.view}
+                <span class="visually-hidden">{STATE_TEXT[info.state]}</span>
+              {/if}
               <button
                 class="close"
                 data-tab-close
@@ -223,7 +245,10 @@
         ><Plus size={16} aria-hidden="true" /></button
       >
       <span class="spacer"></span>
-      {#if pane.tabs.some((tab) => handlers.tab(tab)?.member === false)}
+      {#if pane.tabs.some((tab) => {
+        const info = handlers.tab(tab);
+        return info !== null && !info.view && !info.member;
+      })}
         <button
           class="icon"
           data-join-pane
@@ -421,6 +446,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .view-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    color: var(--accent);
   }
 
   .role {

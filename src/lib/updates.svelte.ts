@@ -100,7 +100,7 @@ export async function openReleasePage() {
   }
 }
 
-/** Plain words for a status, for the preferences dialog. */
+/** Plain words for a status, for the Preferences view. */
 export function describeStatus(status: UpdateStatus | null): string {
   switch (status?.kind) {
     case undefined:

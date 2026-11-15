@@ -1,7 +1,7 @@
 //! The window's session layout: tabs in panes, panes split side by side or
 //! one above the other.
 
-use netterm_core::layout::{Layout, LayoutError, Node, PaneId, Split, TabId};
+use netterm_core::layout::{Layout, LayoutError, Node, PaneId, Split, TabId, TabKind, View};
 use netterm_core::session::SessionId;
 use serde_json::json;
 
@@ -541,6 +541,10 @@ fn the_layout_reaches_the_interface_as_a_tree() {
             },
             "activePane": right.0,
             "group": [],
+            "kinds": {
+                a.0.to_string(): { "kind": "session" },
+                b.0.to_string(): { "kind": "session" },
+            },
             "revision": layout.revision(),
         })
     );
@@ -793,4 +797,153 @@ fn joining_an_unknown_pane_is_refused_without_changing_anything() {
     assert_eq!(layout.join_pane(gone), Err(LayoutError::NoSuchPane(gone)));
     assert_eq!(layout.revision(), revision);
     assert_eq!(layout.group(), &[] as &[TabId]);
+}
+
+// View tabs (#68): a tab holds a session or a view.
+
+fn preferences() -> View {
+    View::new("preferences", None)
+}
+
+#[test]
+fn a_view_opens_as_a_tab_at_the_end_of_the_active_pane() {
+    let mut layout = Layout::new();
+    let pane = layout.active_pane();
+    let session = layout.open_tab();
+
+    let view = layout.open_view(preferences());
+
+    assert_eq!(tabs(&layout, pane), vec![session, view]);
+    assert_eq!(layout.active_tab(), Some(view));
+    assert_eq!(layout.tab_kind(view), Some(&TabKind::View(preferences())));
+    assert_eq!(layout.tab_kind(session), Some(&TabKind::Session));
+}
+
+#[test]
+fn opening_a_view_that_is_open_brings_its_tab_forward() {
+    let mut layout = Layout::new();
+    let left = layout.active_pane();
+    let view = layout.open_view(preferences());
+    layout.open_tab();
+    let right = layout.split(left, Split::Right).unwrap();
+    assert_eq!(layout.active_pane(), right);
+
+    let again = layout.open_view(preferences());
+
+    assert_eq!(again, view);
+    assert_eq!(layout.active_pane(), left);
+    assert_eq!(shown(&layout, left), Some(view));
+    assert_eq!(tabs(&layout, left), vec![view]);
+}
+
+#[test]
+fn the_same_view_about_another_subject_is_another_tab() {
+    let mut layout = Layout::new();
+    let r1 = layout.open_view(View::new("config-history", Some("r1.yaml".into())));
+    let r2 = layout.open_view(View::new("config-history", Some("r2.yaml".into())));
+
+    assert_ne!(r1, r2);
+    assert_eq!(
+        layout.open_view(View::new("config-history", Some("r1.yaml".into()))),
+        r1
+    );
+}
+
+#[test]
+fn a_closed_view_opens_again_as_a_new_tab() {
+    let mut layout = Layout::new();
+    let view = layout.open_view(preferences());
+    layout.close_tab(view).unwrap();
+
+    let again = layout.open_view(preferences());
+
+    assert_ne!(again, view);
+    assert_eq!(layout.tab_kind(view), None);
+}
+
+#[test]
+fn view_tabs_move_split_close_and_go_round_like_session_tabs() {
+    let mut layout = Layout::new();
+    let left = layout.active_pane();
+    let a = layout.open_tab();
+    let view = layout.open_view(preferences());
+    let b = layout.open_tab();
+
+    layout.previous_tab();
+    assert_eq!(layout.active_tab(), Some(view));
+    layout.next_tab();
+    assert_eq!(layout.active_tab(), Some(b));
+
+    layout.move_tab_by(view, -1).unwrap();
+    assert_eq!(tabs(&layout, left), vec![view, a, b]);
+
+    layout.activate(view).unwrap();
+    let right = layout.split(left, Split::Right).unwrap();
+    assert_eq!(tabs(&layout, right), vec![view]);
+    assert_eq!(tabs(&layout, left), vec![a, b]);
+
+    layout.move_tab(view, left, 1).unwrap();
+    assert_eq!(tabs(&layout, left), vec![a, view, b]);
+    assert_eq!(layout.panes(), vec![left]);
+
+    layout.close_tab(view).unwrap();
+    assert_eq!(tabs(&layout, left), vec![a, b]);
+    assert_eq!(layout.active_tab(), Some(b));
+}
+
+#[test]
+fn a_view_tab_cannot_join_the_multi_send_group() {
+    let mut layout = Layout::new();
+    let view = layout.open_view(preferences());
+    let revision = layout.revision();
+
+    assert_eq!(layout.join_group(view), Err(LayoutError::NotASession(view)));
+    assert_eq!(layout.group(), &[] as &[TabId]);
+    assert_eq!(layout.revision(), revision);
+}
+
+#[test]
+fn joining_a_pane_skips_its_view_tabs() {
+    let mut layout = Layout::new();
+    let pane = layout.active_pane();
+    let a = layout.open_tab();
+    layout.open_view(preferences());
+    let b = layout.open_tab();
+
+    assert_eq!(layout.join_pane(pane).unwrap(), vec![a, b]);
+    assert_eq!(layout.group(), &[a, b]);
+}
+
+#[test]
+fn a_view_tab_never_receives_a_sessions_input() {
+    let mut layout = Layout::new();
+    let a = layout.open_tab();
+    let view = layout.open_view(preferences());
+    layout.attach_session(a, SessionId(1)).unwrap();
+    layout.join_group(a).unwrap();
+
+    assert_eq!(
+        layout.attach_session(view, SessionId(2)),
+        Err(LayoutError::NotASession(view))
+    );
+    assert_eq!(layout.input_targets(SessionId(1)), vec![SessionId(1)]);
+    assert_eq!(layout.input_targets(SessionId(2)), vec![SessionId(2)]);
+}
+
+#[test]
+fn the_interface_sees_each_tabs_kind_and_subject() {
+    let mut layout = Layout::new();
+    let session = layout.open_tab();
+    let prefs = layout.open_view(preferences());
+    let history = layout.open_view(View::new("config-history", Some("r1.yaml".into())));
+
+    let view = serde_json::to_value(&layout).unwrap();
+    assert_eq!(
+        view["kinds"],
+        json!({
+            session.0.to_string(): { "kind": "session" },
+            prefs.0.to_string(): { "kind": "view", "view": "preferences", "subject": null },
+            history.0.to_string(): { "kind": "view", "view": "config-history", "subject": "r1.yaml" },
+        })
+    );
 }
