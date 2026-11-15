@@ -11,7 +11,6 @@
   import { checkNow, describeStatus, updates } from "./updates.svelte";
   import VaultSection from "./VaultSection.svelte";
   import PythonSection from "./PythonSection.svelte";
-  import { python } from "./python.svelte";
 
   const current = $derived(preferences.current);
 
@@ -198,7 +197,7 @@
 
     <VaultSection />
 
-    <PythonSection onsetup={() => (python.dialog = true)} />
+    <PythonSection />
 
     <dl>
       {#each SHORTCUTS as [what, keys] (what)}

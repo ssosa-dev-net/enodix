@@ -8,12 +8,14 @@
 // (title, icon), and a branch in `App.svelte`'s view slot.
 
 import Archive from "@lucide/svelte/icons/archive";
+import ClipboardCheck from "@lucide/svelte/icons/clipboard-check";
 import Cpu from "@lucide/svelte/icons/cpu";
 import FileClock from "@lucide/svelte/icons/file-clock";
 import FileInput from "@lucide/svelte/icons/file-input";
 import FileSpreadsheet from "@lucide/svelte/icons/file-spreadsheet";
 import Highlighter from "@lucide/svelte/icons/highlighter";
 import ListChecks from "@lucide/svelte/icons/list-checks";
+import Package from "@lucide/svelte/icons/package";
 import Settings from "@lucide/svelte/icons/settings";
 import type { Component } from "svelte";
 import { inventory } from "./inventory.svelte";
@@ -53,6 +55,10 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
   platforms: { title: () => "Platforms", icon: Cpu },
   /** The highlight rules and the switch (#72; one tab). */
   highlights: { title: () => "Highlight rules", icon: Highlighter },
+  /** The review of a "Fill in from devices" run (#73; subject: the run). */
+  enrich: { title: () => "Fill in from devices", icon: ClipboardCheck },
+  /** Setting up the app's Python environment (#73; one tab). */
+  "python-setup": { title: () => "Python setup", icon: Package },
 };
 
 /** The open workspace's name for the host `id` (else the id). */

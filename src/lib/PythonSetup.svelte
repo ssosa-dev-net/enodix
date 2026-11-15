@@ -2,7 +2,10 @@
   // Setting up the app's own Python environment: the Python found and where
   // the environment goes, the libraries to tick, then a confirmation listing
   // everything that will be installed; nothing is installed before
-  // "Install". The setup's output streams in while it runs.
+  // "Install". The setup's output streams in while it runs. A tab of its
+  // own (#73; one at a time); closing the tab while the setup runs cancels
+  // it.
+  import { onDestroy } from "svelte";
   import {
     cancelSetup,
     findPython,
@@ -16,6 +19,7 @@
   } from "./python.svelte";
 
   interface Props {
+    /** Closes the tab. */
     onclose: () => void;
   }
 
@@ -97,27 +101,14 @@
     void cancelSetup();
   }
 
-  function close() {
-    if (step === "running") return;
-    onclose();
-  }
-
-  function onkeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") close();
-  }
+  // The tab closed while the setup runs: nobody would see it end.
+  onDestroy(() => {
+    if (step === "running" && !cancelling) void cancelSetup();
+  });
 </script>
 
-<svelte:window {onkeydown} />
-
-<div
-  class="backdrop"
-  role="dialog"
-  aria-modal="true"
-  aria-labelledby="python-setup-title"
-  data-dialog="python-setup"
-  data-step={step}
->
-  <section>
+<div class="setup" data-view="python-setup" data-step={step}>
+  <section aria-labelledby="python-setup-title">
     <h2 id="python-setup-title">The app's Python environment</h2>
 
     {#if step === "finding"}
@@ -249,28 +240,20 @@
 </div>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 15;
-    display: grid;
-    place-items: center;
-    padding: var(--space-4);
-    background: var(--backdrop);
+  .setup {
+    height: 100%;
+    min-height: 0;
+    overflow: auto;
+    background: var(--bg);
+    font-size: var(--text-sm);
   }
 
   section {
-    width: min(36rem, 100%);
-    max-height: 100%;
-    overflow: auto;
+    max-width: 48rem;
     display: grid;
+    align-content: start;
     gap: var(--space-3);
-    padding: var(--space-4);
-    background: var(--dialog);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
-    font-size: var(--text-sm);
+    padding: var(--space-3);
   }
 
   h2 {

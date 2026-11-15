@@ -81,8 +81,6 @@ export const inventory = $state({
   csvImport: null as string | null,
   /** The same for the Nornir import tab. */
   nornirImport: null as string | null,
-  /** While the review of a "Fill in from devices" run is open: its id. */
-  enrichReview: null as string | null,
 });
 
 /**
