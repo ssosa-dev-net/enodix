@@ -73,7 +73,10 @@
   <header><h2>Config backups</h2></header>
 
   {#if !workspace}
-    <p class="hint">Open a workspace to see its config backups.</p>
+    <p class="hint" data-needs-workspace>
+      Config backups are kept per workspace: open or create one to see its hosts
+      backed up here.
+    </p>
   {:else if hosts === null}
     <p class="hint">{error ?? "Loading…"}</p>
   {:else if hosts.length === 0}

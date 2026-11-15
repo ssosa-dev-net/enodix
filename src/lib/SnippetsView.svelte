@@ -81,7 +81,9 @@
   </header>
 
   {#if !workspace}
-    <p class="hint">Open a workspace to see its snippets.</p>
+    <p class="hint" data-needs-workspace>
+      Snippets live in a workspace: open or create one to see them here.
+    </p>
   {:else if list.length === 0}
     <div class="empty" data-snippets-empty>
       <p>

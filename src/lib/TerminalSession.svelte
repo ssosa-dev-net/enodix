@@ -291,7 +291,10 @@
       !hostKey &&
       !closedCard &&
       !searching &&
-      !pasteQuestion
+      !pasteQuestion &&
+      // A question drawn by the window (closing this tab, joining) keeps
+      // the keys: this pane may become active after it took them.
+      !document.activeElement?.closest("[role=dialog]")
     )
       xterm?.focus();
   });

@@ -11,6 +11,7 @@
   import Search from "@lucide/svelte/icons/search";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import Trash from "@lucide/svelte/icons/trash";
+  import Upload from "@lucide/svelte/icons/upload";
   import TriangleAlert from "@lucide/svelte/icons/triangle-exclamation-point";
   import X from "@lucide/svelte/icons/x";
   import TreeFolder from "./TreeFolder.svelte";
@@ -38,6 +39,7 @@
     type Item,
   } from "./inventory.svelte";
   import {
+    allHosts,
     findHost,
     openLogFolder,
     resolveSettings,
@@ -58,6 +60,8 @@
   let { onopen, onconnect, ondetails }: Props = $props();
 
   const workspace = $derived(inventory.workspace);
+  /** Whether the open workspace holds no host at all (folders aside). */
+  const empty = $derived(!!workspace && allHosts(workspace.tree).length === 0);
 
   /** Whether the list of workspace problems is open. */
   let problemsOpen = $state(false);
@@ -532,6 +536,24 @@
   {/if}
 
   {#if workspace}
+    {#if empty}
+      <div class="empty" data-hosts-empty>
+        <p>
+          No hosts yet. Each host is a small file in the workspace folder: add
+          one here, or import a list from a CSV file or a Nornir inventory.
+        </p>
+        {#each additions.filter(([kind]) => kind !== "folder") as [kind, label, action] (kind)}
+          <button data-hosts-empty-add={kind} onclick={action}>
+            {#if kind === "host"}<Plus
+                size={14}
+                aria-hidden="true"
+              />{:else}<Upload size={14} aria-hidden="true" />{/if}
+            {label}
+          </button>
+        {/each}
+      </div>
+    {/if}
+
     <!-- The rows are buttons; the tree only delegates their pointer, menu
          and key events. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -550,7 +572,7 @@
         onconnect={(host) => onconnect(host)}
         {ondetails}
       />
-      {#if inventory.filterView?.hosts.size === 0}
+      {#if inventory.filterView?.hosts.size === 0 && !empty}
         <p class="hint">No host matches this filter.</p>
       {/if}
     </nav>
@@ -579,9 +601,9 @@
       </footer>
     {/if}
   {:else if !inventory.openError}
-    <p class="hint">
-      Click “No workspace” above to create a workspace or add a workspace
-      folder, and see its hosts here.
+    <p class="hint" data-needs-workspace>
+      No workspace is open. Open or create one from the welcome view, or by the
+      name above, to see its hosts here.
     </p>
   {/if}
 </div>
@@ -795,6 +817,25 @@
 
   .tree.drop-target {
     background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+
+  .empty {
+    display: grid;
+    justify-items: start;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
+  .empty p {
+    margin: 0;
+  }
+
+  .empty button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
   }
 
   .hint,

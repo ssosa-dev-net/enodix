@@ -109,9 +109,12 @@ const OTHER_KEY_FILE = "crates/core/tests/fixtures/keys/rsa_client.pub";
 
 const children = [];
 const userData = mkdtempSync(join(tmpdir(), "netterm-smoke-"));
-// The app's own data folder, holding a last workspace to reopen on launch.
+// The app's own data folder, listing workspaces but none to reopen, so the
+// first window is the welcome view.
 const appData = join(userData, "app-data");
 const workspace = join(userData, "smoke-workspace");
+// A workspace on the list whose folder is gone (marked in the welcome view).
+const goneWorkspace = join(userData, "gone-workspace");
 // Where the app writes the web links it would open in the browser (the
 // smoke test never starts a browser).
 const openedLinks = join(userData, "opened-links.txt");
@@ -181,7 +184,7 @@ function createWorkspace() {
   // JSON is valid YAML, and quotes the Windows path safely.
   writeFileSync(
     join(appData, "state.yaml"),
-    JSON.stringify({ last_workspace: workspace }),
+    JSON.stringify({ workspaces: [workspace, goneWorkspace] }),
   );
 }
 
@@ -852,6 +855,82 @@ async function connectDevTools() {
   return { send, close: () => socket.close() };
 }
 
+/**
+ * The first window, with no workspace open: the welcome view lists the
+ * known workspaces (the gone one marked, and removed from the list), offers
+ * open, create and quick connect, and refuses to create over a folder with
+ * files; the side views say they need a workspace. It ends by opening the
+ * smoke workspace from its row.
+ */
+async function welcome({ evaluate, text, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const rows = () =>
+    evaluate(`[...document.querySelectorAll("[data-welcome-workspace]")].map(
+      (row) => row.dataset.welcomeWorkspace + (row.dataset.unavailable === undefined ? "" : " (gone)"),
+    )`);
+  await until("the welcome view", () =>
+    exists(".slot.connect [data-welcome] [data-welcome-workspaces]"),
+  );
+  await until("the known workspaces", async () => (await rows()).length === 2);
+  if (json(await rows()) !== json([workspace, `${goneWorkspace} (gone)`])) {
+    fail(`the welcome view lists ${json(await rows())}`);
+  }
+  for (const selector of [
+    "[data-welcome-form=open] [name=welcome-folder]",
+    "[data-welcome-form=create] [name=welcome-folder]",
+    "[data-welcome] [data-quick-mode=ssh]",
+    "[data-welcome] [data-quick-mode=serial]",
+    "[data-welcome] input[name=host]",
+  ]) {
+    if (!(await exists(selector))) fail(`the welcome view lacks ${selector}`);
+  }
+  // Side views that need a workspace say so.
+  if (!(await exists("[data-side-view=hosts] [data-needs-workspace]"))) {
+    fail("the Hosts view does not say it needs a workspace");
+  }
+  await evaluate(`document.querySelector("[data-rail=snippets]").click()`);
+  await until("the Snippets view saying it needs a workspace", () =>
+    exists("[data-side-view=snippets] [data-needs-workspace]"),
+  );
+  await evaluate(`document.querySelector("[data-rail=hosts]").click()`);
+  await until("the Hosts view back", () => exists("[data-side-view=hosts]"));
+  await screenshot("welcome");
+
+  // Creating over a folder with files in it is refused, in the view.
+  await evaluate(`(() => {
+    const form = document.querySelector("[data-welcome-form=create]");
+    const input = form.querySelector("[name=welcome-folder]");
+    input.value = ${json(workspace)};
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    form.requestSubmit();
+  })()`);
+  await until("the refusal", async () =>
+    (await text("[data-welcome-error]")).includes("not empty"),
+  );
+
+  // The gone folder is taken off the list.
+  await evaluate(
+    `document.querySelector(${json(`[data-welcome-workspace=${json(goneWorkspace)}]`)}).closest("li").querySelector("[data-welcome-forget]").click()`,
+  );
+  await until(
+    "the gone workspace off the list",
+    async () => json(await rows()) === json([workspace]),
+  );
+  step(
+    "the welcome view lists the known workspaces (a gone one marked and removed), offers open, create and quick connect; side views ask for a workspace",
+  );
+
+  await evaluate(
+    `document.querySelector(${json(`[data-welcome-workspace=${json(workspace)}]`)}).click()`,
+  );
+  await until(
+    "the welcome view gone",
+    async () => !(await exists("[data-welcome]")),
+  );
+}
+
 async function main() {
   createWorkspace();
   headlessInventory();
@@ -1017,9 +1096,15 @@ async function main() {
   }
   step("the interface typeface and icons are bundled: no request left the app");
 
-  // The last opened workspace reopens: its tree is shown, and the malformed
-  // file is reported by name without stopping the rest from loading.
-  await until("the reopened workspace's tree", () =>
+  // With no workspace to reopen, the first window is the welcome view: the
+  // known workspaces (a gone folder marked), open, create and quick
+  // connect; the side views say they need a workspace.
+  await welcome({ evaluate, text, screenshot, step });
+
+  // The workspace opened from the welcome view: its tree is shown, and the
+  // malformed file is reported by name without stopping the rest from
+  // loading.
+  await until("the opened workspace's tree", () =>
     evaluate(
       `[...document.querySelectorAll("nav button")].some((b) => b.textContent.includes("Lab"))`,
     ),
@@ -1051,8 +1136,47 @@ async function main() {
     evaluate(`!!document.querySelector("[data-side-view=hosts]")`),
   );
   step(
-    "the last workspace reopened, with the malformed file reported at the foot (and on the folded Hosts icon)",
+    "the workspace opened, with the malformed file reported at the foot (and on the folded Hosts icon)",
   );
+
+  // With a workspace open, the empty pane offers the palette as well as
+  // quick connect (SSH and serial).
+  await until("the connect view", () =>
+    evaluate(
+      `!!document.querySelector(".slot.connect [data-connect-view] [data-empty-pane=palette]")`,
+    ),
+  );
+  if (
+    !(await evaluate(
+      `!!document.querySelector(".slot.connect [data-quick-mode=ssh]") && !!document.querySelector(".slot.connect [data-quick-mode=serial]")`,
+    ))
+  ) {
+    fail("the empty pane does not offer SSH and serial quick connect");
+  }
+  if (await evaluate(`!!document.querySelector("[data-welcome]")`)) {
+    fail("the welcome view stayed with a workspace open");
+  }
+  await evaluate(
+    `document.querySelector(".slot.connect [data-empty-pane=palette]").click()`,
+  );
+  await until("the palette from the empty pane", () =>
+    evaluate(`!!document.querySelector("input[name=palette-query]")`),
+  );
+  await devtools.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+  });
+  await until(
+    "the palette closed",
+    async () =>
+      !(await evaluate(
+        `!!document.querySelector("input[name=palette-query]")`,
+      )),
+  );
+  await screenshot("empty-pane");
+  step("the empty pane offers the palette and quick connect (SSH, serial)");
 
   await updateCheck({ evaluate, text, screenshot, step });
 
@@ -2060,6 +2184,13 @@ async function vault({ app, devtools, evaluate, step }) {
   await until("the unlock screen", () => shown("[data-unlock-screen]"));
   if (!(await shown("[data-unlock=quit]")))
     fail("the unlock screen has no Quit");
+  // The new look: the lock mark and the app name over the form.
+  if (
+    !(await again(
+      `!!document.querySelector("[data-unlock-screen] [data-unlock-mark] svg.lucide-icon") && document.querySelector("[data-unlock-screen] h1")?.textContent.length > 0`,
+    ))
+  )
+    fail("the unlock screen lacks its mark and title");
   const whileLocked = headlessCredentials("vault-r1.yaml");
   if (
     whileLocked.status !== 1 ||
@@ -5560,6 +5691,27 @@ async function workspaces({
     fail(`identifiers: ${idOf(second)} and ${idOf(workspace)}`);
   }
   if (await exists("nav [data-host]")) fail("the new workspace is not empty");
+  // An empty workspace says how to add a host, and offers the ways.
+  await until("the empty workspace's offer", () =>
+    exists("[data-side-view=hosts] [data-hosts-empty]"),
+  );
+  for (const kind of ["host", "csv", "nornir"]) {
+    if (!(await exists(`[data-hosts-empty] [data-hosts-empty-add=${kind}]`))) {
+      fail(`the empty workspace does not offer ${kind}`);
+    }
+  }
+  await screenshot("empty-workspace");
+  await clickOn("[data-hosts-empty-add=host]");
+  await until("the new host form", () =>
+    exists("[role=dialog] input[name=name]"),
+  );
+  await evaluate(
+    `[...document.querySelectorAll("[role=dialog] button")].find((b) => b.textContent.trim() === "Cancel").click()`,
+  );
+  await until(
+    "the new host form closed",
+    async () => !(await exists("[role=dialog] input[name=name]")),
+  );
   if (!(await exists(slot))) fail("the kept session's tab is gone");
   if ((await text(`${slot} [role=status]`)) !== "Connected") {
     fail(`the kept session is ${await text(`${slot} [role=status]`)}`);

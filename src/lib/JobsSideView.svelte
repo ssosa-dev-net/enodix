@@ -130,7 +130,10 @@
   <header><h2>Jobs</h2></header>
 
   {#if !workspace}
-    <p class="hint">Open a workspace to see its jobs.</p>
+    <p class="hint" data-needs-workspace>
+      Jobs run on the hosts of a workspace: open or create one to see its saved
+      jobs and runs here.
+    </p>
   {:else}
     {#if runningRuns.length > 0}
       <section class="group" data-runs-running={runningRuns.length}>
