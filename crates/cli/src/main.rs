@@ -1,7 +1,7 @@
 //! The headless binary: the core from the command line, with no window. It
 //! needs no running app, but asks it for credentials while it runs (see
 //! `credentials`). Its command line is a contract (the Python bridge
-//! builds on it, `tests/` checks it); see `usage`.
+//! builds on it, `tests/` checks it); see `usage` and the cli notes.
 //!
 //! Exit status: 0 done, 1 refused or failed (the reason on stderr), 2 a
 //! command line it does not understand.
