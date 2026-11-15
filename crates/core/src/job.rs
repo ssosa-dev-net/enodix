@@ -42,6 +42,7 @@
 //! listed newest first, searched, compared line by line, exported, deleted,
 //! and planned again on the same target with [`plan_again`].
 
+mod live;
 mod login;
 pub mod results;
 mod run;
@@ -60,6 +61,7 @@ use crate::workspace::{
     Workspace,
 };
 
+pub use live::{LiveJob, LiveJobs, NewLiveJob};
 pub use login::{LoginBackup, LoginBackupOutcome, SessionLogin};
 pub use run::{
     check, start, HostResult, HostState, Job, JobCanceller, JobEvent, JobOptions, JobReport,

@@ -30,7 +30,8 @@
   import PanelResizer from "./lib/PanelResizer.svelte";
   import BackupsView from "./lib/BackupsView.svelte";
   import PreferencesView from "./lib/PreferencesView.svelte";
-  import { setViewOpener, VIEWS } from "./lib/views";
+  import { openRunTab, setViewOpener, VIEWS } from "./lib/views";
+  import { closeDetachedWindows, onDockRun } from "./lib/windows";
   import PythonSetup from "./lib/PythonSetup.svelte";
   import { refreshPython } from "./lib/python.svelte";
   import Platforms from "./lib/Platforms.svelte";
@@ -56,7 +57,7 @@
   import EnrichReview from "./lib/EnrichReview.svelte";
   import ConfigHistory from "./lib/ConfigHistory.svelte";
   import { stepTitle } from "./lib/jobs";
-  import { liveJob, type LiveJob } from "./lib/jobs.svelte";
+  import { liveJob, startLiveJobs, type LiveJob } from "./lib/jobs.svelte";
   import { forgetClosedDrafts, jobDrafts } from "./lib/jobTabs.svelte";
   import {
     hostRole,
@@ -82,6 +83,7 @@
   import { joinConfirmations, NO_SAFETY, planGroupPaste } from "./lib/paste";
   import {
     changePreferences,
+    fontStack,
     isDark,
     loadPreferences,
     PANEL_WIDTHS,
@@ -682,6 +684,8 @@
           )
             void edit({ kind: "closeTab", tab: item.tab });
         }
+        // Runs in windows of their own too (#77).
+        void closeDetachedWindows().catch(() => {});
       }
       shownRoot = root;
     });
@@ -868,6 +872,13 @@
   trackFilterView();
 
   void loadPreferences();
+  // Jobs are the shell's (#77): what already ran shows after a reload.
+  void startLiveJobs();
+  // A run docked back from its own window opens as a tab here.
+  void onDockRun((run) => {
+    focusRequest += 1;
+    openRunTab(run);
+  });
   trackHighlightRules();
   void startUpdates();
   // Python features stay off until an interpreter is chosen and works.
@@ -893,6 +904,12 @@
   // The whole app follows the theme (app.css), the system's by default.
   $effect(() => {
     document.documentElement.dataset.theme = isDark() ? "dark" : "light";
+    // Text shown in monospace (outputs, configs) in the terminal font,
+    // here and in detached windows.
+    document.documentElement.style.setProperty(
+      "--font-mono",
+      fontStack(preferences.current.fontFamily),
+    );
   });
 
   appName().then((value) => {

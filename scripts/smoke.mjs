@@ -825,12 +825,54 @@ function startApp(env = {}) {
   return app;
 }
 
+/** The app's pages (one per window) DevTools lists. */
+async function pageTargets() {
+  const response = await fetch(`http://127.0.0.1:${DEVTOOLS_PORT}/json/list`);
+  return (await response.json()).filter((target) => target.type === "page");
+}
+
 /** A minimal DevTools protocol client for the app's page. */
 async function connectDevTools() {
-  const page = await until("the app's webview", async () => {
-    const response = await fetch(`http://127.0.0.1:${DEVTOOLS_PORT}/json/list`);
-    return (await response.json()).find((target) => target.type === "page");
+  const page = await until("the app's webview", async () =>
+    (await pageTargets()).at(0),
+  );
+  return connectTarget(page);
+}
+
+/**
+ * Connects to the window labelled `label` (#77: a detached run window is
+ * `run-<id>`, a page of its own); resolves to its client and `evaluate`.
+ */
+async function connectWindow(label) {
+  return until(`the window ${label}`, async () => {
+    for (const target of await pageTargets()) {
+      const devtools = await connectTarget(target);
+      const evaluate = evaluateIn(devtools);
+      const shown = await evaluate(
+        "window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? null",
+      );
+      if (shown === label) return { devtools, evaluate };
+      devtools.close();
+    }
+    return null;
   });
+}
+
+/** Whether a window labelled `label` is open (its page listed). */
+async function windowOpen(label) {
+  for (const target of await pageTargets()) {
+    const devtools = await connectTarget(target);
+    const shown = await evaluateIn(devtools)(
+      "window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label ?? null",
+    ).catch(() => null);
+    devtools.close();
+    if (shown === label) return true;
+  }
+  return false;
+}
+
+/** A DevTools protocol client for one page target. */
+async function connectTarget(page) {
   const socket = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve);
@@ -2547,6 +2589,7 @@ async function noKeychain({ current, vaultFile, step }) {
   step(
     "without a keychain, turning the vault off said there is no other store",
   );
+  await closingTheMainWindow({ app: page.app, evaluate: ev, step });
   return page.devtools;
 }
 
@@ -4526,6 +4569,143 @@ async function nornirImport({
 }
 
 /**
+ * A running job's run in a window of its own (#77): its tab's "Open in
+ * window" closes the tab and opens a second window (a second DevTools
+ * page) showing what already happened, in the same theme and font; the
+ * main window still counts the job. Reloaded, the window still shows it
+ * (the shell keeps the jobs). Closed, the job goes on; detached again
+ * from its reopened tab, it docks back as a tab and the window goes.
+ */
+async function detachedRunWindow({ evaluate, exists, clickOn, run, step }) {
+  const json = (value) => JSON.stringify(value);
+  const label = `run-${run}`;
+  const tab = `${RUN_TAB} [data-run-details="${run}"]`;
+  const inRun = `[data-detached=run][data-detached-run="${run}"]`;
+  const host = (state) =>
+    `${inRun} [data-run-details="${run}"] [data-run-host="Jobs/jobs-r1.yaml"][data-host-state=${state}]`;
+  const showing = async (window, what) => {
+    const shown = (selector) =>
+      window.evaluate(`!!document.querySelector(${json(selector)})`);
+    await until(`the run's window ${what}`, () => shown(host("running")));
+    await until(`the output so far, in the window ${what}`, async () =>
+      (
+        await window.evaluate(
+          `document.querySelector(${json(`${inRun} [data-run-output]`)})?.textContent ?? ""`,
+        )
+      ).includes("lab-r1# hang"),
+    );
+    for (const selector of [
+      `${inRun} [data-run-action=dock]`,
+      `${inRun} [data-run-action=cancel]`,
+    ]) {
+      if (!(await shown(selector))) fail(`the run's window lacks ${selector}`);
+    }
+    for (const selector of [
+      "[data-rail]",
+      ".terminal",
+      `${inRun} [data-run-action=detach]`,
+      `${inRun} [data-run-action=again]`,
+    ]) {
+      if (await shown(selector)) fail(`the run's window shows ${selector}`);
+    }
+  };
+  const look = (target) =>
+    target(`({
+      theme: document.documentElement.dataset.theme,
+      font: getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim(),
+    })`);
+
+  await clickOn(`${tab} [data-run-action=detach]`);
+  await until("the run's tab closed", async () => !(await exists(tab)));
+  let window = await connectWindow(label);
+  await showing(window, "opened");
+  const main = await look(evaluate);
+  const detached = await look(window.evaluate);
+  if (json(main) !== json(detached) || !main.font.includes("Cascadia Mono"))
+    fail(
+      `the run's window looks ${json(detached)}, the main one ${json(main)}`,
+    );
+  if (!(await exists('[data-rail=jobs][data-jobs-running="1"]')))
+    fail("the rail no longer counts the detached job");
+  await showSideView(evaluate, "jobs");
+  await until("the Jobs view listing the detached job running", () =>
+    exists(`${JOBS_SIDE} [data-run="${run}"][data-run-state=running]`),
+  );
+  await showSideView(evaluate, "hosts");
+  step(
+    "a running job's run opened in a window of its own, showing what already happened, in the app's theme and font; the main window still counts it",
+  );
+
+  // A reload forgets nothing: the shell keeps the job.
+  await window.devtools.send("Page.reload");
+  await sleep(500);
+  await showing(window, "reloaded");
+  step("the run's window, reloaded, still shows the running job");
+
+  // Closed: the job goes on.
+  await window
+    .evaluate(
+      `window.__TAURI_INTERNALS__.invoke("plugin:window|close", { label: ${json(label)} })`,
+    )
+    .catch(() => {});
+  window.devtools.close();
+  await until(
+    "the run's window closed",
+    async () => !(await windowOpen(label)),
+  );
+  await sleep(500);
+  if (!(await exists('[data-rail=jobs][data-jobs-running="1"]')))
+    fail("closing the run's window stopped the job");
+  step("closing the run's window left the job running");
+
+  // Again from its reopened tab, then docked back.
+  await openRun(evaluate, run);
+  await clickOn(`${tab} [data-run-action=detach]`);
+  await until("the run's tab closed again", async () => !(await exists(tab)));
+  window = await connectWindow(label);
+  await showing(window, "opened again");
+  await window
+    .evaluate(
+      `document.querySelector(${json(`${inRun} [data-run-action=dock]`)}).click()`,
+    )
+    .catch(() => {});
+  window.devtools.close();
+  await until("the run's tab in the main window", () => exists(tab));
+  await until("the run's window gone", async () => !(await windowOpen(label)));
+  step(
+    "Dock back opened the run as a tab in the main window and closed its window",
+  );
+}
+
+/**
+ * Closing the main window closes the detached ones (#77), and so the app:
+ * a run window (of a run that is gone: it says so) is opened, then the
+ * main window is closed.
+ */
+async function closingTheMainWindow({ app, evaluate, step }) {
+  const label = "run-2000-01-01_00-00-00";
+  await evaluate(
+    `window.__TAURI_INTERNALS__.invoke("window_detach_run", { run: "2000-01-01_00-00-00" })`,
+  );
+  const window = await connectWindow(label);
+  await until("the gone run's window says so", () =>
+    window.evaluate(
+      `!!document.querySelector("[data-detached] [data-run-gone]")`,
+    ),
+  );
+  window.devtools.close();
+  await evaluate(
+    `window.__TAURI_INTERNALS__.invoke("plugin:window|close", { label: "main" })`,
+  ).catch(() => {});
+  await until(
+    "the app ended with its main window",
+    () => app.exitCode !== null,
+    15_000,
+  );
+  step("closing the main window closed the run's window and ended the app");
+}
+
+/**
  * Jobs (#42): a snippet run on a folder whose platform is set there,
  * against the example server's device-mode shell. Pre-flight lists the
  * skipped hosts with their reasons and asks once for the production host;
@@ -4843,6 +5023,15 @@ async function jobs({
       exists(`${view} [data-run-details="${hangRun}"]`),
     );
     await until("its host still running", () => exists(hostState("running")));
+
+    // #77: the run in a window of its own, and back.
+    await detachedRunWindow({ evaluate, exists, clickOn, run: hangRun, step });
+    await until("the run's tab docked back", () =>
+      exists(`${view} [data-run-details="${hangRun}"]`),
+    );
+    await until("its host still running, docked back", () =>
+      exists(hostState("running")),
+    );
     const runTab = await evaluate(
       `document.querySelector('${view} [data-run-details="${hangRun}"]').closest(".slot").dataset.tab`,
     );
@@ -4888,12 +5077,41 @@ async function jobs({
     await until("the terminal answering beside the run's tab", async () =>
       /echo beside\s+beside\s+lab-r1#/.test(await screen()),
     );
-    // Cancelled from the Jobs view, its tab beside shows it at once; the
-    // terminal still takes the keys.
+    // Cancelled from the run's own window (opened beside the tab, #77),
+    // the tab beside and that window show it at once; the terminal still
+    // takes the keys.
     await showSideView(evaluate, "jobs");
-    await clickOn(`${JOBS_SIDE} [data-run-cancel="${hangRun}"]`);
+    if (!(await exists(`${JOBS_SIDE} [data-run-cancel="${hangRun}"]`)))
+      fail("the Jobs view offers no cancel for the running job");
+    await evaluate(
+      `window.__TAURI_INTERNALS__.invoke("window_detach_run", { run: ${json(hangRun)} })`,
+    );
+    const other = await connectWindow(`run-${hangRun}`);
+    const inWindow = (selector) =>
+      other.evaluate(`!!document.querySelector(${json(selector)})`);
+    const windowHost = (state) =>
+      `[data-detached-run="${hangRun}"] [data-run-host="Jobs/jobs-r1.yaml"][data-host-state=${state}]`;
+    await until("the run's window, running", () =>
+      inWindow(windowHost("running")),
+    );
+    await other.evaluate(
+      `document.querySelector("[data-run-action=cancel]").click()`,
+    );
+    await until("the cancelled host, in its window", () =>
+      inWindow(windowHost("cancelled")),
+    );
     await until("the cancelled host, in the tab beside", () =>
       exists(hostState("cancelled")),
+    );
+    await other
+      .evaluate(
+        `window.__TAURI_INTERNALS__.invoke("plugin:window|close", { label: ${json(`run-${hangRun}`)} })`,
+      )
+      .catch(() => {});
+    other.devtools.close();
+    await until(
+      "the run's window closed",
+      async () => !(await windowOpen(`run-${hangRun}`)),
     );
     await until("the hang run ended", () =>
       exists(`${runRow(hangRun)}[data-run-state=ended]`),
@@ -4910,7 +5128,7 @@ async function jobs({
     );
     await screenshot("job-run-beside-terminal");
     step(
-      "the Jobs view lists the runs, running first; a run's tab in its own pane kept updating beside a terminal in use, and the job was cancelled from the Jobs view, keeping its output",
+      "the Jobs view lists the runs, running first; a run's tab in its own pane kept updating beside a terminal in use, and the job was cancelled from the run's own window, keeping its output",
     );
     await sessionAction(evaluate, "disconnect");
     await until(
