@@ -8,6 +8,9 @@ import type { ITheme } from "@xterm/xterm";
 
 export type Theme = "system" | "light" | "dark";
 export type FontZoom = "in" | "out" | "reset";
+/** What the activity rail shows in the side view. */
+export type SideView =
+  "hosts" | "snippets" | "jobs" | "backups" | "credentials";
 
 export interface Preferences {
   theme: Theme;
@@ -22,6 +25,9 @@ export interface Preferences {
   confirmMultiLinePaste: boolean;
   /** Look for a newer version at start (off: no connection on its own). */
   checkForUpdates: boolean;
+  /** The side view the rail selected; `leftPanelWidth` is its width and
+   * `leftPanelHidden` whether it is folded away. */
+  sideView: SideView;
   /** Side panel widths in pixels (`PANEL_WIDTHS`). */
   leftPanelWidth: number;
   rightPanelWidth: number;
@@ -67,6 +73,7 @@ export const preferences = $state({
     highlighting: true,
     confirmMultiLinePaste: true,
     checkForUpdates: true,
+    sideView: "hosts",
     leftPanelWidth: PANEL_WIDTHS.left,
     rightPanelWidth: PANEL_WIDTHS.right,
     leftPanelHidden: false,

@@ -198,12 +198,41 @@ function fail(message) {
   throw new Error(message);
 }
 
-/** The workspace panel's width the sidePanels part leaves for the restart. */
+/** The side view's width the sidePanels part leaves for the restart. */
 const SIDE_PANEL_WIDTH = 400;
+/** The side view it leaves selected, for the restart to find. */
+const SIDE_VIEW_KEPT = "snippets";
 
-// The side panels: dragging a panel's edge resizes it (saved when the drag
-// ends), double-clicking resets it, the terminal keeps its room, and both
-// panels fold away and come back by button and by keyboard.
+/** Shows the side view `view` by its rail icon, unless it is shown. */
+async function showSideView(evaluate, view) {
+  const shown = `!!document.querySelector("[data-side-view=${view}]")`;
+  if (!(await evaluate(shown))) {
+    await evaluate(`document.querySelector("[data-rail=${view}]").click()`);
+  }
+  await until(`the ${view} side view`, () => evaluate(shown));
+}
+
+/** Opens the jobs view (past runs) from the Jobs side view, then shows the
+ * Hosts view again. */
+async function openRuns(evaluate) {
+  await showSideView(evaluate, "jobs");
+  await evaluate(`document.querySelector("[data-open-jobs]").click()`);
+  await showSideView(evaluate, "hosts");
+}
+
+/** Opens the profiles dialog from the Credentials side view, then shows
+ * the Hosts view again. */
+async function openProfiles(evaluate) {
+  await showSideView(evaluate, "credentials");
+  await evaluate(`document.querySelector("[data-open-profiles]").click()`);
+  await showSideView(evaluate, "hosts");
+}
+
+// The rail and the side view: each icon shows its view and says so,
+// clicking the open one folds the side view and any icon brings it back;
+// each view has its shortcut. Dragging the side view's edge resizes it
+// (saved when the drag ends), double-clicking resets it, the terminal keeps
+// its room, and the details panel folds away and comes back.
 async function sidePanels({
   evaluate,
   mouse,
@@ -218,7 +247,7 @@ async function sidePanels({
     );
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
-  const left = ".layout > aside:first-child";
+  const left = "[data-side-view]";
   const drag = async (selector, dx) => {
     const from = await centreOf(selector);
     // Off the hide button in the middle of the handle.
@@ -251,6 +280,12 @@ async function sidePanels({
     });
     await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...press });
   };
+  const railClick = (view) =>
+    evaluate(`document.querySelector("[data-rail=${view}]").click()`);
+  const openView = () =>
+    evaluate(
+      `document.querySelector("[data-rail][data-active]")?.dataset.rail ?? null`,
+    );
 
   // Room for wider panels: the window is widened for this part (the
   // terminal keeps 320 px, so at 800 px neither panel could grow).
@@ -266,18 +301,84 @@ async function sidePanels({
     async () => (await evaluate("window.innerWidth")) >= 1300,
   );
 
-  // A host is selected, so both panels are there.
+  // Every icon has a name and a tooltip; Hosts is open.
+  const icons = await evaluate(`[...document.querySelectorAll(
+    "[data-rail], [data-open-preferences]")].map((b) => ({
+      name: b.getAttribute("aria-label"), title: b.title }))`);
+  if (
+    icons.length !== 6 ||
+    icons.some((icon) => !icon.name || !icon.title.includes(icon.name))
+  ) {
+    fail(`the rail's icons: ${JSON.stringify(icons)}`);
+  }
+  await showSideView(evaluate, "hosts");
+  if ((await openView()) !== "hosts") fail("the rail does not show Hosts");
+  // The toolbar of text buttons is gone.
+  if (await exists(".toolbar")) fail("the toolbar is still there");
+  step(`the rail has ${icons.length} named icons with tooltips`);
+
+  // Each icon shows its view; the open one folds it; any icon brings it back.
+  for (const view of ["snippets", "jobs", "backups", "credentials", "hosts"]) {
+    await railClick(view);
+    await until(
+      `the ${view} view from the rail`,
+      async () =>
+        (await exists(`[data-side-view=${view}]`)) &&
+        (await openView()) === view,
+    );
+  }
+  await railClick("hosts");
+  await until(
+    "the side view folded",
+    async () => !(await exists(left)) && (await openView()) === null,
+  );
+  await screenshot("side-view-folded");
+  await railClick("jobs");
+  await until("the jobs view after folding", () =>
+    exists("[data-side-view=jobs]"),
+  );
+  step("the rail switches the side view, folds it, and opens it again");
+
+  // By keyboard: each view's letter, and Ctrl+Shift+B folds.
+  for (const [letter, view] of [
+    ["H", "hosts"],
+    ["S", "snippets"],
+    ["J", "jobs"],
+    ["G", "backups"],
+    ["L", "credentials"],
+  ]) {
+    await shortcut(letter);
+    await until(`the ${view} view by Ctrl+Shift+${letter}`, () =>
+      exists(`[data-side-view=${view}]`),
+    );
+  }
+  await shortcut("B");
+  await until(
+    "the side view folded by Ctrl+Shift+B",
+    async () => !(await exists(left)),
+  );
+  await shortcut("B");
+  await until("the side view back by Ctrl+Shift+B", () =>
+    exists("[data-side-view=credentials]"),
+  );
+  await shortcut("H");
+  await until("the hosts view by Ctrl+Shift+H", () =>
+    exists("[data-side-view=hosts]"),
+  );
+  step("each side view and folding have a shortcut");
+
+  // A host is selected, so the details panel is there too.
   await evaluate(`document.querySelector("nav [data-host]").click()`);
   await until("the details panel", () => exists(".layout > aside.side"));
 
   const before = await width(left);
   await drag("[data-panel-resizer=left]", 150);
   await until(
-    "the wider workspace panel",
+    "the wider side view",
     async () => Math.abs((await width(left)) - (before + 150)) <= 2,
   );
   step(
-    `dragging the workspace panel's edge widened it (${before} to ${before + 150} px)`,
+    `dragging the side view's edge widened it (${before} to ${before + 150} px)`,
   );
 
   const rightBefore = await width(".layout > aside.side");
@@ -307,16 +408,14 @@ async function sidePanels({
   );
   step("double-clicking the edge restored the default width");
 
-  // Folding away: the panel's own button, then the strip brings it back.
+  // The edge's own button folds the side view too.
   await evaluate(`document.querySelector("[data-hide-panel=left]").click()`);
   await until(
-    "the workspace panel hidden",
-    async () =>
-      !(await exists(left)) && (await exists("[data-reveal-panel=left]")),
+    "the side view folded by its edge",
+    async () => !(await exists(left)),
   );
-  await screenshot("panel-hidden");
-  await evaluate(`document.querySelector("[data-reveal-panel=left]").click()`);
-  await until("the workspace panel back", () => exists(left));
+  await railClick("hosts");
+  await until("the side view back", () => exists(left));
   await shortcut("D");
   await until("the details panel hidden by Ctrl+Shift+D", () =>
     exists("[data-reveal-panel=right]"),
@@ -325,13 +424,7 @@ async function sidePanels({
   await until("the details panel back by Ctrl+Shift+D", () =>
     exists(".layout > aside.side"),
   );
-  await shortcut("B");
-  await until("the workspace panel hidden by Ctrl+Shift+B", () =>
-    exists("[data-reveal-panel=left]"),
-  );
-  await shortcut("B");
-  await until("the workspace panel back by Ctrl+Shift+B", () => exists(left));
-  step("both panels fold away and come back, by button and by keyboard");
+  step("the details panel folds away and comes back by keyboard");
 
   // A width for the restart to find, set by dragging.
   await drag(
@@ -339,9 +432,10 @@ async function sidePanels({
     SIDE_PANEL_WIDTH - (await width(left)),
   );
   await until(
-    `the workspace panel at ${SIDE_PANEL_WIDTH} px`,
+    `the side view at ${SIDE_PANEL_WIDTH} px`,
     async () => (await width(left)) === SIDE_PANEL_WIDTH,
   );
+  await showSideView(evaluate, SIDE_VIEW_KEPT);
   await sleep(500); // the save goes through the core after the drag ends
   await screenshot("panels-resized");
   await devtools.send("Browser.setWindowBounds", { windowId, bounds });
@@ -616,10 +710,35 @@ async function main() {
       `[...document.querySelectorAll("nav button")].some((b) => b.textContent.includes("Lab"))`,
     ),
   );
+  // One line at the foot of the Hosts view, which opens the list.
   await until("the malformed file reported", async () =>
-    (await text("details")).includes("broken.yaml"),
+    (await text("[data-problems]")).includes("could not be loaded"),
   );
-  step("the last workspace reopened, with the malformed file reported");
+  await evaluate(`document.querySelector("[data-problems]").click()`);
+  await until("the malformed file listed", async () =>
+    (await text("[data-problems-list]")).includes("broken.yaml"),
+  );
+  await evaluate(`document.querySelector("[data-problems]").click()`);
+  // Folded away, the Hosts icon still says so.
+  if (
+    await evaluate(
+      `!!document.querySelector("[data-rail=hosts][data-problems]")`,
+    )
+  ) {
+    fail("the Hosts icon is marked while the Hosts view shows the problems");
+  }
+  await evaluate(`document.querySelector("[data-rail=hosts]").click()`);
+  await until("the Hosts icon marked while folded", () =>
+    evaluate(`!!document.querySelector("[data-rail=hosts][data-problems]")`),
+  );
+  await screenshot("problems-folded");
+  await evaluate(`document.querySelector("[data-rail=hosts]").click()`);
+  await until("the Hosts view back", () =>
+    evaluate(`!!document.querySelector("[data-side-view=hosts]")`),
+  );
+  step(
+    "the last workspace reopened, with the malformed file reported at the foot (and on the folded Hosts icon)",
+  );
 
   await updateCheck({ evaluate, text, screenshot, step });
 
@@ -1292,23 +1411,32 @@ async function main() {
     fail(`preferences after a restart: ${JSON.stringify(kept)}`);
   }
   step("the preferences were kept across a restart");
-  const panels = await until("the side panels after a restart", () =>
+  const panels = await until("the side view after a restart", () =>
     evaluateAgain(`(() => {
-      const left = document.querySelector(".layout > aside:first-child");
-      return left && { left: Math.round(left.getBoundingClientRect().width) };
+      const left = document.querySelector("[data-side-view]");
+      return left && {
+        view: left.dataset.sideView,
+        rail: document.querySelector("[data-rail][data-active]")?.dataset.rail,
+        left: Math.round(left.getBoundingClientRect().width),
+      };
     })()`),
   );
-  if (panels.left !== SIDE_PANEL_WIDTH) {
-    fail(`the workspace panel after a restart: ${JSON.stringify(panels)}`);
+  if (
+    panels.left !== SIDE_PANEL_WIDTH ||
+    panels.view !== SIDE_VIEW_KEPT ||
+    panels.rail !== SIDE_VIEW_KEPT
+  ) {
+    fail(`the side view after a restart: ${JSON.stringify(panels)}`);
   }
-  step("the side panel width was kept across a restart");
+  step("the side view and its width were kept across a restart");
+  await showSideView(evaluateAgain, "hosts");
 
   // The known workspaces survive it too, and the last one opened reopens.
   await until(
     "the smoke workspace reopened",
     async () =>
       (await evaluateAgain(
-        `document.querySelector("aside header .name")?.textContent.trim()`,
+        `document.querySelector("[data-open-workspaces]")?.textContent.trim()`,
       )) === "smoke-workspace",
   );
   await evaluateAgain(
@@ -1424,8 +1552,8 @@ async function vault({ app, devtools, evaluate, step }) {
     async () => !(await exists("[data-dialog=workspaces]")),
   );
   await until("the new host in the tree", () => exists(hostRow));
-  // Labelled "Profiles (!)" while the host's profile is missing.
-  await clickOn('button[title="Credential profiles"]');
+  // The Credentials icon is marked while the host's profile is missing.
+  await openProfiles(evaluate);
   await until("the profiles dialog", () => exists(profilesDialog));
   await click("New profile…");
   await until("the profile form", () =>
@@ -1692,7 +1820,7 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
   await until("the vault in use", () => shown("[data-vault-status=unlocked]"));
   await closeDialog();
   // A profile kept only in the vault, which starting over deletes.
-  await clickOn('button[title="Credential profiles"]');
+  await openProfiles(ev);
   await until("the profiles dialog", () => shown("[data-dialog=profiles]"));
   await ev(
     `[...document.querySelectorAll("[data-dialog=profiles] button")].find((b) => b.textContent.trim() === "New profile…").click()`,
@@ -1738,7 +1866,7 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
   );
   await until("the workspace after starting over", () => shown(hostRow));
   if (existsSync(vaultFile)) fail("starting over left the vault file");
-  await clickOn('button[title="Credential profiles"]');
+  await openProfiles(ev);
   await until("the profiles dialog", () => shown("[data-dialog=profiles]"));
   await until("the vault-login profile shown as not set up", () =>
     shown('[data-dialog=profiles] li.missing[data-profile="vault-login"]'),
@@ -1807,7 +1935,7 @@ async function noKeychain({ current, vaultFile, step }) {
     fail("Preferences do not say the vault is the only store");
   await closeDialog();
 
-  await clickOn('button[title="Credential profiles"]');
+  await openProfiles(ev);
   await until("the profiles dialog's vault note", () =>
     shown(`${profilesDialog} [data-profiles-needs-vault]`),
   );
@@ -2199,7 +2327,7 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
     await clickOn(`${dialog} [data-job=dismiss]`);
     await until("the job dialog closed", async () => !(await exists(dialog)));
     if (!(await exists("[data-dialog=jobs]"))) {
-      await evaluate(`document.querySelector("[data-open-jobs]").click()`);
+      await openRuns(evaluate);
       await until("the jobs view", () => exists("[data-dialog=jobs]"));
     }
     await evaluate(
@@ -2506,7 +2634,7 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
     await closeReview("close");
 
     // The run stays reviewable from the jobs view.
-    await evaluate(`document.querySelector("[data-open-jobs]").click()`);
+    await openRuns(evaluate);
     await until("the review action in the jobs view", () =>
       exists("[data-dialog=jobs] [data-run-action=review]"),
     );
@@ -3025,7 +3153,8 @@ async function snippets({
     (await screen()).includes("test-ssh$"),
   );
 
-  // Created in the panel, saved to the workspace's snippets file.
+  // Created in the Snippets view, saved to the workspace's snippets file.
+  await showSideView(evaluate, "snippets");
   await clickOn("[data-snippet-new]");
   await until("the snippet form", () => exists("[data-snippet-form]"));
   await fillForm(
@@ -3101,9 +3230,8 @@ async function snippets({
   );
 
   // Sent from the palette: `>` searches the snippets, Enter sends.
-  await evaluate(
-    `[...document.querySelectorAll("button")].find((b) => b.title === "Search hosts (Ctrl+K)").click()`,
-  );
+  await showSideView(evaluate, "hosts");
+  await clickOn('[aria-label="Search hosts"]');
   await until("the palette", () => exists("input[name=palette-query]"));
   await evaluate(`(() => {
     const input = document.querySelector("input[name=palette-query]");
@@ -3122,6 +3250,7 @@ async function snippets({
   step("a snippet sent from the command palette");
 
   // Edited (renamed) and deleted from the panel.
+  await showSideView(evaluate, "snippets");
   await clickOn('[data-snippet-edit="Smoke check"]');
   await until("the snippet form", () => exists("[data-snippet-form]"));
   await fillForm({ "snippet-name": "Smoke renamed" }, "[data-snippet-form]");
@@ -3156,6 +3285,7 @@ async function snippets({
   );
   step("a snippet written on disk showed in the panel");
   rmSync(hostFile);
+  await showSideView(evaluate, "hosts");
 }
 
 /**
@@ -3352,7 +3482,8 @@ async function csvImport({ evaluate, fillForm, text, screenshot, step }) {
   const oddBefore = readFileSync(oddFile, "utf8");
 
   const readFile = async () => {
-    await clickOn("[data-open-csv-import]");
+    await clickOn("[data-add-menu]");
+    await clickOn("[data-add-entries] [data-open-csv-import]");
     await until("the CSV import dialog", () => atStep("file"));
     await fillForm({ "csv-file": csvFile }, `${dialog} form`);
     await until("the column mapping", () => atStep("map"));
@@ -3546,7 +3677,8 @@ async function nornirImport({ evaluate, fillForm, text, screenshot, step }) {
       (section) => section.dataset.report + "=" + section.dataset.count,
     ).join(" ")`);
   const preview = async () => {
-    await clickOn("[data-open-nornir-import]");
+    await clickOn("[data-add-menu]");
+    await clickOn("[data-add-entries] [data-open-nornir-import]");
     await until("the Nornir import dialog", () => atStep("files"));
     await evaluate(`(() => {
       const target = document.querySelector("${dialog} select[name=nornir-target]");
@@ -3668,7 +3800,7 @@ async function jobs({
     : null;
 
   // A profile for the job's hosts.
-  await click("Profiles");
+  await openProfiles(evaluate);
   await until("the profiles dialog", () => exists(profilesDialog));
   await click("New profile…");
   await until("the profile form", () =>
@@ -3716,9 +3848,11 @@ async function jobs({
   );
   const folderRow = 'nav button[data-item=folder][data-path="Jobs"]';
   await until("the Jobs folder in the tree", () => exists(folderRow));
+  await showSideView(evaluate, "snippets");
   await until("the job snippet loaded", () =>
     exists('[data-snippet="Job check"]'),
   );
+  await showSideView(evaluate, "hosts");
 
   const runFromFolder = async () => {
     await clickOn(folderRow);
@@ -3906,7 +4040,7 @@ async function jobs({
     await clickOn(`${dialog} [data-job=close]`);
     await until("the job dialog hidden", async () => !(await exists(dialog)));
     await until("the header shows one job running", () =>
-      exists('[data-open-jobs][data-jobs-running="1"]'),
+      exists('[data-rail=jobs][data-jobs-running="1"]'),
     );
     await screenshot("job-running-indicator");
     step("a hidden job keeps running, with an indicator in the header");
@@ -3914,7 +4048,7 @@ async function jobs({
     // The jobs view: every run, newest first, the running one cancelled
     // there, its output kept.
     const view = "[data-dialog=jobs]";
-    await clickOn("[data-open-jobs]");
+    await openRuns(evaluate);
     await until("the jobs view", () => exists(`${view} [data-runs]`));
     const listed = () =>
       evaluate(`[...document.querySelectorAll("${view} [data-run]")].map((r) => ({
@@ -3951,7 +4085,7 @@ async function jobs({
       (await runOutputText()).includes("lab-r1# hang"),
     );
     await until("the header shows no job running", () =>
-      exists('[data-open-jobs][data-jobs-running="0"]'),
+      exists('[data-rail=jobs][data-jobs-running="0"]'),
     );
     step(
       "the jobs view lists the runs newest first and cancelled the running one, keeping its output",
@@ -4329,12 +4463,16 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     `${savedSnippets ?? ""}Saved check: show hostname\n`,
   );
   try {
+    // The saved jobs are in the Jobs side view, the snippets in theirs.
+    await showSideView(evaluate, "jobs");
     await until("the saved jobs panel, empty", () =>
       exists("[data-saved-jobs] .hint"),
     );
+    await showSideView(evaluate, "snippets");
     await until("the snippet for saved jobs", () =>
       exists('[data-snippet="Saved check"]'),
     );
+    await showSideView(evaluate, "hosts");
 
     // Saved from pre-flight: a snippet on the Jobs folder.
     await clickOn('nav button[data-item=folder][data-path="Jobs"]');
@@ -4377,6 +4515,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     step("a job was saved from its pre-flight list into the workspace");
 
     // One click in the panel: pre-flight first, then it runs.
+    await showSideView(evaluate, "jobs");
     await until("the saved job listed", () => exists(savedJob("Jobs check")));
     await clickOn(savedJob("Jobs check"));
     await until("the saved job's pre-flight", () => atStep("preflight"));
@@ -4485,10 +4624,17 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     ) {
       fail("the gone filter's job does not name the filter");
     }
-    await until("the bad entry listed as a problem", async () =>
-      (await text("aside .problems")).includes("saved job `Broken job`"),
-    );
     if (await exists(savedJob("Broken job"))) fail("a bad entry was listed");
+    // The problem is at the foot of the Hosts view (and marks its icon).
+    await until("the Hosts icon marked", () =>
+      exists("[data-rail=hosts][data-problems]"),
+    );
+    await showSideView(evaluate, "hosts");
+    await clickOn("[data-problems]");
+    await until("the bad entry listed as a problem", async () =>
+      (await text("[data-problems-list]")).includes("saved job `Broken job`"),
+    );
+    await showSideView(evaluate, "jobs");
     await clickOn(savedJob("Gone filter"));
     await until("the refusal", async () =>
       (await text("[data-saved-jobs-error]")).includes(
@@ -4509,6 +4655,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     "the saved jobs gone",
     async () => !(await exists("[data-saved-job]")),
   );
+  await showSideView(evaluate, "hosts");
 }
 
 async function workspaces({
@@ -4527,7 +4674,7 @@ async function workspaces({
     evaluate(`!!document.querySelector(${json(selector)})`);
   const clickOn = (selector) =>
     evaluate(`document.querySelector(${json(selector)}).click()`);
-  const openName = () => text("aside header .name");
+  const openName = () => text("[data-open-workspaces] span");
   const second = join(userData, "customers", "customer-b");
   const idOf = (folder) =>
     readFileSync(join(folder, "_workspace.yaml"), "utf8").match(
@@ -4830,6 +4977,23 @@ async function pasteSafety({
   );
   const savedClipboard = readClipboard();
   try {
+    // The tree shows each host's environment before connecting: a label
+    // for production, a mark for lab.
+    await until("the lab host's mark in the tree", () =>
+      exists('[data-host="lab-r9.yaml"] [data-host-environment=lab]'),
+    );
+    await evaluate(`(() => {
+      const row = document.querySelector('nav button[data-item=folder][data-path="Prod"]');
+      if (row && row.getAttribute("aria-expanded") !== "true") row.click();
+    })()`);
+    await until("the production host's label in the tree", async () =>
+      (
+        await text(
+          '[data-host="Prod/prod-r1.yaml"][data-environment=production] [data-host-environment=production]',
+        )
+      ).includes("PROD"),
+    );
+    step("the tree shows each host's environment");
     // Turned off: from now on only production hosts ask.
     await evaluate(`document.querySelector("[data-open-preferences]").click()`);
     await until("the preferences dialog", () =>
@@ -4926,6 +5090,7 @@ async function pasteSafety({
       snippetsFile,
       'Prod lines: "later 0 snip-prod-1\\nlater 0 snip-prod-2\\n"\n',
     );
+    await showSideView(evaluate, "snippets");
     await until("the snippet in the panel", () =>
       exists('[data-snippet="Prod lines"]'),
     );
@@ -4947,6 +5112,7 @@ async function pasteSafety({
       async () => (await ran("snip-prod-1")) && (await ran("snip-prod-2")),
     );
     rmSync(snippetsFile);
+    await showSideView(evaluate, "hosts");
     step("a multi-line snippet sent to production asked first");
 
     // A lab session: marked lab, and the paste goes out at once.
@@ -5474,11 +5640,17 @@ async function searchAndFilter({
       })()`),
     );
   };
-  const setView = (value) =>
+  // A saved filter's chip: a click applies it, another clears it.
+  const chip = (name) => `[data-filter-chip=${JSON.stringify(name)}]`;
+  const chipPressed = (name) =>
+    evaluate(
+      `document.querySelector(${JSON.stringify(chip(name))})?.getAttribute("aria-pressed") === "true"`,
+    );
+  const filterWords = (words) =>
     evaluate(`(() => {
-      const select = document.querySelector("select[name=filter]");
-      select.value = ${JSON.stringify(value)};
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+      const input = document.querySelector("input[name=host-filter]");
+      input.value = ${JSON.stringify(words)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     })()`);
 
   // Ctrl+K reaches the palette even while the terminal has the keyboard.
@@ -5513,9 +5685,27 @@ async function searchAndFilter({
   await click("Cancel");
   step("a search on the role found the host and Enter connected to it");
 
-  // A filter is saved to the workspace and the tree is viewed through it.
-  await click("Save filter…");
+  // The filter field narrows the tree as words are typed.
+  const odd = '[data-host="odd.yaml"]';
+  await filterWords("lab router");
+  await until(
+    "the tree narrowed by the filter field",
+    async () => (await exists(hostRow)) && !(await exists(odd)),
+  );
+  await screenshot("filter-field");
+  step("the filter field narrowed the tree to the matching hosts");
+
+  // The words are saved as a filter from the chips row (here changed to a
+  // role condition), and the tree is viewed through it.
+  await clickOn("[data-save-filter]");
   await until("the save filter dialog", () => exists("[role=dialog] form"));
+  const offered = await evaluate(`(() => {
+    const form = document.querySelector("[role=dialog] form");
+    return [form.querySelector("[name=field]").value, form.querySelector("[name=value]").value];
+  })()`);
+  if (JSON.stringify(offered) !== '["text","lab router"]') {
+    fail(`the save filter dialog offers ${JSON.stringify(offered)}`);
+  }
   await evaluate(`(() => {
     const select = document.querySelector("[role=dialog] select[name=field]");
     select.value = "role";
@@ -5531,23 +5721,38 @@ async function searchAndFilter({
       existsSync(filters) &&
       readFileSync(filters, "utf8") === "Lab routers:\n  role: lab_router\n",
   );
-  const odd = '[data-host="odd.yaml"]';
   await until(
     "the tree viewed through the filter",
-    async () => (await exists(hostRow)) && !(await exists(odd)),
+    async () =>
+      (await exists(hostRow)) &&
+      !(await exists(odd)) &&
+      (await chipPressed("Lab routers")),
   );
+  if (
+    await evaluate(`document.querySelector("input[name=host-filter]").value`)
+  ) {
+    fail("the filter field kept the saved words");
+  }
   await screenshot("filter");
-  await setView("");
-  await until("every host back", () => exists(odd));
-  await setView("Lab routers");
+  await clickOn(chip("Lab routers"));
+  await until(
+    "every host back",
+    async () => (await exists(odd)) && !(await chipPressed("Lab routers")),
+  );
+  await clickOn(chip("Lab routers"));
   await until("the filter applied again", async () => !(await exists(odd)));
-  step("a filter was saved to the workspace and applied to the tree");
+  step(
+    "a filter was saved from the chips row; its chip applies it and clears it",
+  );
 
-  await click("Delete filter");
+  await clickOn("[data-filter-delete]");
   await until("the delete confirmation", () => exists("[role=dialog] form"));
   await clickOn("[role=dialog] form button[type=submit]");
   await until("the filters file removed", () => !existsSync(filters));
-  await until("every host back", () => exists(odd));
+  await until(
+    "every host back",
+    async () => (await exists(odd)) && !(await exists(chip("Lab routers"))),
+  );
   step("the filter was deleted");
 }
 
@@ -5638,7 +5843,7 @@ async function credentialProfiles({
       .join("\n");
 
   // A profile is created in the profiles dialog.
-  await click("Profiles");
+  await openProfiles(evaluate);
   await until("the profiles dialog", () => exists(profilesDialog));
   await click("New profile…");
   await until("the profile form", () =>
@@ -5710,7 +5915,7 @@ async function credentialProfiles({
   // Profiles are edited and deleted in the dialog; a deleted profile the
   // workspace names shows as missing.
   await click("Disconnect");
-  await click("Profiles");
+  await openProfiles(evaluate);
   await until(
     "both profiles listed",
     async () =>
@@ -5895,7 +6100,7 @@ async function agentAndKeyboardInteractive({
 
   // Profiles that log in with the SSH agent.
   const createAgentProfile = async (name, username) => {
-    await click("Profiles");
+    await openProfiles(evaluate);
     await until("the profiles dialog", () => exists(profilesDialog));
     await click("New profile…");
     await until("the profile form", () =>
@@ -6374,30 +6579,53 @@ async function editInventory({
         (await text(`.side [data-origin="${key}"]`)).trim() === expected,
     );
 
-  // Every toolbar button is fully inside the panel (it is narrower than
-  // the buttons on one row, so they must wrap rather than be cut off).
+  // Every control of the Hosts view's header is fully inside the side
+  // view, and no toolbar of text buttons is left.
   const clipped = await evaluate(`(() => {
-    const panel = document.querySelector("aside").getBoundingClientRect();
-    return [...document.querySelectorAll("aside .toolbar button")]
+    const panel = document.querySelector("[data-side-view=hosts]").getBoundingClientRect();
+    return [...document.querySelectorAll("[data-side-view=hosts] header button")]
       .filter((b) => {
         const r = b.getBoundingClientRect();
-        return r.width === 0 || r.left < panel.left || r.right > panel.right + 0.5
-          || b.scrollWidth > b.clientWidth + 1 || r.height > 2 * parseFloat(getComputedStyle(b).lineHeight) + 8;
+        return r.width === 0 || r.left < panel.left || r.right > panel.right + 0.5;
       })
-      .map((b) => b.textContent.trim());
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent.trim());
   })()`);
   if (clipped.length > 0) {
-    fail(`toolbar buttons cut off or wrapped: ${clipped.join(", ")}`);
+    fail(`Hosts view controls cut off: ${clipped.join(", ")}`);
   }
-  step("every workspace toolbar button is visible");
+  if (await evaluate(`!!document.querySelector(".toolbar")`)) {
+    fail("a toolbar of text buttons is still there");
+  }
+  // The add control offers hosts, folders and both imports.
+  await clickOn("[data-add-menu]");
+  const additions = await evaluate(
+    `[...document.querySelectorAll("[data-add-entries] [data-add]")].map((b) => b.dataset.add)`,
+  );
+  if (JSON.stringify(additions) !== '["host","folder","csv","nornir"]') {
+    fail(`the add control offers ${JSON.stringify(additions)}`);
+  }
+  await screenshot("add-menu");
+  await evaluate(
+    `window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`,
+  );
+  await until(
+    "the add menu closed",
+    async () =>
+      !(await evaluate(`!!document.querySelector("[data-add-entries]")`)),
+  );
+  step(
+    "the Hosts view's controls are visible; one add control offers what to add",
+  );
 
-  // A folder and a host, created from the toolbar at the top level.
-  await clickOn("aside header .name");
-  await click("+ Folder");
+  // A folder and a host, created from the add control at the top level.
+  await clickOn("[data-workspace-settings]");
+  await clickOn("[data-add-menu]");
+  await clickOn("[data-add=folder]");
   await until("the new folder dialog", dialogOpen);
   await fillForm({ name: "Edge" }, dialog);
   await until("the Edge folder on disk", () => existsSync(file("Edge")));
-  await click("+ Host");
+  await clickOn("[data-add-menu]");
+  await clickOn("[data-add=host]");
   await until("the new host dialog", dialogOpen);
   await fillForm({ name: "edge-r1", address: "10.9.0.1" }, dialog);
   await until(
@@ -6629,7 +6857,7 @@ async function editInventory({
       `document.querySelector(${JSON.stringify(platformRow(name))})?.getAttribute("data-platform-source") ?? null`,
     );
   const openPlatforms = async () => {
-    await clickOn("aside .toolbar [data-open-platforms]");
+    await clickOn("[data-side-view=hosts] [data-open-platforms]");
     await until("the platforms dialog", () =>
       evaluate(`!!document.querySelector("${platformsDialog}")`),
     );
@@ -7448,6 +7676,7 @@ async function multiSend({
     // A snippet is filled per member: the production host gives its own
     // name; the quick connects have none, so it is asked once, for both.
     writeFileSync(snippetsFile, "Who: who-{{name}}\n");
+    await showSideView(evaluate, "snippets");
     await until("the snippet in the panel", () =>
       exists('[data-snippet="Who"]'),
     );
@@ -7479,6 +7708,7 @@ async function multiSend({
     if ((await screenOfTab(d)).includes("who-quick")) {
       fail("the production member got the answer instead of its own name");
     }
+    await showSideView(evaluate, "hosts");
     step(
       "a snippet sent to the group was filled per member; the missing variable was asked once",
     );

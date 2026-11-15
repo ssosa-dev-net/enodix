@@ -44,6 +44,21 @@ pub enum Theme {
     Dark,
 }
 
+/// The side view the activity rail selected (the window's left side).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SideView {
+    /// The host tree.
+    #[default]
+    Hosts,
+    Snippets,
+    Jobs,
+    /// Config backups.
+    Backups,
+    /// Credential profiles, named secrets and the vault.
+    Credentials,
+}
+
 /// A step of the terminal font size (Ctrl+scroll, Ctrl+= / Ctrl+- / Ctrl+0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -79,6 +94,9 @@ pub struct Preferences {
     /// The app looks for a newer release once at start (see
     /// [`crate::update`]). Off, it makes no connection on its own.
     pub check_for_updates: bool,
+    /// The side view the rail shows (`left_panel_width` is its width and
+    /// `left_panel_hidden` whether it is folded away).
+    pub side_view: SideView,
     /// The workspace panel's width (pixels, `MIN_PANEL_WIDTH` to
     /// `MAX_PANEL_WIDTH`).
     pub left_panel_width: u16,
@@ -102,6 +120,7 @@ impl Default for Preferences {
             highlighting: true,
             confirm_multi_line_paste: true,
             check_for_updates: true,
+            side_view: SideView::Hosts,
             left_panel_width: DEFAULT_LEFT_PANEL_WIDTH,
             right_panel_width: DEFAULT_RIGHT_PANEL_WIDTH,
             left_panel_hidden: false,
@@ -133,6 +152,7 @@ impl Preferences {
                 .unwrap_or(defaults.confirm_multi_line_paste),
             check_for_updates: read(&mapping, "check_for_updates")
                 .unwrap_or(defaults.check_for_updates),
+            side_view: read(&mapping, "side_view").unwrap_or(defaults.side_view),
             left_panel_width: read_number(&mapping, "left_panel_width", u16::MAX)
                 .unwrap_or(defaults.left_panel_width),
             right_panel_width: read_number(&mapping, "right_panel_width", u16::MAX)
@@ -168,6 +188,10 @@ impl Preferences {
             preferences.confirm_multi_line_paste.into(),
         );
         put("check_for_updates", preferences.check_for_updates.into());
+        put(
+            "side_view",
+            serde_norway::to_value(preferences.side_view).map_err(io::Error::other)?,
+        );
         put("left_panel_width", preferences.left_panel_width.into());
         put("right_panel_width", preferences.right_panel_width.into());
         put("left_panel_hidden", preferences.left_panel_hidden.into());

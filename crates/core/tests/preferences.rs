@@ -4,7 +4,7 @@
 use std::fs;
 
 use netterm_core::preferences::{
-    FontZoom, Preferences, Theme, DEFAULT_FONT_SIZE, DEFAULT_LEFT_PANEL_WIDTH,
+    FontZoom, Preferences, SideView, Theme, DEFAULT_FONT_SIZE, DEFAULT_LEFT_PANEL_WIDTH,
     DEFAULT_RIGHT_PANEL_WIDTH, MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK, MIN_FONT_SIZE,
     MIN_PANEL_WIDTH,
 };
@@ -262,4 +262,86 @@ fn side_panel_widths_are_kept_within_their_range() {
     assert_eq!(loaded.left_panel_width, MAX_PANEL_WIDTH);
     assert_eq!(loaded.right_panel_width, DEFAULT_RIGHT_PANEL_WIDTH);
     assert!(!loaded.left_panel_hidden);
+}
+
+#[test]
+fn the_side_view_starts_on_hosts() {
+    let data = TempDir::new().unwrap();
+
+    assert_eq!(Preferences::load(data.path()).side_view, SideView::Hosts);
+}
+
+#[test]
+fn the_side_view_its_width_and_folding_are_remembered_across_restarts() {
+    let data = TempDir::new().unwrap();
+    let chosen = Preferences {
+        side_view: SideView::Jobs,
+        left_panel_width: 360,
+        left_panel_hidden: true,
+        ..Preferences::default()
+    };
+
+    chosen.save(data.path()).unwrap();
+
+    let text = fs::read_to_string(data.path().join("preferences.yaml")).unwrap();
+    assert!(text.contains("side_view: jobs"), "{text}");
+    assert_eq!(Preferences::load(data.path()), chosen);
+    for view in [
+        SideView::Hosts,
+        SideView::Snippets,
+        SideView::Jobs,
+        SideView::Backups,
+        SideView::Credentials,
+    ] {
+        let chosen = Preferences {
+            side_view: view,
+            ..Preferences::default()
+        };
+        chosen.save(data.path()).unwrap();
+        assert_eq!(Preferences::load(data.path()).side_view, view);
+    }
+}
+
+#[test]
+fn a_preferences_file_from_before_the_side_views_keeps_its_values() {
+    let data = TempDir::new().unwrap();
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "theme: dark\nfont_size: 16\nleft_panel_width: 333\nright_panel_width: 250\nleft_panel_hidden: true\nright_panel_hidden: true\n",
+    )
+    .unwrap();
+
+    let loaded = Preferences::load(data.path());
+
+    assert_eq!(loaded.side_view, SideView::Hosts);
+    assert_eq!(loaded.theme, Theme::Dark);
+    assert_eq!(loaded.font_size, 16);
+    assert_eq!(loaded.left_panel_width, 333);
+    assert!(loaded.left_panel_hidden);
+}
+
+#[test]
+fn an_unknown_side_view_falls_back_to_hosts() {
+    let data = TempDir::new().unwrap();
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "side_view: dashboards\nfont_size: 15\n",
+    )
+    .unwrap();
+
+    let loaded = Preferences::load(data.path());
+
+    assert_eq!(loaded.side_view, SideView::Hosts);
+    assert_eq!(loaded.font_size, 15);
+}
+
+#[test]
+fn the_interface_sees_the_side_view_by_name() {
+    let json = serde_json::to_value(Preferences {
+        side_view: SideView::Backups,
+        ..Preferences::default()
+    })
+    .unwrap();
+
+    assert_eq!(json["sideView"], "backups");
 }
