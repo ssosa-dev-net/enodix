@@ -16,7 +16,10 @@ export interface PaneRect {
 /**
  * The inner size of a new session window (#84) whose terminal keeps the
  * columns and rows it has over `rect`: a tab bar, the session, and the
- * status line, measured in this window where they are drawn.
+ * status line, measured in this window where they are drawn. The tab bar
+ * is a pane's own (`[data-tab-bar]`): `[data-window-bar]` is also on a
+ * side view's header, which comes first in the main window and need not
+ * be as tall.
  */
 export function sessionWindowSize(rect: PaneRect) {
   const height = (selector: string, otherwise: number) =>
@@ -26,7 +29,7 @@ export function sessionWindowSize(rect: PaneRect) {
     width: rect.width,
     height:
       rect.height +
-      height("[data-window-bar]", 38) +
+      height("[data-tab-bar]", 38) +
       height("[data-status-line]", 22),
   };
 }
