@@ -26,8 +26,9 @@ What comes after v1. The order and the decisions below were settled in a design 
 
 ## Status
 
-As of 2026-11-14, items 1, 2, 3, 5, 6 and 7 are built and released in 0.2.0, an unsigned pre-release like 0.1.x. Item 4 was skipped for now, as it still needs its design session. What was built but not verified:
+As of 2026-11-15, items 1, 2, 3, 5, 6 and 7 are built; they were released in 0.2.0. Item 4 was skipped for now, as it still needs its design session; items 8, 9 and 10 are not started. Two releases since came from Hardening, not from the list above: 0.3.0 (the redesigned interface) and 0.4.0 (the app's own window frame, and terminals in windows of their own). Every release so far is an unsigned pre-release. What was built but not verified:
 
+- **The release files themselves:** the installer, the portable zip and the Linux packages of 0.3.0 and 0.4.0 were built and checksummed, not installed and run as part of the release. The end-to-end test runs the same code built without the installer.
 - **Linux desktop:** the packages build and the core, the headless binary and the Python bridge pass their tests under WSL. The app itself has not been run on a real Linux desktop; the check list is in `docs/linux.md`.
 - **NX-OS:** its built-in platform definition has not been run against a device (no image in the lab). The other five are verified in the containerlab suite.
 - **Privilege password:** no lab account asks for an enable password, so that question has only been exercised against the test device.
@@ -36,6 +37,8 @@ As of 2026-11-14, items 1, 2, 3, 5, 6 and 7 are built and released in 0.2.0, an 
 ## Hardening
 
 What has to be true before anyone but the developer uses the app. It runs alongside the remaining features and comes first where the two compete. So far the app has had one user and was tested mostly against test servers and one lab.
+
+The parts below are not in an order yet. Only the Linux desktop check has a ticket (#58); the rest is still to be ticketed.
 
 **The first five minutes**
 
@@ -49,6 +52,7 @@ What has to be true before anyone but the developer uses the app. It runs alongs
 - In short: an activity rail with one foldable side view replaces the toolbar and the permanent side columns; jobs, config history, preferences and the imports open as tabs beside the terminals; only short confirmations stay dialogs; job runs and config history can open as real windows. Behaviour does not change.
 - Found in use after 0.3.0: the system title bar wasted a line and did not match, so the app now draws its own window frame (#80, built). The cosmetic fixes made after 0.3.0 and the window frame are in 0.4.0.
 - Also found in use: terminals could not leave the main window, which engineers with several monitors need when troubleshooting across devices (spec #81, closed). The risky part, handing a live session from one window to another without losing output, was proven by a prototype (#82) and its mechanism is in the core with tests. Built on 2026-11-15 (#83 to #90) and released in 0.4.0: a session moves to a window of its own and back, session windows hold tabs and split panes, and safety markers, questions, multi-send and the closing rules follow. Checked with twenty sessions over three windows on two monitors. A session window whose page crashes hands its sessions to the main window (#89). A new session window is placed by physical position, so it opens beside the main window on monitors with different scaling too (#90, checked at 100% and 150%). Still open: a session window whose page hangs without crashing, or the web engine dying as a whole, leaves sessions stuck until the app is closed; the crash handling is untried on a Linux desktop.
+- Small limits of the new window, known and left for now: Windows 11's snap-layouts menu on the Maximize button is not offered (dragging to an edge and the Win+arrow keys still snap); in a narrow top-right pane the pane's own tools (join, split, close pane) are cut off first; a window cannot be moved while a window-wide dialog is open.
 
 **Edge testing**
 
@@ -61,9 +65,12 @@ Deliberately hostile use, each finding becoming a test where it can:
 - **Jobs and scripts:** hundreds of hosts, hosts failing in every way at once, cancelling at every stage, a script that hangs, floods output or leaves processes behind.
 - **Windows itself:** display scaling and several monitors, a locked-down corporate laptop (no admin rights, restricted PowerShell, a strict firewall), antivirus holding files open.
 
+Done so far, on 2026-11-15 for the session windows (the record is in the window notes): twenty SSH sessions over three windows with one flooding for a minute, and two monitors at the same scale and at 100% beside 150%. A monitor left of or above the primary is untried. Everything else in the list is still to do.
+
 **Checks still owed from the work so far**
 
-- A review of everything built after 0.1.2 against its spec; only the script tunnels were reviewed after they were built.
+- A review of the 0.2.0 work (#34 to #57) against its spec. The script tunnels (#60) were reviewed after they were built, and the redesign and the session windows each ended with a sweep of their spec's user stories (#79, #88); the rest of 0.2.0 was not.
+- A release installed and run: the Windows installer on a clean profile and over the previous version, and the portable zip. The Linux packages are part of the Linux desktop check (#58).
 - The items listed under Status as built but not verified.
 
 **Trust, written down**
@@ -196,6 +203,8 @@ Let scripts reach more than a host's SSH port through the app's jump hosts.
 
 ## Later, undated
 
+- Dragging a tab out of the window to give it a window of its own, and dragging tabs between windows (left out of #81: the menu and the shortcut came first)
+- Remembering session windows and their places across restarts (left out of #81, like the tab layout)
 - Expect-style scripting of live terminal sessions
 - Port forwarding and SOCKS proxy
 - Quick tools: ping, traceroute, subnet calculator, MAC vendor lookup
