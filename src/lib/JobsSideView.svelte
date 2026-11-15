@@ -127,7 +127,7 @@
 {/snippet}
 
 <div class="jobs" data-jobs-view>
-  <header><h2>Jobs</h2></header>
+  <header data-window-bar data-tauri-drag-region="deep"><h2>Jobs</h2></header>
 
   {#if !workspace}
     <p class="hint" data-needs-workspace>

@@ -6,6 +6,17 @@ everything 0.2.0 could do, the app still does, reached differently.
 
 ## The window
 
+- **Frame**: the app draws its own (no system title bar). The top of the
+  window is the app's own bar: the rail and the side view's heading on the
+  left, the tab bars across the rest. Dragging an empty part of it moves
+  the window (and snaps it to screen edges), a double click maximizes or
+  restores it; a tab, button or field never drags. Minimize, Maximize or
+  Restore, and Close sit at the right end of the top-right pane's bar;
+  Close does what closing the window always did. The window resizes from
+  its edges as before. Run and config history windows have the same bar,
+  with their title. Windows 11's snap layouts menu on hovering Maximize is
+  not offered (a drawn button cannot have it); Win+Z and Win+arrow keys
+  still snap.
 - **Activity rail** (left edge): icons for the side views Hosts, Snippets,
   Jobs, Config backups and Credentials, with Preferences (the gear) at the
   foot. Clicking the open view's icon folds the side view away; any icon

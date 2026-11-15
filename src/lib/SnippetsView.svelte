@@ -88,7 +88,7 @@
   data-mode={editing ? "edit" : "list"}
   {onkeydown}
 >
-  <header>
+  <header data-window-bar data-tauri-drag-region="deep">
     <h2>
       Snippets
       {#if list.length > 0}<span class="count">{list.length}</span>{/if}

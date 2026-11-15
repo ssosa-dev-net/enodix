@@ -57,6 +57,7 @@
   import RoleIcon from "./RoleIcon.svelte";
   import { VIEWS } from "./views";
   import { ENVIRONMENT_NAMES } from "./paste";
+  import WindowControls from "./WindowControls.svelte";
 
   interface Props {
     node: LayoutNode;
@@ -64,9 +65,23 @@
     /** Whether there is more than one pane (each can then be closed). */
     several: boolean;
     handlers: PaneHandlers;
+    /** Whether the pane (or split) reaches the window's top edge: its tab
+     * bar is then part of the window's top bar, and drags the window
+     * (#80). */
+    top?: boolean;
+    /** Whether it reaches the window's right edge: the top-right pane's
+     * bar ends with the window's buttons. */
+    right?: boolean;
   }
 
-  let { node, activePane, several, handlers }: Props = $props();
+  let {
+    node,
+    activePane,
+    several,
+    handlers,
+    top = true,
+    right = true,
+  }: Props = $props();
 
   const STATE_TEXT = {
     connecting: "Connecting",
@@ -145,14 +160,32 @@
 
 {#if node.kind === "split"}
   <div class="split {node.direction}">
-    {#each node.children as child (child.kind === "pane" ? `p${child.id}` : `s${panesOf(child)[0].id}`)}
-      <PaneView node={child} {activePane} {several} {handlers} />
+    {#each node.children as child, index (child.kind === "pane" ? `p${child.id}` : `s${panesOf(child)[0].id}`)}
+      {@const last = index === node.children.length - 1}
+      <PaneView
+        node={child}
+        {activePane}
+        {several}
+        {handlers}
+        top={top && (node.direction === "right" || index === 0)}
+        right={right && (node.direction === "down" || last)}
+      />
     {/each}
   </div>
 {:else}
   {@const pane = node}
   <div class="pane" class:active={pane.id === activePane} data-pane={pane.id}>
-    <div class="bar" data-tab-bar={pane.id} data-pane={pane.id}>
+    <!-- At the top, the bar's empty parts drag the window and a double
+         click maximizes it; a tab, a button or a field never does (Tauri's
+         drag region skips them). -->
+    <div
+      class="bar"
+      class:framed={top && right}
+      data-tab-bar={pane.id}
+      data-pane={pane.id}
+      data-window-bar={top || undefined}
+      data-tauri-drag-region={top ? "deep" : undefined}
+    >
       <div class="tabs" role="tablist" aria-label="Tabs" onwheel={scrollTabs}>
         {#each pane.tabs as tab (tab)}
           {@const info = handlers.tab(tab)}
@@ -255,48 +288,55 @@
         ><Plus size={16} aria-hidden="true" /></button
       >
       <span class="spacer"></span>
-      {#if pane.tabs.some((tab) => {
-        const info = handlers.tab(tab);
-        return info !== null && !info.view && !info.member;
-      })}
+      <!-- Next to the window's buttons, these give way first in a narrow
+           pane (see .bar.framed .tools). -->
+      <div class="tools">
+        {#if pane.tabs.some((tab) => {
+          const info = handlers.tab(tab);
+          return info !== null && !info.view && !info.member;
+        })}
+          <button
+            class="icon"
+            data-join-pane
+            aria-label="Add this pane's tabs to the multi-send group"
+            title="Add this pane's tabs to the multi-send group"
+            onclick={() => handlers.joinPane(pane.id)}
+          >
+            <UsersRound size={15} aria-hidden="true" />
+          </button>
+        {/if}
         <button
           class="icon"
-          data-join-pane
-          aria-label="Add this pane's tabs to the multi-send group"
-          title="Add this pane's tabs to the multi-send group"
-          onclick={() => handlers.joinPane(pane.id)}
+          data-split="right"
+          aria-label="Split right"
+          title="Split right"
+          onclick={() => handlers.split(pane.id, "right")}
         >
-          <UsersRound size={15} aria-hidden="true" />
+          <Columns2 size={15} aria-hidden="true" />
         </button>
-      {/if}
-      <button
-        class="icon"
-        data-split="right"
-        aria-label="Split right"
-        title="Split right"
-        onclick={() => handlers.split(pane.id, "right")}
-      >
-        <Columns2 size={15} aria-hidden="true" />
-      </button>
-      <button
-        class="icon"
-        data-split="down"
-        aria-label="Split down"
-        title="Split down"
-        onclick={() => handlers.split(pane.id, "down")}
-      >
-        <Rows2 size={15} aria-hidden="true" />
-      </button>
-      {#if several}
         <button
           class="icon"
-          data-close-pane
-          aria-label="Close pane"
-          title="Close pane (its tabs move to the pane next to it)"
-          onclick={() => handlers.closePane(pane.id)}
+          data-split="down"
+          aria-label="Split down"
+          title="Split down"
+          onclick={() => handlers.split(pane.id, "down")}
         >
-          <SquareX size={15} aria-hidden="true" />
+          <Rows2 size={15} aria-hidden="true" />
         </button>
+        {#if several}
+          <button
+            class="icon"
+            data-close-pane
+            aria-label="Close pane"
+            title="Close pane (its tabs move to the pane next to it)"
+            onclick={() => handlers.closePane(pane.id)}
+          >
+            <SquareX size={15} aria-hidden="true" />
+          </button>
+        {/if}
+      </div>
+      {#if top && right}
+        <WindowControls />
       {/if}
     </div>
     <div class="body" data-pane={pane.id} {@attach handlers.body(pane.id)}>
@@ -348,6 +388,35 @@
     padding: 0 var(--space-1-5);
     background: var(--surface);
     border-bottom: 1px solid var(--border);
+  }
+
+  /* The window's buttons sit flush with the window's top-right corner. */
+  .bar.framed {
+    padding-right: 0;
+  }
+
+  .bar.framed > :global([data-window-controls]) {
+    margin-left: var(--space-1-5);
+  }
+
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: var(--space-0-5);
+    flex: none;
+  }
+
+  /* In the bar with the window's buttons, a narrow pane's tools give way
+     first (clipped), so that the shown tab and the window's buttons stay
+     in sight; other bars are as they were. */
+  .bar.framed .tools {
+    flex: 0 100 auto;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .bar.framed .tabs:has([data-tab]) {
+    min-width: 3.5rem;
   }
 
   .tabs {

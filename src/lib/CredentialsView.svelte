@@ -77,7 +77,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="credentials" data-credentials data-mode={mode.kind} {onkeydown}>
-  <header>
+  <header data-window-bar data-tauri-drag-region="deep">
     <h2>Credentials</h2>
     <button
       class="tool"
