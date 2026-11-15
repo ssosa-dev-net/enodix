@@ -1693,9 +1693,25 @@ async function main() {
 
   await webLinks({ evaluate, text, screenshot, step });
 
-  await csvImport({ evaluate, fillForm, text, screenshot, step });
+  await csvImport({
+    evaluate,
+    fillForm,
+    text,
+    mouse,
+    centreOf,
+    screenshot,
+    step,
+  });
 
-  await nornirImport({ evaluate, fillForm, text, screenshot, step });
+  await nornirImport({
+    evaluate,
+    fillForm,
+    text,
+    mouse,
+    centreOf,
+    screenshot,
+    step,
+  });
 
   await jobs({
     evaluate,
@@ -3894,13 +3910,21 @@ async function webLinks({ evaluate, text, screenshot, step }) {
  * top of the workspace with one existing host confirmed, then imported again
  * without confirming anything.
  */
-async function csvImport({ evaluate, fillForm, text, screenshot, step }) {
+async function csvImport({
+  evaluate,
+  fillForm,
+  text,
+  mouse,
+  centreOf,
+  screenshot,
+  step,
+}) {
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
   const clickOn = (selector) =>
     evaluate(`document.querySelector(${json(selector)}).click()`);
-  const dialog = "[data-dialog=csv-import]";
+  const dialog = ".slot.view [data-view=csv-import]";
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const csvFile = join(userData, "inventory.csv");
   writeFileSync(
@@ -3919,12 +3943,43 @@ async function csvImport({ evaluate, fillForm, text, screenshot, step }) {
   const oddFile = join(workspace, "odd.yaml");
   const oddBefore = readFileSync(oddFile, "utf8");
 
-  const readFile = async () => {
-    await clickOn("[data-add-menu]");
-    await clickOn("[data-add-entries] [data-open-csv-import]");
-    await until("the CSV import dialog", () => atStep("file"));
+  const importTabs = () =>
+    evaluate(
+      `document.querySelectorAll(".slot.view[data-view-slot=csv-import]").length`,
+    );
+  // Opened from the Hosts view's add control, or from a folder's context
+  // menu (`fromFolder`), whose folder is then the target.
+  const readFile = async (fromFolder) => {
+    if (fromFolder === undefined) {
+      await clickOn("[data-add-menu]");
+      await clickOn("[data-add-entries] [data-open-csv-import]");
+    } else {
+      const row = await centreOf(
+        `nav button[data-item=folder][data-path="${fromFolder}"]`,
+      );
+      await mouse("mousePressed", row, { button: "right", clickCount: 1 });
+      await mouse("mouseReleased", row, { button: "right", clickCount: 1 });
+      await until("the folder's context menu", () =>
+        exists("[role=menu] [data-menu=import-csv]"),
+      );
+      await clickOn("[role=menu] [data-menu=import-csv]");
+    }
+    await until("the CSV import tab", () => atStep("file"));
+    if (
+      !(await exists(".slot.view[data-view-slot=csv-import][data-view-active]"))
+    )
+      fail("the CSV import tab is not the active pane's shown tab");
+    if (!(await exists("nav [data-host]")))
+      fail("the tree is not in view beside the CSV import tab");
     await fillForm({ "csv-file": csvFile }, `${dialog} form`);
     await until("the column mapping", () => atStep("map"));
+    if (fromFolder !== undefined) {
+      const target = await evaluate(
+        `document.querySelector("${dialog} select[name=csv-target]").value`,
+      );
+      if (target !== fromFolder)
+        fail(`the CSV import opened on ${fromFolder} targets ${json(target)}`);
+    }
   };
   const choices = () =>
     evaluate(
@@ -4015,21 +4070,30 @@ async function csvImport({ evaluate, fillForm, text, screenshot, step }) {
   ) {
     fail(`the confirmed odd.yaml holds ${json(odd)} (was ${json(oddBefore)})`);
   }
-  await clickOn(`${dialog} [data-csv=close]`);
-  await until("the dialog closed", async () => !(await exists(dialog)));
-  await until("the imported folder in the tree", () =>
+  // The tree beside the tab shows what the import wrote, the tab still open.
+  await until("the imported folder in the tree beside the tab", () =>
     exists('nav button[data-item=folder][data-path="Europe"]'),
   );
+  if (!(await atStep("report"))) fail("the CSV import tab left its report");
+  await clickOn(`${dialog} [data-csv=close]`);
+  await until("the CSV import tab closed", async () => !(await exists(dialog)));
   step(
-    "importing creates folders under the target, replaces only the confirmed host and reports every row",
+    "importing creates folders under the target, replaces only the confirmed host and reports every row, the tree updating beside the tab",
   );
 
-  // Again, confirming nothing: every host exists now and none is written.
+  // Again, from a folder's context menu (its folder the target), confirming
+  // nothing: every host exists now and none is written. Opening the import
+  // again meanwhile brings its one tab forward.
   const madridBefore = readFileSync(
     join(workspace, "Europe", "Madrid", "imp-1.yaml"),
   );
   writeFileSync(oddFile, oddBefore);
-  await readFile();
+  await readFile("Europe");
+  await clickOn("[data-add-menu]");
+  await clickOn("[data-add-entries] [data-open-csv-import]");
+  await until("the CSV import still at its mapping", () => atStep("map"));
+  if ((await importTabs()) !== 1)
+    fail(`opening the CSV import twice made ${await importTabs()} tabs`);
   await preview();
   await until(
     "every host existing",
@@ -4049,8 +4113,10 @@ async function csvImport({ evaluate, fillForm, text, screenshot, step }) {
     fail("imp-1.yaml was overwritten");
   }
   await clickOn(`${dialog} [data-csv=close]`);
-  await until("the dialog closed", async () => !(await exists(dialog)));
-  step("a re-import overwrites no existing host without confirmation");
+  await until("the CSV import tab closed", async () => !(await exists(dialog)));
+  step(
+    "a re-import from a folder's menu, in the one tab, overwrites no existing host without confirmation",
+  );
 }
 
 /**
@@ -4059,13 +4125,21 @@ async function csvImport({ evaluate, fillForm, text, screenshot, step }) {
  * data as custom fields, passwords never written, and a re-import that
  * overwrites nothing.
  */
-async function nornirImport({ evaluate, fillForm, text, screenshot, step }) {
+async function nornirImport({
+  evaluate,
+  fillForm,
+  text,
+  mouse,
+  centreOf,
+  screenshot,
+  step,
+}) {
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
   const clickOn = (selector) =>
     evaluate(`document.querySelector(${json(selector)}).click()`);
-  const dialog = "[data-dialog=nornir-import]";
+  const dialog = ".slot.view [data-view=nornir-import]";
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const files = {
     "nornir-hosts": join(userData, "nornir-hosts.yaml"),
@@ -4114,15 +4188,45 @@ async function nornirImport({ evaluate, fillForm, text, screenshot, step }) {
     evaluate(`[...document.querySelectorAll("${dialog} [data-report]")].map(
       (section) => section.dataset.report + "=" + section.dataset.count,
     ).join(" ")`);
-  const preview = async () => {
-    await clickOn("[data-add-menu]");
-    await clickOn("[data-add-entries] [data-open-nornir-import]");
-    await until("the Nornir import dialog", () => atStep("files"));
-    await evaluate(`(() => {
-      const target = document.querySelector("${dialog} select[name=nornir-target]");
-      target.value = "Europe";
-      target.dispatchEvent(new Event("change", { bubbles: true }));
-    })()`);
+  // Opened from the Hosts view's add control (the target then chosen), or
+  // from the Europe folder's context menu (`fromMenu`), which targets it.
+  const preview = async (fromMenu = false) => {
+    if (fromMenu) {
+      const row = await centreOf(
+        'nav button[data-item=folder][data-path="Europe"]',
+      );
+      await mouse("mousePressed", row, { button: "right", clickCount: 1 });
+      await mouse("mouseReleased", row, { button: "right", clickCount: 1 });
+      await until("the folder's context menu", () =>
+        exists("[role=menu] [data-menu=import-nornir]"),
+      );
+      await clickOn("[role=menu] [data-menu=import-nornir]");
+    } else {
+      await clickOn("[data-add-menu]");
+      await clickOn("[data-add-entries] [data-open-nornir-import]");
+    }
+    await until("the Nornir import tab", () => atStep("files"));
+    if (
+      !(await exists(
+        ".slot.view[data-view-slot=nornir-import][data-view-active]",
+      ))
+    )
+      fail("the Nornir import tab is not the active pane's shown tab");
+    if (!(await exists("nav [data-host]")))
+      fail("the tree is not in view beside the Nornir import tab");
+    if (fromMenu) {
+      const target = await evaluate(
+        `document.querySelector("${dialog} select[name=nornir-target]").value`,
+      );
+      if (target !== "Europe")
+        fail(`the Nornir import opened on Europe targets ${json(target)}`);
+    } else {
+      await evaluate(`(() => {
+        const target = document.querySelector("${dialog} select[name=nornir-target]");
+        target.value = "Europe";
+        target.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+    }
     await fillForm(files, `${dialog} form`);
     await until("the Nornir preview", () => atStep("preview"));
   };
@@ -4132,7 +4236,10 @@ async function nornirImport({ evaluate, fillForm, text, screenshot, step }) {
   };
   const close = async () => {
     await clickOn(`${dialog} [data-nornir=close]`);
-    await until("the dialog closed", async () => !(await exists(dialog)));
+    await until(
+      "the Nornir import tab closed",
+      async () => !(await exists(dialog)),
+    );
   };
 
   // The preview: each host's fate, the passwords left out, nothing written.
@@ -4173,18 +4280,20 @@ async function nornirImport({ evaluate, fillForm, text, screenshot, step }) {
       fail(`${secret} was written to the workspace`);
     }
   }
-  await close();
-  await until("an imported Nornir host in the tree", () =>
+  await until("an imported Nornir host in the tree beside the tab", () =>
     exists('nav [data-host="Europe/nr-1.yaml"]'),
   );
+  if (!(await atStep("report"))) fail("the Nornir import tab left its report");
+  await close();
   step(
-    "importing writes inherited values, group tags and data fields, never passwords",
+    "importing writes inherited values, group tags and data fields, never passwords, the tree updating beside the tab",
   );
 
-  // Again: both hosts exist now, nothing is confirmed, nothing is written.
+  // Again, from the folder's context menu: both hosts exist now, nothing is
+  // confirmed, nothing is written.
   writeFileSync(nr2, "address: 10.8.0.2\ndescription: edited by hand\n");
   const nr2Before = readFileSync(nr2, "utf8");
-  await preview();
+  await preview(true);
   await until(
     "both Nornir hosts existing",
     async () => (await outcomes()) === "nr-1:exists nr-2:exists broken:fail",
