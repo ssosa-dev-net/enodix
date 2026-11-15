@@ -116,17 +116,17 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
   }
 
   label {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
   }
 
   input {
-    padding: 0.25rem 0.45rem;
+    padding: var(--space-1) var(--space-1-5);
     min-width: 12rem;
   }
 

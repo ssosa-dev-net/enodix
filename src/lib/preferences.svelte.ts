@@ -166,11 +166,11 @@ export function terminalTheme(dark: boolean): ITheme {
 // xterm.js's own ANSI colours (Tango), written out so that highlight
 // rules naming a palette colour get the same one as the device's own.
 const DARK_TERMINAL: ITheme = {
-  background: "#0e1116",
-  foreground: "#d7dce2",
-  cursor: "#d7dce2",
-  cursorAccent: "#0e1116",
-  selectionBackground: "#3a5a8c",
+  background: "#0b0d10",
+  foreground: "#cfd6de",
+  cursor: "#cfd6de",
+  cursorAccent: "#0b0d10",
+  selectionBackground: "#2d4f78",
   selectionForeground: "#ffffff",
   black: "#2e3436",
   red: "#cc0000",

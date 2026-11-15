@@ -1,4 +1,6 @@
 <script lang="ts">
+  import X from "@lucide/svelte/icons/x";
+  import Settings from "@lucide/svelte/icons/settings";
   import SavedJobsPanel from "./SavedJobsPanel.svelte";
   import SnippetsPanel from "./SnippetsPanel.svelte";
   import TreeFolder from "./TreeFolder.svelte";
@@ -297,12 +299,7 @@
       aria-label="Preferences"
       onclick={() => (preferences.dialog = true)}
     >
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-        <path
-          fill="currentColor"
-          d="M9.4 1l.3 1.8c.4.1.8.3 1.1.5l1.5-1 1.4 1.4-1 1.5c.2.3.4.7.5 1.1L15 6.6v2l-1.8.3c-.1.4-.3.8-.5 1.1l1 1.5-1.4 1.4-1.5-1c-.3.2-.7.4-1.1.5L9.4 15h-2l-.3-1.8c-.4-.1-.8-.3-1.1-.5l-1.5 1-1.4-1.4 1-1.5c-.2-.3-.4-.7-.5-1.1L1.8 9.4v-2l1.8-.3c.1-.4.3-.8.5-1.1l-1-1.5 1.4-1.4 1.5 1c.3-.2.7-.4 1.1-.5L7.4 1h2zM8.4 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z"
-        />
-      </svg>
+      <Settings size={15} aria-hidden="true" />
     </button>
   </header>
 
@@ -402,7 +399,8 @@
       <button
         class="dismiss"
         aria-label="Dismiss"
-        onclick={() => (inventory.editError = null)}>×</button
+        onclick={() => (inventory.editError = null)}
+        ><X size={14} aria-hidden="true" /></button
       >
     </p>
   {/if}
@@ -476,34 +474,39 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    background: var(--bg);
+    background: var(--surface);
     border-right: 1px solid var(--border);
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.4rem 0.6rem;
-    background: var(--surface);
+    gap: var(--space-2);
+    padding: var(--space-1-5) var(--space-2) var(--space-1-5) var(--space-3);
     border-bottom: 1px solid var(--border);
   }
 
   header button {
-    padding: 0.25rem 0.6rem;
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+
+  header button:hover:not(:disabled) {
+    color: var(--text);
   }
 
   header .preferences {
     display: inline-grid;
     place-items: center;
-    padding: 0.3rem 0.4rem;
+    padding: var(--space-1) var(--space-1-5);
   }
 
   header .jobs {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: var(--space-1-5);
     white-space: nowrap;
   }
 
@@ -538,11 +541,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
+    font-size: var(--text-sm);
+    color: var(--text);
     text-align: left;
     border-color: transparent;
     background: none;
-    padding-left: 0.2rem;
+    padding-left: var(--space-1);
   }
 
   header .name:disabled {
@@ -558,15 +563,15 @@
     /* The panel is at most 18rem wide: the buttons go on a second row
        rather than out of sight. */
     flex-wrap: wrap;
-    gap: 0.4rem;
-    padding: 0.35rem 0.6rem;
+    gap: var(--space-1-5);
+    padding: var(--space-1-5) var(--space-2);
     border-bottom: 1px solid var(--border);
   }
 
   .toolbar button,
   .filters button {
-    padding: 0.15rem 0.55rem;
-    font-size: 0.8rem;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--text-xs);
     white-space: nowrap;
   }
 
@@ -575,28 +580,23 @@
     color: var(--muted);
   }
 
-  kbd {
-    font-family: inherit;
-    font-size: 0.7rem;
-  }
-
   .filters {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.35rem 0.6rem;
+    gap: var(--space-1-5);
+    padding: var(--space-1-5) var(--space-2);
     border-bottom: 1px solid var(--border);
   }
 
   .filters select {
     flex: 1;
     min-width: 0;
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
   }
 
   .filters .count {
     color: var(--muted);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     white-space: nowrap;
   }
 
@@ -604,7 +604,7 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 0.3rem 0;
+    padding: var(--space-1) 0;
   }
 
   .tree.drop-target {
@@ -613,7 +613,7 @@
 
   .hint,
   .error {
-    margin: 0.8rem 0.6rem;
+    margin: var(--space-3) var(--space-2);
     color: var(--muted);
   }
 
@@ -625,9 +625,9 @@
   .edit-error {
     display: flex;
     align-items: flex-start;
-    gap: 0.4rem;
-    margin: 0.5rem 0.6rem 0;
-    font-size: 0.8rem;
+    gap: var(--space-1-5);
+    margin: var(--space-2) var(--space-2) 0;
+    font-size: var(--text-xs);
   }
 
   .edit-error span {
@@ -637,27 +637,28 @@
   .dismiss {
     border: 0;
     background: none;
-    padding: 0 0.3rem;
+    padding: 0 var(--space-1);
     color: var(--muted);
   }
 
   .problems {
-    margin: 0.5rem 0.6rem 0;
-    padding: 0.4rem 0.5rem;
-    border: 1px solid var(--danger);
-    border-radius: 4px;
+    margin: var(--space-2) var(--space-2) 0;
+    padding: var(--space-1-5) var(--space-2);
+    background: var(--warning-bg);
+    border: 1px solid var(--warning-border);
+    border-radius: var(--radius-md);
     color: var(--text);
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
   }
 
   .problems summary {
     cursor: pointer;
-    color: var(--danger);
+    color: var(--warning);
   }
 
   .problems ul {
-    margin: 0.4rem 0 0;
-    padding-left: 1rem;
+    margin: var(--space-1-5) 0 0;
+    padding-left: var(--space-4);
     max-height: 10rem;
     overflow: auto;
     overflow-wrap: anywhere;
@@ -667,11 +668,11 @@
     position: fixed;
     z-index: 30;
     pointer-events: none;
-    padding: 0.15rem 0.5rem;
-    font-size: 0.8rem;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--text-xs);
     background: var(--surface);
     border: 1px solid var(--accent);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     opacity: 0.9;
   }
 
@@ -680,23 +681,22 @@
     z-index: 25;
     display: grid;
     min-width: 10rem;
-    padding: 0.25rem 0;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    box-shadow: 0 6px 20px rgb(0 0 0 / 0.4);
+    padding: var(--space-1);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow);
   }
 
   .menu button {
     border: 0;
-    border-radius: 0;
+    border-radius: var(--radius-sm);
     background: none;
     text-align: left;
-    padding: 0.3rem 0.9rem;
+    padding: var(--space-1-5) var(--space-2-5);
   }
 
-  .menu button:hover {
-    filter: none;
-    background: var(--border);
+  .menu button:hover:not(:disabled) {
+    background: var(--selected);
   }
 </style>

@@ -119,54 +119,54 @@
     height: 100%;
     display: grid;
     place-items: center;
-    padding: 1.5rem;
+    padding: var(--space-6);
     overflow: auto;
   }
 
   .panel {
     width: min(22rem, 100%);
     display: grid;
-    gap: 0.9rem;
+    gap: var(--space-3);
   }
 
   form {
     display: grid;
-    gap: 0.9rem;
+    gap: var(--space-3);
   }
 
   h2 {
     margin: 0;
-    font-size: 1.25rem;
-    font-weight: 600;
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
   }
 
   p {
-    margin: -0.6rem 0 0.4rem;
+    margin: calc(-1 * var(--space-2)) 0 var(--space-1-5);
     color: var(--muted);
   }
 
   p.notice {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
     color: var(--text);
     overflow-wrap: anywhere;
   }
 
   label {
     display: grid;
-    gap: 0.3rem;
-    font-size: 0.8rem;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   input {
     font: inherit;
-    font-size: 0.95rem;
+    font-size: var(--text-md);
     color: var(--text);
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0.5rem 0.6rem;
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-2);
     min-width: 0;
   }
 
@@ -177,8 +177,8 @@
 
   .actions {
     display: flex;
-    gap: 0.6rem;
-    margin-top: 0.4rem;
+    gap: var(--space-2);
+    margin-top: var(--space-1-5);
   }
 
   .link {
@@ -187,6 +187,6 @@
     border: none;
     background: none;
     color: var(--accent);
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
   }
 </style>

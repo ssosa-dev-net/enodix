@@ -1,4 +1,6 @@
 <script lang="ts">
+  import X from "@lucide/svelte/icons/x";
+  import ExternalLink from "@lucide/svelte/icons/external-link";
   import CopyButton from "./CopyButton.svelte";
   import RoleIcon from "./RoleIcon.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
@@ -214,7 +216,8 @@
           title={link.url
             ? `Open ${link.url} in the browser`
             : `Not opened: ${link.refused}`}
-          onclick={() => open(link)}>{link.name} ↗</button
+          onclick={() => open(link)}
+          >{link.name} <ExternalLink size={12} aria-hidden="true" /></button
         >
       {/each}
     </div>
@@ -414,7 +417,7 @@
           onclick={() =>
             save((current) => ({
               custom: current.custom.filter((f) => f.key !== field.key),
-            }))}>×</button
+            }))}><X size={14} aria-hidden="true" /></button
         >
       </div>
     {/each}
@@ -443,20 +446,20 @@
 <style>
   .details {
     display: grid;
-    gap: 1rem;
-    padding: 0.8rem;
-    font-size: 0.85rem;
+    gap: var(--space-4);
+    padding: var(--space-3);
+    font-size: var(--text-sm);
   }
 
   header {
     display: grid;
-    gap: 0.3rem;
+    gap: var(--space-1);
   }
 
   h2 {
     margin: 0;
-    font-size: 1.05rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
     overflow-wrap: anywhere;
   }
 
@@ -464,9 +467,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin: 0 0 0.4rem;
-    font-size: 0.8rem;
-    font-weight: 600;
+    margin: 0 0 var(--space-1-5);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
     color: var(--muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -474,21 +477,21 @@
 
   .file {
     color: var(--muted);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     overflow-wrap: anywhere;
   }
 
   .actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-top: 0.3rem;
+    gap: var(--space-1-5);
+    margin-top: var(--space-1);
   }
 
   .actions button,
   .small {
-    padding: 0.2rem 0.6rem;
-    font-size: 0.8rem;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--text-xs);
   }
 
   .web-link.refused {
@@ -499,26 +502,26 @@
   .error {
     margin: 0;
     color: var(--danger);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     overflow-wrap: anywhere;
   }
 
   section {
     display: grid;
-    gap: 0.45rem;
+    gap: var(--space-1-5);
   }
 
   .field {
     display: grid;
-    gap: 0.15rem;
-    font-size: 0.75rem;
+    gap: var(--space-0-5);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .row {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .row input,
@@ -537,7 +540,7 @@
   }
 
   .remove {
-    padding: 0 0.45rem;
+    padding: 0 var(--space-1-5);
     border: 0;
     background: none;
     color: var(--muted);

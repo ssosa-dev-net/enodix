@@ -1,4 +1,7 @@
 <script lang="ts">
+  import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import X from "@lucide/svelte/icons/x";
   import { inventory, removeSnippet } from "./inventory.svelte";
   import { bySnippetGroup, editSnippet, newSnippet } from "./snippets.svelte";
 
@@ -23,7 +26,11 @@
       data-snippets-toggle
       onclick={() => (open = !open)}
     >
-      <span class="caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+      <span class="caret" aria-hidden="true"
+        >{#if open}<ChevronDown size={14} />{:else}<ChevronRight
+            size={14}
+          />{/if}</span
+      >
       Snippets
       {#if list.length > 0}<span class="count">{list.length}</span>{/if}
     </button>
@@ -74,7 +81,8 @@
                     data-snippet-delete={snippet.name}
                     title="Delete"
                     aria-label={`Delete ${snippet.name}`}
-                    onclick={() => removeSnippet(snippet.name)}>×</button
+                    onclick={() => removeSnippet(snippet.name)}
+                    ><X size={13} aria-hidden="true" /></button
                   >
                 </li>
               {/each}
@@ -98,8 +106,8 @@
   header {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.3rem 0.6rem;
+    gap: var(--space-1-5);
+    padding: var(--space-1) var(--space-2);
     background: var(--surface);
   }
 
@@ -107,11 +115,11 @@
     flex: 1;
     display: flex;
     align-items: center;
-    gap: 0.35rem;
+    gap: var(--space-1-5);
     border-color: transparent;
     background: none;
-    padding: 0.1rem 0.2rem;
-    font-weight: 600;
+    padding: var(--space-0-5) var(--space-0-5);
+    font-weight: var(--weight-semibold);
     text-align: left;
   }
 
@@ -123,31 +131,31 @@
   .count {
     color: var(--muted);
     font-weight: normal;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .new {
-    padding: 0.15rem 0.55rem;
-    font-size: 0.8rem;
+    padding: var(--space-0-5) var(--space-2);
+    font-size: var(--text-xs);
   }
 
   .body {
     min-height: 0;
     overflow: auto;
-    padding: 0.2rem 0 0.4rem;
+    padding: var(--space-0-5) 0 var(--space-1-5);
   }
 
   .hint {
-    margin: 0.4rem 0.6rem;
+    margin: var(--space-1-5) var(--space-2);
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
   }
 
   h3 {
-    margin: 0.4rem 0.6rem 0.1rem;
+    margin: var(--space-1-5) var(--space-2) var(--space-0-5);
     color: var(--muted);
-    font-size: 0.72rem;
-    font-weight: 600;
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-semibold);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -161,8 +169,8 @@
   li {
     display: flex;
     align-items: center;
-    gap: 0.2rem;
-    padding: 0 0.6rem 0 0.4rem;
+    gap: var(--space-0-5);
+    padding: 0 var(--space-2) 0 var(--space-1-5);
   }
 
   .send {
@@ -174,12 +182,11 @@
     text-align: left;
     border-color: transparent;
     background: none;
-    padding: 0.2rem 0.4rem;
+    padding: var(--space-0-5) var(--space-1-5);
   }
 
   .send:not(:disabled):hover {
-    filter: none;
-    background: var(--surface);
+    background: var(--surface-raised);
   }
 
   .send:disabled {
@@ -188,8 +195,8 @@
 
   .small {
     flex: none;
-    padding: 0.05rem 0.35rem;
-    font-size: 0.72rem;
+    padding: var(--space-0-5) var(--space-1-5);
+    font-size: var(--text-2xs);
     border-color: transparent;
     background: none;
     color: var(--muted);

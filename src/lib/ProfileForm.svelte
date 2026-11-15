@@ -275,26 +275,26 @@
 <style>
   form {
     display: grid;
-    gap: 0.8rem;
+    gap: var(--space-3);
   }
 
   label {
     display: grid;
-    gap: 0.3rem;
-    font-size: 0.8rem;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   label.check {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    margin-top: -0.4rem;
+    gap: var(--space-1-5);
+    margin-top: calc(-1 * var(--space-1-5));
   }
 
   .row {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
   }
 
   .row input {
@@ -303,21 +303,21 @@
 
   .note {
     margin: 0;
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .error {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
     color: var(--danger);
     overflow-wrap: anywhere;
   }
 
   .needs-vault {
     display: grid;
-    gap: 0.8rem;
-    font-size: 0.85rem;
+    gap: var(--space-3);
+    font-size: var(--text-sm);
   }
 
   .needs-vault p {
@@ -327,6 +327,6 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
 </style>

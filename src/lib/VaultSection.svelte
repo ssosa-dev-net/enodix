@@ -283,16 +283,16 @@
 <style>
   .security {
     display: grid;
-    gap: 0.5rem;
-    padding-top: 0.6rem;
+    gap: var(--space-2);
+    padding-top: var(--space-2);
     border-top: 1px solid var(--border);
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   h3 {
     margin: 0;
-    font-size: 0.9rem;
-    font-weight: 600;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
   }
 
   p {
@@ -301,29 +301,29 @@
 
   form {
     display: grid;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   label {
     display: grid;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
 
   .buttons {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .explained {
     display: grid;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .warning {
-    padding: 0.5rem 0.6rem;
+    padding: var(--space-2) var(--space-2);
     border: 1px solid var(--danger);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   .note {
@@ -338,6 +338,6 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 </style>

@@ -1366,7 +1366,7 @@
     border-radius: 0;
     background: var(--bg);
     color: var(--muted);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     cursor: pointer;
   }
 
@@ -1378,9 +1378,9 @@
     border-left: 1px solid var(--border);
   }
 
-  .reveal:hover {
+  .reveal:hover:not(:disabled) {
     color: inherit;
-    background: var(--border);
+    background: var(--surface-raised);
   }
 
   .centre {
@@ -1406,7 +1406,7 @@
   .side {
     min-height: 0;
     overflow: auto;
-    background: var(--bg);
+    background: var(--surface);
     border-left: 1px solid var(--border);
   }
 </style>

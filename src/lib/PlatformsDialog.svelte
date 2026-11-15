@@ -311,8 +311,8 @@
     z-index: 15;
     display: grid;
     place-items: center;
-    padding: 1rem;
-    background: rgb(0 0 0 / 0.45);
+    padding: var(--space-4);
+    background: var(--backdrop);
   }
 
   section {
@@ -320,24 +320,24 @@
     max-height: 100%;
     overflow: auto;
     display: grid;
-    gap: 0.8rem;
-    padding: 1.2rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+    gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
   }
 
   h2 {
     margin: 0;
-    font-size: 1.05rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
   }
 
   p {
     margin: 0;
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   .error {
@@ -347,7 +347,7 @@
   }
 
   .mono {
-    font-family: "Cascadia Mono", Consolas, monospace;
+    font-family: var(--font-mono);
   }
 
   ul {
@@ -355,17 +355,17 @@
     margin: 0;
     padding: 0;
     display: grid;
-    gap: 0.3rem;
+    gap: var(--space-1);
   }
 
   li {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.4rem 0.5rem;
+    gap: var(--space-2);
+    padding: var(--space-1-5) var(--space-2);
     border: 1px solid var(--border);
-    border-radius: 4px;
-    font-size: 0.85rem;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
   }
 
   li.unusable .text strong {
@@ -396,15 +396,15 @@
   }
 
   li button {
-    padding: 0.2rem 0.6rem;
+    padding: var(--space-0-5) var(--space-2);
   }
 
   .fields {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
-    gap: 0.5rem 0.8rem;
-    font-size: 0.85rem;
+    gap: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
   }
 
   .hint {
@@ -419,6 +419,6 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
 </style>

@@ -80,25 +80,25 @@
 <style>
   form {
     display: grid;
-    gap: 0.8rem;
+    gap: var(--space-3);
   }
 
   label {
     display: grid;
-    gap: 0.3rem;
-    font-size: 0.8rem;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .note {
     margin: 0;
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
     color: var(--muted);
   }
 
   .error {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
     color: var(--danger);
     overflow-wrap: anywhere;
   }
@@ -106,6 +106,6 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
 </style>

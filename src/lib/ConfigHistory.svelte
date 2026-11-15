@@ -325,8 +325,8 @@
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    padding: 4vh 1rem 1rem;
-    background: rgb(0 0 0 / 0.35);
+    padding: 4vh var(--space-4) var(--space-4);
+    background: var(--backdrop);
   }
 
   .dialog {
@@ -334,14 +334,14 @@
     max-height: 92vh;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    padding: 0.8rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+    gap: var(--space-2);
+    padding: var(--space-3);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
     overflow: hidden;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   header {
@@ -352,14 +352,14 @@
 
   h2 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
   }
 
   .columns {
     display: grid;
     grid-template-columns: minmax(12rem, 16rem) 1fr;
-    gap: 0.6rem;
+    gap: var(--space-2);
     min-height: 0;
     flex: 1;
     overflow: hidden;
@@ -378,14 +378,14 @@
     padding: 0;
     overflow: auto;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   .versions li > button {
     display: grid;
-    gap: 0.1rem;
+    gap: var(--space-0-5);
     width: 100%;
-    padding: 0.35rem 0.5rem;
+    padding: var(--space-1-5) var(--space-2);
     text-align: left;
     background: none;
     border: none;
@@ -399,18 +399,18 @@
   }
 
   .title {
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   .meta {
     color: var(--muted);
-    font-size: 0.9em;
+    font-size: var(--text-sm);
   }
 
   .version {
     display: flex;
     flex-direction: column;
-    gap: 0.45rem;
+    gap: var(--space-1-5);
     min-height: 0;
     overflow: auto;
   }
@@ -418,31 +418,31 @@
   .row {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
     align-items: center;
   }
 
   .row input {
     flex: 1;
     min-width: 10rem;
-    padding: 0.3rem 0.5rem;
+    padding: var(--space-1) var(--space-2);
   }
 
   .row label {
     display: flex;
-    gap: 0.3rem;
+    gap: var(--space-1);
     align-items: center;
   }
 
   pre {
     margin: 0;
-    padding: 0.4rem 0.5rem;
-    font-family: var(--mono, monospace);
-    font-size: 0.8rem;
+    padding: var(--space-1-5) var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     background: var(--surface);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   .text {
@@ -452,12 +452,12 @@
   }
 
   .diff {
-    font-family: var(--mono, monospace);
-    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
     max-height: 22rem;
     overflow: auto;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   .diff .line {
@@ -474,11 +474,11 @@
   }
 
   .diff .added {
-    background: color-mix(in srgb, var(--success, #2a7) 18%, transparent);
+    background: color-mix(in srgb, var(--ok) 18%, transparent);
   }
 
   .diff .removed {
-    background: color-mix(in srgb, var(--danger, #c33) 18%, transparent);
+    background: color-mix(in srgb, var(--danger) 18%, transparent);
   }
 
   .note {

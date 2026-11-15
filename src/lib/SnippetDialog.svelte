@@ -127,8 +127,8 @@
     z-index: 15;
     display: grid;
     place-items: center;
-    padding: 1rem;
-    background: rgb(0 0 0 / 0.45);
+    padding: var(--space-4);
+    background: var(--backdrop);
   }
 
   form {
@@ -136,55 +136,55 @@
     max-height: 100%;
     overflow: auto;
     display: grid;
-    gap: 0.8rem;
-    padding: 1.2rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+    gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
   }
 
   h2 {
     margin: 0;
-    font-size: 1.05rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
   }
 
   .fields {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     align-items: center;
-    gap: 0.5rem 0.8rem;
-    font-size: 0.85rem;
+    gap: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
   }
 
   label[for="snippet-text"] {
     align-self: start;
-    padding-top: 0.3rem;
+    padding-top: var(--space-1);
   }
 
   textarea {
     resize: vertical;
-    font-family: "Cascadia Mono", Consolas, monospace;
-    font-size: 0.85rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
   }
 
   .hint {
     margin: 0;
     color: var(--muted);
-    font-size: 0.8rem;
+    font-size: var(--text-xs);
   }
 
   .error {
     margin: 0;
     color: var(--danger);
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
     overflow-wrap: anywhere;
   }
 
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.6rem;
+    gap: var(--space-2);
   }
 </style>

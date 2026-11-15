@@ -255,8 +255,8 @@
     z-index: 15;
     display: grid;
     place-items: center;
-    padding: 1rem;
-    background: rgb(0 0 0 / 0.45);
+    padding: var(--space-4);
+    background: var(--backdrop);
   }
 
   section {
@@ -264,19 +264,19 @@
     max-height: 100%;
     overflow: auto;
     display: grid;
-    gap: 0.8rem;
-    padding: 1.2rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
-    font-size: 0.85rem;
+    gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    font-size: var(--text-sm);
   }
 
   h2 {
     margin: 0;
-    font-size: 1.05rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
   }
 
   p {
@@ -287,7 +287,7 @@
   dl {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    gap: 0.3rem 0.8rem;
+    gap: var(--space-1) var(--space-3);
     margin: 0;
   }
 
@@ -302,20 +302,20 @@
 
   .libraries {
     display: grid;
-    gap: 0.35rem;
+    gap: var(--space-1-5);
   }
 
   .check {
     display: flex;
     align-items: baseline;
-    gap: 0.4rem;
+    gap: var(--space-1-5);
   }
 
   .installs {
     margin: 0;
-    padding-left: 1.2rem;
+    padding-left: var(--space-4);
     display: grid;
-    gap: 0.2rem;
+    gap: var(--space-0-5);
   }
 
   .hint {
@@ -326,11 +326,11 @@
     margin: 0;
     max-height: 16rem;
     overflow: auto;
-    padding: 0.5rem;
-    background: var(--bg-alt, rgb(0 0 0 / 0.2));
+    padding: var(--space-2);
+    background: var(--input);
     border: 1px solid var(--border);
-    border-radius: 4px;
-    font-size: 0.75rem;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
@@ -342,6 +342,6 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 </style>

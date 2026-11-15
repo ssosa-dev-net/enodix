@@ -279,8 +279,8 @@
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    padding: 6vh 1rem 1rem;
-    background: rgb(0 0 0 / 0.35);
+    padding: 6vh var(--space-4) var(--space-4);
+    background: var(--backdrop);
   }
 
   .dialog {
@@ -288,36 +288,36 @@
     max-height: 88vh;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    padding: 0.8rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+    gap: var(--space-2);
+    padding: var(--space-3);
+    background: var(--dialog);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
     overflow: hidden;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
   }
 
   h2 {
     margin: 0;
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
   }
 
   h3 {
-    margin: 0.3rem 0;
-    font-size: 0.9rem;
+    margin: var(--space-1) 0;
+    font-size: var(--text-sm);
   }
 
   .scroll {
     overflow: auto;
     min-height: 0;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
   }
 
   .report {
-    padding: 0 0.5rem;
+    padding: 0 var(--space-2);
   }
 
   table {
@@ -328,7 +328,7 @@
   th,
   td {
     text-align: left;
-    padding: 0.25rem 0.5rem;
+    padding: var(--space-1) var(--space-2);
     border-bottom: 1px solid var(--border);
     vertical-align: top;
   }
@@ -337,12 +337,12 @@
     position: sticky;
     top: 0;
     background: var(--surface);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   ul {
     margin: 0;
-    padding-left: 1rem;
+    padding-left: var(--space-4);
   }
 
   .outcome {
@@ -362,7 +362,7 @@
   }
 
   .field {
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
   }
 
   .old {
@@ -384,7 +384,7 @@
 
   .tick-all {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
     align-items: center;
   }
 
@@ -396,7 +396,7 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .error {

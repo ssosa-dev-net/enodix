@@ -108,7 +108,7 @@
 
   .resizer:hover,
   .resizer:focus-visible {
-    background: color-mix(in srgb, var(--accent, #3b82f6) 45%, transparent);
+    background: color-mix(in srgb, var(--accent) 45%, transparent);
     outline: none;
   }
 
@@ -120,9 +120,9 @@
     width: 14px;
     height: 36px;
     padding: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     opacity: 0;
     cursor: pointer;
   }
