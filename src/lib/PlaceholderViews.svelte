@@ -1,8 +1,7 @@
 <script lang="ts">
-  // The Jobs, Config backups and Credentials side views until their own
-  // views exist: each says what it is about and opens what the app has for
-  // it today (the saved jobs and the jobs view, config history and backups,
-  // the profiles dialog and the vault).
+  // The Jobs and Config backups side views until their own views exist:
+  // each says what it is about and opens what the app has for it today
+  // (the saved jobs and the jobs view, config history and backups).
   import SavedJobsPanel from "./SavedJobsPanel.svelte";
   import {
     inventory,
@@ -11,11 +10,9 @@
     selectedHost,
   } from "./inventory.svelte";
   import { openJobsView, runningCount } from "./jobs.svelte";
-  import { preferences } from "./preferences.svelte";
-  import { profiles } from "./profiles.svelte";
 
   interface Props {
-    view: "jobs" | "backups" | "credentials";
+    view: "jobs" | "backups";
   }
 
   let { view }: Props = $props();
@@ -27,7 +24,6 @@
   const TITLES = {
     jobs: "Jobs",
     backups: "Config backups",
-    credentials: "Credentials",
   };
 </script>
 
@@ -54,7 +50,7 @@
       >
     </div>
     <SavedJobsPanel />
-  {:else if view === "backups"}
+  {:else}
     <div class="body">
       <p class="hint">
         Back up the configuration of a host or folder from its menu in Hosts;
@@ -76,32 +72,6 @@
         onclick={() =>
           openBackup({ kind: "folder", path: "" }, workspace.tree.name)}
         >Back up every host…</button
-      >
-    </div>
-  {:else}
-    <div class="body">
-      <p class="hint">
-        {profiles.view.profiles.length === 1
-          ? "1 credential profile"
-          : `${profiles.view.profiles.length} credential profiles`},
-        {profiles.view.secrets.length === 1
-          ? "1 named secret"
-          : `${profiles.view.secrets.length} named secrets`}.
-      </p>
-      {#if profiles.view.missing.length > 0}
-        <p class="warning" data-profiles-missing>
-          Not set up here: {profiles.view.missing.join(", ")}
-        </p>
-      {/if}
-      <button
-        data-open-profiles
-        title="Credential profiles and named secrets"
-        onclick={() => (profiles.dialog = true)}>Profiles and secrets…</button
-      >
-      <button
-        data-open-vault
-        title="The vault, in Preferences"
-        onclick={() => (preferences.dialog = true)}>Vault…</button
       >
     </div>
   {/if}
@@ -144,11 +114,5 @@
 
   .placeholder > .hint {
     margin: var(--space-3);
-  }
-
-  .warning {
-    margin: 0;
-    color: var(--warning);
-    overflow-wrap: anywhere;
   }
 </style>

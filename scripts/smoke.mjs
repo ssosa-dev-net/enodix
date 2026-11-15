@@ -210,6 +210,14 @@ async function showSideView(evaluate, view) {
     await evaluate(`document.querySelector("[data-rail=${view}]").click()`);
   }
   await until(`the ${view} side view`, () => evaluate(shown));
+  // Saved before going on, so that a restart finds it (hosts is the default).
+  await until(`the ${view} side view saved`, () => {
+    const file = join(appData, "preferences.yaml");
+    const saved = existsSync(file)
+      ? (/^side_view: *(\S+)/m.exec(readFileSync(file, "utf8"))?.[1] ?? "hosts")
+      : "hosts";
+    return saved === view;
+  });
 }
 
 /** Opens the details sheet on the tree's selection by its row's details
@@ -234,12 +242,26 @@ async function openRuns(evaluate) {
   await showSideView(evaluate, "hosts");
 }
 
-/** Opens the profiles dialog from the Credentials side view, then shows
- * the Hosts view again. */
+/** The Credentials side view (profiles, secrets, the vault's state). */
+const CREDENTIALS = "[data-credentials]";
+
+/** Shows the Credentials side view with its lists (no form open). */
 async function openProfiles(evaluate) {
   await showSideView(evaluate, "credentials");
-  await evaluate(`document.querySelector("[data-open-profiles]").click()`);
-  await showSideView(evaluate, "hosts");
+  await until("the credentials lists", () =>
+    evaluate(`!!document.querySelector("${CREDENTIALS}[data-mode=list]")`),
+  );
+}
+
+/** Opens the new-profile form of the Credentials side view. */
+async function newProfile(evaluate) {
+  await openProfiles(evaluate);
+  await evaluate(
+    `document.querySelector("${CREDENTIALS} [data-profile-new]").click()`,
+  );
+  await until("the profile form", () =>
+    evaluate(`!!document.querySelector("${CREDENTIALS} [name=profile-name]")`),
+  );
 }
 
 // The rail and the side view: each icon shows its view and says so,
@@ -1680,7 +1702,7 @@ async function vault({ app, devtools, evaluate, step }) {
     })()`);
   const vaultFile = join(appData, "credentials.vault");
   const hostRow = 'nav [data-host="vault-r1.yaml"]';
-  const profilesDialog = "[data-dialog=profiles]";
+  const profilesDialog = CREDENTIALS;
 
   // A host that names a profile, and the profile.
   writeFileSync(
@@ -1696,25 +1718,31 @@ async function vault({ app, devtools, evaluate, step }) {
     async () => !(await exists("[data-dialog=workspaces]")),
   );
   await until("the new host in the tree", () => exists(hostRow));
-  // The Credentials icon is marked while the host's profile is missing.
+  // The Credentials view says where profiles are kept, marks the one the
+  // host names as not set up here, and sets it up in place.
   await openProfiles(evaluate);
-  await until("the profiles dialog", () => exists(profilesDialog));
-  await click("New profile…");
-  await until("the profile form", () =>
-    exists(`${profilesDialog} [name=profile-name]`),
+  await until("the keychain named in the Credentials view", () =>
+    exists(`${profilesDialog} [data-credentials-vault=off]`),
+  );
+  const missingRow = `${profilesDialog} [data-profile="vault-login"][data-profile-missing]`;
+  await until("the missing profile marked", () => exists(missingRow));
+  await clickOn(`${missingRow} [data-profile-setup]`);
+  await until(
+    "the set-up form",
+    async () =>
+      (await exists(`${profilesDialog} [name=profile-username]`)) &&
+      !(await exists(`${profilesDialog} [name=profile-name]`)),
   );
   await fillForm(
-    {
-      "profile-name": "vault-login",
-      "profile-username": USERNAME,
-      "profile-password": PASSWORD,
-    },
+    { "profile-username": USERNAME, "profile-password": PASSWORD },
     `${profilesDialog} form`,
   );
-  await until("the profile listed", () =>
-    exists(`${profilesDialog} [data-profile="vault-login"]`),
+  await until("the profile listed as set up", () =>
+    exists(
+      `${profilesDialog}[data-mode=list] [data-profile="vault-login"]:not([data-profile-missing])`,
+    ),
   );
-  await click("Close");
+  step("the Credentials view marked a missing profile and set it up");
 
   // Turning the vault on asks for the password twice, with the warning.
   await clickOn("[data-open-preferences]");
@@ -1759,6 +1787,10 @@ async function vault({ app, devtools, evaluate, step }) {
     if (everyFile.includes(secret)) fail("a secret is in the data folder");
   }
   await click("Close");
+  await until("the vault unlocked in the Credentials view", () =>
+    exists(`${profilesDialog} [data-credentials-vault=unlocked]`),
+  );
+  await showSideView(evaluate, "hosts");
   step(
     "the vault was turned on: password twice, warned, nothing plain on disk",
   );
@@ -1964,26 +1996,19 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
   await until("the vault in use", () => shown("[data-vault-status=unlocked]"));
   await closeDialog();
   // A profile kept only in the vault, which starting over deletes.
-  await openProfiles(ev);
-  await until("the profiles dialog", () => shown("[data-dialog=profiles]"));
-  await ev(
-    `[...document.querySelectorAll("[data-dialog=profiles] button")].find((b) => b.textContent.trim() === "New profile…").click()`,
-  );
-  await until("the profile form", () =>
-    shown("[data-dialog=profiles] [name=profile-name]"),
-  );
+  await newProfile(ev);
   await fillForm(
     {
       "profile-name": "vault-login",
       "profile-username": USERNAME,
       "profile-password": PASSWORD,
     },
-    "[data-dialog=profiles] form",
+    `${CREDENTIALS} form`,
   );
   await until("the profile listed", () =>
-    shown('[data-dialog=profiles] [data-profile="vault-login"]'),
+    shown(`${CREDENTIALS}[data-mode=list] [data-profile="vault-login"]`),
   );
-  await closeDialog();
+  await showSideView(ev, "hosts");
   await restart();
   await until("the unlock screen", () => shown("[data-unlock-screen]"));
   await clickOn("[data-unlock=start-over]");
@@ -2011,14 +2036,18 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
   await until("the workspace after starting over", () => shown(hostRow));
   if (existsSync(vaultFile)) fail("starting over left the vault file");
   await openProfiles(ev);
-  await until("the profiles dialog", () => shown("[data-dialog=profiles]"));
   await until("the vault-login profile shown as not set up", () =>
-    shown('[data-dialog=profiles] li.missing[data-profile="vault-login"]'),
+    shown(`${CREDENTIALS} [data-profile="vault-login"][data-profile-missing]`),
   );
-  if (await shown("[data-dialog=profiles] [data-profile]:not(.missing)")) {
+  if (
+    await shown(`${CREDENTIALS} [data-profile]:not([data-profile-missing])`)
+  ) {
     fail("a profile is left after starting over");
   }
-  await closeDialog();
+  if (!(await shown(`${CREDENTIALS} [data-credentials-vault=off]`))) {
+    fail("the Credentials view does not say the vault is off");
+  }
+  await showSideView(ev, "hosts");
   await openSecurity("off");
   await closeDialog();
   step(
@@ -2063,7 +2092,7 @@ async function noKeychain({ current, vaultFile, step }) {
     ev(
       `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Close" && b.checkVisibility()).click()`,
     );
-  const profilesDialog = "[data-dialog=profiles]";
+  const profilesDialog = CREDENTIALS;
 
   await until("the workspace without a keychain", () =>
     shown('nav [data-host="vault-r1.yaml"]'),
@@ -2080,15 +2109,10 @@ async function noKeychain({ current, vaultFile, step }) {
   await closeDialog();
 
   await openProfiles(ev);
-  await until("the profiles dialog's vault note", () =>
+  await until("the Credentials view's vault note", () =>
     shown(`${profilesDialog} [data-profiles-needs-vault]`),
   );
-  await ev(
-    `[...document.querySelectorAll("${profilesDialog} button")].find((b) => b.textContent.trim() === "New profile…").click()`,
-  );
-  await until("the profile form", () =>
-    shown(`${profilesDialog} [name=profile-name]`),
-  );
+  await newProfile(ev);
   await fillForm(
     {
       "profile-name": "vault-login",
@@ -2103,7 +2127,7 @@ async function noKeychain({ current, vaultFile, step }) {
   if (!/no keychain/.test(why) || !/Turn the vault on/.test(why))
     fail(`the explanation on saving: ${why}`);
   await clickOn(`${profilesDialog} [data-needs-vault-action=turn-on]`);
-  await until("the vault form inside the profile dialog", () =>
+  await until("the vault form inside the Credentials view", () =>
     shown(`${profilesDialog} [data-needs-vault=turn-on] [data-vault-form]`),
   );
   if (/keychain/.test(await textOf(`${profilesDialog} [data-vault-warning]`)))
@@ -2113,12 +2137,17 @@ async function noKeychain({ current, vaultFile, step }) {
     `${profilesDialog} [data-vault-form]`,
   );
   await until("the profile saved into the vault", () =>
-    shown(`${profilesDialog} [data-profile="vault-login"]:not(.missing)`),
+    shown(
+      `${profilesDialog} [data-profile="vault-login"]:not([data-profile-missing])`,
+    ),
+  );
+  await until("the vault unlocked in the Credentials view", () =>
+    shown(`${profilesDialog} [data-credentials-vault=unlocked]`),
   );
   if (!existsSync(vaultFile)) fail("no vault file after turning it on");
   if (await shown(`${profilesDialog} [data-profiles-needs-vault]`))
     fail("the vault note stayed after turning the vault on");
-  await closeDialog();
+  await showSideView(ev, "hosts");
   step(
     "without a keychain, saving a profile offered the vault, and the profile went into it",
   );
@@ -3992,7 +4021,7 @@ async function jobs({
     evaluate(`document.querySelector(${json(selector)}).click()`);
   const dialog = "[data-dialog=job]";
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
-  const profilesDialog = "[data-dialog=profiles]";
+  const profilesDialog = CREDENTIALS;
   const folder = join(workspace, "Jobs");
   const backupHostFile = join(folder, "jobs-b1.yaml");
   const snippetsFile = join(workspace, "_snippets.yaml");
@@ -4001,12 +4030,7 @@ async function jobs({
     : null;
 
   // A profile for the job's hosts.
-  await openProfiles(evaluate);
-  await until("the profiles dialog", () => exists(profilesDialog));
-  await click("New profile…");
-  await until("the profile form", () =>
-    exists(`${profilesDialog} [name=profile-name]`),
-  );
+  await newProfile(evaluate);
   await fillForm(
     {
       "profile-name": "jobs-login",
@@ -4016,13 +4040,9 @@ async function jobs({
     `${profilesDialog} form`,
   );
   await until("the jobs profile listed", () =>
-    exists(`${profilesDialog} [data-profile="jobs-login"]`),
+    exists(`${profilesDialog}[data-mode=list] [data-profile="jobs-login"]`),
   );
-  await click("Close");
-  await until(
-    "the profiles dialog closed",
-    async () => !(await exists(profilesDialog)),
-  );
+  await showSideView(evaluate, "hosts");
 
   // The folder sets the platform (frr: its prompt matches `lab-r1#`), the
   // profile and the device's port for its hosts.
@@ -6004,7 +6024,7 @@ async function liveReload({ evaluate, text, screenshot, step }) {
   step("a host deleted on disk left the tree; the selection stayed");
 }
 
-/** A credential profile is created in the profiles dialog and assigned to
+/** A credential profile is created in the Credentials view and assigned to
  * a host, which then connects without a prompt; a profile the workspace
  * names but nobody set up is asked for, saved and used; no secret reaches
  * a file. The app runs with its in-memory credential store, so the
@@ -6027,7 +6047,7 @@ async function credentialProfiles({
     evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const hostRow = 'nav [data-host="Lab/smoke-r1.yaml"]';
   const hostFile = join(workspace, "Lab", "smoke-r1.yaml");
-  const profilesDialog = "[data-dialog=profiles]";
+  const profilesDialog = CREDENTIALS;
   const profileRow = (name) => `${profilesDialog} [data-profile="${name}"]`;
   const connected = async () => {
     await until(
@@ -6049,10 +6069,15 @@ async function credentialProfiles({
       .map((path) => readFileSync(path, "utf8"))
       .join("\n");
 
-  // A profile is created in the profiles dialog.
+  // With no profiles, the Credentials view says what one is and offers
+  // the first, which is created there.
   await openProfiles(evaluate);
-  await until("the profiles dialog", () => exists(profilesDialog));
-  await click("New profile…");
+  const empty = await until("the empty Credentials view", () =>
+    text(`${profilesDialog} [data-profiles-empty]`),
+  );
+  if (!/credential profile is a login/.test(empty))
+    fail(`the empty Credentials view: ${empty}`);
+  await clickOn(`${profilesDialog} [data-profile-first]`);
   await until("the profile form", () =>
     exists(`${profilesDialog} [name=profile-name]`),
   );
@@ -6070,13 +6095,12 @@ async function credentialProfiles({
       `${USERNAME}, password, enable secret`,
     ),
   );
+  if (await exists(`${profilesDialog} [data-profiles-empty]`))
+    fail("the empty state stayed after the first profile");
+  if (await exists("[data-dialog=profiles]")) fail("a profiles dialog is left");
   await screenshot("profiles");
-  await click("Close");
-  await until(
-    "the profiles dialog closed",
-    async () => !(await exists(profilesDialog)),
-  );
-  step("a credential profile was created in the profiles dialog");
+  await showSideView(evaluate, "hosts");
+  step("the first credential profile was created in the Credentials view");
 
   // Assigned to a host, the profile logs in without a prompt.
   await until("the host in the tree", () => exists(hostRow));
@@ -6120,8 +6144,8 @@ async function credentialProfiles({
   await connected();
   step("a profile that was not set up was asked for by name, saved and used");
 
-  // Profiles are edited and deleted in the dialog; a deleted profile the
-  // workspace names shows as missing.
+  // Profiles are edited, renamed and deleted in the Credentials view; a
+  // profile the workspace names that is no longer stored shows as missing.
   await click("Disconnect");
   await openProfiles(evaluate);
   await until(
@@ -6130,7 +6154,9 @@ async function credentialProfiles({
       (await exists(profileRow("lab-login"))) &&
       (await exists(profileRow("team-login"))),
   );
-  await clickOn(`${profileRow("lab-login")} button`);
+  if (await exists(`${profilesDialog} [data-profile-missing]`))
+    fail("a stored profile is marked missing");
+  await clickOn(`${profileRow("lab-login")} [data-profile-edit]`);
   await until("the edit form", () =>
     evaluate(
       `document.querySelector("${profilesDialog} [name=profile-username]")?.value === ${JSON.stringify(USERNAME)}`,
@@ -6140,19 +6166,41 @@ async function credentialProfiles({
   await until("the edited username listed", async () =>
     (await text(profileRow("lab-login"))).includes("operator, password"),
   );
-  await evaluate(
-    `[...document.querySelectorAll(${JSON.stringify(`${profileRow("team-login")} button`)})].find((b) => b.textContent === "Delete").click()`,
+  // Renamed, the workspace's name for it is missing; renamed back, not.
+  const rename = async (from, to) => {
+    await clickOn(`${profileRow(from)} [data-profile-edit]`);
+    await until("the edit form", () =>
+      exists(`${profilesDialog} [name=profile-name]`),
+    );
+    await fillForm({ "profile-name": to }, `${profilesDialog} form`);
+    await until(`${to} listed`, () =>
+      exists(
+        `${profilesDialog}[data-mode=list] [data-profile="${to}"]:not([data-profile-missing])`,
+      ),
+    );
+  };
+  await rename("team-login", "team-renamed");
+  await until("the old name shown as missing", () =>
+    exists(`${profileRow("team-login")}[data-profile-missing]`),
   );
+  await rename("team-renamed", "team-login");
+  if (await exists(profileRow("team-renamed")))
+    fail("the renamed profile kept its other name");
+  await clickOn(`${profileRow("team-login")} [data-profile-delete]`);
   await until("the delete confirmation", async () =>
-    (await text(`${profilesDialog} h2`)).includes("Delete team-login"),
+    (
+      await text(`${profilesDialog} [data-credentials-confirm=profile]`)
+    ).includes("Delete team-login"),
   );
-  await evaluate(
-    `document.querySelector("${profilesDialog} button.danger").click()`,
-  );
+  await clickOn(`${profilesDialog} [data-profile-action=delete]`);
   await until("the deleted profile shown as missing", async () =>
-    (await text(profileRow("team-login"))).includes("not set up"),
+    (await text(`${profileRow("team-login")}[data-profile-missing]`)).includes(
+      "not set up",
+    ),
   );
-  step("a profile was edited and another deleted in the profiles dialog");
+  step(
+    "a profile was edited, renamed and another deleted in the Credentials view",
+  );
 
   // Named secrets: added, value replaced, refused twice by name, deleted;
   // the dialog shows names only, and a profile of the same name is kept
@@ -6224,7 +6272,8 @@ async function credentialProfiles({
   if (!(await exists(profileRow("lab-login")))) {
     fail("deleting a secret named like a profile deleted the profile");
   }
-  await click("Close");
+  await showSideView(evaluate, "hosts");
+  await showDetails(evaluate);
   step("a named secret was added, replaced and deleted; only its name shown");
 
   for (const secret of [PASSWORD, "en4ble-s3cret", ...secretValues]) {
@@ -6260,7 +6309,7 @@ async function agentAndKeyboardInteractive({
     evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
   const hostRow = 'nav [data-host="Lab/smoke-r1.yaml"]';
   const hostFile = join(workspace, "Lab", "smoke-r1.yaml");
-  const profilesDialog = "[data-dialog=profiles]";
+  const profilesDialog = CREDENTIALS;
   const loginPrompt = "[data-login-prompt]";
   const connected = async () => {
     await until(
@@ -6308,9 +6357,7 @@ async function agentAndKeyboardInteractive({
 
   // Profiles that log in with the SSH agent.
   const createAgentProfile = async (name, username) => {
-    await openProfiles(evaluate);
-    await until("the profiles dialog", () => exists(profilesDialog));
-    await click("New profile…");
+    await newProfile(evaluate);
     await until("the profile form", () =>
       exists(`${profilesDialog} [name=profile-auth]`),
     );
@@ -6334,11 +6381,8 @@ async function agentAndKeyboardInteractive({
         `${username}, SSH agent`,
       ),
     );
-    await click("Close");
-    await until(
-      "the profiles dialog closed",
-      async () => !(await exists(profilesDialog)),
-    );
+    await showSideView(evaluate, "hosts");
+    await showDetails(evaluate);
   };
   await createAgentProfile("agent-login", USERNAME);
   await createAgentProfile("agent-stranger", "stranger");
