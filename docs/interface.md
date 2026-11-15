@@ -85,8 +85,14 @@ everything 0.2.0 could do, the app still does, reached differently.
   snippet is asked once, over the pane pasted in, naming the members
   wherever they are; each then gets its lines through its own terminal,
   with its own line delay. If a session window goes away without
-  docking back, the main window takes its sessions, saying their earlier
-  output was lost. Everything that protects you comes along (#86): the
+  docking back, or its page crashes while the window stays open (#89),
+  the main window takes its sessions, still connected, saying their
+  earlier output was lost, and the crashed window closes. A window that
+  is only slow (minimised, or drawing a flood) is never taken for crashed.
+  Checked on Windows; on Linux it is built but not yet tried on a desktop.
+  Not handled: a page that hangs without crashing (its sessions stay
+  stuck until the app is closed) and the web engine crashing as a whole,
+  which takes the main window's page too. Everything that protects you comes along (#86): the
   production colour and PROD mark, the unencrypted, legacy-crypto,
   logging-failed and backup markers, paste confirmation (over the pane
   pasted in, with the host's line delay), host-key and login questions of

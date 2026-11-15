@@ -12,7 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use netterm_core::layout::{
-    close_workspace_sessions, live_in_session_windows, WindowId, Windows, WorkspaceClosed,
+    close_workspace_sessions, live_in_session_windows, take_over_dead_window, WindowId, Windows,
+    WorkspaceClosed,
 };
 use netterm_core::session::{
     Consumer, ConsumerGone, ConsumerKey, OutputOptions, Reported, SessionEvent, SessionEvents,
@@ -684,4 +685,67 @@ async fn closing_a_workspaces_sessions_ends_them_in_every_session_window() {
         assert_eq!(records.get(gone), None);
     }
     assert!(relays.live(kept));
+}
+
+// A session window whose page died while its window stayed open (#89).
+
+#[tokio::test]
+async fn a_dead_windows_flooding_session_is_handed_to_main_and_keeps_flowing() {
+    let server = TestSshServer::start().await;
+    let manager = manager();
+    let relays = SessionRelays::new();
+    let records = SessionRecords::new();
+    let mut windows = Windows::new();
+    let dead = windows.open_session_window();
+    let (id, mut main) = in_session_window(
+        &manager,
+        &server,
+        &relays,
+        &records,
+        &mut windows,
+        dead,
+        None,
+    )
+    .await;
+    relays.release(id, main.key).unwrap();
+    // Its page takes the session, then dies: deliveries still succeed
+    // (a channel into a crashed page says nothing), nobody acknowledges.
+    let (mut page, _) = attach(&relays, id, dead);
+    windows.take_sessions(dead);
+    manager.write(id, b"flood\r".to_vec()).unwrap();
+    let before = page.unacknowledged_output().await.len();
+    assert!(before >= FLOW_WINDOW, "{before}");
+    assert!(
+        page.unacknowledged_output().await.is_empty(),
+        "flow control paused"
+    );
+
+    let handed = take_over_dead_window(&mut windows, &relays, dead).unwrap();
+
+    assert_eq!(handed.len(), 1);
+    assert_eq!(handed[0].session, id);
+    assert_eq!(handed[0].snapshot, None, "its output so far is lost");
+    assert_eq!(
+        windows.session_tabs(WindowId::MAIN),
+        vec![(handed[0].tab, id)]
+    );
+    assert!(windows.view(dead).is_none(), "the dead window is closed");
+    let (mut adopting, _) = attach(&relays, id, WindowId::MAIN);
+    let flowing = adopting.unacknowledged_output().await.len();
+    assert!(flowing >= FLOW_WINDOW, "{flowing}");
+    relays.acknowledge(id, adopting.key, flowing);
+    assert!(!adopting.unacknowledged_output().await.is_empty());
+    assert!(main.unacknowledged_output().await.is_empty());
+    manager.write(id, vec![3]).unwrap();
+}
+
+#[tokio::test]
+async fn taking_over_the_main_window_or_one_already_gone_is_refused() {
+    let mut windows = Windows::new();
+    let relays = SessionRelays::new();
+    let gone = windows.open_session_window();
+    windows.close_window(gone).unwrap();
+
+    assert!(take_over_dead_window(&mut windows, &relays, WindowId::MAIN).is_err());
+    assert!(take_over_dead_window(&mut windows, &relays, gone).is_err());
 }

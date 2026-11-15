@@ -57,6 +57,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 use tauri_plugin_opener::OpenerExt;
 
 mod group;
+mod page_watch;
 mod python;
 mod session_windows;
 

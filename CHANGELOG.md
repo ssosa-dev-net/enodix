@@ -25,9 +25,14 @@ For troubleshooting across several monitors (spec #81, #83 to #88).
   back or close them. Closing the main window now asks once when a session
   is live in any window; before, it closed without asking (#88).
 - The palette (Ctrl+K) works in a session window (#88).
-- Known limits: a session window whose page crashes keeps its sessions
-  stuck until the app is closed (#89, not built yet); monitors with
-  different display scaling are not checked.
+- A session window whose page crashes (or whose renderer is ended from
+  the Task Manager) closes, and the main window takes its sessions, still
+  connected, saying their earlier output was lost; a flood going on keeps
+  flowing (#89).
+- Known limits: monitors with different display scaling are not checked
+  (#90); a session window whose page hangs without crashing, or the web
+  engine crashing as a whole, still leaves sessions stuck until the app is
+  closed; the crash handling is not yet tried on a Linux desktop (#58).
 
 ### Other changes
 

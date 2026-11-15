@@ -2260,6 +2260,8 @@ async function main() {
 
   await closingSessionWindows({ evaluate, screenshot, step });
 
+  await crashedSessionWindow({ evaluate, devtools, step });
+
   await webLinks({ evaluate, text, screenshot, step });
 
   await csvImport({
@@ -5427,6 +5429,134 @@ async function closingSessionWindows({ evaluate, screenshot, step }) {
   });
   if (live !== 0) fail(`after Close them, ${live} live in session windows`);
   step("Close them closed the session window and ended its session");
+}
+
+/**
+ * A session window whose page crashes while the window stays open (#89):
+ * after closingSessionWindows (lab-r9 connected in the main window).
+ * lab-r9 is moved out, and `Page.crash` kills that page's renderer, twice:
+ * quiet, then flooding. Each time the shell takes the session to the main
+ * window, connected, saying its earlier output was lost (the flood
+ * scrolls that line away: checked the first time), and closes the dead
+ * window; the flood keeps flowing (flow control released).
+ */
+async function crashedSessionWindow({ evaluate, devtools, step }) {
+  const CTRL = 2;
+  const typeIn = async (client, text) => {
+    for (const char of text) {
+      const key =
+        char === "\r"
+          ? { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }
+          : { key: char };
+      await client.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        text: char,
+        ...key,
+      });
+      await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+    }
+  };
+  const focusShown = (target) =>
+    target(
+      `document.querySelector(${JSON.stringify(`${SHOWN_SESSION} .terminal textarea`)}).focus()`,
+    );
+  /** Every line of the terminal in `slot` of the main window. */
+  const everyLine = (slot) =>
+    evaluate(`(() => {
+      const buffer = document.querySelector(${JSON.stringify(`${slot} .terminal`)}).xterm.buffer.normal;
+      const lines = [];
+      for (let y = 0; y < buffer.length; y++)
+        lines.push(buffer.getLine(y)?.translateToString(true) ?? "");
+      return lines;
+    })()`);
+  /**
+   * Moves lab-r9 out, types `typed` there, waits for its screen to match
+   * `shows`, crashes the window's page and resolves to the slot of lab-r9
+   * back in the main window, shown, once the dead window has closed.
+   */
+  const crashWith = async (typed, shows) => {
+    const known = new Set((await tabsIn(evaluate)).map((each) => each.id));
+    const window = await moveToNewWindow(evaluate, "lab-r9");
+    await focusShown(window.evaluate);
+    await typeIn(window.devtools, typed);
+    await until(`${shows} in the session window`, async () =>
+      shows.test(await screenOf(window.evaluate, SHOWN_SESSION)),
+    );
+    window.devtools.send("Page.crash").catch(() => {});
+    await until(
+      "the crashed session window closed",
+      async () => !(await windowOpen(window.label)),
+    );
+    window.devtools.close();
+    const arrived = await until(
+      "lab-r9 in the main window, connected",
+      async () =>
+        (await tabsIn(evaluate)).find(
+          (each) =>
+            !known.has(each.id) &&
+            each.name === "lab-r9" &&
+            each.state === "connected",
+        ),
+    ).catch(async (error) =>
+      fail(
+        `${error.message}: the main window shows ${JSON.stringify(await tabsIn(evaluate))}`,
+      ),
+    );
+    const slot = `.slot[data-tab="${arrived.id}"]`;
+    await evaluate(
+      `document.querySelector('[data-tab-bar] [data-tab="${arrived.id}"]').click()`,
+    );
+    await until("lab-r9 shown", () =>
+      evaluate(`!!document.querySelector('${slot}[data-active]')`),
+    );
+    if ((await sessionWindowLabels()).length !== 0)
+      fail(`a session window is left: ${await sessionWindowLabels()}`);
+    if (
+      (await invokeIn(evaluate, "session_windows_live", {
+        workspace: null,
+      })) !== 0
+    )
+      fail("the crashed window's session is still counted in a session window");
+    return slot;
+  };
+
+  // A quiet session: its earlier output is lost, and it says so.
+  // (Its output, not the command typed: all of it reached the page.)
+  let slot = await crashWith(
+    "later 0 before-crash\r",
+    /(^|\n|\$ )before-crash\s*(\n|$)/,
+  );
+  const lines = await everyLine(slot);
+  if (!lines.some((line) => line.includes("earlier output was lost")))
+    fail(
+      `the session taken from the crashed window did not say its output was lost: ${JSON.stringify(lines)}`,
+    );
+  if (lines.some((line) => line.includes("before-crash")))
+    fail("the crashed window's output reached the main window");
+  await focusShown(evaluate);
+  await typeIn(devtools, "later 0 after-crash\r");
+  await until("typing after the crash", async () =>
+    /(^|\n|\$ )after-crash\s*(\n|$)/.test(await screenOf(evaluate, slot)),
+  );
+  step(
+    "a crashed session window closed, its session reached the main window connected, saying earlier output was lost, and took typing",
+  );
+
+  // A flooding one: flow control was released. The flood goes on here,
+  // and Ctrl+C's prompt comes after all of it (were flow control still
+  // paused, it never would).
+  slot = await crashWith("flood\r", /flood flood/);
+  await until("the flood flowing in the main window", async () =>
+    (await screenOf(evaluate, slot)).includes("flood flood"),
+  );
+  await focusShown(evaluate);
+  await pressIn(devtools, "c", "KeyC", 67, CTRL);
+  await until("the prompt after Ctrl+C", async () =>
+    /\^C\s*\S*[$#>]\s*$/.test(await screenOf(evaluate, slot)),
+  );
+  step(
+    "the session flooding when its window crashed kept flowing in the main window and stopped with Ctrl+C",
+  );
 }
 
 /**
