@@ -25,7 +25,7 @@
   import ProfilesDialog from "./lib/ProfilesDialog.svelte";
   import QuickConnect from "./lib/QuickConnect.svelte";
   import SnippetDialog from "./lib/SnippetDialog.svelte";
-  import SnippetsPanel from "./lib/SnippetsPanel.svelte";
+  import SnippetsView from "./lib/SnippetsView.svelte";
   import SnippetVariables from "./lib/SnippetVariables.svelte";
   import TerminalSession from "./lib/TerminalSession.svelte";
   import UnlockVault from "./lib/UnlockVault.svelte";
@@ -1029,14 +1029,10 @@
           />
         {/if}
       {:else if sideView === "snippets"}
-        {#if inventory.workspace}
-          <SnippetsPanel
-            target={snippetTarget}
-            onsend={(snippet) => void sendSnippet(snippet)}
-          />
-        {:else}
-          <p class="hint">Open a workspace to see its snippets.</p>
-        {/if}
+        <SnippetsView
+          target={snippetTarget}
+          onsend={(snippet) => void sendSnippet(snippet)}
+        />
       {:else}
         <PlaceholderViews view={sideView} />
       {/if}
@@ -1419,13 +1415,6 @@
   .side-view > :global(*) {
     flex: 1 1 auto;
     min-height: 0;
-  }
-
-  .side-view .hint {
-    flex: none;
-    margin: var(--space-3);
-    color: var(--muted);
-    font-size: var(--text-sm);
   }
 
   .hosts-area {
