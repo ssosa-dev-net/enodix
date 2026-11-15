@@ -343,12 +343,30 @@ impl Windows {
             .collect()
     }
 
+    /// Each session window, in the order they opened, with the session its
+    /// active tab shows (by which it is named, #85); `None` while that is
+    /// not known.
+    pub fn session_windows(&self) -> Vec<(WindowId, Option<SessionId>)> {
+        self.layouts
+            .iter()
+            .filter(|(&window, _)| window != WindowId::MAIN)
+            .map(|(&window, layout)| {
+                let session = layout
+                    .active_tab()
+                    .and_then(|tab| self.group.sessions.get(&Member { window, tab }))
+                    .copied();
+                (window, session)
+            })
+            .collect()
+    }
+
     /// Moves the session tab `tab` of the window `from` to the window `to`
     /// (#84), where it becomes a new tab at the end of the active pane,
     /// shown; returns its id there. Its session goes with it. Until the
     /// group spans windows in the interface (#87), a member leaves the
-    /// group (raising every revision). A view tab, the same window or an
-    /// unknown one is refused, changing nothing.
+    /// group (raising every revision). A session window left without a
+    /// tab closes (#85). A view tab, the same window or an unknown one is
+    /// refused, changing nothing.
     pub fn move_session(
         &mut self,
         from: WindowId,
@@ -379,6 +397,15 @@ impl Windows {
         self.layout_mut(from)
             .expect("checked above")
             .close_tab(tab)?;
+        let emptied = self.layout(from).is_some_and(|layout| {
+            layout
+                .panes()
+                .iter()
+                .all(|&pane| layout.pane(pane).is_some_and(|pane| pane.tabs.is_empty()))
+        });
+        if from != WindowId::MAIN && emptied {
+            self.close_window(from)?;
+        }
         Ok(moved)
     }
 
@@ -389,16 +416,32 @@ impl Windows {
         self.snapshots.insert(Member { window, tab }, snapshot);
     }
 
-    /// The session `window` shows (its first session tab), for its page to
-    /// take, with the snapshot kept for it, used up; `None` while it shows
-    /// none (it has not been moved there yet). A page taking it again (it
-    /// reloaded) gets no snapshot: what it showed is lost.
-    pub fn take_session(&mut self, window: WindowId) -> Option<Taken> {
-        let (tab, session) = self.session_tabs(window).into_iter().next()?;
+    /// The sessions `window` shows (its session tabs, in reading order),
+    /// for its page to take as it loads, each with the snapshot kept for
+    /// it, used up; empty while it shows none (nothing has moved there
+    /// yet). A page taking them again (it reloaded) gets no snapshots:
+    /// what it showed is lost.
+    pub fn take_sessions(&mut self, window: WindowId) -> Vec<Taken> {
+        self.session_tabs(window)
+            .into_iter()
+            .map(|(tab, session)| Taken {
+                tab,
+                session,
+                snapshot: self.snapshots.remove(&Member { window, tab }),
+            })
+            .collect()
+    }
+
+    /// The session tab `tab` that moved into `window` while its page was
+    /// open (#85), with its snapshot, used up as `take_sessions` does;
+    /// `None` if the window does not show it.
+    pub fn take_tab(&mut self, window: WindowId, tab: TabId) -> Option<Taken> {
+        let member = Member { window, tab };
+        let session = *self.group.sessions.get(&member)?;
         Some(Taken {
             tab,
             session,
-            snapshot: self.snapshots.remove(&Member { window, tab }),
+            snapshot: self.snapshots.remove(&member),
         })
     }
 
@@ -421,7 +464,11 @@ impl Windows {
                 snapshot,
             });
         }
-        self.close_window(window)?;
+        // Its last tab moving out closed it, unless a tab whose session was
+        // not known yet (a duplicate opening) was left.
+        if self.layouts.contains_key(&window) {
+            self.close_window(window)?;
+        }
         Ok(handed)
     }
 

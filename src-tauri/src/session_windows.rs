@@ -1,14 +1,18 @@
-//! Session windows (#84): a session moved out of the main window into a
-//! window of its own, and back.
+//! Session windows (#84, #85): sessions moved out of the main window into
+//! windows of their own, between them, and back.
 //!
 //! The giving window releases the session (`session_release`), waits for
 //! the end of its share of the output, and serialises its terminal; then
-//! `window_open_session` (from the main window) or `session_dock` (from a
-//! session window) moves the tab from one window's layout to the other's
-//! in the core (`Windows::move_session`). The receiving page writes the
-//! snapshot, then attaches (`session_attach`). A new window's page takes
-//! its session with `session_window_take`; the main window is told with
-//! `session-arrived`.
+//! `window_open_session` (into a new session window or an open one) or
+//! `session_dock` / `session_dock_all` (back to the main window) moves the
+//! tab from one window's layout to the other's in the core
+//! (`Windows::move_session`), which closes a session window left without
+//! a tab. The receiving page writes the snapshot, then attaches
+//! (`session_attach`). A new window's page takes its sessions with
+//! `session_window_take`; an open one is told with `session-tab-arrived` (the
+//! tab) and takes it with `session_window_take_tab`; the main window is
+//! told with `session-arrived` (the session, snapshot and all). Every
+//! window is told the open session windows with `session-windows`.
 //!
 //! What is decided is the core's (`Windows`: the move, the snapshot kept
 //! for a page, a reloaded page's rule, a dead window's sessions); this only
@@ -25,7 +29,7 @@ use netterm_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, SessionId, SessionManager, SessionRecord,
     SessionRecords, SessionRelays, Transport,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
@@ -38,6 +42,10 @@ const SESSION_WINDOW_PREFIX: &str = "session-";
 /// The main window is given a session: docked back, or from a window that
 /// died.
 const SESSION_ARRIVED_EVENT: &str = "session-arrived";
+/// An open session window is given a tab (#85); only it listens.
+const SESSION_TAB_ARRIVED_EVENT: &str = "session-tab-arrived";
+/// Every window is told which session windows are open (#85).
+const SESSION_WINDOWS_EVENT: &str = "session-windows";
 /// How long a new session window's page waits for its session.
 const TAKE_WAIT: Duration = Duration::from_secs(10);
 /// Where a session window opens, from the main window's corner.
@@ -93,11 +101,14 @@ pub(super) fn session_release(
         .map_err(|error| error.to_string())
 }
 
-/// Moves the main window's tab `tab`, whose session `id` it has released,
-/// to a new session window, which shows `snapshot` (the terminal's screen
-/// and scrollback) first. `width` and `height` are the window's inner size
-/// (logical pixels) at which its terminal has the columns and rows it had;
-/// it is made to fit the screen. Returns the main window's layout.
+/// Moves the calling window's tab `tab`, whose session `id` it has
+/// released, to another window, which shows `snapshot` (the terminal's
+/// screen and scrollback) first: into the open session window `into`
+/// (#85), or, without one, into a new session window. `width` and
+/// `height` are a new window's inner size (logical pixels) at which its
+/// terminal has the columns and rows it had; it is made to fit the screen.
+/// Returns the calling window's layout; `None` once it closed, its last
+/// tab gone (#85).
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub(super) async fn window_open_session(
@@ -111,51 +122,127 @@ pub(super) async fn window_open_session(
     snapshot: String,
     width: f64,
     height: f64,
-) -> Result<WindowView, String> {
-    if calling_window(&window)? != WindowId::MAIN {
-        return Err("only the main window opens a session window".into());
-    }
+    into: Option<WindowId>,
+) -> Result<Option<WindowView>, String> {
+    let from = calling_window(&window)?;
     let session = SessionId(id);
-    let target = {
-        let mut windows = tabs.lock();
-        if tab_showing(&windows, WindowId::MAIN, session) != Some(tab) {
-            return Err("the tab does not show that session".into());
+    if tab_showing(&tabs.lock(), from, session) != Some(tab) {
+        return Err("the tab does not show that session".into());
+    }
+    match into {
+        Some(target) => {
+            let receiving = (target != WindowId::MAIN)
+                .then(|| app.get_webview_window(&label_of(target)))
+                .flatten()
+                .ok_or("that session window is gone")?;
+            {
+                let mut windows = tabs.lock();
+                let moved = windows
+                    .move_session(from, tab, target)
+                    .map_err(|error| error.to_string())?;
+                // Its page takes it, snapshot and all, once told.
+                windows.keep_snapshot(target, moved, snapshot);
+                receiving
+                    .emit_to(
+                        receiving.label(),
+                        SESSION_TAB_ARRIVED_EVENT,
+                        ArrivedTab { tab: moved },
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            let _ = receiving.unminimize();
+            let _ = receiving.set_focus();
         }
-        windows.open_session_window()
-    };
-    let name = records
-        .get(session)
-        .map(|record| record.name)
-        .unwrap_or_default();
-    let theme = window_theme(preferred.lock().theme);
-    let built = build(
-        &app,
-        &window,
-        label_of(target),
-        format!("{name} - {}", product_name(&app)),
-        theme,
-        (width, height),
-    );
-    let mut windows = tabs.lock();
-    let moved = built.and_then(|built| {
-        windows
-            .move_session(WindowId::MAIN, tab, target)
-            .map_err(|error| {
-                let _ = built.destroy();
-                error.to_string()
-            })
-    });
-    let moved = match moved {
-        Ok(moved) => moved,
-        Err(error) => {
-            let _ = windows.close_window(target);
-            return Err(error);
+        None => {
+            let target = tabs.lock().open_session_window();
+            let name = records
+                .get(session)
+                .map(|record| record.name)
+                .unwrap_or_default();
+            let theme = window_theme(preferred.lock().theme);
+            let built = build(
+                &app,
+                &window,
+                label_of(target),
+                format!("{name} - {}", product_name(&app)),
+                theme,
+                (width, height),
+            );
+            let mut windows = tabs.lock();
+            let moved = built.and_then(|built| {
+                windows.move_session(from, tab, target).map_err(|error| {
+                    let _ = built.destroy();
+                    error.to_string()
+                })
+            });
+            let moved = match moved {
+                Ok(moved) => moved,
+                Err(error) => {
+                    let _ = windows.close_window(target);
+                    return Err(error);
+                }
+            };
+            // Kept with the move, under one lock: a page that finds its
+            // window showing the session finds its snapshot too.
+            windows.keep_snapshot(target, moved, snapshot);
         }
-    };
-    // Kept with the move, under one lock: a page that finds its window
-    // showing the session finds its snapshot too.
-    windows.keep_snapshot(target, moved, snapshot);
-    window_view(&windows, WindowId::MAIN)
+    }
+    let shown = leave(&tabs, &window, from);
+    announce(&app, &tabs, &records);
+    shown
+}
+
+/// What the window `from` shows after a tab left it: its layout, or
+/// `None` once its last tab has gone, the core closed it, and so does the
+/// window (#85).
+fn leave(
+    tabs: &Tabs,
+    window: &tauri::WebviewWindow,
+    from: WindowId,
+) -> Result<Option<WindowView>, String> {
+    let view = tabs.lock().view(from);
+    if view.is_none() {
+        window.destroy().map_err(|error| error.to_string())?;
+    }
+    Ok(view)
+}
+
+/// An open session window, as the Open in window entries name it (#85).
+#[derive(Clone, Serialize)]
+pub(super) struct ListedWindow {
+    window: WindowId,
+    /// The name of the session its active tab shows; empty while unknown.
+    name: String,
+}
+
+fn listed(tabs: &Tabs, records: &SessionRecords) -> Vec<ListedWindow> {
+    let windows = tabs.lock().session_windows();
+    windows
+        .into_iter()
+        .map(|(window, session)| ListedWindow {
+            window,
+            name: session
+                .and_then(|session| records.get(session))
+                .map(|record| record.name)
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// The open session windows, each named by the session its active tab
+/// shows (#85).
+#[tauri::command]
+pub(super) fn session_windows_list(
+    tabs: State<'_, Tabs>,
+    records: State<'_, SessionRecords>,
+) -> Vec<ListedWindow> {
+    listed(&tabs, &records)
+}
+
+/// Tells every window which session windows are open now (one opened or
+/// closed, or its active tab changed), with `session-windows`.
+pub(super) fn announce(app: &AppHandle, tabs: &Tabs, records: &SessionRecords) {
+    let _ = app.emit(SESSION_WINDOWS_EVENT, listed(tabs, records));
 }
 
 /// Builds a session window near `main`, `size` (logical) or as much of it
@@ -207,21 +294,38 @@ fn build(
         .map_err(|error| format!("the window could not be opened: {error}"))
 }
 
-/// What a session window's page starts from.
+/// A session a session window's page takes.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Taken {
+pub(super) struct TakenTab {
     session: u64,
     tab: TabId,
     /// `None`: the page was reloaded, and what it showed is lost.
     snapshot: Option<String>,
     record: Option<SessionRecord>,
+}
+
+impl TakenTab {
+    fn of(taken: netterm_core::layout::Taken, records: &SessionRecords) -> Self {
+        Self {
+            session: taken.session.0,
+            tab: taken.tab,
+            record: records.get(taken.session),
+            snapshot: taken.snapshot,
+        }
+    }
+}
+
+/// What a session window's page starts from: its sessions and layout.
+#[derive(Serialize)]
+pub(super) struct Taken {
+    sessions: Vec<TakenTab>,
     layout: WindowView,
 }
 
-/// The calling session window's session, once it was moved there (the
-/// page may load first: it waits a little), as `Windows::take_session`
-/// gives it. Without a snapshot (the page reloaded), whoever held the
+/// The calling session window's sessions, once one was moved there (the
+/// page may load first: it waits a little), as `Windows::take_sessions`
+/// gives them. Without a snapshot (the page reloaded), whoever held a
 /// session (the page before) is let go of.
 #[tauri::command]
 pub(super) async fn session_window_take(
@@ -235,15 +339,16 @@ pub(super) async fn session_window_take(
     loop {
         {
             let mut windows = tabs.lock();
-            if let Some(taken) = windows.take_session(window) {
-                if taken.snapshot.is_none() {
-                    relays.let_go(taken.session);
+            let taken = windows.take_sessions(window);
+            if !taken.is_empty() {
+                for each in taken.iter().filter(|each| each.snapshot.is_none()) {
+                    relays.let_go(each.session);
                 }
                 return Ok(Taken {
-                    session: taken.session.0,
-                    tab: taken.tab,
-                    snapshot: taken.snapshot,
-                    record: records.get(taken.session),
+                    sessions: taken
+                        .into_iter()
+                        .map(|each| TakenTab::of(each, &records))
+                        .collect(),
                     layout: window_view(&windows, window)?,
                 });
             }
@@ -253,6 +358,40 @@ pub(super) async fn session_window_take(
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// A tab moved into a session window whose page is open (#85).
+#[derive(Clone, Serialize)]
+struct ArrivedTab {
+    tab: TabId,
+}
+
+/// A tab that moved into the calling session window while its page was
+/// open (told by `session-tab-arrived`), and the window's layout.
+#[derive(Serialize)]
+pub(super) struct TakenOne {
+    session: TakenTab,
+    layout: WindowView,
+}
+
+/// The session of the tab `tab` moved into the calling session window
+/// while its page was open, with its snapshot (used up).
+#[tauri::command]
+pub(super) fn session_window_take_tab(
+    window: tauri::WebviewWindow,
+    tabs: State<'_, Tabs>,
+    records: State<'_, SessionRecords>,
+    tab: TabId,
+) -> Result<TakenOne, String> {
+    let window = calling_window(&window)?;
+    let mut windows = tabs.lock();
+    let taken = windows
+        .take_tab(window, tab)
+        .ok_or("this window does not show that tab")?;
+    Ok(TakenOne {
+        session: TakenTab::of(taken, &records),
+        layout: window_view(&windows, window)?,
+    })
 }
 
 /// A session the calling window takes over.
@@ -340,9 +479,70 @@ struct Arrival {
     layout: WindowView,
 }
 
+/// A session tab a session window gives back to the main window: its
+/// session `id`, released, and `snapshot`, its terminal.
+#[derive(Deserialize)]
+pub(super) struct Docking {
+    tab: TabId,
+    id: u64,
+    snapshot: String,
+}
+
+/// Docks the calling session window's tabs back into the main window, in
+/// order; the main window takes the focus and is told of each
+/// (`session-arrived`). A window left without a tab closes (#85): its
+/// layout is returned until then.
+fn dock(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+    tabs: &Tabs,
+    records: &SessionRecords,
+    docking: Vec<Docking>,
+) -> Result<Option<WindowView>, String> {
+    let from = calling_window(window)?;
+    if from == WindowId::MAIN {
+        return Err("the main window docks nothing".into());
+    }
+    let main = focused_main(app)?;
+    let arrivals = {
+        let mut windows = tabs.lock();
+        if docking
+            .iter()
+            .any(|each| tab_showing(&windows, from, SessionId(each.id)) != Some(each.tab))
+        {
+            return Err("the tab does not show that session".into());
+        }
+        let mut moved = Vec::new();
+        for each in docking {
+            let back = windows
+                .move_session(from, each.tab, WindowId::MAIN)
+                .map_err(|error| error.to_string())?;
+            moved.push((each.id, back, each.snapshot));
+        }
+        let layout = window_view(&windows, WindowId::MAIN)?;
+        moved
+            .into_iter()
+            .map(|(id, tab, snapshot)| Arrival {
+                session: id,
+                tab,
+                snapshot: Some(snapshot),
+                record: records.get(SessionId(id)),
+                layout: layout.clone(),
+            })
+            .collect::<Vec<_>>()
+    };
+    for arrival in arrivals {
+        main.emit_to(MAIN_WINDOW, SESSION_ARRIVED_EVENT, arrival)
+            .map_err(|error| error.to_string())?;
+    }
+    let shown = leave(tabs, window, from);
+    announce(app, tabs, records);
+    shown
+}
+
 /// Docks the calling session window's tab `tab` back into the main window
-/// (its session `id` released, `snapshot` its terminal), which takes the
-/// focus; the session window closes.
+/// (its session `id` released, `snapshot` its terminal); the window
+/// closes if that was its last tab.
 #[tauri::command]
 pub(super) async fn session_dock(
     app: AppHandle,
@@ -352,40 +552,35 @@ pub(super) async fn session_dock(
     tab: TabId,
     id: u64,
     snapshot: String,
-) -> Result<(), String> {
-    let from = calling_window(&window)?;
-    if from == WindowId::MAIN {
-        return Err("the main window docks nothing".into());
-    }
-    let session = SessionId(id);
-    let main = focused_main(&app)?;
-    let arrival = {
-        let mut windows = tabs.lock();
-        if tab_showing(&windows, from, session) != Some(tab) {
-            return Err("the tab does not show that session".into());
-        }
-        let back = windows
-            .move_session(from, tab, WindowId::MAIN)
-            .map_err(|error| error.to_string())?;
-        // Its only tab has gone: so does the window, before it is destroyed
-        // (which then finds nothing to hand over).
-        let _ = windows.close_window(from);
-        Arrival {
-            session: id,
-            tab: back,
-            snapshot: Some(snapshot),
-            record: records.get(session),
-            layout: window_view(&windows, WindowId::MAIN)?,
-        }
-    };
-    main.emit_to(MAIN_WINDOW, SESSION_ARRIVED_EVENT, arrival)
-        .map_err(|error| error.to_string())?;
-    window.destroy().map_err(|error| error.to_string())
+) -> Result<Option<WindowView>, String> {
+    dock(
+        &app,
+        &window,
+        &tabs,
+        &records,
+        vec![Docking { tab, id, snapshot }],
+    )
 }
 
-/// Closes the calling session window and its session: its tab was closed.
+/// Dock all back (#85): every given tab of the calling session window goes
+/// back to the main window, in order, and the window closes once none is
+/// left.
+#[tauri::command]
+pub(super) async fn session_dock_all(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    tabs: State<'_, Tabs>,
+    records: State<'_, SessionRecords>,
+    docking: Vec<Docking>,
+) -> Result<Option<WindowView>, String> {
+    dock(&app, &window, &tabs, &records, docking)
+}
+
+/// Closes the calling session window and its sessions: its last tab was
+/// closed.
 #[tauri::command]
 pub(super) async fn session_window_close(
+    app: AppHandle,
     window: tauri::WebviewWindow,
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
@@ -409,6 +604,7 @@ pub(super) async fn session_window_close(
         manager.discard(session);
         records.forget(session);
     }
+    announce(&app, &tabs, &records);
     window.destroy().map_err(|error| error.to_string())
 }
 
@@ -446,6 +642,7 @@ pub(super) fn destroyed(app: &AppHandle, label: &str) {
         };
         (handed, windows.view(WindowId::MAIN))
     };
+    announce(app, &tabs, &records);
     let Some(layout) = layout else {
         return;
     };

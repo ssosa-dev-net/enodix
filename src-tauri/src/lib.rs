@@ -2330,11 +2330,15 @@ fn layout_reset(window: tauri::WebviewWindow, tabs: State<'_, Tabs>) -> Result<W
     window_view(&windows, window)
 }
 
-/// Edits the calling window's layout, or the app's multi-send group.
+/// Edits the calling window's layout, or the app's multi-send group. A
+/// session window's edit may change the session it is named by: every
+/// window is told (#85).
 #[tauri::command]
 fn layout_edit(
+    app: AppHandle,
     window: tauri::WebviewWindow,
     tabs: State<'_, Tabs>,
+    records: State<'_, SessionRecords>,
     edit: LayoutEdit,
 ) -> Result<LayoutChanged, String> {
     let window = calling_window(&window)?;
@@ -2350,13 +2354,19 @@ fn layout_edit(
     if group_edit && window != WindowId::MAIN {
         return Err("a session window takes no part in multi-send".into());
     }
-    let mut windows = tabs.lock();
-    let created =
-        apply_layout_edit(&mut windows, window, edit).map_err(|error| error.to_string())?;
-    Ok(LayoutChanged {
-        layout: window_view(&windows, window)?,
-        created,
-    })
+    let changed = {
+        let mut windows = tabs.lock();
+        let created =
+            apply_layout_edit(&mut windows, window, edit).map_err(|error| error.to_string())?;
+        LayoutChanged {
+            layout: window_view(&windows, window)?,
+            created,
+        }
+    };
+    if window != WindowId::MAIN {
+        session_windows::announce(&app, &tabs, &records);
+    }
+    Ok(changed)
 }
 
 /// What `window`'s interface is sent of its layout.
@@ -3054,6 +3064,9 @@ pub fn run() {
             session_windows::session_attach,
             session_windows::session_dock,
             session_windows::session_window_close,
+            session_windows::session_window_take_tab,
+            session_windows::session_dock_all,
+            session_windows::session_windows_list,
             jobs_live,
             jobs_forget_finished,
             enrich_apply,

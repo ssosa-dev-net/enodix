@@ -10180,7 +10180,7 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
     "[data-side-view]",
     "[data-welcome]",
     "[data-new-tab]",
-    "[data-split]",
+    "[data-join-pane]",
     "[data-multi-send-bar]",
   ]) {
     if (await window.evaluate(`!!document.querySelector(${json(selector)})`))
@@ -10391,9 +10391,18 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
     .catch(() => {});
   window.devtools.close();
   await gone("session-3");
-  back = await until("the session docked back on close", () => movingTab());
-  if (back.state !== "connected")
-    fail(`closing the window left the session ${back.state}`);
+  // Connecting until its terminal has attached: then connected.
+  back = await until(
+    "the session docked back on close, connected",
+    async () => {
+      const tab = await movingTab();
+      return tab?.state === "connected" && tab;
+    },
+  ).catch(async (error) =>
+    fail(
+      `${error.message}: closing the window left ${JSON.stringify(await movingTab())}`,
+    ),
+  );
   await show(back.id);
   if (!(await echoed(evaluate, slot(back.id))))
     fail("closing the window lost the session's scrollback");
@@ -10404,6 +10413,382 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
   // The group as multiSend left it: ended.
   await show(a);
   await sessionAction(evaluate, "end-group", slot(a));
+
+  await severalInAWindow({
+    evaluate,
+    tabs,
+    slot,
+    show,
+    keysOn,
+    main,
+    focusTerminal,
+    lines,
+    ran,
+    ranAnywhere,
+    openWindow,
+    gone,
+    step,
+    screenshot,
+  });
+}
+
+/**
+ * Several sessions in one session window (#85): moved in from the main
+ * window and from another session window (which then closes), the tab
+ * shortcuts on that window's tabs only, Duplicate there, a split with
+ * typing in each pane, search, copy, paste and highlighting there, zoom
+ * and theme from the main window, the title following the active tab,
+ * and Dock all back. The window ids follow those sessionWindows used
+ * (session-1 to -3).
+ */
+async function severalInAWindow({
+  evaluate,
+  tabs,
+  slot,
+  show,
+  keysOn,
+  main,
+  focusTerminal,
+  lines,
+  ran,
+  ranAnywhere,
+  openWindow,
+  gone,
+  step,
+  screenshot,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const CTRL = 2;
+  const SHIFT = 8;
+  const connected = (await tabs()).filter((tab) => tab.state === "connected");
+  if (connected.length < 3)
+    fail(`severalInAWindow needs three connected sessions: ${json(connected)}`);
+  const [x, y, z] = connected;
+  const known = new Set((await tabs()).map((tab) => tab.id));
+  const windowTabs = (window) =>
+    window.evaluate(`[...document.querySelectorAll("[role=tab]")].map((tab) => ({
+      id: Number(tab.dataset.tab),
+      state: tab.dataset.tabState,
+      name: tab.querySelector("[data-tab-name]")?.textContent ?? "",
+    }))`);
+  const shownTab = (target) =>
+    target(
+      `Number(document.querySelector("${SHOWN_SESSION}")?.dataset.tab ?? -1)`,
+    );
+  const titleOf = (window) => window.evaluate("document.title");
+
+  // A new window from the main window, then a second session into it.
+  await show(x.id);
+  await sessionAction(evaluate, "open-in-window", slot(x.id));
+  const window = await openWindow("session-4");
+  await show(y.id);
+  await sessionAction(evaluate, "open-in-window-4", slot(y.id));
+  await until("two tabs in the session window", async () => {
+    const shown = await windowTabs(window);
+    return (
+      shown.length === 2 && shown.every((tab) => tab.state === "connected")
+    );
+  });
+  if ((await tabs()).some((tab) => tab.id === x.id || tab.id === y.id))
+    fail("the moved sessions' tabs are still in the main window");
+  await until(`the title naming ${y.name}`, async () =>
+    (await titleOf(window)).startsWith(y.name),
+  );
+  step(
+    "Open in window offered the open session window, and moving into it added a tab there, titled after it",
+  );
+
+  // From another session window: that window, emptied, closes.
+  await show(z.id);
+  await sessionAction(evaluate, "open-in-window", slot(z.id));
+  const other = await openWindow("session-5");
+  await sessionAction(other.evaluate, "open-in-window-4");
+  await gone("session-5");
+  await until(
+    "three tabs in the first session window",
+    async () => (await windowTabs(window)).length === 3,
+  );
+  // In the order they came (each at the end of the active pane).
+  const [xTab, yTab] = (await windowTabs(window)).map((tab) => tab.id);
+  const xSlot = `.slot[data-tab="${xTab}"]`;
+  const ySlot = `.slot[data-tab="${yTab}"]`;
+  step(
+    "a session moved from one session window into another; the emptied window closed itself",
+  );
+
+  // Tab shortcuts act on this window's tabs only.
+  const keys = keysOn(window.devtools);
+  const mainShown = await shownTab(evaluate);
+  const before = await shownTab(window.evaluate);
+  await focusTerminal(window.evaluate, SHOWN_SESSION);
+  await keys.press("Tab", "Tab", 9, CTRL);
+  await until("the next tab in the session window", async () => {
+    const now = await shownTab(window.evaluate);
+    return now !== before && now !== -1;
+  });
+  if ((await shownTab(evaluate)) !== mainShown)
+    fail("Ctrl+Tab in the session window changed the main window's tab");
+  const order = async () => (await windowTabs(window)).map((tab) => tab.id);
+  const orderBefore = await order();
+  await keys.press("PageDown", "PageDown", 34, CTRL | SHIFT);
+  await until(
+    "the tab moved right (it is the first)",
+    async () => json(await order()) !== json(orderBefore),
+  );
+  await keys.press("PageUp", "PageUp", 33, CTRL | SHIFT);
+  await until(
+    "the tab moved back",
+    async () => json(await order()) === json(orderBefore),
+  );
+  await until("the title following the active tab", async () => {
+    const tab = await shownTab(window.evaluate);
+    const name = (await windowTabs(window)).find(
+      (each) => each.id === tab,
+    )?.name;
+    return !!name && (await titleOf(window)).startsWith(name);
+  });
+  step(
+    "Ctrl+Tab and Ctrl+Shift+PageUp/PageDown acted on the session window's tabs only; its title followed the active tab",
+  );
+
+  // Duplicate opens beside the original, in this window.
+  await sessionAction(window.evaluate, "duplicate", xSlot);
+  const duplicated = await until(
+    "the duplicate connected beside it",
+    async () => {
+      const shown = await windowTabs(window);
+      const at = shown.findIndex((tab) => tab.id === xTab);
+      const next = shown[at + 1];
+      return (
+        shown.length === 4 &&
+        next &&
+        !orderBefore.includes(next.id) &&
+        next.name === x.name &&
+        next.state === "connected" &&
+        next
+      );
+    },
+  );
+  await window.evaluate(
+    `document.querySelector('[data-tab="${duplicated.id}"] [data-tab-close]').click()`,
+  );
+  await until("the close question", () =>
+    window.evaluate(`!!document.querySelector("[data-confirm=close]")`),
+  );
+  await window.evaluate(
+    `document.querySelector("[data-confirm=close]").click()`,
+  );
+  await until(
+    "three tabs again",
+    async () => (await windowTabs(window)).length === 3,
+  );
+  step("Duplicate in the session window opened beside the original there");
+
+  // Split: x and y side by side, each typing to its own device.
+  await window.evaluate(
+    `document.querySelector('[data-tab="${xTab}"]').click()`,
+  );
+  await until("x shown", () =>
+    window.evaluate(`!!document.querySelector('${xSlot}[data-active]')`),
+  );
+  await window.evaluate(`document.querySelector("[data-split=right]").click()`);
+  await until("two panes", () =>
+    window.evaluate(`document.querySelectorAll("[data-tab-bar]").length === 2`),
+  );
+  const visible = (selector) =>
+    window.evaluate(
+      `(() => { const slot = document.querySelector('${selector}'); return !!slot && !slot.hidden; })()`,
+    );
+  // The split took the shown tab (x) into the new pane; the first shows y
+  // or z: show y there.
+  await window.evaluate(
+    `document.querySelector('[data-tab="${yTab}"]').click()`,
+  );
+  await until(
+    "both sessions side by side",
+    async () => (await visible(xSlot)) && (await visible(ySlot)),
+  );
+  await focusTerminal(window.evaluate, xSlot);
+  await keys.type("inleft\r");
+  await focusTerminal(window.evaluate, ySlot);
+  await keys.type("inright\r");
+  await until(
+    "each typed line echoed in its own pane",
+    async () =>
+      (await ran(window.evaluate, xSlot, "inleft")) &&
+      (await ran(window.evaluate, ySlot, "inright")),
+  );
+  if (
+    (await ranAnywhere(window.evaluate, xSlot, "inright")) ||
+    (await ranAnywhere(window.evaluate, ySlot, "inleft"))
+  )
+    fail("typing in one pane reached the other's device");
+  step(
+    "split in the session window: two sessions side by side, each typing to its own device",
+  );
+  if (screenshot) await screenshot("session-window-split");
+
+  // Search, copy and paste, and highlighting there.
+  await focusTerminal(window.evaluate, ySlot);
+  await keys.press("F", "KeyF", 70, CTRL | SHIFT);
+  await until("the search bar", () =>
+    window.evaluate(
+      `document.activeElement?.matches(${json(`${ySlot} [data-terminal-search] input[name=search]`)}) ?? false`,
+    ),
+  );
+  await keys.type("inright");
+  await until("a match", async () =>
+    /^\d+ of [1-9]/.test(
+      await window.evaluate(
+        `document.querySelector(${json(`${ySlot} [data-search-results]`)}).textContent`,
+      ),
+    ),
+  );
+  await keys.press("Escape", "Escape", 27);
+  const savedClipboard = readClipboard();
+  try {
+    await window.evaluate(`(() => {
+      const terminal = document.querySelector('${ySlot} .terminal').xterm;
+      const buffer = terminal.buffer.active;
+      for (let y = buffer.length - 1; y >= 0; y--) {
+        if (buffer.getLine(y).translateToString(true).includes("$ inright")) {
+          terminal.selectLines(y, y);
+          return;
+        }
+      }
+    })()`);
+    await focusTerminal(window.evaluate, ySlot);
+    await keys.press("C", "KeyC", 67, CTRL | SHIFT);
+    await until("the selection copied", () =>
+      readClipboard().includes("inright"),
+    );
+    writeClipboard("pastedhere");
+    await keys.press("V", "KeyV", 86, CTRL | SHIFT);
+    // The paste goes through its plan first: Enter only once it is in.
+    await until("the pasted text on the line", async () =>
+      (await screenOf(window.evaluate, ySlot)).includes("$ pastedhere"),
+    );
+    await keys.type("\r");
+    await until("the paste echoed", () =>
+      ran(window.evaluate, ySlot, "pastedhere"),
+    );
+  } finally {
+    writeClipboard(savedClipboard);
+  }
+  await keys.type("down\r");
+  await until("down echoed", () => ran(window.evaluate, ySlot, "down")).catch(
+    async (error) =>
+      fail(
+        `${error.message}; focus in ${await window.evaluate("document.activeElement?.outerHTML.slice(0, 120) ?? null")}; screen ${json(await screenOf(window.evaluate, ySlot))}`,
+      ),
+  );
+  await until("the built-in rules colouring down", () =>
+    window.evaluate(`(() => {
+      const slot = document.querySelector('${ySlot} .terminal');
+      const buffer = slot.xterm.buffer.active;
+      return slot.highlights.shown().some((cell) =>
+        buffer.getLine(cell.line)?.translateToString(true).slice(cell.col, cell.col + cell.width) === "down");
+    })()`),
+  ).catch(async (error) => {
+    const seen = await window.evaluate(`(() => {
+      const slot = document.querySelector('${ySlot} .terminal');
+      const buffer = slot.xterm.buffer.active;
+      const lines = [];
+      for (let y = 0; y < buffer.length; y++) {
+        const text = buffer.getLine(y).translateToString(true);
+        if (text.trim()) lines.push([y, text]);
+      }
+      return {
+        focus: document.hasFocus(),
+        visibility: document.visibilityState,
+        shown: slot.highlights.shown(),
+        lines,
+        viewport: buffer.viewportY,
+        rows: slot.xterm.rows,
+      };
+    })()`);
+    fail(`${error.message}; window ${json(seen)}`);
+  });
+  step(
+    "search, copy, paste and keyword highlighting worked in the session window",
+  );
+
+  // Zoom and theme from the main window reach it.
+  const fontSize = () =>
+    window.evaluate(
+      `document.querySelector('${ySlot} .terminal').xterm.options.fontSize`,
+    );
+  const size = await fontSize();
+  await main.press("=", "Equal", 187, CTRL);
+  await until(
+    "the larger font there too",
+    async () => (await fontSize()) === size + 1,
+  );
+  await main.press("0", "Digit0", 48, CTRL);
+  await until(
+    "the default font there too",
+    async () => (await fontSize()) !== size + 1,
+  );
+  const theme = () => window.evaluate("document.documentElement.dataset.theme");
+  const themeBefore = await theme();
+  await openPreferences(evaluate);
+  const choose = (value) =>
+    evaluate(`(() => {
+      const field = document.querySelector("[data-view=preferences] [name=preference-theme]");
+      const before = field.value;
+      field.value = ${json(value)};
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+      return before;
+    })()`);
+  const chosenBefore = await choose(themeBefore === "dark" ? "light" : "dark");
+  await until(
+    "the other theme there too",
+    async () => (await theme()) !== themeBefore,
+  );
+  await choose(chosenBefore);
+  await until(
+    "the theme back there too",
+    async () => (await theme()) === themeBefore,
+  );
+  await closePreferences(evaluate);
+  step(
+    "a zoom and a theme change in the main window reached the session window",
+  );
+
+  // Dock all back: every session, connected, with its scrollback.
+  await sessionAction(window.evaluate, "dock-all", ySlot).catch(
+    async (error) => {
+      await window.evaluate(
+        `document.querySelector(${json(`${ySlot} [data-session-menu]`)}).click()`,
+      );
+      const entry = await until("the menu", () =>
+        window.evaluate(`(() => {
+          const entry = document.querySelector("[data-session-actions] [data-session-action=dock-all]");
+          return entry ? { title: entry.title, disabled: entry.disabled } : document.querySelector("[data-session-actions]") && "none";
+        })()`),
+      );
+      fail(`${error.message}: ${json(entry)}`);
+    },
+  );
+  window.devtools.close();
+  await gone("session-4");
+  const docked = await until("the three sessions back", async () => {
+    const back = (await tabs()).filter((tab) => !known.has(tab.id));
+    return back.length === 3 && back;
+  });
+  if (docked.some((tab) => tab.state !== "connected"))
+    fail(`Dock all back left ${json(docked)}`);
+  for (const word of ["inleft", "inright"]) {
+    let found = false;
+    for (const tab of docked) {
+      await show(tab.id);
+      if (await ranAnywhere(evaluate, slot(tab.id), word)) found = true;
+    }
+    if (!found) fail(`Dock all back lost the scrollback with ${word}`);
+  }
+  step(
+    "Dock all back returned every session to the main window, connected, with its scrollback, and closed the window",
+  );
 }
 
 let exitCode = 0;

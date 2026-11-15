@@ -14,6 +14,17 @@
     attributes?: Record<string, string>;
     run: () => void;
   }
+
+  /** A way the window offers to move a session to another window (#84,
+   * #85), shown as one of its actions. */
+  export interface SessionMove extends Omit<SessionAction, "disabled"> {
+    /** What it does, as the entry's tooltip while it is allowed (its id
+     * is also a `data-<id>` marker). */
+    title: string;
+    /** Why the window cannot make it now, beyond the session's own
+     * reasons; null: it can. */
+    refusal?: () => string | null;
+  }
 </script>
 
 <script lang="ts">
