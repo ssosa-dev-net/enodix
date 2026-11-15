@@ -5563,6 +5563,11 @@ async function jobs({
     await until("the run's window, running", () =>
       inWindow(windowHost("running")),
     );
+    // The host reads "running" from the kept run at once; Cancel is offered
+    // only once the window has the app's record of live jobs, a moment later.
+    await until("the run's window offers Cancel", () =>
+      inWindow("[data-run-action=cancel]"),
+    );
     await other.evaluate(
       `document.querySelector("[data-run-action=cancel]").click()`,
     );
