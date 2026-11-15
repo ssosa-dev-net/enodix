@@ -21,7 +21,7 @@ These need no key and no environment variables and write to
 Linux packages and `SHA256SUMS.txt`, with no `.sig` and no `latest.json`.
 The app in them has no updater and no release server, so it never checks
 for or installs an update; people install the next version by hand.
-Versions 0.1.0 to 0.2.0 were made this way and published on the tracker's
+Versions 0.1.0 to 0.4.0 were made this way and published on the tracker's
 release page as pre-releases. The first signed release starts the updater:
 copies of a pre-release cannot update themselves to it.
 

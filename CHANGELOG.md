@@ -5,6 +5,13 @@ in the project's tracker.
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.4.0
+
+A pre-release: not code-signed, and without automatic updates (install it
+over 0.3.0 by hand).
+
 ### Terminals in windows of their own
 
 For troubleshooting across several monitors (spec #81, #83 to #88).

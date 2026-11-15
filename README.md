@@ -31,11 +31,12 @@ that it switches and folds, and the terminals in tabs and split panes.
 Job runs, config history, Preferences, the imports and the other tools
 open as tabs beside the terminals, and a job run or a config history can
 open in a window of its own. So can a terminal, still connected and with
-its scrollback, for a second monitor (not yet in a release). [docs/interface.md](docs/interface.md)
+its scrollback, for a second monitor. [docs/interface.md](docs/interface.md)
 describes the window, lists the shortcuts and says where everything is.
 
 Releases up to 0.1.2 have the sessions and the inventory only; everything
-else in the list came with 0.2.0, and the redesigned interface with 0.3.0. Releases so far are pre-releases: not
+else in the list came with 0.2.0, the redesigned interface with 0.3.0, and
+terminals in windows of their own with 0.4.0. Releases so far are pre-releases: not
 code-signed, and without the automatic updates described below (install
 the next version over the old one by hand). [CHANGELOG.md](CHANGELOG.md) lists what
 each release added, and [ROADMAP.md](ROADMAP.md) says what is built, what
