@@ -5,6 +5,13 @@ in the project's tracker.
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.3.0
+
+A pre-release: not code-signed, and without automatic updates (install it
+over 0.2.0 by hand).
+
 ### A new interface
 
 The same features, reached differently (spec #61, #62 to #79);

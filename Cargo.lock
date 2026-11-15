@@ -2898,7 +2898,7 @@ dependencies = [
 
 [[package]]
 name = "netterm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "netterm-core",
  "serde",
@@ -2912,7 +2912,7 @@ dependencies = [
 
 [[package]]
 name = "netterm-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "netterm-core",
@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "netterm-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
