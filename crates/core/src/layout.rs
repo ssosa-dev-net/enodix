@@ -10,23 +10,23 @@
 //! Every change raises [`Layout::revision`]; an edit naming a tab or pane that
 //! does not exist is refused and changes nothing.
 //!
-//! The layout also holds the window's one multi-send group (#35): the tabs
-//! whose typing reaches every member. Closing a tab takes it out; moving it
-//! keeps it; new tabs start outside. To route input, each tab can be told
-//! the session it shows ([`Layout::attach_session`]); see
-//! [`Layout::input_targets`].
-//!
 //! A tab holds a session or a view (#68): a [`View`] names which view it is
 //! and what it is about. A view is open at most once: opening it again
 //! shows its tab. View tabs move, split and close like session tabs, but
-//! never join the multi-send group nor show a session.
+//! never join the multi-send group nor show a session. A session window's
+//! layout ([`Layout::for_session_window`]) holds session tabs only.
+//!
+//! The app's windows each have a layout, kept together in [`Windows`] with
+//! the one multi-send group that spans them (#83).
 
-use std::collections::{BTreeMap, HashMap};
+mod windows;
+
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::SessionId;
+pub use windows::{LayoutMut, Member, WindowId, WindowView, Windows};
 
 /// A tab, unique for the life of its [`Layout`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -125,6 +125,12 @@ pub enum LayoutError {
     LastPane,
     #[error("the tab {0} shows a view, not a session")]
     NotASession(TabId),
+    #[error("a session window shows no view tabs")]
+    NoViewTabs,
+    #[error("there is no window {0}")]
+    NoSuchWindow(WindowId),
+    #[error("the main window cannot be closed")]
+    MainWindow,
 }
 
 /// The tabs and panes of a window.
@@ -133,16 +139,14 @@ pub enum LayoutError {
 pub struct Layout {
     root: Node,
     active_pane: PaneId,
-    /// The multi-send group's tabs, in the order they joined.
-    group: Vec<TabId>,
     /// What each tab holds.
     kinds: BTreeMap<TabId, TabKind>,
     revision: u64,
     #[serde(skip)]
     next_id: u64,
-    /// The session each tab shows, once known.
+    /// Whether view tabs open here: not in a session window.
     #[serde(skip)]
-    sessions: HashMap<TabId, SessionId>,
+    views: bool,
 }
 
 impl Default for Layout {
@@ -152,18 +156,30 @@ impl Default for Layout {
 }
 
 impl Layout {
-    /// One empty pane, showing the connect view.
+    /// One empty pane, showing the connect view: the main window's.
     pub fn new() -> Self {
         let pane = PaneId(1);
         Self {
             root: Node::Pane(empty_pane(pane)),
             active_pane: pane,
-            group: Vec::new(),
             kinds: BTreeMap::new(),
             revision: 0,
             next_id: 2,
-            sessions: HashMap::new(),
+            views: true,
         }
+    }
+
+    /// One empty pane, for a session window: view tabs are refused.
+    pub fn for_session_window() -> Self {
+        Self {
+            views: false,
+            ..Self::new()
+        }
+    }
+
+    /// Whether view tabs open in this layout (not a session window's).
+    pub fn shows_views(&self) -> bool {
+        self.views
     }
 
     pub fn root(&self) -> &Node {
@@ -243,13 +259,17 @@ impl Layout {
     }
 
     /// Shows `view`: its tab if it is open (that pane becomes active),
-    /// else a new tab at the end of the active pane.
-    pub fn open_view(&mut self, view: View) -> TabId {
+    /// else a new tab at the end of the active pane. Refused in a session
+    /// window.
+    pub fn open_view(&mut self, view: View) -> Result<TabId, LayoutError> {
+        if !self.views {
+            return Err(LayoutError::NoViewTabs);
+        }
         if let Some(tab) = self.view_tab(&view) {
             self.activate(tab).expect("the view's tab exists");
-            return tab;
+            return Ok(tab);
         }
-        self.open_new(TabKind::View(view))
+        Ok(self.open_new(TabKind::View(view)))
     }
 
     fn open_new(&mut self, kind: TabKind) -> TabId {
@@ -423,96 +443,8 @@ impl Layout {
         Ok(())
     }
 
-    /// The multi-send group's tabs, in the order they joined.
-    pub fn group(&self) -> &[TabId] {
-        &self.group
-    }
-
-    /// Whether `tab` is in the multi-send group.
-    pub fn in_group(&self, tab: TabId) -> bool {
-        self.group.contains(&tab)
-    }
-
-    /// Adds `tab` to the multi-send group (nothing changes if it is in it).
-    /// A view tab is refused.
-    pub fn join_group(&mut self, tab: TabId) -> Result<(), LayoutError> {
-        self.find_session_tab(tab)?;
-        if !self.in_group(tab) {
-            self.group.push(tab);
-            self.changed();
-        }
-        Ok(())
-    }
-
-    /// Adds every session tab of `pane` that is not a member yet to the multi-send
-    /// group, in the pane's order, and returns them (nothing changes if
-    /// there are none).
-    pub fn join_pane(&mut self, pane: PaneId) -> Result<Vec<TabId>, LayoutError> {
-        let joining: Vec<TabId> = self
-            .pane(pane)
-            .ok_or(LayoutError::NoSuchPane(pane))?
-            .tabs
-            .iter()
-            .copied()
-            .filter(|&tab| !self.in_group(tab) && !self.is_view(tab))
-            .collect();
-        if !joining.is_empty() {
-            self.group.extend(&joining);
-            self.changed();
-        }
-        Ok(joining)
-    }
-
-    /// Takes `tab` out of the multi-send group (nothing changes if it is
-    /// not in it).
-    pub fn leave_group(&mut self, tab: TabId) -> Result<(), LayoutError> {
-        self.find_tab(tab)?;
-        if self.in_group(tab) {
-            self.group.retain(|&member| member != tab);
-            self.changed();
-        }
-        Ok(())
-    }
-
-    /// Ends the multi-send group: no tab is in it any more.
-    pub fn end_group(&mut self) {
-        if !self.group.is_empty() {
-            self.group.clear();
-            self.changed();
-        }
-    }
-
-    /// Records that `tab` shows `session` (a reconnect keeps the same
-    /// session). Not part of what the interface is sent, so the revision
-    /// stays. A view tab is refused.
-    pub fn attach_session(&mut self, tab: TabId, session: SessionId) -> Result<(), LayoutError> {
-        self.find_session_tab(tab)?;
-        self.sessions.insert(tab, session);
-        Ok(())
-    }
-
-    /// The sessions that input typed or pasted in `session` goes to: every
-    /// member's session (in the order they joined) if its tab is in the
-    /// multi-send group, else only `session` itself. Members whose session
-    /// is not known yet are left out.
-    pub fn input_targets(&self, session: SessionId) -> Vec<SessionId> {
-        let member = self
-            .group
-            .iter()
-            .any(|tab| self.sessions.get(tab) == Some(&session));
-        if !member {
-            return vec![session];
-        }
-        self.group
-            .iter()
-            .filter_map(|tab| self.sessions.get(tab).copied())
-            .collect()
-    }
-
     /// Drops what the layout knew about a tab that is gone.
     fn forget(&mut self, tab: TabId) {
-        self.group.retain(|&member| member != tab);
-        self.sessions.remove(&tab);
         self.kinds.remove(&tab);
     }
 
@@ -560,6 +492,7 @@ impl Layout {
         self.pane_of(tab).ok_or(LayoutError::NoSuchTab(tab))
     }
 
+    /// Whether `tab` exists and holds a session.
     fn find_session_tab(&self, tab: TabId) -> Result<(), LayoutError> {
         self.find_tab(tab)?;
         if self.is_view(tab) {

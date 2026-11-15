@@ -53,6 +53,7 @@ pub trait Consumer: Send + 'static {
 pub struct ConsumerGone;
 
 /// Identifies one consumer of one relay, for acknowledging and releasing.
+/// No two consumers get the same key, of the same relay or of any other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConsumerKey(u64);
 
@@ -126,7 +127,15 @@ struct Shared {
     /// abandoned. Only that task waits, on one wait at a time.
     wake: Notify,
     flow: Arc<Flow>,
-    next_key: AtomicU64,
+}
+
+/// Where every relay takes its consumers' keys from: one count for the
+/// process, so no two relays (a session's relay before and after a
+/// reconnect, say) ever give out the same key.
+static NEXT_KEY: AtomicU64 = AtomicU64::new(0);
+
+fn new_key() -> ConsumerKey {
+    ConsumerKey(NEXT_KEY.fetch_add(1, Ordering::Relaxed))
 }
 
 struct State {
@@ -146,10 +155,6 @@ struct Current {
 impl Shared {
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn key(&self) -> ConsumerKey {
-        ConsumerKey(self.next_key.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Lets go of the current consumer: what it was given and never
@@ -176,9 +181,8 @@ impl Relay {
             }),
             wake: Notify::new(),
             flow: events.flow(),
-            next_key: AtomicU64::new(0),
         });
-        let key = shared.key();
+        let key = new_key();
         shared.state().consumer = Some(Current {
             key,
             consumer: Box::new(consumer),
@@ -220,7 +224,7 @@ impl Relay {
         if state.consumer.is_some() {
             return Err(HandoverError::Shown);
         }
-        let key = shared.key();
+        let key = new_key();
         state.consumer = Some(Current {
             key,
             consumer: Box::new(consumer),

@@ -11,6 +11,7 @@ mod algorithms;
 mod output;
 mod recording;
 mod relay;
+mod relays;
 mod serial;
 mod ssh;
 mod tcp;
@@ -35,6 +36,7 @@ pub use algorithms::{
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
 pub use relay::{Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay};
+pub use relays::SessionRelays;
 pub use serial::{
     SerialLine, SerialParameters, SerialPortInfo, SerialPortKind, SerialPorts, SerialTarget,
     SystemSerialPorts, BREAK_DURATION, SERIAL_POLL,

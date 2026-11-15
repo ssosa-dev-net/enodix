@@ -54,8 +54,9 @@ export interface Layout {
   root: LayoutNode;
   activePane: PaneId;
   /**
-   * The multi-send group's tabs, in the order they joined: what is typed
-   * or pasted in one of them reaches them all (the shell routes it).
+   * This window's tabs in the app's multi-send group, in the order they
+   * joined: what is typed or pasted in one of them reaches every member,
+   * in any window (the shell routes it).
    */
   group: TabId[];
   /** What each tab holds, by tab id. */
