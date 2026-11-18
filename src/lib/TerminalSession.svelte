@@ -1682,5 +1682,9 @@
     padding: var(--space-1) 0 0 var(--space-1-5);
     background: var(--terminal);
     overflow: hidden;
+    /* xterm's layers carry z-indexes (the WebGL addon's canvases, inline);
+       kept inside the terminal, so that the questions drawn over it get
+       the clicks. */
+    isolation: isolate;
   }
 </style>
