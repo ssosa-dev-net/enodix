@@ -44,6 +44,8 @@
     closePane: (pane: PaneId) => void;
     /** Adds every tab of the pane to the multi-send group. */
     joinPane: (pane: PaneId) => void;
+    /** Gives the shown terminal the keys again (a menu of the bar closed). */
+    refocus: () => void;
     /** Opens the tab's context menu (its session's actions) at x, y. */
     menu: (tab: TabId, x: number, y: number) => void;
     /** Attaches to each pane's body, where its terminal is placed. */
@@ -58,6 +60,8 @@
   import { VIEWS } from "./views";
   import { ENVIRONMENT_NAMES } from "./paste";
   import WindowControls from "./WindowControls.svelte";
+  import SessionMenu, { type SessionAction } from "./SessionMenu.svelte";
+  import Ellipsis from "@lucide/svelte/icons/ellipsis";
 
   interface Props {
     node: LayoutNode;
@@ -113,6 +117,120 @@
    * terminal): a mouse click on Split right took them (#94). */
   function keepKeys(event: MouseEvent) {
     event.preventDefault();
+  }
+
+  /** Whether the pane offers to add its tabs to the multi-send group: a
+   * session tab of it is not a member yet. */
+  function joinable(tabs: TabId[]): boolean {
+    return (
+      connects &&
+      tabs.some((tab) => {
+        const info = handlers.tab(tab);
+        return info !== null && !info.view && !info.member;
+      })
+    );
+  }
+
+  // In the bar with the window's buttons, the pane's tools give way first;
+  // once they no longer fit, they fold into a "…" button whose menu holds
+  // them and the new-tab button (#100: clipped, they could not be clicked
+  // at all; the "…" alone left no room for the window's buttons).
+  let bar = $state<HTMLElement>();
+  let tools = $state<HTMLElement>();
+  let spacer = $state<HTMLElement>();
+  let more = $state<HTMLButtonElement>();
+  /** Whether the tools are folded into the "…" button. */
+  let folded = $state(false);
+  /** Where the "…" menu is open; null: closed. */
+  let toolsMenu = $state<{ x: number; y: number } | null>(null);
+
+  /** Folds the tools when they are clipped, and unfolds them once the
+   * room they would take (the free space and the "…" button's) is there. */
+  function fitTools() {
+    if (!bar || !tools || !spacer) return;
+    const natural = tools.scrollWidth;
+    if (!folded) {
+      if (natural > tools.clientWidth + 0.5) folded = true;
+      return;
+    }
+    const gap = parseFloat(getComputedStyle(bar).columnGap) || 0;
+    // Unfolded, the new-tab button comes back too (as wide as the "…").
+    const button = (more?.offsetWidth ?? 0) + gap;
+    const needed = natural + (connects ? button : 0);
+    if (needed <= spacer.clientWidth + button) folded = false;
+  }
+
+  $effect(() => {
+    if (node.kind !== "pane" || !(top && right) || !bar) {
+      folded = false;
+      return;
+    }
+    const watched = [bar, tools, spacer, bar.querySelector(".tabs")];
+    const observer = new ResizeObserver(() => fitTools());
+    for (const element of watched) if (element) observer.observe(element);
+    fitTools();
+    return () => observer.disconnect();
+  });
+
+  // A tool appearing or going (Close pane, multi-send) changes the room
+  // they need: measured again.
+  $effect(() => {
+    void several;
+    if (node.kind === "pane") void joinable(node.tabs);
+    queueMicrotask(fitTools);
+  });
+
+  function openToolsMenu() {
+    if (toolsMenu) {
+      toolsMenu = null;
+      return;
+    }
+    const box = more?.getBoundingClientRect();
+    if (box) toolsMenu = { x: box.right - 192, y: box.bottom + 2 };
+  }
+
+  /** The tools, as the "…" menu offers them. */
+  function toolEntries(pane: PaneId, tabs: TabId[]): SessionAction[] {
+    return [
+      ...(connects
+        ? [
+            {
+              id: "new-tab",
+              label: "New connection in this pane",
+              run: () => handlers.newTab(pane),
+            },
+          ]
+        : []),
+      ...(joinable(tabs)
+        ? [
+            {
+              id: "join-pane",
+              label: "Add this pane's tabs to multi-send",
+              run: () => handlers.joinPane(pane),
+            },
+          ]
+        : []),
+      {
+        id: "split-right",
+        label: "Split right",
+        run: () => handlers.split(pane, "right"),
+      },
+      {
+        id: "split-down",
+        label: "Split down",
+        run: () => handlers.split(pane, "down"),
+      },
+      ...(several
+        ? [
+            {
+              id: "close-pane",
+              label: "Close pane",
+              title: "Its tabs move to the pane next to it",
+              run: () => handlers.closePane(pane),
+            },
+          ]
+        : []),
+    ];
   }
 
   function onpointerdown(event: PointerEvent, tab: TabId) {
@@ -195,6 +313,7 @@
     <div
       class="bar"
       class:framed={top && right}
+      bind:this={bar}
       data-tab-bar={pane.id}
       data-pane={pane.id}
       data-window-bar={top || undefined}
@@ -293,7 +412,7 @@
           {/if}
         {/each}
       </div>
-      {#if connects}
+      {#if connects && !folded}
         <button
           class="icon"
           data-new-tab
@@ -303,14 +422,11 @@
           ><Plus size={16} aria-hidden="true" /></button
         >
       {/if}
-      <span class="spacer"></span>
+      <span class="spacer" bind:this={spacer}></span>
       <!-- Next to the window's buttons, these give way first in a narrow
-           pane (see .bar.framed .tools). -->
-      <div class="tools">
-        {#if connects && pane.tabs.some((tab) => {
-            const info = handlers.tab(tab);
-            return info !== null && !info.view && !info.member;
-          })}
+           pane, then fold into the "…" button (#100). -->
+      <div class="tools" class:folded bind:this={tools} inert={folded}>
+        {#if joinable(pane.tabs)}
           <button
             class="icon"
             data-join-pane
@@ -355,6 +471,33 @@
           </button>
         {/if}
       </div>
+      {#if folded}
+        <button
+          class="icon"
+          bind:this={more}
+          data-pane-tools-more
+          aria-label="Pane actions"
+          title="Pane actions: split, close pane"
+          aria-haspopup="menu"
+          aria-expanded={toolsMenu !== null}
+          onclick={openToolsMenu}
+          onmousedown={keepKeys}
+        >
+          <Ellipsis size={16} aria-hidden="true" />
+        </button>
+      {/if}
+      {#if toolsMenu && folded}
+        <SessionMenu
+          entries={toolEntries(pane.id, pane.tabs)}
+          x={toolsMenu.x}
+          y={toolsMenu.y}
+          opener={more}
+          onclose={() => {
+            toolsMenu = null;
+            handlers.refocus();
+          }}
+        />
+      {/if}
       {#if top && right}
         <WindowControls />
       {/if}
@@ -438,6 +581,12 @@
     flex: 0 100 auto;
     min-width: 0;
     overflow: hidden;
+  }
+
+  /* Folded into the "…" button: no room taken, still measured. */
+  .bar.framed .tools.folded {
+    flex: 0 0 0;
+    visibility: hidden;
   }
 
   .bar.framed .tabs:has([data-tab]) {

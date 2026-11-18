@@ -35,7 +35,9 @@ everything 0.2.0 could do, the app still does, reached differently.
   Each session has one header line (role, name, address, jump host,
   protocol, markers, status) and a menu with its actions; the same menu is
   the tab's context menu. An empty pane offers the palette and quick
-  connect.
+  connect. In a narrow pane at the window's top-right, the pane's
+  buttons (new connection, multi-send, split right and down, close pane)
+  fold into a "…" button that lists them.
 - **View tabs**: job (pre-flight, running, result), past run, config
   history (one per host), Preferences, CSV import, Nornir import, platform
   definitions, highlight rules, fill-in review and Python setup. They have
