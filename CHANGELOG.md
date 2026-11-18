@@ -5,6 +5,22 @@ in the project's tracker.
 
 ## Unreleased
 
+### New
+
+- Scripts reach more than a device's SSH port through the app's jump
+  hosts. Name the ports when the tunnels open (the `ports` argument of
+  `netterm.tunnels`, the Nornir plugin's `tunnel_ports` option, or
+  `netterm-cli tunnel --port 830`) and NETCONF, eAPI, RESTCONF or any
+  other TCP service of the device goes through the same jump chain and
+  jump connection as the SSH port. `netterm.endpoint(host, port, tunnels)`
+  and the Nornir host data's `netterm.ports` say where to connect for a
+  port of a host, behind a jump host or not, so one script runs in both
+  cases. ncclient and scrapli-netconf check the device's host key
+  against the keys the app trusts (`netterm.host_key_options`); the app
+  does not check TLS certificates (the README says what that means).
+  Checked through the lab's jump host: NETCONF on cJunos Evolved's port
+  830 and eAPI on cEOS's port 443.
+
 ### Fixes
 
 - The buttons of a question drawn over a terminal take the mouse again:

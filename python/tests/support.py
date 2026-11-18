@@ -23,11 +23,13 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 FIXTURE = Path(__file__).parent / "fixtures" / "workspace"
 #: The fixture's workspace id: the scope the agent serves profiles for.
@@ -165,6 +167,57 @@ class JumpServer:
         self.process.wait()
         if self.process.stdout:
             self.process.stdout.close()
+
+
+class Relay:
+    """A TCP service on its own port of ``127.0.0.1`` that passes every
+    connection on to ``target`` (a port of ``127.0.0.1``): through it, a
+    second port of the device shows the same SSH service, host key
+    included."""
+
+    def __init__(self, target: int) -> None:
+        self.target = target
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self.port: int = self._listener.getsockname()[1]
+        self._open: List[socket.socket] = []
+        self._guard = threading.Lock()
+        threading.Thread(target=self._accept, name="relay", daemon=True).start()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                client, _ = self._listener.accept()
+            except OSError:
+                return
+            try:
+                upstream = socket.create_connection(("127.0.0.1", self.target), timeout=10)
+                upstream.settimeout(None)
+            except OSError:
+                client.close()
+                continue
+            with self._guard:
+                self._open += [client, upstream]
+            for source, sink in ((client, upstream), (upstream, client)):
+                threading.Thread(target=self._pump, args=(source, sink), daemon=True).start()
+
+    @staticmethod
+    def _pump(source: socket.socket, sink: socket.socket) -> None:
+        try:
+            while data := source.recv(65536):
+                sink.sendall(data)
+        except OSError:
+            pass
+        for end in (source, sink):
+            try:
+                end.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        self._listener.close()
+        with self._guard:
+            for end in self._open:
+                end.close()
 
 
 class BridgeTest(unittest.TestCase):

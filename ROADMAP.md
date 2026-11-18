@@ -27,7 +27,7 @@ What comes after v1. The order and the decisions below were settled in a design 
 
 Settled on 2026-11-18. The two items left are built in the order 9, 4:
 
-1. **Tunnel ports for scripts** (9): small, and designed (spec #91, tickets #92 and #93).
+1. **Tunnel ports for scripts** (9): built on 2026-11-18 (spec #91, tickets #92 and #93).
 2. **SFTP/SCP browser** (4): the most use day to day. Designed (spec #95); a prototype against the lab comes first (#96).
 
 These are the last features before the app goes into daily use. Nothing is released in between. Each feature ends with a sweep of its spec's user stories; then comes a second pass over Hardening, reordered by what has been found by then; then one release, 0.5.0, still an unsigned pre-release. That release is installed and run on Windows before it is published (the check owed since 0.3.0), and daily use starts with it.
@@ -36,13 +36,12 @@ Alongside, outside the two features: the end-to-end test clicks with the mouse, 
 
 ## Status
 
-As of 2026-11-18, items 1, 2, 3, 5, 6 and 7 are built; they were released in 0.2.0. Items 4 and 9 are what 0.5.0 will hold (above); neither is built yet. Item 8 was set aside. Two releases since came from Hardening, not from the list above: 0.3.0 (the redesigned interface) and 0.4.0 (the app's own window frame, and terminals in windows of their own). Every release so far is an unsigned pre-release. What was built but not verified:
+As of 2026-11-18, items 1, 2, 3, 5, 6 and 7 are built; they were released in 0.2.0. Items 4 and 9 are what 0.5.0 will hold (above); item 9 is built (on main, not released), item 4 is not. Item 8 was set aside. Two releases since came from Hardening, not from the list above: 0.3.0 (the redesigned interface) and 0.4.0 (the app's own window frame, and terminals in windows of their own). Every release so far is an unsigned pre-release. What was built but not verified:
 
 - **The release files themselves:** the installer, the portable zip and the Linux packages of 0.3.0 and 0.4.0 were built and checksummed, not installed and run as part of the release. The end-to-end test runs the same code built without the installer.
 - **Linux desktop:** the packages build and the core, the headless binary and the Python bridge pass their tests under WSL. The app itself has not been run on a real Linux desktop; the check list is in `docs/linux.md`.
 - **NX-OS:** its built-in platform definition has not been run against a device (no image in the lab). The other five are verified in the containerlab suite.
 - **Privilege password:** no lab account asks for an enable password, so that question has only been exercised against the test device.
-- **Host enrichment through tunnels:** checked against the in-process test servers; the lab run through the lab's jump host is still to do.
 
 ## Hardening
 
@@ -213,7 +212,7 @@ Let scripts reach more than a host's SSH port through the app's jump hosts.
   - For NETCONF, which runs over SSH, the library checks the device against the keys the app trusts for it.
   - For HTTPS the app does not check the device's certificate: the path is protected up to the last jump host, and the script decides how to check beyond it. The docs say so.
   - Any TCP port can be named. Fill in from devices does not change: it already works over the SSH port.
-- Checked in the lab, once built: NETCONF on 830 against cJunos and eAPI on 443 against cEOS, through the lab's jump host.
+- **Built** on 2026-11-18 (#92: the core and `netterm-cli tunnel --port`; #93: `netterm.tunnels(..., ports=)`, `netterm.endpoint`, the Nornir plugin's `tunnel_ports` and `netterm.ports`, host-key options for ncclient and scrapli-netconf, the README). Checked in the lab through its jump host (`lab_tunnel_ports`): ncclient to cJunos Evolved 25.4 on 830 with the device key checked and another key refused, and an HTTPS eAPI call to cEOS 4.36 on 443. Not released yet.
 
 ## Later, undated
 
@@ -246,4 +245,5 @@ Let scripts reach more than a host's SSH port through the app's jump hosts.
 
 - **Linux:** the check on a real desktop (Ubuntu and Fedora, X11 and Wayland), before Linux is claimed as supported.
 - **Script tunnels:** job pre-flight does not know host keys, so a host whose device or jump-host key is not trusted yet is refused only when the job runs.
+- **Tunnel ports:** the app checks no TLS certificate (eAPI, RESTCONF, NX-API through a tunnel are only as safe as the script's own check beyond the last jump host); whether certificates should ever be learned or pinned like host keys is undecided. ncclient fails to negotiate with a device for which the app trusts only an RSA key and that offers RSA only as `rsa-sha2-*` (an ncclient limit). scrapli-netconf's `system` transport, gNMI, RESTCONF and NX-API were not tried; the ports were tried on Windows only.
 - **SFTP/SCP browser:** what the prototype (#96) finds: whether the SFTP library fits and is fast enough, and what each lab device offers.

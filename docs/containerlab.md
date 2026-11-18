@@ -30,6 +30,7 @@ from these runs.
 | config backup                  | A config backup job keeps the configuration without the prompt (its last line matches `config_end`); a second backup of the unchanged device keeps nothing new, so the definition's ignored lines cover what changes by itself |
 | privileged mode                | Only where the definition has a privilege command: a job's `privilege_check` command shows `privilege_expect` (level 15) |
 | fill in from devices           | Only with `NETTERM_LAB_PYTHON` (a Python with NAPALM): the app's script (`python -m netterm.enrich`, from `python/`) runs as a job for every device whose definition has a NAPALM driver (cEOS, IOS-XE, Junos), through the headless binary's tunnels (`netterm-cli tunnel`, opened by the package) when there is a jump host, after a terminal session through the chain has trusted the keys; every device reports vendor, model, serial number and OS version, and applying writes them |
+| tunnel ports                   | Only with `NETTERM_LAB_PYTHON`: a script (`crates/core/tests/lab/tunnel_ports.py`) opens the headless binary's tunnels with ports 830 and 443 named, through the jump host, after a terminal session has trusted the keys; ncclient reaches NETCONF on the `junos` device's port 830 with the device's key checked against the keys the app trusts, gets the running configuration, and is refused with another key in its known-hosts file; an HTTPS eAPI call (requests) runs `show version` on the `ceos` device's port 443. A check whose library that Python lacks, or whose platform the lab file has no device of, is NOT CHECKED |
 | second channel and backup on login | A session opened with the host's backup on login reports it saved; then a second shell channel on that session's connection is opened: accepted (the command runs there, the terminal is untouched) or refused (then the backup used a second connection) |
 
 The output of every check (pass, fail or not checked, with the negotiated
@@ -39,7 +40,10 @@ any device`: with the example lab, the terminal-size check on SR Linux and
 cEOS (no size command). The app does not tunnel telnet through a jump
 host, so telnet is checked on cEOS, which the topology configures for
 telnet and publishes on the server's port 2323; the lab file's
-`telnet_address` sends the telnet check there directly. When the output
+`telnet_address` sends the telnet check there directly. The topology's cEOS
+config also turns on eAPI over HTTPS (`management api http-commands`,
+`protocol https`) for the tunnel ports check; cJunos Evolved needs NETCONF on
+830 turned on by hand after each deploy (step 1 below). When the output
 fitted in the flow-control window, the large-output check says so, since
 flow control was then not exercised.
 
@@ -69,6 +73,22 @@ files).
    take several minutes to boot after the deploy. Remove a node from the
    topology (and the lab file) if its image is not available. The FRR image
    must be rebuilt after `lab/frr/` changes (#47 added the `vtysh` user).
+
+   cJunos Evolved gets no startup configuration from the topology and
+   boots with a minimal one (host name `HOSTNAME`, SSH only, no root
+   password, so nothing can be committed). Once it answers on SSH, log in
+   as `admin` and set what the suite expects: the host name (the
+   `junos` prompt is `admin@cjunos1>`), a root password (Junos commits
+   nothing without one) and NETCONF over SSH on port 830 (the tunnel
+   ports check and NAPALM's `junos` driver):
+
+   ```text
+   configure
+   set system host-name cjunos1
+   set system root-authentication plain-text-password
+   set system services netconf ssh
+   commit and-quit
+   ```
 
    Docker inside a Proxmox LXC container needs two entries in the
    container's `/etc/pve/lxc/<id>.conf` on the Proxmox host (besides
@@ -100,8 +120,12 @@ files).
    npm run test:lab
    ```
 
-   For `lab_enrichment`, also `export NETTERM_LAB_PYTHON=<python with napalm>`
-   (without it the check prints NOT CHECKED).
+   For `lab_enrichment` and `lab_tunnel_ports`, also
+   `export NETTERM_LAB_PYTHON=<python>` (without it both print NOT CHECKED).
+   That Python needs NAPALM for `lab_enrichment`, and ncclient and
+   requests for `lab_tunnel_ports` (`pip install napalm` brings all three;
+   else `pip install ncclient requests`). The package `netterm` comes from
+   this repository's `python/` folder; nothing else is needed.
 
    `npm run test:lab` is `cargo build -p netterm-cli && `
    `cargo test -p netterm-core --test containerlab -- --ignored --nocapture --test-threads=1`.
@@ -109,7 +133,7 @@ files).
    `lab_wrong_password`, `lab_terminal_size`,
    `lab_large_output_with_flow_control`, `lab_session_log`, `lab_telnet`,
    `lab_paging`, `lab_config_backup`, `lab_privilege`,
-   `lab_second_channel`, `lab_enrichment`) after `--test containerlab` to run one check.
+   `lab_second_channel`, `lab_enrichment`, `lab_tunnel_ports`) after `--test containerlab` to run one check.
 
 Without a lab file the suite prints `containerlab suite SKIPPED: no lab
 configured ...` and passes. A lab file that exists but cannot be used (a

@@ -8,7 +8,7 @@
 // succeeds. It builds `netterm-cli` and the `test_ssh_server` example
 // (debug), builds the wheel (scripts/build-wheel.mjs), installs it into a
 // virtual environment in `target/python-test/venv-<version>` together with Nornir and
-// nornir_netmiko (from the package index the first time, so that needs the
+// nornir_netmiko and ncclient (from the package index the first time, so that needs the
 // network), and runs the tests with that environment's Python.
 
 import { spawnSync } from "node:child_process";
@@ -23,7 +23,11 @@ const WORK = join(ROOT, "target", "python-test");
 const WINDOWS = process.platform === "win32";
 const EXE = WINDOWS ? ".exe" : "";
 /** What the tests need beside the package, from the package index. */
-const LIBRARIES = ["nornir>=3.3,<4", "nornir-netmiko>=1,<2"];
+const LIBRARIES = [
+  "nornir>=3.3,<4",
+  "nornir-netmiko>=1,<2",
+  "ncclient>=0.6,<1",
+];
 
 function fail(message) {
   console.error(`test:python: ${message}`);
@@ -96,7 +100,10 @@ const VENV = join(WORK, `venv-${found.version}`);
 const venvPython = join(VENV, WINDOWS ? "Scripts" : "bin", `python${EXE}`);
 if (!existsSync(venvPython)) run(python, ["-m", "venv", VENV]);
 const pip = [venvPython, "-m", "pip", "--disable-pip-version-check"];
-const imports = spawnSync(venvPython, ["-c", "import nornir, nornir_netmiko"]);
+const imports = spawnSync(venvPython, [
+  "-c",
+  "import nornir, nornir_netmiko, ncclient",
+]);
 if (imports.status !== 0)
   run(pip[0], [...pip.slice(1), "install", "--quiet", ...LIBRARIES]);
 run(pip[0], [

@@ -19,7 +19,9 @@ at most one of ``folder``
 (host ids); ``credentials`` (default ``True``: hand over each host's login
 from its credential profile; ``False`` reads no store); ``tunnels``
 (default: as ``credentials``; open loopback tunnels to the hosts behind
-jump hosts, logging in to the jump hosts with their stored profiles).
+jump hosts, logging in to the jump hosts with their stored profiles);
+``tunnel_ports`` (other device ports the tunnels carry, such as
+``[830, 443]``; default none).
 
 The mapping:
 
@@ -41,7 +43,9 @@ The mapping:
   ``jump_hosts`` (ids, in connect order), ``jump_chain_error``,
   ``behind_jump_host``, ``tunnel`` (``address``, ``port`` and
   ``known_hosts`` of its tunnel, or ``None``), ``tunnel_error`` (why a host
-  behind jump hosts is not tunnelled, or ``None``), ``withheld``
+  behind jump hosts is not tunnelled, or ``None``), ``ports`` (for each of
+  ``tunnel_ports``, where to connect: ``address`` and ``port``, or the
+  ``error`` :func:`netterm.endpoint` gives), ``withheld``
   (secret-named custom fields left out) and ``custom``.
 - Logins: a password profile sets ``username`` and ``password``; a key
   profile ``username`` and, in the ``netmiko``, ``scrapli`` and ``napalm``
@@ -63,7 +67,7 @@ warning names it.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from nornir.core.inventory import (
     ConnectionOptions,
@@ -77,7 +81,7 @@ from nornir.core.inventory import (
 )
 
 from . import Folder, NettermError, Tunnels, credentials, inventory, tunnels
-from ._tunnel import host_key_options
+from ._tunnel import Unreachable, answer, behind as _behind, host_key_options, ports_of
 
 __all__ = ["NettermInventory", "build_inventory"]
 
@@ -96,6 +100,9 @@ BUILT_IN_FIELDS = (
     "role",
     "description",
 )
+#: The libraries whose connection options get the tunnel's host-key
+#: checks (they connect to the host's hostname and port).
+SSH_PORT_LIBRARIES = ("netmiko", "scrapli", "napalm")
 #: Host data keys of the package's own, which no field replaces.
 RESERVED = ("tags", "netterm")
 
@@ -113,6 +120,7 @@ class NettermInventory:
         hosts: Optional[Union[str, Iterable[str]]] = None,
         credentials: bool = True,
         tunnels: Optional[bool] = None,
+        tunnel_ports: Optional[Iterable[int]] = None,
     ) -> None:
         self.workspace = workspace
         self.folder = folder
@@ -120,6 +128,9 @@ class NettermInventory:
         self.hosts = hosts
         self.credentials = credentials
         self.tunnels = credentials if tunnels is None else tunnels
+        #: Other device ports the tunnels carry (checked here, before
+        #: anything is read).
+        self.tunnel_ports = ports_of(tunnel_ports)
         #: The tunnels :meth:`load` opened, if any.
         self.opened: Optional[Tunnels] = None
 
@@ -132,7 +143,7 @@ class NettermInventory:
         )
         logins = _logins(exported) if self.credentials else {}
         tunnelled, failure = self._tunnel(exported)
-        return build_inventory(exported, logins, tunnelled, failure)
+        return build_inventory(exported, logins, tunnelled, failure, self.tunnel_ports)
 
     def _tunnel(
         self, exported: Mapping[str, Any]
@@ -148,16 +159,11 @@ class NettermInventory:
                 folder=self.folder,
                 filter=self.filter,
                 hosts=self.hosts,
+                ports=self.tunnel_ports,
             )
         except NettermError as error:
             return {}, f"the tunnels could not be opened: {error}"
         return self.opened.hosts, None
-
-
-def _behind(host: Mapping[str, Any]) -> bool:
-    """Whether the exported host is reached through jump hosts (a broken
-    chain included)."""
-    return bool(host["jump_hosts"] or host["jump_chain_error"])
 
 
 def _logins(exported: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -188,11 +194,14 @@ def build_inventory(
     logins: Optional[Mapping[str, Mapping[str, Any]]] = None,
     tunnelled: Optional[Mapping[str, Mapping[str, Any]]] = None,
     tunnel_failure: Optional[str] = None,
+    tunnel_ports: Sequence[int] = (),
 ) -> Inventory:
     """The Nornir inventory of an export (:func:`netterm.inventory`) with
     the given logins (:func:`netterm.credentials`, by host id) and tunnels
     (:attr:`netterm.Tunnels.hosts`); ``tunnel_failure`` says why a host
-    behind jump hosts that has no tunnel entry is not tunnelled."""
+    behind jump hosts that has no tunnel entry is not tunnelled;
+    ``tunnel_ports`` are the extra device ports the tunnels were opened
+    with, answered for every host in ``netterm.ports``."""
     logins = logins or {}
     tunnelled = tunnelled or {}
     defaults = Defaults()
@@ -213,7 +222,8 @@ def build_inventory(
         tunnel = dict(tunnelled.get(exported_host["id"]) or {})
         if _behind(exported_host) and not tunnel:
             tunnel = {"error": tunnel_failure or "it is not tunnelled"}
-        host = _host(exported_host, logins.get(exported_host["id"]), tunnel, groups, defaults)
+        ports = _ports(exported_host, tunnel_ports, tunnelled.get(exported_host["id"]), tunnel_failure)
+        host = _host(exported_host, logins.get(exported_host["id"]), tunnel, ports, groups, defaults)
         hosts[host.name] = host
         error = host.data["netterm"]["tunnel_error"]
         if error:
@@ -230,10 +240,30 @@ def build_inventory(
     return Inventory(hosts=hosts, groups=groups, defaults=defaults)
 
 
+def _ports(
+    exported: Mapping[str, Any],
+    ports: Sequence[int],
+    tunnel: Optional[Mapping[str, Any]],
+    tunnel_failure: Optional[str],
+) -> Dict[int, Dict[str, Any]]:
+    """For each port, where to connect (``address``, ``port``) or why not
+    (``error``): the answers of :func:`netterm.endpoint`."""
+    answers: Dict[int, Dict[str, Any]] = {}
+    for port in ports:
+        try:
+            address, loopback = answer(exported, port, tunnel, tunnel_failure or "it is not tunnelled")
+        except Unreachable as error:
+            answers[port] = {"error": str(error)}
+        else:
+            answers[port] = {"address": address, "port": loopback}
+    return answers
+
+
 def _host(
     exported: Mapping[str, Any],
     login: Optional[Mapping[str, Any]],
     tunnel: Mapping[str, Any],
+    ports: Dict[int, Dict[str, Any]],
     groups: Groups,
     defaults: Defaults,
 ) -> Host:
@@ -260,13 +290,17 @@ def _host(
             {key: tunnel[key] for key in ("address", "port", "known_hosts")} if listening else None
         ),
         "tunnel_error": tunnel.get("error"),
+        "ports": ports,
         "withheld": list(exported["withheld"]),
         "custom": custom,
     }
     username, password, extras = _login(login)
     if listening:
+        # Only the libraries that talk to the SSH port: no connection
+        # plugin is set up for the extra ports.
         for library, options in host_key_options(dict(tunnel)).items():
-            extras.setdefault(library, {}).update(options)
+            if library in SSH_PORT_LIBRARIES:
+                extras.setdefault(library, {}).update(options)
     folder = exported["folder"]
     return Host(
         name=exported["id"],

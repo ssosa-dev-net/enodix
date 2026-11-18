@@ -55,14 +55,15 @@ print(nr.run(task=netmiko_send_command, command_string="show version"))
 
 Options:
 
-| Option        | Meaning                                                                |
-| ------------- | ---------------------------------------------------------------------- |
-| `workspace`   | The workspace folder (required).                                       |
-| `folder`      | Only the hosts in this folder and the folders below it.                |
-| `filter`      | Only the hosts of this saved filter.                                   |
-| `hosts`       | Only these host ids (a list), such as `Madrid/core-r1.yaml`.           |
-| `credentials` | `True` (default): hand over each host's login; `False` reads no store. |
-| `tunnels`     | Tunnel to the hosts behind jump hosts (default: as `credentials`).     |
+| Option         | Meaning                                                                |
+| -------------- | ---------------------------------------------------------------------- |
+| `workspace`    | The workspace folder (required).                                       |
+| `folder`       | Only the hosts in this folder and the folders below it.                |
+| `filter`       | Only the hosts of this saved filter.                                   |
+| `hosts`        | Only these host ids (a list), such as `Madrid/core-r1.yaml`.           |
+| `credentials`  | `True` (default): hand over each host's login; `False` reads no store. |
+| `tunnels`      | Tunnel to the hosts behind jump hosts (default: as `credentials`).     |
+| `tunnel_ports` | Other device ports the tunnels carry, such as `[830, 443]` (below).    |
 
 Give at most one of `folder`, `filter` and `hosts`.
 
@@ -82,8 +83,8 @@ What you get:
   inherited ones included), and `netterm` with the rest: `id`, `name`,
   `folder`, `folders`, `settings` (every resolved setting), `login`
   (`password`, `private_key`, `agent` or `None`), `jump_hosts`,
-  `jump_chain_error`, `behind_jump_host`, `tunnel`, `tunnel_error` (see
-  below), `withheld` and `custom` (all the custom fields; a custom field
+  `jump_chain_error`, `behind_jump_host`, `tunnel`, `tunnel_error`,
+  `ports` (see below), `withheld` and `custom` (all the custom fields; a custom field
   with a built-in field's name is only here).
   Custom fields whose names say they hold a secret are never exported (they
   are listed in `withheld`). Filter as usual:
@@ -152,13 +153,79 @@ when its `transport` is `ssh`). A device whose key changed is refused.
 NAPALM's other drivers (`junos`, `iosxr`, ...) do not check the key
 through the tunnel.
 
-A tunnel reaches the host's SSH port and nothing else. A library that
-talks to another port is pointed at the SSH port all the same and fails:
-NAPALM's `eos` driver uses eAPI over HTTPS unless given
-`optional_args: {transport: ssh}`, and NETCONF must run on the SSH port
-(not 830), as Junos allows. While a script runs, any local program
-can reach the devices' SSH ports through the tunnels (as with `ssh -L`); it
-still needs their logins.
+#### Other ports: NETCONF, HTTPS APIs
+
+A tunnel reaches the host's SSH port, and the other device ports you name
+with the `tunnel_ports` option (`netterm.tunnels(..., ports=[...])`
+without Nornir): any TCP port, such as 830 for NETCONF or 443 for eAPI,
+RESTCONF or NX-API. They go through the same jump chain and the same jump
+connection as the SSH port, for every tunnelled host of the inventory,
+each on a port of `127.0.0.1` of its own. `hostname` and `port` stay the
+SSH endpoint; `netterm.ports` in the host data says, for each named port,
+where to connect (`{"address": ..., "port": ...}`) or why that host cannot
+be reached on it (`{"error": ...}`), for hosts behind jump hosts and hosts
+reached directly alike (those get their own address and the port itself),
+so the same task runs in a flat lab and behind a bastion:
+
+```python
+nr = InitNornir(inventory={"plugin": "NettermInventory", "options": {
+    "workspace": r"C:\Work\inventory", "tunnel_ports": [830, 443]}})
+
+def facts(task):
+    where = task.host["netterm"]["ports"][830]   # {"address", "port"} or {"error"}
+    ...
+```
+
+No connection plugin is set up for the named ports: your task passes the
+address and port to its library. NAPALM's `eos` driver, which uses eAPI
+unless given `optional_args: {transport: ssh}`, is still pointed at
+`hostname` and `port`, the SSH endpoint: run it over SSH, or give it
+the 443 answer's address and port yourself. Nothing is probed when the tunnels open:
+a port the device does not listen on fails when something connects to it,
+that connection only, and the reason is logged as a `netterm` warning
+(`port 830: ...`). Naming ports changes nothing about which hosts are
+tunnelled: a host refused for its SSH port is refused for all of them.
+
+**Host keys on SSH-based ports.** The app keeps the keys it trusts for a
+device's SSH port; a device shows the same key on its NETCONF port, so the
+known-hosts file of a tunnelled host lists those keys for every loopback
+port of the host. `netterm.host_key_options(tunnel)` (with
+`task.host["netterm"]["tunnel"]` or an entry of `Tunnels.hosts`) gives the
+options that turn checking on, by library:
+
+- **ncclient** (`manager.connect`): `hostkey_verify=True` and an
+  `ssh_config` file written beside the known-hosts file whose only line is
+  its `UserKnownHostsFile`: ncclient reads a known-hosts file of its
+  choosing only through an SSH config (without one it checks against your
+  own `~/.ssh/known_hosts`). A device that shows another key is refused
+  with `SSHUnknownHostError`. One limit of ncclient's: it asks the device
+  only for the type of the keys it knows, by the key's name, and an RSA
+  key's name is `ssh-rsa` (SHA-1), which current devices no longer offer.
+  So when the app trusts only an RSA key for a device that offers RSA only
+  as `rsa-sha2-256`/`-512`, ncclient fails with "no acceptable host key"
+  before any key is checked. Devices that also have an Ed25519 or ECDSA
+  key, which the app prefers, are not affected.
+- **scrapli-netconf** (`NetconfDriver`): `auth_strict_key=True` and
+  `ssh_known_hosts_file`, as for scrapli. Tried with its `paramiko`
+  transport; its default `system` transport hands the file to OpenSSH and
+  was not tried.
+
+Another key is refused by both. Other NETCONF stacks are not given a key
+here: PyEZ (`junos-eznc`, which NAPALM's `junos` driver uses) does not
+check the key through the tunnel, as noted above.
+
+**TLS ports (HTTPS: eAPI, RESTCONF, NX-API, gNMI over TLS).** The app does
+not check a device's certificate, here or anywhere: it carries the bytes.
+Through a tunnel your script connects to `127.0.0.1`, so the certificate's
+name cannot match, and device certificates are usually self-signed
+anyway. The path is protected (SSH) up to the last jump host; from there
+to the device, your script's own certificate check is the only one. Pin
+the device's certificate or CA in your script (with `requests`, `verify=`
+a CA file, and a name check that accepts `127.0.0.1` for that device), or
+turn the check off knowingly (`verify=False`) as the example below does.
+
+While a script runs, any local program can reach the devices' tunnelled
+ports (as with `ssh -L`); it still needs their logins.
 
 If a jump host goes down mid-run, the connections through it break at
 once (the library reports a closed socket) and the reason is logged as a
@@ -239,5 +306,59 @@ with netterm.tunnels(r"C:\Work\inventory", folder="Madrid") as opened:
     print(opened.hosts)  # host id -> address, port, known_hosts (or error)
 ```
 
-Errors are `netterm.NettermError` (`CliNotFound`, or `CliFailed` with the
-binary's `status` and `reason`).
+`netterm.tunnels(workspace, ..., ports=[830, 443])` also carries those
+device ports: each tunnelled host's entry gains `extra_ports`, device port
+-> loopback port (without `ports` the entries are as above).
+
+**Where do I connect?** `netterm.endpoint(host, port, tunnels)` (or
+`tunnels.endpoint(host, port)`) takes a host of `netterm.inventory(...)`
+and a device port and returns `(address, port)`: the tunnel's listener for
+a host behind jump hosts, the host's own address and `port` for a host
+reached directly (with or without tunnels). For a host behind jump hosts
+that is not tunnelled, or a port that was not named, it raises
+`netterm.Unreachable` (a `NettermError`) with the reason. The host's own
+SSH port is always answered.
+
+NETCONF on 830 with ncclient, the device's key checked:
+
+```python
+import netterm
+from ncclient import manager
+
+ws = r"C:\Work\inventory"
+hosts = netterm.inventory(ws, folder="Madrid")["hosts"]
+with netterm.tunnels(ws, folder="Madrid", ports=[830]) as opened:
+    for host in hosts:
+        address, port = opened.endpoint(host, 830)
+        login = netterm.credentials(ws, host["id"])
+        tunnel = opened.hosts.get(host["id"])
+        checks = netterm.host_key_options(tunnel)["ncclient"] if tunnel else {}
+        with manager.connect(host=address, port=port, username=login["username"],
+                             password=login["auth"]["password"], look_for_keys=False,
+                             allow_agent=False, device_params={"name": "junos"},
+                             **checks) as session:
+            print(host["id"], session.get_config(source="running").data_xml[:200])
+```
+
+eAPI on 443 over HTTPS with requests (the certificate is not checked: see
+"TLS ports" above):
+
+```python
+import netterm, requests
+
+ws = r"C:\Work\inventory"
+hosts = netterm.inventory(ws, filter="Arista")["hosts"]
+with netterm.tunnels(ws, filter="Arista", ports=[443]) as opened:
+    for host in hosts:
+        address, port = opened.endpoint(host, 443)
+        login = netterm.credentials(ws, host["id"])
+        answer = requests.post(
+            f"https://{address}:{port}/command-api",
+            json={"jsonrpc": "2.0", "method": "runCmds", "id": 1,
+                  "params": {"version": 1, "cmds": ["show version"]}},
+            auth=(login["username"], login["auth"]["password"]), verify=False)
+        print(host["id"], answer.json()["result"][0]["version"])
+```
+
+Errors are `netterm.NettermError` (`CliNotFound`, `CliFailed` with the
+binary's `status` and `reason`, or `Unreachable`).
