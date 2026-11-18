@@ -1,11 +1,11 @@
 # Roadmap
 
-What comes after v1. The order and the decisions below were settled in a design session on 2026-11-14; anything listed under "Still open" was not. The NETCONF and RESTCONF client was dropped afterwards (see "Not planned"). The SFTP/SCP browser, the file servers and NetBox sync each get their own design session before work starts. The v1 spec lives in `docs/spec-v1.md`.
+What comes after v1. The order and the decisions below were settled in a design session on 2026-11-14; anything listed under "Still open" was not. The NETCONF and RESTCONF client was dropped afterwards (see "Not planned"). A second session on 2026-11-18 settled what goes into 0.5.0 (see "Next: 0.5.0"), designed the SFTP/SCP browser, and moved the file servers and NetBox sync to "Later, undated". The v1 spec lives in `docs/spec-v1.md`.
 
 ## Principles
 
 - **Daily use drives the order.** Features are built in the order they are needed in real work, since that is what can be verified without users.
-- **Small releases.** Each numbered item below ships on its own.
+- **Small releases.** Each numbered item below ships on its own. The exception is 0.5.0, which holds the last two together (see "Next: 0.5.0").
 - **Python is optional.** Everything except script jobs and host enrichment works without it.
 - **Local and trusted.** The app holds some of the most sensitive passwords an organisation has, so it stays on the user's computer: no telemetry, no accounts, no cloud. The only connection it makes on its own is the update check, which can be turned off; every other connection is one the user started (a session, a web link, a script, a Python setup they confirmed). Nothing is added that breaks this.
 - **Solid before wide.** Hardening what exists comes before showing it to anyone, and before most new features.
@@ -20,13 +20,23 @@ What comes after v1. The order and the decisions below were settled in a design 
 5. Headless binary, Python bridge and script jobs (built)
 6. Host enrichment (built)
 7. Linux release (built; not yet checked on a Linux desktop)
-8. NetBox sync
+8. NetBox sync (set aside, see "Later, undated")
 9. Tunnel ports for scripts
-10. Temporary file servers
+
+## Next: 0.5.0
+
+Settled on 2026-11-18. The two items left are built in the order 9, 4:
+
+1. **Tunnel ports for scripts** (9): small, and designed (spec #91, tickets #92 and #93).
+2. **SFTP/SCP browser** (4): the most use day to day. Designed (spec #95); a prototype against the lab comes first (#96).
+
+These are the last features before the app goes into daily use. Nothing is released in between. Each feature ends with a sweep of its spec's user stories; then comes a second pass over Hardening, reordered by what has been found by then; then one release, 0.5.0, still an unsigned pre-release. That release is installed and run on Windows before it is published (the check owed since 0.3.0), and daily use starts with it.
+
+Alongside, outside the two features: the end-to-end test clicks with the mouse, as a user does (#94). In 0.3.0 and 0.4.0 the host-key question could not be answered with the mouse, because the terminal's drawing layers lay over it, and the test passed all the same, since its clicks reach a control whatever covers it. The fix is on main and will be in 0.5.0.
 
 ## Status
 
-As of 2026-11-15, items 1, 2, 3, 5, 6 and 7 are built; they were released in 0.2.0. Item 4 was skipped for now, as it still needs its design session; items 8, 9 and 10 are not started. Two releases since came from Hardening, not from the list above: 0.3.0 (the redesigned interface) and 0.4.0 (the app's own window frame, and terminals in windows of their own). Every release so far is an unsigned pre-release. What was built but not verified:
+As of 2026-11-18, items 1, 2, 3, 5, 6 and 7 are built; they were released in 0.2.0. Items 4 and 9 are what 0.5.0 will hold (above); neither is built yet. Item 8 was set aside. Two releases since came from Hardening, not from the list above: 0.3.0 (the redesigned interface) and 0.4.0 (the app's own window frame, and terminals in windows of their own). Every release so far is an unsigned pre-release. What was built but not verified:
 
 - **The release files themselves:** the installer, the portable zip and the Linux packages of 0.3.0 and 0.4.0 were built and checksummed, not installed and run as part of the release. The end-to-end test runs the same code built without the installer.
 - **Linux desktop:** the packages build and the core, the headless binary and the Python bridge pass their tests under WSL. The app itself has not been run on a real Linux desktop; the check list is in `docs/linux.md`.
@@ -38,7 +48,7 @@ As of 2026-11-15, items 1, 2, 3, 5, 6 and 7 are built; they were released in 0.2
 
 What has to be true before anyone but the developer uses the app. It runs alongside the remaining features and comes first where the two compete. So far the app has had one user and was tested mostly against test servers and one lab.
 
-The parts below are not in an order yet. Only the Linux desktop check has a ticket (#58); the rest is still to be ticketed.
+The parts below are not in an order yet: they are ordered in the pass that follows the features of 0.5.0. Three have tickets: the Linux desktop check (#58), the end-to-end test's clicks (#94) and what a renamed host loses (#99). The rest is still to be ticketed.
 
 **The first five minutes**
 
@@ -70,8 +80,9 @@ Done so far, on 2026-11-15 for the session windows (the record is in the window 
 **Checks still owed from the work so far**
 
 - A review of the 0.2.0 work (#34 to #57) against its spec. The script tunnels (#60) were reviewed after they were built, and the redesign and the session windows each ended with a sweep of their spec's user stories (#79, #88); the rest of 0.2.0 was not.
-- A release installed and run: the Windows installer on a clean profile and over the previous version, and the portable zip. The Linux packages are part of the Linux desktop check (#58).
+- A release installed and run: the Windows installer and the portable zip. This is done with 0.5.0, before it is published. The Linux packages are part of the Linux desktop check (#58).
 - The items listed under Status as built but not verified.
+- Renaming or moving a host (found on 2026-11-18, #99): its session logs and config history stay under the old name, and any host or folder that names it as its jump host loses that jump host.
 
 **Trust, written down**
 
@@ -103,7 +114,7 @@ An encrypted store for credentials, for users who want more than the system keyc
 - The file lives in the per-user data folder, never in the workspace.
 - A forgotten master password has no recovery; profiles are entered again. The dialog that sets the password says so.
 - Turning the vault on moves the keychain's profiles into it; turning it off moves them back.
-- **Named secrets:** the store (vault or keychain) also holds name → value secrets per workspace, for scripts and integrations. The NetBox API token is the first.
+- **Named secrets:** the store (vault or keychain) also holds name → value secrets per workspace, for scripts and integrations, such as an API token a script needs.
 - Designed with the agent pipe (item 5) and Linux in mind, so neither needs a second pass.
 
 ## 3. Platform definitions, jobs and config backup
@@ -146,7 +157,15 @@ Move images and configs to and from devices without a separate tool.
 - SFTP and SCP file browser for a host, opened from the side panel.
 - Push a file to a device from the inventory.
 - SFTP uses `russh-sftp`; SCP has no library support and runs over a remote command.
-- Gets its own design session.
+- Designed on 2026-11-18 (spec #95). A prototype against the lab devices comes first (#96); the build tickets follow its findings.
+  - A Files tab per host, beside the terminals. It logs in with the host's credential profile through its jump hosts, on a connection of its own, so the terminal is never slowed. A login that must be typed and an unknown host key are asked in the tab.
+  - Devices with SFTP get a browser: list, upload, download, rename, delete, new folder. Devices with SCP only (IOS, IOS-XE) get transfer by path; the app falls back by itself.
+  - The local side is the operating system: a file dialog, files dropped from Explorer, a folder to download into.
+  - Transfers show progress and speed and can be cancelled; one at a time per host. Sizes are checked, and the uploaded file's MD5 and SHA-256 are shown for comparing with the device's own verify command. No resume.
+  - On a production host, uploading, deleting and renaming ask first; overwriting asks on every host.
+  - A platform definition gains a seventh value, the folder where files belong on that platform.
+  - "Send a file to many hosts" is a job step, for staging an image on a folder of devices: three in parallel by default, a host that already has the file counts as done, and the kept run records what was sent where.
+- Left out: editing in place, whole folders, a two-pane view, using the open terminal's connection, fetching a file from many hosts, file commands in the headless binary.
 
 ## 5. Headless binary, Python bridge and script jobs
 
@@ -179,30 +198,27 @@ Let existing automation use the inventory.
 
 ## 8. NetBox sync
 
-- Read-only and one-way; NetBox stays the source of truth.
-- Synced hosts are ordinary host files, committed to the workspace, confined to one designated folder subtree and marked with a `netbox` key. One sync is one reviewable commit.
-- Sync is a deliberate action, never a background one.
-- Local-only overrides (credential profile, notes) survive a refresh.
-- The API token is a named secret.
-- Waits for a lab NetBox instance to test against, and gets its own design session.
+Set aside on 2026-11-18; see "Later, undated".
 
 ## 9. Tunnel ports for scripts
 
 Let scripts reach more than a host's SSH port through the app's jump hosts.
 
 - Today a script's tunnel reaches only the host's SSH port. A script can name other ports of the host (830 for NETCONF, 443 for RESTCONF or eAPI), and the tunnel carries them through the same jump chain.
-- This is how model-driven access is served: the engineer's own Python libraries (ncclient, scrapli-netconf, requests) with the app's inventory, credentials and jump hosts. The app has no client of its own for it.
+- This is how model-driven access is served: the engineer's own Python libraries (ncclient, scrapli-netconf, requests) with the app's inventory, credentials and jump hosts. The app has no client of its own for it, and ships no scripts that push changes or discover interfaces.
 - A small change to the tunnels that exist; no new subsystem.
-- Open: how a script names the ports, and what a library is given to check an HTTPS certificate by, as there is no host key to hand over.
-
-## 10. Temporary file servers
-
-- One-click temporary TFTP, FTP and SFTP servers that serve a chosen folder on a chosen network interface and stop when closed.
-- They are the only part of the app that listens on the network. They must be off by default, clearly visible while running, and bound to one interface.
-- Gets its own design session.
+- Designed on 2026-11-18 (spec #91):
+  - A script names the ports when it opens the tunnels: an argument in Python, an option of the Nornir plugin, a flag of the headless binary. Nothing is added to the inventory or the interface.
+  - One helper tells a script where to connect for a port of a host, whether the host is behind a jump host or not, so the same script runs in both cases.
+  - For NETCONF, which runs over SSH, the library checks the device against the keys the app trusts for it.
+  - For HTTPS the app does not check the device's certificate: the path is protected up to the last jump host, and the script decides how to check beyond it. The docs say so.
+  - Any TCP port can be named. Fill in from devices does not change: it already works over the SSH port.
+- Checked in the lab, once built: NETCONF on 830 against cJunos and eAPI on 443 against cEOS, through the lab's jump host.
 
 ## Later, undated
 
+- NetBox sync (was item 8; set aside on 2026-11-18). Nobody on the project uses NetBox and the lab cannot stand in for a real one, so it could not be verified. If it comes back, it is as something of its own beside the app, closer to a plugin than a built-in feature: read-only and one-way, hosts written as ordinary host files into one folder, never in the background. A first design is kept in the closed spec #97; nothing it says about NetBox itself was ever checked against a running instance.
+- Temporary TFTP, FTP and SFTP servers that serve a chosen folder (was item 10; moved here on 2026-11-18). They would be the only part of the app that listens on the network. The SFTP/SCP browser pushes files to devices, which covers every device that has a file server of its own; what is left is old devices that can only fetch over TFTP, and there is none to test with. Still to design if it comes back: authentication, transfer logging, low ports, the Windows firewall prompt, locked-down corporate laptops.
 - Dragging a tab out of the window to give it a window of its own, and dragging tabs between windows (left out of #81: the menu and the shortcut came first)
 - Remembering session windows and their places across restarts (left out of #81, like the tab layout)
 - Expect-style scripting of live terminal sessions
@@ -226,11 +242,8 @@ Let scripts reach more than a host's SSH port through the app's jump hosts.
 
 ## Still open
 
-- **Edge testing:** which real devices and adapters are available beyond the containerlab images.
+- **Edge testing:** there are no real devices or adapters to test with (settled on 2026-11-18): everything is checked against the containerlab images. A real serial adapter, old hardware and a locked-down corporate laptop stay untested until someone has one.
 
 - **Linux:** the check on a real desktop (Ubuntu and Fedora, X11 and Wayland), before Linux is claimed as supported.
 - **Script tunnels:** job pre-flight does not know host keys, so a host whose device or jump-host key is not trusted yet is refused only when the job runs.
-- **SFTP/SCP browser:** the whole design.
-- **NetBox:** how its hierarchy (region, site, location, rack) maps onto the folder tree, and where local overrides are kept.
-- **Tunnel ports:** how a script names the ports, and certificate checking for HTTPS through a tunnel.
-- **File servers:** authentication, transfer logging, low ports (TFTP 69, FTP 21), the Windows firewall prompt, and behaviour on locked-down corporate laptops.
+- **SFTP/SCP browser:** what the prototype (#96) finds: whether the SFTP library fits and is fast enough, and what each lab device offers.
