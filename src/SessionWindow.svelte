@@ -831,6 +831,7 @@
       void edit({ kind: "moveTab", tab, pane, index });
     },
     newTab: () => {},
+    refocus: () => (focusRequest += 1),
     split: (pane, direction) => void edit({ kind: "split", pane, direction }),
     closePane: (pane) => void edit({ kind: "closePane", pane }),
     joinPane: () => {},

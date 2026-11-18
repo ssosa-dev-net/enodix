@@ -37,6 +37,11 @@ in the project's tracker.
   terminal is the only "New connection": the closed bar under its
   backdrop showed one that could not be clicked.
 - A saved filter's chip, once applied, stays readable under the mouse.
+- In a narrow pane at the window's top-right, the pane's buttons (new
+  connection, multi-send, split right and down, close pane) fold into a
+  "…" button that lists them. They were cut off under the window's
+  buttons and could not be used, already at 800 px with two panes side by
+  side or two tabs in one pane, in session windows too.
 
 ## 0.4.0
 

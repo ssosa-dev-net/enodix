@@ -940,23 +940,6 @@ function hitOf(evaluate, element) {
 }
 
 /**
- * Controls a user could not click that #94 found and left unfixed: each
- * `where` is a selector the control is inside (matched by `closest`).
- * Each one met still fails the run, listed at the end; its click is made
- * with the DOM's .click() meanwhile, so that the rest of the run goes on
- * checking what follows.
- */
-const UNREACHABLE_FINDINGS = [
-  {
-    where: ".bar.framed .tools",
-    why: "a narrow top-right pane clips its tools (multi-send, Split right, Split down, Close pane) away under the window's buttons: at 800 px with two panes side by side none can be clicked",
-  },
-];
-/** The findings above met in this run: what was clicked -> [where it
- * landed, why]. */
-const unreachableMet = new Map();
-
-/**
  * Presses and releases a mouse button at `point` with real input events
  * over DevTools (`evaluate` from `evaluateIn` knows its page). `double`
  * sends a second click that the page sees as a double-click; `button`
@@ -1015,20 +998,6 @@ async function mouseClickElement(evaluate, element, what, options) {
       button: "none",
     });
   }
-  const hit = await hitOf(evaluate, element);
-  if (hit && !hit.reached) {
-    const where = await evaluate(`(() => {
-      const element = (${element});
-      return ${JSON.stringify(UNREACHABLE_FINDINGS.map((f) => f.where))}.findIndex((where) => !!element.closest(where));
-    })()`);
-    if (where >= 0) {
-      // A known finding (#94): recorded, failed at the end, clicked past.
-      console.log(`FINDING - a click on ${what} would land on ${hit.top}`);
-      unreachableMet.set(what, [hit.top, UNREACHABLE_FINDINGS[where].why]);
-      await evaluate(`(${element}).click()`);
-      return;
-    }
-  }
   await mouseAt(evaluate, await settled(evaluate, element, what), options);
 }
 
@@ -1068,6 +1037,81 @@ async function expandFolder(evaluate, selector) {
     `document.querySelector(${JSON.stringify(selector)}).getAttribute("aria-expanded") === "true"`,
   );
   if (!open) await mouseClick(evaluate, selector);
+}
+
+/** Each pane tool's button in a tab bar (and the new-tab button), by its
+ * `data-session-action` in the "…" menu that holds them when they are
+ * folded (#100). */
+const PANE_TOOLS = {
+  "new-tab": "[data-new-tab]",
+  "split-right": "[data-split=right]",
+  "split-down": "[data-split=down]",
+  "close-pane": "[data-close-pane]",
+  "join-pane": "[data-join-pane]",
+};
+
+/**
+ * Uses the pane tool `tool` of the tab bar the page expression `bar`
+ * gives, with the mouse: its button, or, when the bar has folded its tools
+ * (a narrow top-right pane, #100), the "…" button and the entry of its
+ * menu. `what` names the pane in a failure. Resolves to whether the tools
+ * were folded.
+ */
+async function paneTool(evaluate, bar, tool, what) {
+  const more = `(${bar}).querySelector("[data-pane-tools-more]")`;
+  if (!(await evaluate(`!!${more}`))) {
+    await mouseClickElement(
+      evaluate,
+      `(${bar}).querySelector(${JSON.stringify(PANE_TOOLS[tool])})`,
+      `${what}: ${tool}`,
+    );
+    return false;
+  }
+  await mouseClickElement(evaluate, more, `${what}: pane actions`);
+  const entry = `[data-session-actions] [data-session-action=${tool}]`;
+  await until(`${what}: ${tool} in the pane actions`, () =>
+    evaluate(`!!document.querySelector(${JSON.stringify(entry)})`),
+  );
+  await mouseClick(evaluate, entry);
+  return true;
+}
+
+/**
+ * The entries of the "…" menu of the tab bar the page expression `bar`
+ * gives (#100), opened with the mouse and closed with Escape; null when
+ * the bar's tools are not folded. Fails unless the window's buttons and
+ * the bar's shown tab can still be clicked.
+ */
+async function foldedToolEntries(evaluate, bar, what) {
+  const more = `(${bar}).querySelector("[data-pane-tools-more]")`;
+  if (!(await evaluate(`!!${more}`))) return null;
+  await reachable(evaluate, "[data-window-control=close]");
+  await reachableElement(
+    evaluate,
+    `(${bar}).querySelector("[data-tab][aria-selected=true]")`,
+    `${what}: the shown tab`,
+  );
+  await mouseClickElement(evaluate, more, `${what}: pane actions`);
+  const entries = await until(`${what}: the pane actions`, () =>
+    evaluate(`(() => {
+      const ids = [...document.querySelectorAll("[data-session-actions] [data-session-action]")].map((entry) => entry.dataset.sessionAction);
+      return ids.length > 0 && ids;
+    })()`),
+  );
+  for (const type of ["keyDown", "keyUp"]) {
+    await evaluate.devtools.send("Input.dispatchKeyEvent", {
+      type,
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+  }
+  await until(
+    `${what}: the pane actions closed`,
+    async () =>
+      !(await evaluate(`!!document.querySelector("[data-session-actions]")`)),
+  );
+  return entries;
 }
 
 /** Clicks `selector` with the mouse if it is on the page. */
@@ -4170,10 +4214,11 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
       async () => !(await exists("[data-tab-view=preferences]")),
     );
     await mouseClick(evaluate, `[data-tab-view=highlights]`);
-    await mouseClickElement(
+    await paneTool(
       evaluate,
-      `document.querySelector("[data-tab-view=highlights]").closest("[data-tab-bar]").querySelector("[data-split=down]")`,
-      "the rules tab's Split down",
+      `document.querySelector("[data-tab-view=highlights]").closest("[data-tab-bar]")`,
+      "split-down",
+      "the rules tab's pane",
     );
     await until("the rules' tab in a pane of its own", () =>
       evaluate(
@@ -6105,10 +6150,11 @@ async function jobs({
     await until("the run's tab shown again", () =>
       exists(`${view} [data-run-details="${hangRun}"]`),
     );
-    await mouseClickElement(
+    await paneTool(
       evaluate,
-      `${tabBarOf(runTab)}.querySelector("[data-split=right]")`,
-      "the run tab's Split right",
+      tabBarOf(runTab),
+      "split-right",
+      "the run tab's pane",
     );
     await until("the run's tab in a pane of its own", () =>
       evaluate(
@@ -8083,10 +8129,22 @@ async function terminalComforts({
         async () => (await order()).indexOf("preferences") === before,
       );
     }
-    await mouseClickElement(
+    // Two tabs in one pane already fold the tools at 800 px (#100).
+    const twoTabs = await foldedToolEntries(
       evaluate,
-      `document.querySelector("[data-tab-view=preferences]").closest("[data-tab-bar]").querySelector("[data-split=right]")`,
-      "the Preferences tab's Split right",
+      `document.querySelector("[data-tab-view=preferences]").closest("[data-tab-bar]")`,
+      "the Preferences tab's pane",
+    );
+    if (
+      JSON.stringify(twoTabs) !==
+      JSON.stringify(["new-tab", "join-pane", "split-right", "split-down"])
+    )
+      fail(`the folded actions of one pane: ${JSON.stringify(twoTabs)}`);
+    await paneTool(
+      evaluate,
+      `document.querySelector("[data-tab-view=preferences]").closest("[data-tab-bar]")`,
+      "split-right",
+      "the Preferences tab's pane",
     );
     await until("Preferences split into a pane of their own", () =>
       evaluate(
@@ -10178,7 +10236,12 @@ async function tabsAndPanes({
   // waits for its prompt; returns its tab.
   const openSession = async () => {
     const before = new Set((await allTabs()).map((tab) => tab.id));
-    await clickOn(".pane.active [data-new-tab]");
+    await paneTool(
+      evaluate,
+      `document.querySelector(".pane.active [data-tab-bar]")`,
+      "new-tab",
+      "the active pane",
+    );
     await until("the quick-connect form", () => exists("input[name=host]"));
     await fillForm({
       host: "127.0.0.1",
@@ -10303,7 +10366,12 @@ async function tabsAndPanes({
   step("a hidden terminal held its output and caught up when shown again");
 
   // Splitting right moves the shown tab into a new pane beside the other.
-  await clickOn(".pane.active [data-split=right]");
+  await paneTool(
+    evaluate,
+    `document.querySelector(".pane.active [data-tab-bar]")`,
+    "split-right",
+    "the active pane",
+  );
   await until("two panes", async () => (await layout()).length === 2);
   let panes = await layout();
   if (
@@ -10329,8 +10397,38 @@ async function tabsAndPanes({
     /size\s*\d+x\d+/.test(await screenOfTab(a)),
   );
   // Splitting a pane with one tab gives an empty pane for a new session.
-  await clickOn(".pane.active [data-split=down]");
+  // At 800 px the top-right pane has folded its tools and its new-tab
+  // button into the "…" button (#100); the tab and the window's buttons
+  // stay clickable. Split from its menu.
+  const sideBySide = await foldedToolEntries(
+    evaluate,
+    `document.querySelector(".pane.active [data-tab-bar]")`,
+    "the top-right pane",
+  );
+  if (
+    JSON.stringify(sideBySide) !==
+    JSON.stringify([
+      "new-tab",
+      "join-pane",
+      "split-right",
+      "split-down",
+      "close-pane",
+    ])
+  )
+    fail(`the folded pane actions: ${JSON.stringify(sideBySide)}`);
+  if (
+    !(await paneTool(
+      evaluate,
+      `document.querySelector(".pane.active [data-tab-bar]")`,
+      "split-down",
+      "the active pane",
+    ))
+  )
+    fail("the narrow top-right pane did not fold its tools");
   await until("three panes", async () => (await layout()).length === 3);
+  step(
+    "at 800 px the top-right pane folded its tools into a menu (new tab, multi-send, split right and down, close pane); the tab and the window's buttons stayed clickable",
+  );
   const c = await openSession();
   panes = await layout();
   if (!panes[2].tabs.some((t) => t.id === c)) {
@@ -10504,8 +10602,11 @@ async function tabsAndPanes({
   );
 
   // Closing a pane gives its tabs to the pane beside it.
-  await clickOn(
-    `.pane[data-pane="${(await layout())[1].pane}"] [data-close-pane]`,
+  await paneTool(
+    evaluate,
+    `document.querySelector('.pane[data-pane="${(await layout())[1].pane}"] [data-tab-bar]')`,
+    "close-pane",
+    "the second pane",
   );
   await until("one pane with both tabs", async () => {
     const now = await layout();
@@ -10758,7 +10859,12 @@ async function multiSend({
     const pane = await evaluate(
       `document.querySelector(${json(slot(d))}).dataset.pane`,
     );
-    await clickOn(`.pane[data-pane="${pane}"] [data-join-pane]`);
+    await paneTool(
+      evaluate,
+      `document.querySelector('.pane[data-pane="${pane}"] [data-tab-bar]')`,
+      "join-pane",
+      `pane ${pane}`,
+    );
     const paneAsked = await until("the pane's join question", joinQuestion);
     if (
       json(paneAsked.production) !== json(["ms-prod"]) ||
@@ -11691,10 +11797,62 @@ async function severalInAWindow({
   await until("x shown", () =>
     window.evaluate(`!!document.querySelector('${xSlot}[data-active]')`),
   );
-  await mouseClick(window.evaluate, `[data-split=right]`);
+  await paneTool(
+    window.evaluate,
+    `document.querySelector('[data-tab="${xTab}"]').closest("[data-tab-bar]")`,
+    "split-right",
+    "the session window's pane",
+  );
   await until("two panes", () =>
     window.evaluate(`document.querySelectorAll("[data-tab-bar]").length === 2`),
   );
+  // Narrow, it folds its top-right pane's tools too (#100): no new tab or
+  // multi-send there.
+  {
+    const { windowId, bounds } = await window.devtools.send(
+      "Browser.getWindowForTarget",
+    );
+    await window.devtools.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { width: 560, height: bounds.height },
+    });
+    const topRight = `document.querySelector(".bar.framed")`;
+    await until("the narrow session window's tools folded", () =>
+      window.evaluate(
+        `!!(${topRight})?.querySelector("[data-pane-tools-more]")`,
+      ),
+    );
+    const narrow = await foldedToolEntries(
+      window.evaluate,
+      topRight,
+      "the narrow session window",
+    );
+    if (
+      JSON.stringify(narrow) !==
+      JSON.stringify(["split-right", "split-down", "close-pane"])
+    )
+      fail(`the session window's folded actions: ${JSON.stringify(narrow)}`);
+    // Wide, they come back; then the window's own size again.
+    await window.devtools.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { width: 1200, height: bounds.height },
+    });
+    await until(
+      "the session window's tools back",
+      async () =>
+        !(await window.evaluate(
+          `!!document.querySelector("[data-pane-tools-more]")`,
+        )),
+    );
+    await reachable(window.evaluate, ".bar.framed [data-split=down]");
+    await window.devtools.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { width: bounds.width, height: bounds.height },
+    });
+    step(
+      "a narrow session window folded its top-right pane's tools into a menu (split right and down, close pane); at 1200 px they were back in the bar",
+    );
+  }
   const visible = (selector) =>
     window.evaluate(
       `(() => { const slot = document.querySelector('${selector}'); return !!slot && !slot.hidden; })()`,
@@ -11908,17 +12066,6 @@ try {
   console.log(
     "ok - every screen checked met the contrast minimum in both themes",
   );
-  if (unreachableMet.size > 0) {
-    const listed = [...unreachableMet].map(
-      ([what, [top, why]]) => `  ${what}: lands on ${top}; ${why}`,
-    );
-    fail(
-      [
-        `controls a user could not click (${listed.length}, #94):`,
-        ...listed,
-      ].join(String.fromCharCode(10)),
-    );
-  }
   console.log("smoke test passed");
 } catch (error) {
   console.error(`smoke test FAILED: ${error.message}`);

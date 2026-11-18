@@ -566,6 +566,7 @@
       view = { kind: "quick" };
       void edit({ kind: "showConnectView", pane });
     },
+    refocus: () => (focusRequest += 1),
     split: (pane, direction) => void edit({ kind: "split", pane, direction }),
     closePane: (pane) => void edit({ kind: "closePane", pane }),
     joinPane,
