@@ -109,6 +109,12 @@
   /** Set just after a drag ends, so the click that follows does nothing. */
   let dragged = false;
 
+  /** Like the tabs, the pane's tools leave the keys where they were (the
+   * terminal): a mouse click on Split right took them (#94). */
+  function keepKeys(event: MouseEvent) {
+    event.preventDefault();
+  }
+
   function onpointerdown(event: PointerEvent, tab: TabId) {
     if (event.button !== 0) return;
     if ((event.target as Element).closest("[data-tab-close]")) return;
@@ -311,6 +317,7 @@
             aria-label="Add this pane's tabs to the multi-send group"
             title="Add this pane's tabs to the multi-send group"
             onclick={() => handlers.joinPane(pane.id)}
+            onmousedown={keepKeys}
           >
             <UsersRound size={15} aria-hidden="true" />
           </button>
@@ -321,6 +328,7 @@
           aria-label="Split right"
           title="Split right"
           onclick={() => handlers.split(pane.id, "right")}
+          onmousedown={keepKeys}
         >
           <Columns2 size={15} aria-hidden="true" />
         </button>
@@ -330,6 +338,7 @@
           aria-label="Split down"
           title="Split down"
           onclick={() => handlers.split(pane.id, "down")}
+          onmousedown={keepKeys}
         >
           <Rows2 size={15} aria-hidden="true" />
         </button>
@@ -340,6 +349,7 @@
             aria-label="Close pane"
             title="Close pane (its tabs move to the pane next to it)"
             onclick={() => handlers.closePane(pane.id)}
+            onmousedown={keepKeys}
           >
             <SquareX size={15} aria-hidden="true" />
           </button>

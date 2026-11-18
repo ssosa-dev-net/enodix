@@ -781,7 +781,9 @@
     color: var(--muted);
   }
 
-  .chip:hover:not(:disabled) {
+  /* Not on a pressed chip, whose text is on the accent (#94: under the
+     mouse it was unreadable). */
+  .chip:hover:not(:disabled, [aria-pressed="true"]) {
     color: var(--text);
   }
 
