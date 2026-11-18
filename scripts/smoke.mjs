@@ -65,7 +65,7 @@ async function openPreferences(evaluate) {
     if (shown && !document.querySelector("[data-view=preferences]"))
       window.smokeBeforePreferences = shown.dataset.tab;
   })()`);
-  await evaluate(`document.querySelector("[data-open-preferences]").click()`);
+  await mouseClick(evaluate, `[data-open-preferences]`);
   await until("the Preferences tab", () =>
     evaluate(`(() => {
       const view = document.querySelector(${JSON.stringify(PREFERENCES)});
@@ -77,8 +77,9 @@ async function openPreferences(evaluate) {
 /** Closes the Preferences tab and shows again the session shown before
  * it opened (the core shows the closed tab's neighbour). */
 async function closePreferences(evaluate) {
-  await evaluate(
-    `document.querySelector("[data-tab-view=preferences] [data-tab-close]")?.click()`,
+  await mouseClickIfThere(
+    evaluate,
+    "[data-tab-view=preferences] [data-tab-close]",
   );
   await until(
     "the Preferences tab closed",
@@ -94,7 +95,7 @@ async function closePreferences(evaluate) {
   })()`);
   if (before === null) return;
   const tab = `[data-tab-bar] [data-tab="${before}"]`;
-  await evaluate(`document.querySelector('${tab}')?.click()`);
+  await mouseClickIfThere(evaluate, tab);
   await until("the tab shown before Preferences", () =>
     evaluate(`(() => {
       const tab = document.querySelector('${tab}');
@@ -432,7 +433,7 @@ const SIDE_VIEW_KEPT = "snippets";
 async function showSideView(evaluate, view) {
   const shown = `!!document.querySelector("[data-side-view=${view}]")`;
   if (!(await evaluate(shown))) {
-    await evaluate(`document.querySelector("[data-rail=${view}]").click()`);
+    await mouseClick(evaluate, `[data-rail=${view}]`);
   }
   await until(`the ${view} side view`, () => evaluate(shown));
   // Saved before going on, so that a restart finds it (hosts is the default).
@@ -450,11 +451,11 @@ async function showSideView(evaluate, view) {
 async function showDetails(evaluate) {
   const open = `!!document.querySelector("[data-side-view=hosts] [data-details-sheet]")`;
   if (!(await evaluate(open))) {
-    await evaluate(`(() => {
-      const row = document.querySelector(
-        "nav [data-item][aria-pressed=true], nav [data-item].selected");
-      row?.parentElement.querySelector(":scope > [data-row-details]")?.click();
-    })()`);
+    await mouseClickElement(
+      evaluate,
+      `document.querySelector("nav [data-item][aria-pressed=true], nav [data-item].selected")?.parentElement.querySelector(":scope > [data-row-details]")`,
+      "the selected row's details control",
+    );
   }
   await until("the details sheet", () => evaluate(open));
 }
@@ -471,7 +472,7 @@ async function openRun(evaluate, id = null) {
       `document.querySelector(${JSON.stringify(row)})?.dataset.run ?? null`,
     ),
   );
-  await evaluate(`document.querySelector(${JSON.stringify(row)}).click()`);
+  await mouseClick(evaluate, row);
   await until("the run's tab", () =>
     evaluate(
       `!!document.querySelector(${JSON.stringify(`${RUN_TAB} [data-run-details="${run}"]`)})`,
@@ -488,8 +489,9 @@ async function closeTabOf(evaluate, selector) {
     `document.querySelector(${JSON.stringify(selector)})?.closest(".slot")?.dataset.tab ?? null`,
   );
   if (tab === null) fail(`no tab holds ${selector}`);
-  await evaluate(
-    `document.querySelector('[data-tab-bar] [data-tab="${tab}"] [data-tab-close]').click()`,
+  await mouseClick(
+    evaluate,
+    `[data-tab-bar] [data-tab="${tab}"] [data-tab-close]`,
   );
   await until(
     `the tab of ${selector} closed`,
@@ -512,9 +514,7 @@ async function openProfiles(evaluate) {
 /** Opens the new-profile form of the Credentials side view. */
 async function newProfile(evaluate) {
   await openProfiles(evaluate);
-  await evaluate(
-    `document.querySelector("${CREDENTIALS} [data-profile-new]").click()`,
-  );
+  await mouseClick(evaluate, `${CREDENTIALS} [data-profile-new]`);
   await until("the profile form", () =>
     evaluate(`!!document.querySelector("${CREDENTIALS} [name=profile-name]")`),
   );
@@ -574,8 +574,7 @@ async function sidePanels({
     });
     await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...press });
   };
-  const railClick = (view) =>
-    evaluate(`document.querySelector("[data-rail=${view}]").click()`);
+  const railClick = (view) => mouseClick(evaluate, `[data-rail=${view}]`);
   const openView = () =>
     evaluate(
       `document.querySelector("[data-rail][data-active]")?.dataset.rail ?? null`,
@@ -665,7 +664,7 @@ async function sidePanels({
   const sheet = "[data-side-view=hosts] [data-details-sheet]";
   const sheetName = () =>
     evaluate(`document.querySelector("${sheet} h2")?.textContent ?? null`);
-  await evaluate(`document.querySelector("nav [data-host]").click()`);
+  await mouseClick(evaluate, `nav [data-host]`);
   await sleep(300);
   if (await exists(sheet)) fail("selecting a host opened its details");
   if (
@@ -692,9 +691,7 @@ async function sidePanels({
   const firstHost = await evaluate(
     `document.querySelector("nav [data-host]").dataset.label`,
   );
-  await evaluate(
-    `document.querySelector("nav li:has(> [data-host]) > [data-row-details]").click()`,
-  );
+  await mouseClick(evaluate, `nav li:has(> [data-host]) > [data-row-details]`);
   await until(
     "the details sheet from the row",
     async () => (await sheetName()) === firstHost,
@@ -736,16 +733,14 @@ async function sidePanels({
   const rootName = await evaluate(
     `document.querySelector("[data-open-workspaces]").textContent.trim()`,
   );
-  await evaluate(`document.querySelector("[data-workspace-settings]").click()`);
+  await mouseClick(evaluate, `[data-workspace-settings]`);
   await until(
     "the sheet following the selection to a folder",
     async () =>
       (await exists("[data-details-sheet=folder]")) &&
       (await sheetName()) === rootName,
   );
-  await evaluate(
-    `document.querySelector(${JSON.stringify(`nav [data-host="${firstId}"]`)}).click()`,
-  );
+  await mouseClick(evaluate, `nav [data-host="${firstId}"]`);
   await until(
     "the sheet back on the host",
     async () => (await sheetName()) === firstHost,
@@ -753,9 +748,7 @@ async function sidePanels({
   step("the open sheet follows the selection in the tree");
 
   // Back to the tree.
-  await evaluate(
-    `document.querySelector("${sheet} [data-details-close]").click()`,
-  );
+  await mouseClick(evaluate, `${sheet} [data-details-close]`);
   await until("the sheet closed by Back", async () => !(await exists(sheet)));
   // By key.
   await shortcut("D");
@@ -766,9 +759,7 @@ async function sidePanels({
     async () => !(await exists(sheet)),
   );
   // From the context menu, which holds every action of the details.
-  const row = await centreOf("nav [data-host]");
-  await mouse("mousePressed", row, { button: "right", clickCount: 1 });
-  await mouse("mouseReleased", row, { button: "right", clickCount: 1 });
+  await mouseClick(evaluate, "nav [data-host]", { button: "right" });
   await until("the host's context menu", () =>
     exists("[role=menu] [data-menu]"),
   );
@@ -795,9 +786,7 @@ async function sidePanels({
     }
   }
   await screenshot("host-context-menu");
-  await evaluate(
-    `document.querySelector("[role=menu] [data-menu=details]").click()`,
-  );
+  await mouseClick(evaluate, `[role=menu] [data-menu=details]`);
   await until("the sheet opened from the context menu", () => exists(sheet));
   // Another side view takes its place; Hosts comes back without it.
   await railClick("snippets");
@@ -827,9 +816,16 @@ async function sidePanels({
   );
   step("the side view cannot squeeze the terminal below 320 px");
 
-  await evaluate(
-    `document.querySelector("[data-panel-resizer=left]").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`,
-  );
+  // On the handle, off the hide button in its middle (as for the drags).
+  const handle = await centreOf("[data-panel-resizer=left]");
+  const onHandle = { x: handle.x, y: handle.y - 80 };
+  if (
+    !(await evaluate(
+      `document.elementFromPoint(${onHandle.x}, ${onHandle.y}) === document.querySelector("[data-panel-resizer=left]")`,
+    ))
+  )
+    fail("the side view's edge cannot be reached off its hide button");
+  await mouseAt(evaluate, onHandle, { double: true });
   await until(
     "the default width after a double-click",
     async () => (await width(left)) === 288,
@@ -837,7 +833,7 @@ async function sidePanels({
   step("double-clicking the edge restored the default width");
 
   // The edge's own button folds the side view too.
-  await evaluate(`document.querySelector("[data-hide-panel=left]").click()`);
+  await mouseClick(evaluate, `[data-hide-panel=left]`);
   await until(
     "the side view folded by its edge",
     async () => !(await exists(left)),
@@ -886,38 +882,198 @@ async function until(description, probe, timeout = TIMEOUT_MS) {
  * the questions drawn over a terminal). Resolves to that centre.
  */
 async function reachable(evaluate, selector) {
-  const hit = await evaluate(`(() => {
-    const element = document.querySelector(${JSON.stringify(selector)});
+  return reachableElement(
+    evaluate,
+    `document.querySelector(${JSON.stringify(selector)})`,
+    selector,
+  );
+}
+
+/**
+ * `reachable` for the element the page expression `element` gives (one
+ * found by its text, say); `what` names it in a failure.
+ */
+async function reachableElement(evaluate, element, what) {
+  const hit = await hitOf(evaluate, element);
+  if (!hit) fail(`${what} is not on screen`);
+  if (!hit.reached) fail(`a click on ${what} would land on ${hit.top}`);
+  return hit;
+}
+
+/** Where a mouse at the centre of `element` would land (null: no such
+ * element). */
+function hitOf(evaluate, element) {
+  return evaluate(`(() => {
+    const element = (${element});
     if (!element) return null;
     element.scrollIntoView({ block: "nearest" });
+    // The part a user sees: the box cut by every ancestor that clips
+    // (a tab half out of its scrolled strip is clicked on its visible half).
     const box = element.getBoundingClientRect();
-    const x = box.x + box.width / 2;
-    const y = box.y + box.height / 2;
+    let [left, top_, right, bottom] = [box.left, box.top, box.right, box.bottom];
+    for (let around = element.parentElement; around; around = around.parentElement) {
+      if (getComputedStyle(around).overflow === "visible") continue;
+      const clip = around.getBoundingClientRect();
+      left = Math.max(left, clip.left);
+      top_ = Math.max(top_, clip.top);
+      right = Math.min(right, clip.right);
+      bottom = Math.min(bottom, clip.bottom);
+    }
+    left = Math.max(left, 0);
+    top_ = Math.max(top_, 0);
+    right = Math.min(right, window.innerWidth);
+    bottom = Math.min(bottom, window.innerHeight);
+    const seen = right > left && bottom > top_;
+    const x = seen ? (left + right) / 2 : box.x + box.width / 2;
+    const y = seen ? (top_ + bottom) / 2 : box.y + box.height / 2;
     const top = document.elementFromPoint(x, y);
     return {
       x,
       y,
       reached: !!top && (top === element || element.contains(top)),
-      top: top ? top.tagName.toLowerCase() + "." + String(top.className) : null,
+      // What is there, by the control (or element) holding that point.
+      top: top
+        ? (top.closest("button, a, input, [role], [data-tab]") ?? top).cloneNode(false).outerHTML.slice(0, 160)
+        : null,
     };
   })()`);
-  if (!hit) fail(`${selector} is not on screen`);
-  if (!hit.reached) fail(`a click on ${selector} would land on ${hit.top}`);
-  return hit;
 }
 
-/** Clicks `selector` with the mouse, as a user does, if it is reachable. */
-async function mouseClick(evaluate, devtools, selector) {
-  const { x, y } = await reachable(evaluate, selector);
-  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
-    await devtools.send("Input.dispatchMouseEvent", {
+/**
+ * Controls a user could not click that #94 found and left unfixed: each
+ * `where` is a selector the control is inside (matched by `closest`).
+ * Each one met still fails the run, listed at the end; its click is made
+ * with the DOM's .click() meanwhile, so that the rest of the run goes on
+ * checking what follows.
+ */
+const UNREACHABLE_FINDINGS = [
+  {
+    where: ".bar.framed .tools",
+    why: "a narrow top-right pane clips its tools (multi-send, Split right, Split down, Close pane) away under the window's buttons: at 800 px with two panes side by side none can be clicked",
+  },
+];
+/** The findings above met in this run: what was clicked -> [where it
+ * landed, why]. */
+const unreachableMet = new Map();
+
+/**
+ * Presses and releases a mouse button at `point` with real input events
+ * over DevTools (`evaluate` from `evaluateIn` knows its page). `double`
+ * sends a second click that the page sees as a double-click; `button`
+ * "right" opens a context menu. `mayClose`: the click may close the page
+ * (a window's Close), so a send it no longer answers is not a failure
+ * (whether the control was reachable is checked before).
+ */
+async function mouseAt(
+  evaluate,
+  { x, y },
+  { button = "left", double = false, mayClose = false } = {},
+) {
+  const send = (type, clickCount) =>
+    evaluate.devtools.send("Input.dispatchMouseEvent", {
       type,
       x,
       y,
-      button: "left",
-      clickCount: 1,
+      button: type === "mouseMoved" ? "none" : button,
+      clickCount,
+    });
+  try {
+    await send("mouseMoved", 0);
+    for (const clickCount of double ? [1, 2] : [1]) {
+      await send("mousePressed", clickCount);
+      await send("mouseReleased", clickCount);
+    }
+  } catch (error) {
+    if (!mayClose) throw error;
+  }
+}
+
+/**
+ * Clicks `selector` with the mouse, as a user does (#94): fails unless it
+ * is the top element at its centre, so a control something is drawn over
+ * fails the test. `options` as `mouseAt`.
+ */
+async function mouseClick(evaluate, selector, options) {
+  await mouseClickElement(
+    evaluate,
+    `document.querySelector(${JSON.stringify(selector)})`,
+    selector,
+    options,
+  );
+}
+
+/** `mouseClick` on the element the page expression `element` gives. */
+async function mouseClickElement(evaluate, element, what, options) {
+  // The mouse gets there first, as a user's does: controls shown on hover
+  // (a snippet's Edit) appear.
+  const over = await hitOf(evaluate, element);
+  if (over) {
+    await evaluate.devtools.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: over.x,
+      y: over.y,
+      button: "none",
     });
   }
+  const hit = await hitOf(evaluate, element);
+  if (hit && !hit.reached) {
+    const where = await evaluate(`(() => {
+      const element = (${element});
+      return ${JSON.stringify(UNREACHABLE_FINDINGS.map((f) => f.where))}.findIndex((where) => !!element.closest(where));
+    })()`);
+    if (where >= 0) {
+      // A known finding (#94): recorded, failed at the end, clicked past.
+      console.log(`FINDING - a click on ${what} would land on ${hit.top}`);
+      unreachableMet.set(what, [hit.top, UNREACHABLE_FINDINGS[where].why]);
+      await evaluate(`(${element}).click()`);
+      return;
+    }
+  }
+  await mouseAt(evaluate, await settled(evaluate, element, what), options);
+}
+
+/**
+ * The reachable centre of `element` once it stays put: a list that is
+ * still filling in (the palette's hits, say) can move the element between
+ * the look and the click, as it would under a user's mouse.
+ */
+async function settled(evaluate, element, what) {
+  let last = await reachableElement(evaluate, element, what);
+  for (let tries = 0; tries < 20; tries++) {
+    await sleep(40);
+    const now = await reachableElement(evaluate, element, what);
+    if (now.x === last.x && now.y === last.y) return now;
+    last = now;
+  }
+  fail(`${what} kept moving`);
+}
+
+/** The page expression for the visible button labelled `label` (within
+ * `scope`, a selector). */
+const buttonLabelled = (label, scope = "") =>
+  `[...document.querySelectorAll(${JSON.stringify(`${scope} button`.trim())})].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && b.checkVisibility())`;
+
+/** Clicks with the mouse the visible button labelled `label`. */
+const clickButton = (evaluate, label, scope = "") =>
+  mouseClickElement(
+    evaluate,
+    buttonLabelled(label, scope),
+    `the button ${label}`,
+  );
+
+/** Opens the tree's folder row `selector` with the mouse unless it is
+ * open. */
+async function expandFolder(evaluate, selector) {
+  const open = await evaluate(
+    `document.querySelector(${JSON.stringify(selector)}).getAttribute("aria-expanded") === "true"`,
+  );
+  if (!open) await mouseClick(evaluate, selector);
+}
+
+/** Clicks `selector` with the mouse if it is on the page. */
+async function mouseClickIfThere(evaluate, selector) {
+  if (await evaluate(`!!document.querySelector(${JSON.stringify(selector)})`))
+    await mouseClick(evaluate, selector);
 }
 
 /** The ids of the open session menu's entries (header or tab, #67). */
@@ -940,21 +1096,23 @@ async function sessionAction(
   session = SHOWN_SESSION,
   within = 5000,
 ) {
-  const menu = JSON.stringify(`${session} [data-session-menu]`);
+  const menu = `${session} [data-session-menu]`;
   const deadline = Date.now() + within;
   for (;;) {
-    await evaluate(`document.querySelector(${menu}).click()`);
+    await mouseClick(evaluate, menu);
     await until("the session's menu", () =>
       evaluate(`!!document.querySelector("[data-session-actions]")`),
     );
-    const ran = await evaluate(`(() => {
-      const entry = document.querySelector("[data-session-actions] [data-session-action=${action}]");
-      if (!entry || entry.disabled) return false;
-      entry.click();
-      return true;
+    const entry = `[data-session-actions] [data-session-action=${action}]`;
+    const offered = await evaluate(`(() => {
+      const entry = document.querySelector(${JSON.stringify(entry)});
+      return !!entry && !entry.disabled;
     })()`);
-    if (ran) break;
-    await evaluate(`document.querySelector(${menu}).click()`);
+    if (offered) {
+      await mouseClick(evaluate, entry);
+      break;
+    }
+    await mouseClick(evaluate, menu);
     await until("the session's menu closed", async () =>
       evaluate(`!document.querySelector("[data-session-actions]")`),
     );
@@ -1236,18 +1394,14 @@ async function windowFrame({ evaluate, mouse, step }) {
   );
 
   if (await maximized()) fail("the window starts maximized");
-  await evaluate(
-    `document.querySelector("[data-window-control=maximize]").click()`,
-  );
+  await mouseClick(evaluate, `[data-window-control=maximize]`);
   await until("the window maximized by its button", maximized);
   await until(
     "the button offers Restore",
     async () => (await label()) === "Restore",
   );
   await checkOwnFrame(evaluate, "the maximized window", "Restore");
-  await evaluate(
-    `document.querySelector("[data-window-control=maximize]").click()`,
-  );
+  await mouseClick(evaluate, `[data-window-control=maximize]`);
   await until(
     "the window restored by its button",
     async () => !(await maximized()),
@@ -1321,11 +1475,11 @@ async function welcome({ evaluate, text, screenshot, step }) {
   if (!(await exists("[data-side-view=hosts] [data-needs-workspace]"))) {
     fail("the Hosts view does not say it needs a workspace");
   }
-  await evaluate(`document.querySelector("[data-rail=snippets]").click()`);
+  await mouseClick(evaluate, `[data-rail=snippets]`);
   await until("the Snippets view saying it needs a workspace", () =>
     exists("[data-side-view=snippets] [data-needs-workspace]"),
   );
-  await evaluate(`document.querySelector("[data-rail=hosts]").click()`);
+  await mouseClick(evaluate, `[data-rail=hosts]`);
   await until("the Hosts view back", () => exists("[data-side-view=hosts]"));
   await screenshot("welcome");
 
@@ -1342,8 +1496,10 @@ async function welcome({ evaluate, text, screenshot, step }) {
   );
 
   // The gone folder is taken off the list.
-  await evaluate(
-    `document.querySelector(${json(`[data-welcome-workspace=${json(goneWorkspace)}]`)}).closest("li").querySelector("[data-welcome-forget]").click()`,
+  await mouseClickElement(
+    evaluate,
+    `document.querySelector(${json(`[data-welcome-workspace=${json(goneWorkspace)}]`)}).closest("li").querySelector("[data-welcome-forget]")`,
+    "the gone workspace's Forget",
   );
   await until(
     "the gone workspace off the list",
@@ -1353,9 +1509,7 @@ async function welcome({ evaluate, text, screenshot, step }) {
     "the welcome view lists the known workspaces (a gone one marked and removed), offers open, create and quick connect; side views ask for a workspace",
   );
 
-  await evaluate(
-    `document.querySelector(${json(`[data-welcome-workspace=${json(workspace)}]`)}).click()`,
-  );
+  await mouseClick(evaluate, `[data-welcome-workspace=${json(workspace)}]`);
   await until(
     "the welcome view gone",
     async () => !(await exists("[data-welcome]")),
@@ -1389,17 +1543,7 @@ async function main() {
   const app = startApp();
   const devtools = await connectDevTools();
 
-  const evaluate = async (expression) => {
-    const { result, exceptionDetails } = await devtools.send(
-      "Runtime.evaluate",
-      { expression, returnByValue: true },
-    );
-    if (exceptionDetails) {
-      const detail = exceptionDetails.exception?.description ?? "";
-      fail(`page error: ${exceptionDetails.text} ${detail}`);
-    }
-    return result.value;
-  };
+  const evaluate = evaluateIn(devtools);
   const text = (selector) =>
     evaluate(
       `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ""`,
@@ -1410,10 +1554,7 @@ async function main() {
   const screen = () => screenOf(evaluate, shownSession);
   const status = () => text(`${shownSession} [role=status]`);
   // Clicks the button on screen with this label (other tabs have theirs).
-  const click = (label) =>
-    evaluate(
-      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && b.checkVisibility()).click()`,
-    );
+  const click = (label) => clickButton(evaluate, label);
   const type = async (keys) => {
     for (const char of keys) {
       const key =
@@ -1472,20 +1613,8 @@ async function main() {
   const mouse = (type, { x, y }, extra = {}) =>
     devtools.send("Input.dispatchMouseEvent", { type, x, y, ...extra });
   // A real double-click, through the mouse, in the middle of the element.
-  const doubleClick = async (selector) => {
-    const { x, y } = await centreOf(selector);
-    for (const clickCount of [1, 2]) {
-      for (const type of ["mousePressed", "mouseReleased"]) {
-        await devtools.send("Input.dispatchMouseEvent", {
-          type,
-          x,
-          y,
-          button: "left",
-          clickCount,
-        });
-      }
-    }
-  };
+  const doubleClick = (selector) =>
+    mouseClick(evaluate, selector, { double: true });
   // Waits for the host-key question of the given kind ("first-use" or
   // "changed") and returns its text and fingerprints.
   const hostKeyCheck = (kind) =>
@@ -1503,7 +1632,7 @@ async function main() {
     );
   // With the mouse: a button something is drawn over fails here.
   const decideHostKey = (decision) =>
-    mouseClick(evaluate, devtools, `[data-decision=${decision}]`);
+    mouseClick(evaluate, `[data-decision=${decision}]`);
   const step = (message) => console.log(`ok - ${message}`);
   // Set SMOKE_SCREENSHOTS to a folder to keep pictures of the window.
   // Every screen photographed is also checked for contrast, in both
@@ -1589,11 +1718,11 @@ async function main() {
   await until("the malformed file reported, still", async () =>
     (await text("[data-problems]")).includes("could not be loaded"),
   );
-  await evaluate(`document.querySelector("[data-problems]").click()`);
+  await mouseClick(evaluate, `[data-problems]`);
   await until("the malformed file listed", async () =>
     (await text("[data-problems-list]")).includes("broken.yaml"),
   );
-  await evaluate(`document.querySelector("[data-problems]").click()`);
+  await mouseClick(evaluate, `[data-problems]`);
   // Folded away, the Hosts icon still says so.
   if (
     await evaluate(
@@ -1602,12 +1731,12 @@ async function main() {
   ) {
     fail("the Hosts icon is marked while the Hosts view shows the problems");
   }
-  await evaluate(`document.querySelector("[data-rail=hosts]").click()`);
+  await mouseClick(evaluate, `[data-rail=hosts]`);
   await until("the Hosts icon marked while folded", () =>
     evaluate(`!!document.querySelector("[data-rail=hosts][data-problems]")`),
   );
   await screenshot("problems-folded");
-  await evaluate(`document.querySelector("[data-rail=hosts]").click()`);
+  await mouseClick(evaluate, `[data-rail=hosts]`);
   await until("the Hosts view back", () =>
     evaluate(`!!document.querySelector("[data-side-view=hosts]")`),
   );
@@ -1632,11 +1761,12 @@ async function main() {
   if (await evaluate(`!!document.querySelector("[data-welcome]")`)) {
     fail("the welcome view stayed with a workspace open");
   }
-  await evaluate(
-    `document.querySelector(".slot.connect [data-empty-pane=palette]").click()`,
-  );
+  await mouseClick(evaluate, `.slot.connect [data-empty-pane=palette]`);
   await until("the palette from the empty pane", () =>
     evaluate(`!!document.querySelector("input[name=palette-query]")`),
+  );
+  await until("the palette's field focused", () =>
+    evaluate(`document.activeElement?.name === "palette-query"`),
   );
   await devtools.send("Input.dispatchKeyEvent", {
     type: "keyDown",
@@ -1851,9 +1981,7 @@ async function main() {
   ) {
     fail("the session header has buttons besides its menu");
   }
-  await evaluate(
-    `document.querySelector(${JSON.stringify(`${shownSession} [data-session-menu]`)}).click()`,
-  );
+  await mouseClick(evaluate, `${shownSession} [data-session-menu]`);
   await until("the header's menu", () => menuEntries(evaluate));
   const headerEntries = await menuEntries(evaluate);
   if (
@@ -1905,16 +2033,15 @@ async function main() {
   // Duplicate opens a second session to the same host in a tab beside the
   // first.
   const switchTo = (index) =>
-    evaluate(`document.querySelectorAll("[role=tab]")[${index}].click()`);
+    mouseClickElement(
+      evaluate,
+      `document.querySelectorAll("[role=tab]")[${index}]`,
+      `tab ${index}`,
+    );
   // From the tab's context menu: the header's actions, then Close tab.
-  await evaluate(`(() => {
-    const tab = document.querySelector("[role=tab][aria-selected=true]");
-    const box = tab.getBoundingClientRect();
-    tab.dispatchEvent(new MouseEvent("contextmenu", {
-      bubbles: true, cancelable: true, button: 2,
-      clientX: box.x + 10, clientY: box.y + box.height / 2,
-    }));
-  })()`);
+  await mouseClick(evaluate, "[role=tab][aria-selected=true]", {
+    button: "right",
+  });
   await until("the tab's context menu", () => menuEntries(evaluate));
   const tabEntries = await menuEntries(evaluate);
   if (
@@ -1923,8 +2050,9 @@ async function main() {
   ) {
     fail(`the tab's context menu offers ${JSON.stringify(tabEntries)}`);
   }
-  await evaluate(
-    `document.querySelector("[data-session-actions] [data-session-action=duplicate]").click()`,
+  await mouseClick(
+    evaluate,
+    `[data-session-actions] [data-session-action=duplicate]`,
   );
   await until("two sessions", () =>
     evaluate(`document.querySelectorAll(".slot[data-tab]").length === 2`),
@@ -1958,10 +2086,7 @@ async function main() {
     async () => !(await screen()).includes("line 3"),
   );
   // The first session's buttons are there too, out of sight.
-  const clickShown = (label) =>
-    evaluate(
-      `[...document.querySelectorAll("${shownSession} button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)}).click()`,
-    );
+  const clickShown = (label) => clickButton(evaluate, label, shownSession);
   await sessionAction(evaluate, "disconnect");
   await until("the duplicate closed", async () =>
     (await status()).startsWith("Closed"),
@@ -2052,8 +2177,10 @@ async function main() {
 
   // Double-clicking a host in the tree prompts for credentials and opens an
   // SSH session to its management address, on the port its folder sets.
-  await evaluate(
-    `[...document.querySelectorAll("nav button[aria-expanded]")].find((b) => b.textContent.includes("Lab")).click()`,
+  await mouseClickElement(
+    evaluate,
+    `[...document.querySelectorAll("nav button[aria-expanded]")].find((b) => b.textContent.includes("Lab"))`,
+    "the Lab folder",
   );
   const hostButton = '[data-host="Lab/smoke-r1.yaml"]';
   await until("the host in the tree", () =>
@@ -2387,17 +2514,7 @@ async function main() {
   await sleep(1500);
   const restartedApp = startApp();
   const restarted = await connectDevTools();
-  const evaluateAgain = async (expression) => {
-    const { result, exceptionDetails } = await restarted.send(
-      "Runtime.evaluate",
-      {
-        expression,
-        returnByValue: true,
-      },
-    );
-    if (exceptionDetails) fail(`page error: ${exceptionDetails.text}`);
-    return result.value;
-  };
+  const evaluateAgain = evaluateIn(restarted);
   await until("the light theme after a restart", () =>
     evaluateAgain(`document.documentElement.dataset.theme === "light"`),
   );
@@ -2460,9 +2577,7 @@ async function main() {
         `document.querySelector("[data-open-workspaces]")?.textContent.trim()`,
       )) === "smoke-workspace",
   );
-  await evaluateAgain(
-    `document.querySelector("[data-open-workspaces]").click()`,
-  );
+  await mouseClick(evaluateAgain, "[data-open-workspaces]");
   const listed = await until("the switcher after a restart", () =>
     evaluateAgain(`(() => {
       const rows = [...document.querySelectorAll("[data-workspace]")];
@@ -2475,6 +2590,22 @@ async function main() {
     fail(`the switcher lists after a restart: ${JSON.stringify(listed)}`);
   }
   step("the known workspaces were kept across a restart");
+  // Closed by Escape, as a user would before going on.
+  for (const type of ["keyDown", "keyUp"]) {
+    await restarted.send("Input.dispatchKeyEvent", {
+      type,
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+  }
+  await until(
+    "the switcher closed",
+    async () =>
+      !(await evaluateAgain(
+        `!!document.querySelector("[data-dialog=workspaces]")`,
+      )),
+  );
 
   await pythonAfterRestart({
     evaluate: evaluateAgain,
@@ -2499,7 +2630,7 @@ async function main() {
 
 /** Runs `expression` in the page `devtools` is connected to. */
 function evaluateIn(devtools) {
-  return async (expression) => {
+  const evaluate = async (expression) => {
     const { result, exceptionDetails } = await devtools.send(
       "Runtime.evaluate",
       { expression, returnByValue: true },
@@ -2510,6 +2641,9 @@ function evaluateIn(devtools) {
     }
     return result.value;
   };
+  // Its page's client, for the mouse (`mouseClick`).
+  evaluate.devtools = devtools;
+  return evaluate;
 }
 
 /** Ends `app` and starts it again (with `env` added to its environment);
@@ -2538,12 +2672,8 @@ const MASTER_PASSWORD = "smoke master passw0rd";
 async function vault({ app, devtools, evaluate, step }) {
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
-  const click = (label) =>
-    evaluate(
-      `[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && b.checkVisibility()).click()`,
-    );
+  const clickOn = (selector) => mouseClick(evaluate, selector);
+  const click = (label) => clickButton(evaluate, label);
   const fillForm = (fields, form) =>
     evaluate(`(() => {
       const fields = ${JSON.stringify(fields)};
@@ -2716,9 +2846,7 @@ async function vault({ app, devtools, evaluate, step }) {
     async () => !(await shown("[data-unlock-screen]")),
   );
   await until("the workspace after unlocking", () => shown(hostRow));
-  await again(
-    `document.querySelector(${JSON.stringify(hostRow)}).dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`,
-  );
+  await mouseClick(again, hostRow, { double: true });
   await until(
     "the Connected status",
     async () =>
@@ -2762,10 +2890,11 @@ const NEW_MASTER_PASSWORD = "smoke n3w master password";
 async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
   let page = current;
   const ev = (expression) => page.evaluate(expression);
+  // The page changes with each restart; the mouse follows it.
+  Object.defineProperty(ev, "devtools", { get: () => page.devtools });
   const shown = (selector) =>
     ev(`!!document.querySelector(${JSON.stringify(selector)})`);
-  const clickOn = (selector) =>
-    ev(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(ev, selector);
   const textOf = (selector) =>
     ev(
       `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ""`,
@@ -2943,8 +3072,7 @@ async function noKeychain({ current, vaultFile, step }) {
   const ev = page.evaluate;
   const shown = (selector) =>
     ev(`!!document.querySelector(${JSON.stringify(selector)})`);
-  const clickOn = (selector) =>
-    ev(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(ev, selector);
   const textOf = (selector) =>
     ev(
       `document.querySelector(${JSON.stringify(selector)})?.textContent ?? ""`,
@@ -3077,7 +3205,7 @@ async function updateCheck({ evaluate, text, screenshot, step }) {
   await screenshot("update-offered");
   step(`at start, the installed build offered version ${NEWER_VERSION}`);
 
-  await evaluate(`document.querySelector("[data-update-install]").click()`);
+  await mouseClick(evaluate, `[data-update-install]`);
   const refused = await until("the install refused", () =>
     text("[data-update-error]"),
   );
@@ -3086,7 +3214,7 @@ async function updateCheck({ evaluate, text, screenshot, step }) {
   }
   step("installing waits for a click, and a non-release build refuses it");
 
-  await evaluate(`document.querySelector("[data-update-later]").click()`);
+  await mouseClick(evaluate, `[data-update-later]`);
   await until("the notice closed", () =>
     evaluate(`!document.querySelector("[data-update]")`),
   );
@@ -3102,9 +3230,7 @@ async function updateCheck({ evaluate, text, screenshot, step }) {
   if (!before.checked || before.status !== "available") {
     fail(`the update preference at first: ${JSON.stringify(before)}`);
   }
-  await evaluate(
-    `document.querySelector("[name=preference-check-for-updates]").click()`,
-  );
+  await mouseClick(evaluate, `[name=preference-check-for-updates]`);
   await until("the update check saved as off", () =>
     readFileSync(join(appData, "preferences.yaml"), "utf8").includes(
       "check_for_updates: false",
@@ -3154,14 +3280,12 @@ async function openScriptJob(evaluate) {
     evaluate(`!!document.querySelector(${json(selector)})`);
   const folderRow = 'nav button[data-item=folder][data-path="Jobs"]';
   await until("the Jobs folder in the tree", () => exists(folderRow));
-  await evaluate(`document.querySelector(${json(folderRow)}).click()`);
+  await mouseClick(evaluate, folderRow);
   await showDetails(evaluate);
   await until("the Jobs folder's run-script button", () =>
     exists(".side [data-folder-run-script]"),
   );
-  await evaluate(
-    `document.querySelector(".side [data-folder-run-script]").click()`,
-  );
+  await mouseClick(evaluate, `.side [data-folder-run-script]`);
   await until("the run-script tab", () =>
     exists(`${JOB_TAB}[data-step=script]`),
   );
@@ -3197,9 +3321,7 @@ async function scriptJobWithoutPython({ evaluate, screenshot, step }) {
   step(
     "Run script… lists the workspace's scripts and, without Python, says how to set it up",
   );
-  await evaluate(
-    `document.querySelector("${dialog} [data-job=dismiss]").click()`,
-  );
+  await mouseClick(evaluate, `${dialog} [data-job=dismiss]`);
   await until(
     "the run-script dialog closed",
     async () => !(await evaluate(`!!document.querySelector("${dialog}")`)),
@@ -3219,8 +3341,7 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const dialog = JOB_TAB;
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const pickScript = (path) =>
@@ -3337,8 +3458,8 @@ async function pythonBridge({ evaluate, screenshot, step, ready }) {
       const input = document.querySelector("${RUN_TAB} [name=run-search]");
       input.value = "banner";
       input.dispatchEvent(new Event("input", { bubbles: true }));
-      document.querySelector("${RUN_TAB} [data-run-action=search]").click();
     })()`);
+    await mouseClick(evaluate, `${RUN_TAB} [data-run-action=search]`);
     const hit = await until("the search in the script's output", () =>
       evaluate(
         `document.querySelector('${RUN_TAB} [data-search-hit="script"]')?.dataset.count ?? null`,
@@ -3456,8 +3577,7 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const dialog = JOB_TAB;
   const review = ENRICH_TAB;
   const folder = join(workspace, "Enrich");
@@ -3659,10 +3779,7 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
     await closeReview("close");
 
     // The host's own: ticked, the typed vendor is replaced.
-    await evaluate(`(() => {
-      const row = document.querySelector(${json(folderRow)});
-      if (row.getAttribute("aria-expanded") !== "true") row.click();
-    })()`);
+    await expandFolder(evaluate, folderRow);
     const hostRow = 'nav [data-host="Enrich/enrich-r1.yaml"]';
     await until("enrich-r1 in the tree", () => exists(hostRow));
     await fillIn(hostRow, "[data-host-enrich]", ["Enrich/enrich-r1.yaml"]);
@@ -3733,12 +3850,8 @@ function systemPython() {
  */
 async function pythonSetup({ evaluate, fillForm, screenshot, step }) {
   const json = (value) => JSON.stringify(value);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
-  const clickButton = (scope, label) =>
-    evaluate(
-      `[...document.querySelectorAll(${json(scope + " button")})].find((b) => b.textContent.trim() === ${json(label)}).click()`,
-    );
+  const clickOn = (selector) => mouseClick(evaluate, selector);
+  const clickIn = (scope, label) => clickButton(evaluate, label, scope);
   const shownStatus = () =>
     evaluate(`(() => {
       const status = document.querySelector("[data-python-status]");
@@ -3780,7 +3893,7 @@ async function pythonSetup({ evaluate, fillForm, screenshot, step }) {
     if (!/No Python was found/.test(failed))
       fail(`the setup without Python: ${failed}`);
     step("pythonSetup SKIPPED: no Python 3.10 or newer on this machine");
-    await clickButton(dialog, "Close");
+    await clickIn(dialog, "Close");
     return null;
   }
 
@@ -3847,10 +3960,17 @@ async function pythonSetup({ evaluate, fillForm, screenshot, step }) {
   )
     fail(`the libraries offered: ${json(offer)}`);
   // No libraries, so no package index.
-  await evaluate(`(() => {
-    for (const box of document.querySelectorAll(${json(dialog + " input[type=checkbox]")}))
-      if (box.checked) box.click();
-  })()`);
+  const ticked = await evaluate(
+    `[...document.querySelectorAll(${json(dialog + " input[type=checkbox]")})].map((box) => box.checked)`,
+  );
+  for (const [index, checked] of ticked.entries()) {
+    if (checked)
+      await mouseClickElement(
+        evaluate,
+        `document.querySelectorAll(${json(dialog + " input[type=checkbox]")})[${index}]`,
+        `library box ${index}`,
+      );
+  }
   await clickOn("[data-python-setup=continue]");
   await until(
     "the confirmation",
@@ -3885,7 +4005,7 @@ async function pythonSetup({ evaluate, fillForm, screenshot, step }) {
   if (!/Python features are on/.test(result))
     fail(`the setup's result: ${result}`);
   await screenshot("python-setup-done");
-  await clickButton(dialog, "Close");
+  await clickIn(dialog, "Close");
   await clickOn("[data-open-preferences]");
   const ready = await untilStatus("Python ready", "ready");
   if (!ready.interpreter?.startsWith(environment))
@@ -3913,10 +4033,8 @@ async function pythonAfterRestart({ evaluate, expected, step }) {
 }
 
 async function portableUpdateCheck({ evaluate, requestsBeforeRestart, step }) {
-  await evaluate(`(() => {
-    if (!document.querySelector("[data-view=preferences]"))
-      document.querySelector("[data-open-preferences]").click();
-  })()`);
+  if (!(await evaluate(`!!document.querySelector("[data-view=preferences]")`)))
+    await mouseClick(evaluate, "[data-open-preferences]");
   const status = await until("the update status after a restart", () =>
     evaluate(`(() => {
       const status = document.querySelector("[data-update-status]");
@@ -3936,7 +4054,7 @@ async function portableUpdateCheck({ evaluate, requestsBeforeRestart, step }) {
   }
   step("with the check off, the app made no request at start");
 
-  await evaluate(`document.querySelector("[data-update-check-now]").click()`);
+  await mouseClick(evaluate, `[data-update-check-now]`);
   const notice = await until("the portable copy's notice", () =>
     evaluate(`(() => {
       const notice = document.querySelector("[data-update]");
@@ -3955,7 +4073,7 @@ async function portableUpdateCheck({ evaluate, requestsBeforeRestart, step }) {
       `"Check now" asked ${releaseServer.requests - requestsBeforeRestart} times`,
     );
   }
-  await evaluate(`document.querySelector("[data-update-page]").click()`);
+  await mouseClick(evaluate, `[data-update-page]`);
   await until(
     "the download page opened",
     () =>
@@ -4035,8 +4153,9 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
    * terminal the rules are tried on (down, so long lines do not wrap). */
   const openRulesBeside = async () => {
     await openPreferences(evaluate);
-    await evaluate(
-      `document.querySelector("[data-view=preferences] [data-open-highlights]").click()`,
+    await mouseClick(
+      evaluate,
+      `[data-view=preferences] [data-open-highlights]`,
     );
     await until("the highlight rules tab", () =>
       evaluate(`(() => {
@@ -4045,28 +4164,23 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
       })()`),
     );
     // The Preferences tab would sit over the terminal.
-    await evaluate(
-      `document.querySelector("[data-tab-view=preferences] [data-tab-close]").click()`,
-    );
+    await mouseClick(evaluate, `[data-tab-view=preferences] [data-tab-close]`);
     await until(
       "the Preferences tab closed",
       async () => !(await exists("[data-tab-view=preferences]")),
     );
-    await evaluate(
-      `document.querySelector("[data-tab-view=highlights]").click()`,
+    await mouseClick(evaluate, `[data-tab-view=highlights]`);
+    await mouseClickElement(
+      evaluate,
+      `document.querySelector("[data-tab-view=highlights]").closest("[data-tab-bar]").querySelector("[data-split=down]")`,
+      "the rules tab's Split down",
     );
-    await evaluate(`(() => {
-      const tab = document.querySelector("[data-tab-view=highlights]");
-      tab.closest("[data-tab-bar]").querySelector("[data-split=down]").click();
-    })()`);
     await until("the rules' tab in a pane of its own", () =>
       evaluate(
         `document.querySelector("[data-tab-view=highlights]").closest("[data-tab-bar]").querySelectorAll("[data-tab]").length === 1`,
       ),
     );
-    await evaluate(
-      `document.querySelector('[data-tab-bar] [data-tab="${sessionTab}"]').click()`,
-    );
+    await mouseClick(evaluate, `[data-tab-bar] [data-tab="${sessionTab}"]`);
     await until("the rules' tab beside the terminal", () =>
       evaluate(`(() => {
         const view = document.querySelector(".slot[data-view-slot=highlights]");
@@ -4077,9 +4191,7 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
     );
   };
   const closeRules = async () => {
-    await evaluate(
-      `document.querySelector("${RULES} [data-rule=close]").click()`,
-    );
+    await mouseClick(evaluate, `${RULES} [data-rule=close]`);
     await until(
       "the highlight rules tab closed",
       async () =>
@@ -4155,7 +4267,7 @@ async function highlighting({ evaluate, fillForm, type, screenshot, step }) {
   // A workspace rule, added in the rules' tab beside the terminal, is
   // saved to the workspace and shows on that terminal.
   await openRulesBeside();
-  await evaluate(`document.querySelector("[data-rule=new]").click()`);
+  await mouseClick(evaluate, `[data-rule=new]`);
   await until("the rule form", () => exists("[data-rule-form]"));
   await evaluate(`(() => {
     const select = document.querySelector("[data-rule-form] [name=rule-color]");
@@ -4240,8 +4352,7 @@ async function snippets({
   const file = join(workspace, "_snippets.yaml");
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const fileText = () => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
   // A session to an inventory host (added on disk: earlier parts deleted
@@ -4442,9 +4553,7 @@ async function snippets({
       `[...document.querySelectorAll("[role=dialog] button")].some((b) => b.textContent.trim() === "Delete")`,
     ),
   );
-  await evaluate(
-    `[...document.querySelectorAll("[role=dialog] button")].find((b) => b.textContent.trim() === "Delete").click()`,
-  );
+  await clickButton(evaluate, "Delete", "[role=dialog]");
   await until("the snippets file gone", () => !existsSync(file));
   await until(
     "the snippet gone from the panel",
@@ -4481,8 +4590,7 @@ async function webLinks({ evaluate, text, screenshot, step }) {
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const opened = () =>
     existsSync(openedLinks)
       ? readFileSync(openedLinks, "utf8").split("\n").filter(Boolean)
@@ -4505,10 +4613,7 @@ async function webLinks({ evaluate, text, screenshot, step }) {
   writeFileSync(hostFile, "address: 192.0.2.10\n");
   const folderRow = 'nav button[data-item=folder][data-path="Firewalls"]';
   await until("the Firewalls folder in the tree", () => exists(folderRow));
-  await evaluate(`(() => {
-    const row = document.querySelector(${json(folderRow)});
-    if (row.getAttribute("aria-expanded") !== "true") row.click();
-  })()`);
+  await expandFolder(evaluate, folderRow);
   const hostRow = 'nav [data-host="Firewalls/fw-r1.yaml"]';
   await until("fw-r1 in the tree", () => exists(hostRow));
   await clickOn(hostRow);
@@ -4651,8 +4756,7 @@ async function csvImport({
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const dialog = ".slot.view [data-view=csv-import]";
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const csvFile = join(userData, "inventory.csv");
@@ -4683,11 +4787,11 @@ async function csvImport({
       await clickOn("[data-add-menu]");
       await clickOn("[data-add-entries] [data-open-csv-import]");
     } else {
-      const row = await centreOf(
+      await mouseClick(
+        evaluate,
         `nav button[data-item=folder][data-path="${fromFolder}"]`,
+        { button: "right" },
       );
-      await mouse("mousePressed", row, { button: "right", clickCount: 1 });
-      await mouse("mouseReleased", row, { button: "right", clickCount: 1 });
       await until("the folder's context menu", () =>
         exists("[role=menu] [data-menu=import-csv]"),
       );
@@ -4866,8 +4970,7 @@ async function nornirImport({
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const dialog = ".slot.view [data-view=nornir-import]";
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const files = {
@@ -4921,11 +5024,11 @@ async function nornirImport({
   // from the Europe folder's context menu (`fromMenu`), which targets it.
   const preview = async (fromMenu = false) => {
     if (fromMenu) {
-      const row = await centreOf(
+      await mouseClick(
+        evaluate,
         'nav button[data-item=folder][data-path="Europe"]',
+        { button: "right" },
       );
-      await mouse("mousePressed", row, { button: "right", clickCount: 1 });
-      await mouse("mouseReleased", row, { button: "right", clickCount: 1 });
       await until("the folder's context menu", () =>
         exists("[role=menu] [data-menu=import-nornir]"),
       );
@@ -5126,9 +5229,9 @@ async function detachedRunWindow({ evaluate, exists, clickOn, run, step }) {
   step("the run's window, reloaded, still shows the running job");
 
   // Closed by its own Close button (#80): the job goes on.
-  await window
-    .evaluate(`document.querySelector("[data-window-control=close]").click()`)
-    .catch(() => {});
+  await mouseClick(window.evaluate, `[data-window-control=close]`, {
+    mayClose: true,
+  });
   window.devtools.close();
   await until(
     "the run's window closed",
@@ -5145,11 +5248,9 @@ async function detachedRunWindow({ evaluate, exists, clickOn, run, step }) {
   await until("the run's tab closed again", async () => !(await exists(tab)));
   window = await connectWindow(label);
   await showing(window, "opened again");
-  await window
-    .evaluate(
-      `document.querySelector(${json(`${inRun} [data-run-action=dock]`)}).click()`,
-    )
-    .catch(() => {});
+  await mouseClick(window.evaluate, `${inRun} [data-run-action=dock]`, {
+    mayClose: true,
+  });
   window.devtools.close();
   await until("the run's tab in the main window", () => exists(tab));
   await until("the run's window gone", async () => !(await windowOpen(label)));
@@ -5196,9 +5297,7 @@ async function closingTheMainWindow({ app, evaluate, step }) {
     fail(`the config history's window bar says "${titled}"`);
   configWindow.devtools.close();
   // The main window's own Close button (#80) ends the app.
-  await evaluate(
-    `document.querySelector("[data-window-control=close]").click()`,
-  ).catch(() => {});
+  await mouseClick(evaluate, `[data-window-control=close]`, { mayClose: true });
   await until(
     "the app ended with its main window",
     () => app.exitCode !== null,
@@ -5271,9 +5370,7 @@ async function moveToNewWindow(evaluate, name) {
     fail(
       `no connected ${name} to move: ${JSON.stringify(await tabsIn(evaluate))}`,
     );
-  await evaluate(
-    `document.querySelector('[data-tab-bar] [data-tab="${tab.id}"]').click()`,
-  );
+  await mouseClick(evaluate, `[data-tab-bar] [data-tab="${tab.id}"]`);
   await until(`${name} shown`, () =>
     evaluate(
       `!!document.querySelector('.slot[data-tab="${tab.id}"][data-active]')`,
@@ -5314,14 +5411,14 @@ async function paletteChoose(evaluate, query, selector) {
     return evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
   });
   // Clicked: another hit may rank first, and Enter takes that one.
-  await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  await mouseClick(evaluate, selector);
 }
 
 /** Closes the window `evaluate` reaches with its own Close button. */
 function closeWithButton(evaluate) {
-  return evaluate(
-    `document.querySelector("[data-window-control=close]").click()`,
-  ).catch(() => {});
+  return mouseClick(evaluate, `[data-window-control=close]`, {
+    mayClose: true,
+  });
 }
 
 /**
@@ -5371,9 +5468,7 @@ async function closingSessionWindows({ evaluate, screenshot, step }) {
   writeFileSync(snippetsFile, "Window check: later 0 window-snippet-ok\n");
   try {
     const lab = (await tabsIn(there)).find((each) => each.name === "lab-r9");
-    await there(
-      `document.querySelector('[data-tab-bar] [data-tab="${lab.id}"]').click()`,
-    );
+    await mouseClick(there, `[data-tab-bar] [data-tab="${lab.id}"]`);
     await until("lab-r9 active in its window", () =>
       there(
         `!!document.querySelector('.slot[data-tab="${lab.id}"][data-active]')`,
@@ -5408,7 +5503,7 @@ async function closingSessionWindows({ evaluate, screenshot, step }) {
   if (!/lab-r9/.test(asked) || !/win-telnet/.test(asked))
     fail(`the close question names: ${asked}`);
   if (screenshot) await screenshot("session-window-close-question");
-  await there(`document.querySelector("[data-close-window=cancel]").click()`);
+  await mouseClick(there, `[data-close-window=cancel]`);
   await until(
     "the close question gone",
     async () => (await question()) === null,
@@ -5430,9 +5525,7 @@ async function closingSessionWindows({ evaluate, screenshot, step }) {
   // Dock back: both reach the main window, still connected.
   await closeWithButton(there);
   await until("the close question again", question);
-  await there(
-    `document.querySelector("[data-close-window=dock]").click()`,
-  ).catch(() => {});
+  await mouseClick(there, `[data-close-window=dock]`, { mayClose: true });
   window.devtools.close();
   await until(
     "the session window closed",
@@ -5454,9 +5547,9 @@ async function closingSessionWindows({ evaluate, screenshot, step }) {
   await until("the second window's close question", () =>
     second.evaluate(`!!document.querySelector("[data-confirm-close-window]")`),
   );
-  await second
-    .evaluate(`document.querySelector("[data-close-window=close]").click()`)
-    .catch(() => {});
+  await mouseClick(second.evaluate, `[data-close-window=close]`, {
+    mayClose: true,
+  });
   second.devtools.close();
   await until(
     "the second session window closed",
@@ -5544,9 +5637,7 @@ async function crashedSessionWindow({ evaluate, devtools, step }) {
       ),
     );
     const slot = `.slot[data-tab="${arrived.id}"]`;
-    await evaluate(
-      `document.querySelector('[data-tab-bar] [data-tab="${arrived.id}"]').click()`,
-    );
+    await mouseClick(evaluate, `[data-tab-bar] [data-tab="${arrived.id}"]`);
     await until("lab-r9 shown", () =>
       evaluate(`!!document.querySelector('${slot}[data-active]')`),
     );
@@ -5631,7 +5722,7 @@ async function quittingWithLiveSessions({ app, evaluate, devtools, step }) {
   const asked = await until("the quit question", question);
   if (!/session window/.test(asked))
     fail(`the quit question does not count the session window's: ${asked}`);
-  await evaluate(`document.querySelector("[data-quit=cancel]").click()`);
+  await mouseClick(evaluate, `[data-quit=cancel]`);
   await until(
     "the quit question gone",
     async () => (await question()) === null,
@@ -5646,9 +5737,7 @@ async function quittingWithLiveSessions({ app, evaluate, devtools, step }) {
 
   await closeWithButton(evaluate);
   await until("the quit question again", question);
-  await evaluate(`document.querySelector("[data-quit=close]").click()`).catch(
-    () => {},
-  );
+  await mouseClick(evaluate, `[data-quit=close]`, { mayClose: true });
   await until(
     "the app ended with every window",
     () => app.exitCode !== null,
@@ -5684,8 +5773,7 @@ async function jobs({
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const dialog = JOB_TAB;
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const profilesDialog = CREDENTIALS;
@@ -5848,10 +5936,7 @@ async function jobs({
     await until("the job tab closed", async () => !(await exists(dialog)));
 
     // Trusted once in a terminal, the key lets the job in.
-    await evaluate(`(() => {
-      const row = document.querySelector(${json(folderRow)});
-      if (row.getAttribute("aria-expanded") !== "true") row.click();
-    })()`);
+    await expandFolder(evaluate, folderRow);
     const hostRow = 'nav [data-host="Jobs/jobs-r1.yaml"]';
     await until("jobs-r1 in the tree", () => exists(hostRow));
     await doubleClick(hostRow);
@@ -6016,23 +6101,21 @@ async function jobs({
       `the run's tab ${runTab} in a tab bar (tabs: ${await evaluate(`[...document.querySelectorAll("[data-tab-bar] [data-tab]")].map((t) => t.dataset.tab).join(",")`)})`,
       () => exists(`[data-tab-bar] [data-tab="${runTab}"]`),
     );
-    await evaluate(
-      `document.querySelector('[data-tab-bar] [data-tab="${runTab}"]').click()`,
-    );
+    await mouseClick(evaluate, `[data-tab-bar] [data-tab="${runTab}"]`);
     await until("the run's tab shown again", () =>
       exists(`${view} [data-run-details="${hangRun}"]`),
     );
-    await evaluate(
-      `${tabBarOf(runTab)}.querySelector("[data-split=right]").click()`,
+    await mouseClickElement(
+      evaluate,
+      `${tabBarOf(runTab)}.querySelector("[data-split=right]")`,
+      "the run tab's Split right",
     );
     await until("the run's tab in a pane of its own", () =>
       evaluate(
         `${tabBarOf(runTab)}.querySelectorAll("[data-tab]").length === 1`,
       ),
     );
-    await evaluate(
-      `document.querySelector('[data-tab-bar] [data-tab="${sessionTab}"]').click()`,
-    );
+    await mouseClick(evaluate, `[data-tab-bar] [data-tab="${sessionTab}"]`);
     await until("the terminal shown beside the run's tab", () =>
       evaluate(`(() => {
         const run = document.querySelector('.slot[data-tab="${runTab}"]');
@@ -6067,9 +6150,7 @@ async function jobs({
     await until("the run's window offers Cancel", () =>
       inWindow("[data-run-action=cancel]"),
     );
-    await other.evaluate(
-      `document.querySelector("[data-run-action=cancel]").click()`,
-    );
+    await mouseClick(other.evaluate, `[data-run-action=cancel]`);
     await until("the cancelled host, in its window", () =>
       inWindow(windowHost("cancelled")),
     );
@@ -6462,9 +6543,7 @@ async function jobs({
     await backToHost();
     await clickOn(".side [data-open-config-history]");
     await until("the history tab from the details", () => exists(history));
-    const row = await centreOf(backupRow);
-    await mouse("mousePressed", row, { button: "right", clickCount: 1 });
-    await mouse("mouseReleased", row, { button: "right", clickCount: 1 });
+    await mouseClick(evaluate, backupRow, { button: "right" });
     await until("the host's context menu", () =>
       exists("[role=menu] [data-menu=config-history]"),
     );
@@ -6534,8 +6613,9 @@ async function jobs({
       )
         fail(`the history's window shows ${selector}`);
     }
-    await configWindow.evaluate(
-      `document.querySelector(${json(`${inConfigWindow} [data-config-action=diff]`)}).click()`,
+    await mouseClick(
+      configWindow.evaluate,
+      `${inConfigWindow} [data-config-action=diff]`,
     );
     await until("the diff in the history's window", async () =>
       (
@@ -6549,8 +6629,9 @@ async function jobs({
       "the config history opened in a window of its own (its tab closed) with versions, text, diff, copy, save and back up now",
     );
     // Back up now there opens the backup's tab in the main window.
-    await configWindow.evaluate(
-      `document.querySelector(${json(`${inConfigWindow} [data-config-action=back-up]`)}).click()`,
+    await mouseClick(
+      configWindow.evaluate,
+      `${inConfigWindow} [data-config-action=back-up]`,
     );
     await until("the backup's pre-flight in the main window", () =>
       exists(`${dialog}[data-step=preflight] [data-job-host="${backupHost}"]`),
@@ -6664,11 +6745,11 @@ async function jobs({
     await until("the history's window again", () =>
       inside(`[data-config-version="${loginVersion}"]`),
     );
-    await configWindow
-      .evaluate(
-        `document.querySelector(${json(`${inConfigWindow} [data-config-action=dock]`)}).click()`,
-      )
-      .catch(() => {});
+    await mouseClick(
+      configWindow.evaluate,
+      `${inConfigWindow} [data-config-action=dock]`,
+      { mayClose: true },
+    );
     configWindow.devtools.close();
     await until("the history docked back as a tab", () =>
       exists(`${history} [data-config-version="${loginVersion}"]`),
@@ -6698,8 +6779,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const dialog = JOB_TAB;
   const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
   const view = RUN_TAB;
@@ -6857,7 +6937,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     await until("the delete confirmation", () =>
       evaluate(`!!${dialogButton("Delete")}`),
     );
-    await evaluate(`${dialogButton("Delete")}.click()`);
+    await mouseClickElement(evaluate, dialogButton("Delete"), "Delete");
     await until(
       "the deleted job gone",
       async () => !(await exists(savedJob("Renamed job"))),
@@ -6929,8 +7009,7 @@ async function workspaces({
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const openName = () => text("[data-open-workspaces] span");
   const second = join(userData, "customers", "customer-b");
   const idOf = (folder) =>
@@ -6991,9 +7070,7 @@ async function workspaces({
   );
   const away = await moveToNewWindow(evaluate, "ws-r2");
   away.devtools.close();
-  await evaluate(
-    `document.querySelector('[data-tab-bar] [data-tab="${tab}"]').click()`,
-  );
+  await mouseClick(evaluate, `[data-tab-bar] [data-tab="${tab}"]`);
   await until("ws-r1 shown again", () => exists(`${slot}[data-active]`));
   const sessionRole = () =>
     evaluate(
@@ -7054,9 +7131,7 @@ async function workspaces({
   await until("the new host form", () =>
     exists("[role=dialog] input[name=name]"),
   );
-  await evaluate(
-    `[...document.querySelectorAll("[role=dialog] button")].find((b) => b.textContent.trim() === "Cancel").click()`,
-  );
+  await clickButton(evaluate, "Cancel", "[role=dialog]");
   await until(
     "the new host form closed",
     async () => !(await exists("[role=dialog] input[name=name]")),
@@ -7223,8 +7298,7 @@ async function pasteSafety({
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const CTRL = 2;
   const SHIFT = 8;
   const pasteKeys = async () => {
@@ -7258,10 +7332,7 @@ async function pasteSafety({
     if (folder) {
       const row = `nav button[data-item=folder][data-path="${folder}"]`;
       await until(`the ${folder} folder in the tree`, () => exists(row));
-      await evaluate(`(() => {
-        const row = document.querySelector(${json(row)});
-        if (row.getAttribute("aria-expanded") !== "true") row.click();
-      })()`);
+      await expandFolder(evaluate, row);
     }
     const button = `[data-host="${id}"]`;
     await until(`${name} in the tree`, () => exists(button));
@@ -7299,10 +7370,11 @@ async function pasteSafety({
     await until("the lab host's mark in the tree", () =>
       exists('[data-host="lab-r9.yaml"] [data-host-environment=lab]'),
     );
-    await evaluate(`(() => {
-      const row = document.querySelector('nav button[data-item=folder][data-path="Prod"]');
-      if (row && row.getAttribute("aria-expanded") !== "true") row.click();
-    })()`);
+    if (await exists('nav button[data-item=folder][data-path="Prod"]'))
+      await expandFolder(
+        evaluate,
+        'nav button[data-item=folder][data-path="Prod"]',
+      );
     await until("the production host's label in the tree", async () =>
       (
         await text(
@@ -7480,8 +7552,7 @@ async function safetyInSessionWindows({
   const SHIFT = 8;
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const tabs = () =>
     evaluate(`[...document.querySelectorAll("[data-tab-bar] [role=tab]")].map((tab) => ({
       id: Number(tab.dataset.tab),
@@ -7577,8 +7648,14 @@ async function safetyInSessionWindows({
         text: card.querySelector("[data-paste-text]").textContent.replace(/\\r\\n/g, "\\n"),
       };
     })()`);
+  // Blurred first: the window coming forward gives the terminal focus
+  // again (focusin) even when it had it; DevTools never moves the OS focus.
   const focusThere = () =>
-    there(`document.querySelector("${shown} .terminal textarea").focus()`);
+    there(`(() => {
+      const field = document.querySelector("${shown} .terminal textarea");
+      field.blur();
+      field.focus();
+    })()`);
 
   const savedClipboard = readClipboard();
   const knownHosts = join(appData, "known_hosts");
@@ -7603,7 +7680,7 @@ async function safetyInSessionWindows({
     if (await exists("[data-paste-confirm]"))
       fail("the paste question showed in the main window");
     const started = Date.now();
-    await there(`document.querySelector("${shown} [data-paste=send]").click()`);
+    await mouseClick(there, `${shown} [data-paste=send]`);
     await until(
       "the pasted lines run there",
       async () => (await ranThere("win-one")) && (await ranThere("win-two")),
@@ -7655,7 +7732,7 @@ async function safetyInSessionWindows({
     ).catch(() => false);
     if (!forward)
       step("(Windows did not let the session window take the focus)");
-    await there(`document.querySelector("${shown} [data-paste=send]").click()`);
+    await mouseClick(there, `${shown} [data-paste=send]`);
     await until(
       "the snippet's lines run there",
       async () =>
@@ -7731,7 +7808,7 @@ async function safetyInSessionWindows({
     );
     if (await exists("[data-host-key]"))
       fail("the host-key question showed in the main window");
-    await there(`document.querySelector("[data-decision=trustOnce]").click()`);
+    await mouseClick(there, `[data-decision=trustOnce]`);
     await until("reconnected there", () =>
       there(`!!document.querySelector("[data-tab-state=connected]")`),
     );
@@ -7768,7 +7845,7 @@ async function safetyInSessionWindows({
       fail(`the join question named ${json(joinAsked)}`);
     if (await exists("[data-confirm-join]"))
       fail("the join question was asked in the main window");
-    await there(`document.querySelector("[data-join=cancel]").click()`);
+    await mouseClick(there, `[data-join=cancel]`);
     await sleep(300);
     if (await there(`!!document.querySelector("[data-multi-send-bar]")`))
       fail("prod-r1 joined though the question was cancelled");
@@ -7776,7 +7853,7 @@ async function safetyInSessionWindows({
     await until("the join question again", () =>
       there(`!!document.querySelector("[data-confirm-join]")`),
     );
-    await there(`document.querySelector("[data-join=join]").click()`);
+    await mouseClick(there, `[data-join=join]`);
     await until("prod-r1 in the group", () =>
       there(
         `document.querySelector("[data-multi-send-bar]")?.dataset.groupSize === "1"`,
@@ -7888,9 +7965,7 @@ async function inputOrigins({
   await until("mouse reporting on", () =>
     evaluate(`${terminal}.xterm.modes.mouseTrackingMode === "vt200"`),
   );
-  const middle = await centreOf(`${SHOWN_SESSION} .terminal`);
-  await mouse("mousePressed", middle, { button: "left", clickCount: 1 });
-  await mouse("mouseReleased", middle, { button: "left", clickCount: 1 });
+  await mouseClick(evaluate, `${SHOWN_SESSION} .terminal`);
   await until(
     "the mouse reports, as mouse",
     found("mouse", /^\x1b\[<0;\d+;\d+[Mm]$/),
@@ -8008,20 +8083,18 @@ async function terminalComforts({
         async () => (await order()).indexOf("preferences") === before,
       );
     }
-    await evaluate(`(() => {
-      const tab = document.querySelector("[data-tab-view=preferences]");
-      const pane = tab.closest("[data-tab-bar]");
-      pane.querySelector("[data-split=right]").click();
-    })()`);
+    await mouseClickElement(
+      evaluate,
+      `document.querySelector("[data-tab-view=preferences]").closest("[data-tab-bar]").querySelector("[data-split=right]")`,
+      "the Preferences tab's Split right",
+    );
     await until("Preferences split into a pane of their own", () =>
       evaluate(
         `document.querySelector("[data-tab-view=preferences]").closest("[data-tab-bar]").querySelectorAll("[data-tab]").length === 1`,
       ),
     );
     // The terminal's tab, shown again in its own pane (beside).
-    await evaluate(
-      `document.querySelector('[data-tab-bar] [data-tab="${sessionTab}"]').click()`,
-    );
+    await mouseClick(evaluate, `[data-tab-bar] [data-tab="${sessionTab}"]`);
     await until("Preferences in a pane of their own, beside the terminal", () =>
       evaluate(`(() => {
         const view = document.querySelector(".slot[data-view-slot=preferences]");
@@ -8045,15 +8118,21 @@ async function terminalComforts({
   const closePreferencesBeside = async ({ shortcut = false } = {}) => {
     if (shortcut) {
       // Ctrl+Shift+W closes it like any tab.
-      await evaluate(
-        `document.querySelector("[data-tab-view=preferences]").click()`,
-      );
+      await mouseClick(evaluate, `[data-tab-view=preferences]`);
       await until("the Preferences pane active", () =>
         evaluate(
           `!!document.querySelector(".slot[data-view-slot=preferences][data-view-active]")`,
         ),
       );
       await press("W", "KeyW", 87, CTRL | SHIFT);
+      // Gone before closePreferences looks for its close button.
+      await until(
+        "the Preferences tab closed by Ctrl+Shift+W",
+        async () =>
+          !(await evaluate(
+            `!!document.querySelector("[data-tab-view=preferences]")`,
+          )),
+      );
     }
     await closePreferences(evaluate);
     await until("the terminal's pane active again", () =>
@@ -8221,9 +8300,7 @@ async function terminalComforts({
     );
     await press("Enter", "Enter", 13, SHIFT);
     await until("the previous match", async () => (await current()) === first);
-    await evaluate(
-      `document.querySelector("${SHOWN_SESSION} [data-search=next]").click()`,
-    );
+    await mouseClick(evaluate, `${SHOWN_SESSION} [data-search=next]`);
     await until(
       "the next match (button)",
       async () => (await current()) === (first % 100) + 1,
@@ -8299,11 +8376,10 @@ async function terminalComforts({
       await mouse("mouseMoved", to, { button: "left", buttons: 1 });
       await mouse("mouseReleased", to, { button: "left", clickCount: 1 });
     };
-    const rightClick = async () => {
-      const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-      await mouse("mousePressed", at, { button: "right", clickCount: 1 });
-      await mouse("mouseReleased", at, { button: "right", clickCount: 1 });
-    };
+    const rightClick = () =>
+      mouseClick(evaluate, `${SHOWN_SESSION} .xterm-screen`, {
+        button: "right",
+      });
     writeClipboard("not a selection");
     await dragSelect();
     if (!(await evaluate(`${terminal}.hasSelection()`))) {
@@ -8381,9 +8457,7 @@ async function paletteActions({
       );
       await key(enter);
     } else {
-      await evaluate(
-        `document.querySelector(${JSON.stringify(action(id))}).click()`,
-      );
+      await mouseClick(evaluate, action(id));
     }
     await until("the palette closed", async () => !(await exists(palette)));
   };
@@ -8436,9 +8510,7 @@ async function paletteActions({
     );
     await checkContrast(evaluate, `view tab ${view}`);
     if (!before) {
-      await evaluate(
-        `document.querySelector(${JSON.stringify(`${tab} [data-tab-close]`)}).click()`,
-      );
+      await mouseClick(evaluate, `${tab} [data-tab-close]`);
       await until(`the ${view} tab closed`, async () => !(await exists(tab)));
     }
   }
@@ -8488,8 +8560,7 @@ async function searchAndFilter({
   const filters = join(workspace, "_filters.yaml");
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const key = async (spec) => {
     await devtools.send("Input.dispatchKeyEvent", { type: "keyDown", ...spec });
     await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...spec });
@@ -8535,9 +8606,7 @@ async function searchAndFilter({
 
   // Ctrl+K reaches the palette even while the terminal has the keyboard.
   // Shift+Enter shows the host in the tree, opening its folder.
-  await evaluate(
-    `document.querySelector("nav [data-item=folder][data-path=Lab]").click()`,
-  );
+  await mouseClick(evaluate, `nav [data-item=folder][data-path=Lab]`);
   await until("the Lab folder collapsed", async () => !(await exists(hostRow)));
   await evaluate(
     `document.querySelector("${SHOWN_SESSION} .xterm textarea")?.focus()`,
@@ -8653,7 +8722,7 @@ async function liveReload({ evaluate, text, screenshot, step }) {
       `document.querySelector(${JSON.stringify(odd)})?.getAttribute("aria-pressed") === "true"`,
     );
 
-  await evaluate(`document.querySelector(${JSON.stringify(odd)}).click()`);
+  await mouseClick(evaluate, odd);
   await showDetails(evaluate);
   await until("odd.yaml's side panel", async () =>
     (await text(".side h2")).includes("odd"),
@@ -8703,8 +8772,7 @@ async function credentialProfiles({
 }) {
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const hostRow = 'nav [data-host="Lab/smoke-r1.yaml"]';
   const hostFile = join(workspace, "Lab", "smoke-r1.yaml");
   const profilesDialog = CREDENTIALS;
@@ -9177,7 +9245,7 @@ async function legacyCrypto({
 
   // Switch on, in the side panel: the session connects, marked.
   await newConnection();
-  await evaluate(`document.querySelector(${JSON.stringify(hostRow)}).click()`);
+  await mouseClick(evaluate, hostRow);
   await showDetails(evaluate);
   await until("the old device's side panel", async () =>
     (await text(".side h2")).includes("old-switch"),
@@ -9328,7 +9396,7 @@ async function telnet({
 
   // The session's header opens its host's details, bringing back the
   // Hosts view if another one is shown.
-  await evaluate(`document.querySelector("[data-rail=snippets]").click()`);
+  await mouseClick(evaluate, `[data-rail=snippets]`);
   await until("the snippets view", () => exists("[data-side-view=snippets]"));
   await sessionAction(evaluate, "details");
   await until("the telnet host's details from its session", async () =>
@@ -9341,7 +9409,7 @@ async function telnet({
   // The side panel offers SSH for the telnet host, and telnet for an SSH one.
   await sessionAction(evaluate, "disconnect");
   await newConnection();
-  await evaluate(`document.querySelector(${JSON.stringify(hostRow)}).click()`);
+  await mouseClick(evaluate, hostRow);
   await showDetails(evaluate);
   await until("the SSH button for the telnet host", () =>
     exists(sidePanelButton("ssh")),
@@ -9356,9 +9424,7 @@ async function telnet({
   await until("the Telnet button for an SSH host", () =>
     exists(sidePanelButton("telnet")),
   );
-  await evaluate(
-    `document.querySelector(${JSON.stringify(sidePanelButton("telnet"))}).click()`,
-  );
+  await mouseClick(evaluate, sidePanelButton("telnet"));
   await loginPrompt();
   if (!(await exists(marker))) fail("the telnet session is not marked");
   step(
@@ -9392,8 +9458,7 @@ async function serial({
 }) {
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const value = (selector) =>
     evaluate(`document.querySelector(${JSON.stringify(selector)}).value`);
   const missingPort = "COM250";
@@ -9497,8 +9562,7 @@ async function editInventory({
   const file = (path) => join(workspace, ...path.split("/"));
   const contents = (path) =>
     existsSync(file(path)) ? readFileSync(file(path), "utf8") : null;
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const dialog = "[role=dialog] form";
   const dialogOpen = () =>
     evaluate(`!!document.querySelector(${JSON.stringify(dialog)})`);
@@ -9985,9 +10049,7 @@ async function editInventory({
 
   // Moving a folder from its context menu.
   const openMenu = async (selector) => {
-    const at = await centreOf(selector);
-    await mouse("mousePressed", at, { button: "right", clickCount: 1 });
-    await mouse("mouseReleased", at, { button: "right", clickCount: 1 });
+    await mouseClick(evaluate, selector, { button: "right" });
     await until("the context menu", () =>
       evaluate(`!!document.querySelector("[role=menu]")`),
     );
@@ -10036,8 +10098,7 @@ async function tabsAndPanes({
   step,
 }) {
   const json = (value) => JSON.stringify(value);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
   const press = async (key, code, windowsVirtualKeyCode, modifiers) => {
@@ -10491,8 +10552,7 @@ async function multiSend({
   step,
 }) {
   const json = (value) => JSON.stringify(value);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
   const CTRL = 2;
@@ -10899,8 +10959,7 @@ async function multiSend({
  */
 async function sessionWindows({ evaluate, devtools, screenshot, step }) {
   const json = (value) => JSON.stringify(value);
-  const clickOn = (selector) =>
-    evaluate(`document.querySelector(${json(selector)}).click()`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
   const exists = (selector) =>
     evaluate(`!!document.querySelector(${json(selector)})`);
   const CTRL = 2;
@@ -11171,9 +11230,7 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
       fail(`the group paste question named ${json(question)}`);
     if (await exists("[data-paste-confirm]"))
       fail("the group paste was asked in the main window too");
-    await window.evaluate(
-      `document.querySelector("[data-paste=send]").click()`,
-    );
+    await mouseClick(window.evaluate, `[data-paste=send]`);
     const targets = [
       [window.evaluate, shown, "the session window's member"],
       [evaluate, slot(a), `member ${a}`],
@@ -11428,15 +11485,15 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
   );
 
   // Its Close button asks (#88): Dock back returns the session.
-  await window
-    .evaluate(`document.querySelector("[data-window-control=close]").click()`)
-    .catch(() => {});
+  await mouseClick(window.evaluate, `[data-window-control=close]`, {
+    mayClose: true,
+  });
   await until("the close question", () =>
     window.evaluate(`!!document.querySelector("[data-confirm-close-window]")`),
   );
-  await window
-    .evaluate(`document.querySelector("[data-close-window=dock]").click()`)
-    .catch(() => {});
+  await mouseClick(window.evaluate, `[data-close-window=dock]`, {
+    mayClose: true,
+  });
   window.devtools.close();
   await gone("session-3");
   // Connecting until its terminal has attached: then connected.
@@ -11615,15 +11672,14 @@ async function severalInAWindow({
       );
     },
   );
-  await window.evaluate(
-    `document.querySelector('[data-tab="${duplicated.id}"] [data-tab-close]').click()`,
+  await mouseClick(
+    window.evaluate,
+    `[data-tab="${duplicated.id}"] [data-tab-close]`,
   );
   await until("the close question", () =>
     window.evaluate(`!!document.querySelector("[data-confirm=close]")`),
   );
-  await window.evaluate(
-    `document.querySelector("[data-confirm=close]").click()`,
-  );
+  await mouseClick(window.evaluate, `[data-confirm=close]`);
   await until(
     "three tabs again",
     async () => (await windowTabs(window)).length === 3,
@@ -11631,13 +11687,11 @@ async function severalInAWindow({
   step("Duplicate in the session window opened beside the original there");
 
   // Split: x and y side by side, each typing to its own device.
-  await window.evaluate(
-    `document.querySelector('[data-tab="${xTab}"]').click()`,
-  );
+  await mouseClick(window.evaluate, `[data-tab="${xTab}"]`);
   await until("x shown", () =>
     window.evaluate(`!!document.querySelector('${xSlot}[data-active]')`),
   );
-  await window.evaluate(`document.querySelector("[data-split=right]").click()`);
+  await mouseClick(window.evaluate, `[data-split=right]`);
   await until("two panes", () =>
     window.evaluate(`document.querySelectorAll("[data-tab-bar]").length === 2`),
   );
@@ -11647,12 +11701,15 @@ async function severalInAWindow({
     );
   // The split took the shown tab (x) into the new pane; the first shows y
   // or z: show y there.
-  await window.evaluate(
-    `document.querySelector('[data-tab="${yTab}"]').click()`,
-  );
+  await mouseClick(window.evaluate, `[data-tab="${yTab}"]`);
   await until(
     "both sessions side by side",
     async () => (await visible(xSlot)) && (await visible(ySlot)),
+  );
+  // The tab clicked hands its terminal the keys a moment later: once it
+  // has, focusing x is not undone.
+  await until("y's terminal given the keys", () =>
+    window.evaluate(`!!document.activeElement?.closest(${json(ySlot)})`),
   );
   await focusTerminal(window.evaluate, xSlot);
   await keys.type("inleft\r");
@@ -11804,9 +11861,7 @@ async function severalInAWindow({
   // Dock all back: every session, connected, with its scrollback.
   await sessionAction(window.evaluate, "dock-all", ySlot).catch(
     async (error) => {
-      await window.evaluate(
-        `document.querySelector(${json(`${ySlot} [data-session-menu]`)}).click()`,
-      );
+      await mouseClick(window.evaluate, `${ySlot} [data-session-menu]`);
       const entry = await until("the menu", () =>
         window.evaluate(`(() => {
           const entry = document.querySelector("[data-session-actions] [data-session-action=dock-all]");
@@ -11853,6 +11908,17 @@ try {
   console.log(
     "ok - every screen checked met the contrast minimum in both themes",
   );
+  if (unreachableMet.size > 0) {
+    const listed = [...unreachableMet].map(
+      ([what, [top, why]]) => `  ${what}: lands on ${top}; ${why}`,
+    );
+    fail(
+      [
+        `controls a user could not click (${listed.length}, #94):`,
+        ...listed,
+      ].join(String.fromCharCode(10)),
+    );
+  }
   console.log("smoke test passed");
 } catch (error) {
   console.error(`smoke test FAILED: ${error.message}`);

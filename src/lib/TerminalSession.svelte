@@ -264,7 +264,9 @@
         : `Closed: ${status.reason}`,
   );
 
-  /** The card over the terminal that takes the closed session's keys. */
+  /** The card over the terminal that takes the closed session's keys;
+   * the closed bar under its backdrop is left out, as its button could not
+   * be clicked (#94). */
   const closedCard = $derived(
     status.state === "closed" &&
       (status.negotiation !== null ||
@@ -344,13 +346,25 @@
   }
 
   function onsearchkey(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeSearch();
-    } else if (event.key === "Enter" || event.key === "F3") {
+    if (event.key === "Enter" || event.key === "F3") {
       event.preventDefault();
       find(event.shiftKey ? "previous" : "next");
     }
+  }
+
+  /** Escape closes the search from any of its controls: one clicked with
+   * the mouse (Aa, say) has the keys then (#94). */
+  function onsearchbarkey(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSearch();
+    }
+  }
+
+  /** The search's arrows leave the keys in its field, so Enter goes on
+   * finding after a click (#94). */
+  function keepSearchKeys(event: MouseEvent) {
+    event.preventDefault();
   }
 
   // The terminal takes the keys when it comes on screen and when the
@@ -1177,10 +1191,13 @@
   <div class="body">
     <div class="terminal" bind:this={container}></div>
     {#if searching}
+      <!-- Escape from any of its controls (the bar's own key, not a widget's). -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <form
         class="search"
         role="search"
         data-terminal-search
+        onkeydown={onsearchbarkey}
         onsubmit={(event) => {
           event.preventDefault();
           find("next");
@@ -1217,6 +1234,7 @@
           data-search="previous"
           title="Previous match (Shift+Enter)"
           aria-label="Previous match"
+          onmousedown={keepSearchKeys}
           onclick={() => find("previous")}>&uarr;</button
         >
         <button
@@ -1224,6 +1242,7 @@
           data-search="next"
           title="Next match (Enter)"
           aria-label="Next match"
+          onmousedown={keepSearchKeys}
           onclick={() => find("next")}>&darr;</button
         >
         <button
@@ -1263,7 +1282,9 @@
         </button>
       </div>
     {/if}
-    {#if status.state === "closed" && session}
+    {#if closedCard}
+      <!-- The card over the terminal says it and offers a way on. -->
+    {:else if status.state === "closed" && session}
       <div class="ended" role="alert" data-session-ended>
         <span class="reason">{status.reason}.</span>
         <span>Press <kbd>Enter</kbd> to reconnect.</span>

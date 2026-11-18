@@ -76,6 +76,13 @@
     return text;
   }
 
+  /** The icons leave the keys where they were, like the tabs: the
+   * terminal goes on taking them while the user picks a side view with
+   * the mouse (#94). */
+  function keepKeys(event: MouseEvent) {
+    event.preventDefault();
+  }
+
   /** Whether the icon carries a mark, and its kind. */
   function mark(each: SideView): "warning" | "running" | null {
     if (each === "hosts" && problems > 0 && (folded || view !== "hosts")) {
@@ -108,6 +115,7 @@
       aria-pressed={each.view === view && !folded}
       aria-label={each.name}
       title={title(each)}
+      onmousedown={keepKeys}
       onclick={() => onselect(each.view)}
     >
       <Icon size={20} aria-hidden="true" />

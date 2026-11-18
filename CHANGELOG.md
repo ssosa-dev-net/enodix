@@ -28,6 +28,15 @@ in the project's tracker.
   server's login question, and the cards after a failed connection. A
   click went to the terminal underneath, so the question could only be
   answered with the keyboard.
+- Clicking a side view's icon in the rail, or a pane's Split right, Split
+  down, Close pane or multi-send button, leaves the keyboard with the
+  terminal: typing after the click went nowhere.
+- After clicking the search bar's arrows, Enter goes on finding and
+  Escape closes the search; Escape works from any of the bar's controls.
+- After a failed negotiation or a failed agent login, the card over the
+  terminal is the only "New connection": the closed bar under its
+  backdrop showed one that could not be clicked.
+- A saved filter's chip, once applied, stays readable under the mouse.
 
 ## 0.4.0
 
