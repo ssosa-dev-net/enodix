@@ -68,7 +68,8 @@
 //!
 //! [`telnet`] has the telnet server (a scripted device behind real telnet
 //! option negotiation); [`serial`] a virtual serial port pair; [`http`] a
-//! stand-in for the release server (the update check).
+//! stand-in for the release server (the update check); [`tcp`] a plain TCP
+//! service (a device's second port, for the tunnels' extra ports).
 #![allow(dead_code)]
 
 pub mod agent;
@@ -77,6 +78,7 @@ pub mod credentials;
 pub mod http;
 pub mod python;
 pub mod serial;
+pub mod tcp;
 pub mod telnet;
 pub mod workspaces;
 

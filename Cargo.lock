@@ -2921,6 +2921,7 @@ dependencies = [
  "netterm-core",
  "portable-pty",
  "rpassword",
+ "russh",
  "serde",
  "serde_json",
  "tempfile",

@@ -4,6 +4,7 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,9 +18,10 @@ use netterm_core::tunnel::{
     self, Planned, TunnelEvent, TunnelOptions, TunnelState, TunnelStatus, Tunnels,
 };
 use netterm_core::workspace::{HostId, Workspace};
+use support::tcp::TcpService;
 use support::{TestSshServer, OTP_USERNAME, PASSWORD, USERNAME};
 use tempfile::TempDir;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 fn workspace(files: &[(&str, String)]) -> (TempDir, Workspace) {
@@ -78,11 +80,24 @@ async fn open(
     hosts: &[&str],
     options: TunnelOptions,
 ) -> (Tunnels, Events) {
+    open_with_ports(workspace, store, known_hosts, hosts, &[], options).await
+}
+
+/// [`open`], with extra device ports.
+async fn open_with_ports(
+    workspace: &Workspace,
+    store: &MemoryStore,
+    known_hosts: KnownHosts,
+    hosts: &[&str],
+    ports: &[u16],
+    options: TunnelOptions,
+) -> (Tunnels, Events) {
     let plan = tunnel::plan(
         workspace,
         &Profiles::new(store, workspace),
         &known_hosts,
         &ids(hosts),
+        ports,
     );
     let events: Events = Arc::default();
     let kept = events.clone();
@@ -107,6 +122,21 @@ fn port(tunnels: &Tunnels, host: &str) -> u16 {
         TunnelState::Listening { port, .. } => *port,
         TunnelState::Refused { reason } => panic!("{host} was refused: {reason}"),
     }
+}
+
+/// The loopback ports serving `host`'s extra device ports.
+fn extra_ports(tunnels: &Tunnels, host: &str) -> BTreeMap<u16, u16> {
+    match &status(tunnels, host).state {
+        TunnelState::Listening { extra_ports, .. } => extra_ports.clone(),
+        TunnelState::Refused { reason } => panic!("{host} was refused: {reason}"),
+    }
+}
+
+/// The loopback port serving `host`'s device port `device_port`.
+fn extra_port(tunnels: &Tunnels, host: &str, device_port: u16) -> u16 {
+    *extra_ports(tunnels, host)
+        .get(&device_port)
+        .unwrap_or_else(|| panic!("no listener for port {device_port} of {host}"))
 }
 
 fn refusal(tunnels: &Tunnels, host: &str) -> String {
@@ -217,6 +247,7 @@ async fn one_jump_host() {
     };
     assert_eq!(address, "127.0.0.1");
     assert_eq!(host_keys, &vec![openssh(router.host_key())]);
+    assert!(extra_ports(&tunnels, "r1.yaml").is_empty());
 
     assert!(banner(port(&tunnels, "r1.yaml"))
         .await
@@ -334,7 +365,15 @@ async fn hosts_that_cannot_be_tunnelled_are_refused_before_connecting() {
         "lab/serial.yaml",
         "lab/unknown-key.yaml",
     ];
-    let plan = tunnel::plan(&ws, &Profiles::new(&store, &ws), &known_hosts, &ids(&all));
+    // Extra ports change nothing about who is refused.
+    let ports = [830, 443];
+    let plan = tunnel::plan(
+        &ws,
+        &Profiles::new(&store, &ws),
+        &known_hosts,
+        &ids(&all),
+        &ports,
+    );
     let planned: Vec<&str> = plan.hosts.iter().map(|p| p.host().as_str()).collect();
     assert_eq!(
         planned,
@@ -350,8 +389,24 @@ async fn hosts_that_cannot_be_tunnelled_are_refused_before_connecting() {
         .hosts
         .iter()
         .all(|p| matches!(p, Planned::Refused { .. })));
-    let (tunnels, _) = open(&ws, &store, known_hosts, &all, TunnelOptions::default()).await;
+    let (tunnels, _) = open_with_ports(
+        &ws,
+        &store,
+        known_hosts,
+        &all,
+        &ports,
+        TunnelOptions::default(),
+    )
+    .await;
     assert_eq!(bastion.connections(), 0, "nothing was connected");
+    assert!(
+        tunnels
+            .status()
+            .iter()
+            .all(|status| matches!(status.state, TunnelState::Refused { .. })),
+        "no listener for any port: {:?}",
+        tunnels.status()
+    );
 
     let reason = refusal(&tunnels, "lab/no-login.yaml");
     assert!(
@@ -694,6 +749,386 @@ async fn a_reader_that_lets_too_much_wait_loses_its_connection() {
     event_within(&stalled.events, Duration::from_secs(20), |event| {
         matches!(event, TunnelEvent::Failed { host, reason }
             if host.as_str() == "flooder.yaml" && reason.contains("did not read its output"))
+    })
+    .await;
+    assert!(banner(stalled.other_port).await.starts_with("SSH-2.0-"));
+}
+
+/// Sends a line through `socket` and reads it back from the echo service.
+async fn echoed(socket: &mut TcpStream, line: &str) {
+    socket
+        .write_all(format!("{line}\n").as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(
+        first_line(socket, Duration::from_secs(10)).await.as_deref(),
+        Some(line)
+    );
+}
+
+/// Connects to the extra port's listener at `port` and reads the echo
+/// service's banner.
+async fn service(port: u16) -> (TcpStream, String) {
+    let mut socket = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let banner = first_line(&mut socket, Duration::from_secs(10))
+        .await
+        .expect("the service's banner within 10 s");
+    (socket, banner)
+}
+
+/// An extra port reaches the device's service on that port through the
+/// jump host; the SSH port's tunnel is as before. The SSH port itself and
+/// a port named twice add nothing.
+#[tokio::test]
+async fn an_extra_port_through_one_jump_host() {
+    let bastion = TestSshServer::start().await;
+    let router = TestSshServer::start_device("r1").await;
+    let netconf = TcpService::echo("netconf").await;
+    let (_temp, ws) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("bastion.yaml", host(bastion.port(), "")),
+        ("r1.yaml", host(router.port(), "jump_host: bastion.yaml\n")),
+    ]);
+    let store = store(&ws);
+    let ports = [netconf.port(), router.port(), netconf.port()];
+    let plan = tunnel::plan(
+        &ws,
+        &Profiles::new(&store, &ws),
+        &support::known_hosts(),
+        &ids(&["r1.yaml"]),
+        &ports,
+    );
+    let [Planned::Ready(request)] = plan.hosts.as_slice() else {
+        panic!("{plan:?}");
+    };
+    assert_eq!(request.port, router.port());
+    assert_eq!(request.ports, vec![netconf.port()]);
+
+    let (tunnels, events) = open_with_ports(
+        &ws,
+        &store,
+        support::known_hosts(),
+        &["r1.yaml"],
+        &ports,
+        TunnelOptions::default(),
+    )
+    .await;
+    // Nothing reaches the device's service until a program connects.
+    assert_eq!(netconf.accepted(), 0);
+    let extra = extra_ports(&tunnels, "r1.yaml");
+    assert_eq!(extra.keys().copied().collect::<Vec<_>>(), [netconf.port()]);
+    let listener = extra[&netconf.port()];
+    assert_ne!(listener, port(&tunnels, "r1.yaml"));
+
+    assert!(banner(port(&tunnels, "r1.yaml"))
+        .await
+        .starts_with("SSH-2.0-"));
+    let (mut socket, greeting) = service(listener).await;
+    assert_eq!(greeting, "netconf");
+    echoed(&mut socket, "<hello/>").await;
+    assert_eq!(netconf.accepted(), 1);
+    assert_eq!(bastion.connections(), 1);
+    assert_eq!(bastion.forwarded(), 2);
+    assert!(events.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_extra_port_through_a_chain_of_two_jump_hosts() {
+    let core = TestSshServer::start().await;
+    let site = TestSshServer::start().await;
+    let router = TestSshServer::start_device("r1").await;
+    let api = TcpService::echo("api").await;
+    let (_temp, ws) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("core.yaml", host(core.port(), "")),
+        ("site.yaml", host(site.port(), "jump_host: core.yaml\n")),
+        ("r1.yaml", host(router.port(), "jump_host: site.yaml\n")),
+    ]);
+    let store = store(&ws);
+    let (tunnels, _) = open_with_ports(
+        &ws,
+        &store,
+        support::known_hosts(),
+        &["r1.yaml"],
+        &[api.port()],
+        TunnelOptions::default(),
+    )
+    .await;
+    let (mut socket, greeting) = service(extra_port(&tunnels, "r1.yaml", api.port())).await;
+    assert_eq!(greeting, "api");
+    echoed(&mut socket, "GET /").await;
+    // The core forwarded to the site (connecting the chain), the site to
+    // the router's service.
+    assert_eq!(core.forwarded(), 1);
+    assert_eq!(site.forwarded(), 1);
+}
+
+#[tokio::test]
+async fn hosts_behind_one_jump_host_share_its_connection_whatever_the_port() {
+    let bastion = TestSshServer::start().await;
+    let r1 = TestSshServer::start_device("r1").await;
+    let r2 = TestSshServer::start_device("r2").await;
+    let netconf = TcpService::echo("netconf").await;
+    let (_temp, ws) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("bastion.yaml", host(bastion.port(), "")),
+        ("r1.yaml", host(r1.port(), "jump_host: bastion.yaml\n")),
+        ("r2.yaml", host(r2.port(), "jump_host: bastion.yaml\n")),
+    ]);
+    let store = store(&ws);
+    let (tunnels, events) = open_with_ports(
+        &ws,
+        &store,
+        support::known_hosts(),
+        &["r1.yaml", "r2.yaml"],
+        &[netconf.port()],
+        TunnelOptions::default(),
+    )
+    .await;
+    let (a, b, (_c, c), (_d, d)) = tokio::join!(
+        banner(port(&tunnels, "r1.yaml")),
+        banner(port(&tunnels, "r2.yaml")),
+        service(extra_port(&tunnels, "r1.yaml", netconf.port())),
+        service(extra_port(&tunnels, "r2.yaml", netconf.port())),
+    );
+    assert!(a.starts_with("SSH-2.0-") && b.starts_with("SSH-2.0-"));
+    assert_eq!((c.as_str(), d.as_str()), ("netconf", "netconf"));
+    assert_eq!(bastion.connections(), 1);
+    assert_eq!(bastion.forwarded(), 4);
+    assert!(events.lock().unwrap().is_empty());
+}
+
+/// A port nothing listens on at the device: that connection is closed at
+/// once, the reason names the host and the port, and the other listeners
+/// and connections go on.
+#[tokio::test]
+async fn a_port_closed_on_the_device() {
+    let bastion = TestSshServer::start().await;
+    let router = TestSshServer::start_device("r1").await;
+    let netconf = TcpService::echo("netconf").await;
+    let closed_port = support::closed_port().await;
+    let (_temp, ws) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("bastion.yaml", host(bastion.port(), "")),
+        ("r1.yaml", host(router.port(), "jump_host: bastion.yaml\n")),
+    ]);
+    let store = store(&ws);
+    let (tunnels, events) = open_with_ports(
+        &ws,
+        &store,
+        support::known_hosts(),
+        &["r1.yaml"],
+        &[netconf.port(), closed_port],
+        TunnelOptions::default(),
+    )
+    .await;
+    let (mut open_one, _) = service(extra_port(&tunnels, "r1.yaml", netconf.port())).await;
+
+    let started = Instant::now();
+    let mut socket =
+        TcpStream::connect(("127.0.0.1", extra_port(&tunnels, "r1.yaml", closed_port)))
+            .await
+            .unwrap();
+    closed(&mut socket).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    event_within(&events, Duration::from_secs(5), |event| {
+        matches!(event, TunnelEvent::Failed { host, reason }
+            if host.as_str() == "r1.yaml"
+                && reason.contains(&format!("port {closed_port}"))
+                && reason.contains("could not reach it"))
+    })
+    .await;
+    let shown = events.lock().unwrap()[0].to_string();
+    assert!(
+        shown.starts_with(&format!("r1.yaml: port {closed_port}: ")),
+        "{shown}"
+    );
+
+    echoed(&mut open_one, "still here").await;
+    let (_, greeting) = service(extra_port(&tunnels, "r1.yaml", netconf.port())).await;
+    assert_eq!(greeting, "netconf");
+    assert!(banner(port(&tunnels, "r1.yaml"))
+        .await
+        .starts_with("SSH-2.0-"));
+    assert_eq!(bastion.connections(), 1);
+}
+
+/// The jump host drops every connection: the extra port's connection
+/// closes with today's reason, naming the port, and the next connects the
+/// chain again.
+#[tokio::test]
+async fn a_dropped_jump_connection_on_an_extra_port() {
+    let bastion = TestSshServer::start().await;
+    let router = TestSshServer::start_device("r1").await;
+    let netconf = TcpService::echo("netconf").await;
+    let (_temp, ws) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("bastion.yaml", host(bastion.port(), "")),
+        ("r1.yaml", host(router.port(), "jump_host: bastion.yaml\n")),
+    ]);
+    let store = store(&ws);
+    let (tunnels, events) = open_with_ports(
+        &ws,
+        &store,
+        support::known_hosts(),
+        &["r1.yaml"],
+        &[netconf.port()],
+        TunnelOptions::default(),
+    )
+    .await;
+    let listener = extra_port(&tunnels, "r1.yaml", netconf.port());
+    let (mut socket, _) = service(listener).await;
+
+    bastion.cut_connections().await;
+    let started = Instant::now();
+    closed(&mut socket).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let wanted = format!(
+        "port {}: the connection to the jump host bastion.yaml was lost",
+        netconf.port()
+    );
+    event_within(&events, Duration::from_secs(5), |event| {
+        matches!(event, TunnelEvent::Failed { host, reason }
+            if host.as_str() == "r1.yaml" && reason == &wanted)
+    })
+    .await;
+
+    let (_, greeting) = service(listener).await;
+    assert_eq!(greeting, "netconf");
+    assert_eq!(bastion.connections(), 2);
+    assert!(events.lock().unwrap().iter().any(
+        |event| matches!(event, TunnelEvent::ChainConnected { chain } if chain == &["bastion.yaml"])
+    ));
+}
+
+#[tokio::test]
+async fn dropping_the_tunnels_closes_every_listener() {
+    let bastion = TestSshServer::start().await;
+    let router = TestSshServer::start_device("r1").await;
+    let netconf = TcpService::echo("netconf").await;
+    let api = TcpService::echo("api").await;
+    let (_temp, ws) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("bastion.yaml", host(bastion.port(), "")),
+        ("r1.yaml", host(router.port(), "jump_host: bastion.yaml\n")),
+    ]);
+    let store = store(&ws);
+    let (tunnels, _) = open_with_ports(
+        &ws,
+        &store,
+        support::known_hosts(),
+        &["r1.yaml"],
+        &[netconf.port(), api.port()],
+        TunnelOptions::default(),
+    )
+    .await;
+    let mut listeners = vec![port(&tunnels, "r1.yaml")];
+    listeners.extend(extra_ports(&tunnels, "r1.yaml").into_values());
+    assert_eq!(listeners.len(), 3);
+    let (mut held, _) = service(extra_port(&tunnels, "r1.yaml", api.port())).await;
+    drop(tunnels);
+    closed(&mut held).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for listener in listeners {
+        assert!(
+            TcpStream::connect(("127.0.0.1", listener)).await.is_err(),
+            "port {listener} still listens"
+        );
+    }
+}
+
+/// Tunnels to `r1`, whose extra port floods, and to `r2`, behind one
+/// bastion, with a connection to r1's extra port that is never read.
+struct StalledPort {
+    _servers: Vec<TestSshServer>,
+    _flooder: TcpService,
+    _temp: TempDir,
+    _socket: TcpStream,
+    tunnels: Tunnels,
+    events: Events,
+    flood_port: u16,
+    /// r2's SSH port's listener.
+    other_port: u16,
+}
+
+/// Opens [`StalledPort`]: r1's extra port sends `flood` bytes to each
+/// connection.
+async fn stalled_port(flood: usize, options: TunnelOptions) -> StalledPort {
+    let bastion = TestSshServer::start().await;
+    let r1 = TestSshServer::start_device("r1").await;
+    let r2 = TestSshServer::start_device("r2").await;
+    let flooder = TcpService::flood(flood).await;
+    let (temp, ws) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("bastion.yaml", host(bastion.port(), "")),
+        ("r1.yaml", host(r1.port(), "jump_host: bastion.yaml\n")),
+        ("r2.yaml", host(r2.port(), "jump_host: bastion.yaml\n")),
+    ]);
+    let store = store(&ws);
+    let (tunnels, events) = open_with_ports(
+        &ws,
+        &store,
+        support::known_hosts(),
+        &["r1.yaml", "r2.yaml"],
+        &[flooder.port()],
+        options,
+    )
+    .await;
+    let socket = TcpStream::connect(("127.0.0.1", extra_port(&tunnels, "r1.yaml", flooder.port())))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let other_port = port(&tunnels, "r2.yaml");
+    StalledPort {
+        _servers: vec![bastion, r1, r2],
+        flood_port: flooder.port(),
+        _flooder: flooder,
+        _temp: temp,
+        _socket: socket,
+        tunnels,
+        events,
+        other_port,
+    }
+}
+
+/// A program that stops reading an extra port's tunnel does not block the
+/// jump connection the other tunnels share.
+#[tokio::test]
+async fn a_stalled_reader_on_an_extra_port_does_not_block_its_jump_connection() {
+    // Under the default limit, and more than russh's own buffers hold.
+    let stalled = stalled_port(6 * 1024 * 1024, TunnelOptions::default()).await;
+    let started = Instant::now();
+    let got = try_banner(stalled.other_port, Duration::from_secs(10)).await;
+    assert!(
+        got.is_some_and(|banner| banner.starts_with("SSH-2.0-")),
+        "the second tunnel was blocked"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        stalled.events.lock().unwrap().is_empty(),
+        "{:?}",
+        stalled.events.lock().unwrap()
+    );
+    drop(stalled.tunnels);
+}
+
+/// Past the buffer's limit, the extra port's connection is closed, saying
+/// why and naming the port.
+#[tokio::test]
+async fn a_reader_on_an_extra_port_that_lets_too_much_wait_loses_its_connection() {
+    let stalled = stalled_port(
+        64 * 1024 * 1024,
+        TunnelOptions {
+            buffer_limit: 256 * 1024,
+        },
+    )
+    .await;
+    let port_named = format!("port {}: ", stalled.flood_port);
+    event_within(&stalled.events, Duration::from_secs(20), |event| {
+        matches!(event, TunnelEvent::Failed { host, reason }
+            if host.as_str() == "r1.yaml"
+                && reason.starts_with(&port_named)
+                && reason.contains("did not read its output"))
     })
     .await;
     assert!(banner(stalled.other_port).await.starts_with("SSH-2.0-"));

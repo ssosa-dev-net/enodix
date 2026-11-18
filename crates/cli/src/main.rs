@@ -30,6 +30,7 @@ Usage:
   {NAME} credentials <workspace folder> <host id>
   {NAME} secret <workspace folder> <name>
   {NAME} tunnel <workspace folder> [--folder <path> | --filter <name> | --host <id>...]
+                [--port <number>...]
   {NAME} --help | --version
 
 inventory   prints the workspace's hosts as JSON, each with the settings that
@@ -51,6 +52,11 @@ tunnel      opens a loopback tunnel to each host behind jump hosts (in the
             and its trusted host keys, or why it is not tunnelled. Then
             serves the ports, reporting failures on stderr, until its
             standard input ends: keep it open while the tunnels are used.
+            Each --port (repeated, 1 to 65535: NETCONF's 830, an API's
+            443) is a device port tunnelled too, for every host, through
+            the same jump hosts; a listening host then has \"extra_ports\",
+            from device port to the 127.0.0.1 port that reaches it. Nothing
+            checks that the device listens on it.
 
 Credentials come from {PRODUCT} while it runs and its vault, if it has
 one, is unlocked. Otherwise they are read here: from the keychain, or from

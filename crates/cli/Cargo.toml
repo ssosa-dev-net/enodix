@@ -25,7 +25,10 @@ windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
 
 [dev-dependencies]
 portable-pty = "0.9.0"
+# A jump host for the tunnel tests.
+russh = { workspace = true }
 tempfile = "3"
+tokio = { workspace = true }
 
 # A process without a controlling terminal, for the "no terminal" checks.
 [target.'cfg(unix)'.dev-dependencies]
