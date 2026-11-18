@@ -19,11 +19,15 @@
 //! jump host) is in [`Tunnels::status`]. Nobody is ever asked anything,
 //! and nothing is trusted on the user's behalf.
 //!
-//! Every connection accepted on a host's port is carried, through a
+//! A host gets a listener for its SSH port and one for each extra device
+//! port the plan was given (NETCONF on 830, an API on 443: any TCP port).
+//! Every connection accepted on one of them is carried, through a
 //! `direct-tcpip` channel of the last jump host, to the host's address and
-//! port as that jump host reaches them. Hosts behind the same chain share
-//! its connections; a chain that has dropped is connected again on the
-//! next connection. Each channel's output is drained into its own buffer
+//! that port as that jump host reaches them; nothing is tried before.
+//! Hosts behind the same chain share its connections, whatever the port; a
+//! chain that has dropped is connected again on the next connection, and
+//! a failure on another port than SSH's names it. Each channel's output is
+//! drained into its own buffer
 //! at once (russh blocks the whole connection while one channel's messages
 //! are not taken, so one slow reader would stall every tunnel of the
 //! chain); a reader that lets more than [`TunnelOptions::buffer_limit`]
@@ -31,7 +35,7 @@
 //! Listeners bind to `127.0.0.1` only; dropping [`Tunnels`] closes them and
 //! the chains.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -78,6 +82,8 @@ pub struct TunnelRequest {
     /// them.
     pub address: String,
     pub port: u16,
+    /// The device's other ports to tunnel too, ascending, without `port`.
+    pub ports: Vec<u16>,
     /// The chain, in connect order; at least one.
     pub jump_hosts: Vec<JumpHost>,
     /// The device's trusted host keys (`<type> <base64>`, as in a
@@ -116,13 +122,18 @@ pub struct TunnelPlan {
 
 /// Works out which of `ids` are behind jump hosts and how to tunnel to
 /// each, connecting to nothing. Hosts reached directly (and serial ones)
-/// are left out; ids the workspace lacks too.
+/// are left out; ids the workspace lacks too. `ports` are device ports to
+/// tunnel besides each host's SSH port (it, a port named twice and port 0
+/// add nothing); whether a device listens on them is not checked, and they
+/// change nothing about which hosts are refused.
 pub fn plan(
     workspace: &Workspace,
     profiles: &Profiles<'_>,
     known_hosts: &KnownHosts,
     ids: &[HostId],
+    ports: &[u16],
 ) -> TunnelPlan {
+    let ports: BTreeSet<u16> = ports.iter().copied().filter(|&port| port != 0).collect();
     let mut plan = TunnelPlan::default();
     for id in ids {
         let Some(host) = workspace.resolve_host(id) else {
@@ -143,7 +154,14 @@ pub fn plan(
             ),
             Err(error) => refused(format!("its jump hosts cannot be used: {error}")),
             Ok(_) => match request(profiles, known_hosts, &host) {
-                Ok(request) => Planned::Ready(request),
+                Ok(mut request) => {
+                    request.ports = ports
+                        .iter()
+                        .copied()
+                        .filter(|&p| p != request.port)
+                        .collect();
+                    Planned::Ready(request)
+                }
                 Err(reason) => refused(reason),
             },
         };
@@ -208,6 +226,7 @@ fn request(
         host: id.clone(),
         address: target.host,
         port: target.port,
+        ports: Vec::new(),
         jump_hosts,
         host_keys,
         connect_timeout: target.connect_timeout,
@@ -225,12 +244,17 @@ pub struct TunnelStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum TunnelState {
-    /// Connect to `address` (`127.0.0.1`) at `port` to reach the host.
+    /// Connect to `address` (`127.0.0.1`) at `port` to reach the host's
+    /// SSH port.
     Listening {
         address: String,
         port: u16,
         /// [`TunnelRequest::host_keys`].
         host_keys: Vec<String>,
+        /// For each of [`TunnelRequest::ports`], the port on `address`
+        /// that reaches it; left out of the JSON when there are none.
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        extra_ports: BTreeMap<u16, u16>,
     },
     /// Not tunnelled, and why.
     Refused { reason: String },
@@ -243,7 +267,8 @@ pub enum TunnelEvent {
     ChainConnected { chain: Vec<String> },
     /// A chain could not be connected.
     ChainFailed { chain: Vec<String>, reason: String },
-    /// A connection to `host` could not be carried through, or broke.
+    /// A connection to `host` could not be carried through, or broke. The
+    /// reason starts `port <n>: ` when it was to another port than SSH's.
     Failed { host: HostId, reason: String },
 }
 
@@ -344,24 +369,38 @@ impl Tunnels {
                 });
                 continue;
             }
-            let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
-            let address = listener.local_addr()?;
+            // One listener for the SSH port, then one per extra port.
+            let mut listeners = Vec::with_capacity(1 + request.ports.len());
+            for device_port in std::iter::once(request.port).chain(request.ports.iter().copied()) {
+                let listener =
+                    TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+                listeners.push((device_port, listener.local_addr()?, listener));
+            }
+            let address = listeners[0].1;
             status.push(TunnelStatus {
                 host: request.host.clone(),
                 state: TunnelState::Listening {
                     address: address.ip().to_string(),
                     port: address.port(),
                     host_keys: request.host_keys.clone(),
+                    extra_ports: listeners[1..]
+                        .iter()
+                        .map(|(device_port, local, _)| (*device_port, local.port()))
+                        .collect(),
                 },
             });
-            tasks.push(tokio::spawn(serve(
-                listener,
-                Arc::new(request),
-                chains[&key].clone(),
-                known_hosts.clone(),
-                options,
-                report.clone(),
-            )));
+            let request = Arc::new(request);
+            for (device_port, _, listener) in listeners {
+                tasks.push(tokio::spawn(serve(
+                    listener,
+                    request.clone(),
+                    device_port,
+                    chains[&key].clone(),
+                    known_hosts.clone(),
+                    options,
+                    report.clone(),
+                )));
+            }
         }
         Ok(Tunnels { status, tasks })
     }
@@ -380,11 +419,12 @@ impl Drop for Tunnels {
     }
 }
 
-/// Accepts connections to one host until aborted; aborting it ends the
-/// connections it carries too.
+/// Accepts connections to one port of one host until aborted; aborting it
+/// ends the connections it carries too.
 async fn serve(
     listener: TcpListener,
     request: Arc<TunnelRequest>,
+    device_port: u16,
     chain: Arc<Chain>,
     known_hosts: KnownHosts,
     options: TunnelOptions,
@@ -400,9 +440,22 @@ async fn serve(
                     let known_hosts = known_hosts.clone();
                     let report = report.clone();
                     carried.spawn(async move {
-                        if let Err(reason) =
-                            carry(socket, &request, &chain, &known_hosts, options, &report).await
-                        {
+                        let carried = carry(
+                            socket,
+                            &request,
+                            device_port,
+                            &chain,
+                            &known_hosts,
+                            options,
+                            &report,
+                        )
+                        .await;
+                        if let Err(reason) = carried {
+                            let reason = if device_port == request.port {
+                                reason
+                            } else {
+                                format!("port {device_port}: {reason}")
+                            };
                             report(TunnelEvent::Failed {
                                 host: request.host.clone(),
                                 reason,
@@ -447,10 +500,12 @@ async fn connected(
     }
 }
 
-/// Carries `socket` to the request's host until either side ends.
+/// Carries `socket` to `device_port` of the request's host until either
+/// side ends.
 async fn carry(
     socket: TcpStream,
     request: &TunnelRequest,
+    device_port: u16,
     chain: &Chain,
     known_hosts: &KnownHosts,
     options: TunnelOptions,
@@ -460,7 +515,7 @@ async fn carry(
         .await
         .map_err(|reason| format!("not connected: {reason}"))?;
     let channel = connections
-        .forward(&request.address, request.port, request.connect_timeout)
+        .forward(&request.address, device_port, request.connect_timeout)
         .await
         .map_err(|error| error.to_string())?;
     let carried = pump(socket, channel, options.buffer_limit).await;

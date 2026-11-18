@@ -10,6 +10,11 @@ rust-version = "1.90"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "io-util"] }
+# Pinned exactly: the russh API changes roughly monthly (see docs/spec-v1.md).
+# `ring` backend (no extra native build tooling on Windows); `des` and `dsa`
+# compile in the legacy algorithms, `rsa` the RSA host/user keys. The core
+# uses it; the headless binary's tests run a jump host with it.
+russh = { version = "=0.65.1", default-features = false, features = ["ring", "rsa", "des", "dsa", "flate2"] }
 
 # Argon2 unoptimised takes many seconds per vault unlock; tests and dev
 # builds use it optimised.

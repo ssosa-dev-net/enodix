@@ -3,16 +3,20 @@
 //! its standard input ends, and its command line. The built binary runs
 //! against a temporary workspace and data folder; jump-host logins come
 //! from the core's credential agent served in this test process, as the
-//! running app serves them. Tunnels that listen and carry SSH are covered
-//! by the core's `tests/tunnels.rs` and, through this binary, by the Python
-//! suite (`python/tests/test_tunnels.py`).
+//! running app serves them. A minimal jump host ([`JumpHost`]: a password
+//! login and `direct-tcpip`, nothing else) gives listening entries, for the
+//! JSON's shape and the extra ports (`--port`). Tunnels that carry SSH are
+//! covered by the core's `tests/tunnels.rs` and, through this binary, by
+//! the Python suite (`python/tests/test_tunnels.py`).
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use std::net::{TcpListener, TcpStream};
 
 use netterm_core::credentials::{
     vault_file, AgentEndpoint, AgentServer, CredentialProfile, CredentialStore, KdfParams,
@@ -24,7 +28,7 @@ use tempfile::TempDir;
 const BINARY: &str = env!("CARGO_BIN_EXE_netterm-cli");
 const SCOPE: &str = "cli-tunnel-test";
 /// A host key (the core's RSA test fixture's public key), as the app
-/// would have trusted it.
+/// would have trusted it. [`JumpHost`] shows it too.
 const DEVICE_KEY: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCZkcvfK8OMup2sAEnf8XDRIomHqI2xAUiqsv9r8XwTcQgtU4YYl/Y3tBJFjUpEciAeo/RWWi0xY0uSJsDR03BTm8hl9Xt6mEYc4WFIdM/iWRiq/Bvsctze/g0eDf72MSneiB8VS5VLn5fEoHofnjSsMgYaoFNlAea+fGHcPXvCoP104XhU6TCpUOGvlvUaNEDWmzkENTFlrgiofSEU+Esc7HzgpBtsfpRaURx1kjjzzcVx6dTT5wliue5Iaw1d/sKL57L2GcN/Z4V8K17U6jXlzp/m56/v95yZJpeGZ4Pk5dbaVN30wqXBLzpMsWFeR4KBBjB3yE3x6b4CFpUnTfSn";
 
 struct Setup {
@@ -96,6 +100,15 @@ impl Setup {
             format!("[127.0.0.1]:{port} {DEVICE_KEY}\n"),
         )
         .unwrap();
+    }
+
+    /// Trusts [`DEVICE_KEY`] for 127.0.0.1 at each of `ports`.
+    fn trust(&self, ports: &[u16]) {
+        let lines: String = ports
+            .iter()
+            .map(|port| format!("[127.0.0.1]:{port} {DEVICE_KEY}\n"))
+            .collect();
+        fs::write(self.data.join("known_hosts"), lines).unwrap();
     }
 
     /// Starts `tunnel <ws> <args>`, with its stdin open.
@@ -202,6 +215,256 @@ fn closed_port() -> u16 {
         .local_addr()
         .unwrap()
         .port()
+}
+
+/// An SSH server that only logs in the profile `lab` (password) and
+/// forwards `direct-tcpip` channels: a jump host. Its host key is the
+/// fixture's, [`DEVICE_KEY`]. Stops when dropped.
+struct JumpHost {
+    port: u16,
+    _runtime: tokio::runtime::Runtime,
+}
+
+impl JumpHost {
+    fn start() -> Self {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let key = russh::keys::load_secret_key(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../core/tests/fixtures/keys/rsa_client"
+            ),
+            None,
+        )
+        .unwrap();
+        let config = Arc::new(russh::server::Config {
+            auth_rejection_time: Duration::ZERO,
+            keys: vec![key],
+            ..Default::default()
+        });
+        let listener = runtime
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        runtime.spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let config = config.clone();
+                tokio::spawn(async move {
+                    if let Ok(session) = russh::server::run_stream(config, socket, Jump).await {
+                        let _ = session.await;
+                    }
+                });
+            }
+        });
+        Self {
+            port,
+            _runtime: runtime,
+        }
+    }
+}
+
+struct Jump;
+
+impl russh::server::Handler for Jump {
+    type Error = russh::Error;
+
+    async fn auth_password(
+        &mut self,
+        user: &str,
+        password: &str,
+    ) -> Result<russh::server::Auth, Self::Error> {
+        Ok(if user == "admin" && password == "s3cret" {
+            russh::server::Auth::Accept
+        } else {
+            russh::server::Auth::reject()
+        })
+    }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: russh::Channel<russh::server::Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: russh::server::ChannelOpenHandle,
+        _session: &mut russh::server::Session,
+    ) -> Result<(), Self::Error> {
+        let address = (host_to_connect.to_owned(), port_to_connect as u16);
+        match tokio::net::TcpStream::connect(address).await {
+            Ok(mut socket) => {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut socket).await;
+                });
+            }
+            Err(_) => reply.reject(russh::ChannelOpenFailure::ConnectFailed).await,
+        }
+        Ok(())
+    }
+}
+
+/// A loopback TCP service that greets each connection with `hello\n`,
+/// then echoes; its port.
+fn echo_service() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut socket in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let _ = socket.write_all(b"hello\n");
+                let mut buffer = [0; 1024];
+                while let Ok(n) = socket.read(&mut buffer) {
+                    if n == 0 || socket.write_all(&buffer[..n]).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+/// A workspace with the jump host `bastion.yaml` and `r1`, `r2` behind
+/// it (their SSH port is `device_port`), everything trusted, and the app
+/// serving `lab`.
+fn behind_a_jump_host(jump: &JumpHost, device_port: u16) -> (Setup, AgentServer) {
+    let lab = "credential_profile: lab\n";
+    let behind = format!("address: 127.0.0.1\nport: {device_port}\njump_host: bastion.yaml\n");
+    let setup = Setup::new(&[
+        (
+            "bastion.yaml",
+            format!("address: 127.0.0.1\nport: {}\n{lab}", jump.port),
+        ),
+        ("r1.yaml", behind.clone()),
+        ("r2.yaml", behind),
+    ]);
+    setup.trust(&[jump.port, device_port]);
+    let app = setup.serve();
+    (setup, app)
+}
+
+/// The fields of a JSON object, sorted.
+fn fields(entry: &Value) -> Vec<&str> {
+    let mut fields: Vec<&str> = entry
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    fields
+}
+
+#[test]
+fn without_ports_a_listening_entry_is_as_before() {
+    let jump = JumpHost::start();
+    let (setup, _app) = behind_a_jump_host(&jump, closed_port());
+    let tunnel = setup.start(&["--host", "r1.yaml"]);
+    assert_eq!(tunnel.answer["format"], 1);
+    let entry = tunnel.entry("r1.yaml");
+    assert_eq!(entry["status"], "listening", "{entry}");
+    assert_eq!(
+        fields(entry),
+        ["address", "host", "host_keys", "port", "status"]
+    );
+    assert_eq!(entry["address"], "127.0.0.1");
+    assert_eq!(entry["host_keys"], serde_json::json!([DEVICE_KEY]));
+    tunnel.end();
+}
+
+/// `--port`, repeated: each listening host has its extra ports, and one
+/// reaches the device's service through the jump host. The SSH port and a
+/// port named twice add nothing.
+#[test]
+fn extra_ports_are_listed_per_host_and_reach_the_device() {
+    let jump = JumpHost::start();
+    let device_port = closed_port();
+    let service = echo_service();
+    let (setup, _app) = behind_a_jump_host(&jump, device_port);
+    let (service_arg, device_arg) = (service.to_string(), device_port.to_string());
+    let tunnel = setup.start(&[
+        "--port",
+        &service_arg,
+        "--port",
+        "443",
+        "--port",
+        &device_arg,
+        "--port",
+        &service_arg,
+    ]);
+    assert_eq!(tunnel.answer["format"], 1);
+    for host in ["r1.yaml", "r2.yaml"] {
+        let entry = tunnel.entry(host);
+        assert_eq!(entry["status"], "listening", "{entry}");
+        assert_eq!(
+            fields(entry),
+            [
+                "address",
+                "extra_ports",
+                "host",
+                "host_keys",
+                "port",
+                "status"
+            ]
+        );
+        let extra = entry["extra_ports"].as_object().unwrap();
+        let mut named: Vec<&str> = extra.keys().map(String::as_str).collect();
+        named.sort_unstable();
+        let mut wanted = vec!["443", service_arg.as_str()];
+        wanted.sort_unstable();
+        assert_eq!(named, wanted, "{entry}");
+        assert!(extra
+            .values()
+            .all(|port| port.as_u64().is_some_and(|p| p > 0)));
+        assert_ne!(extra["443"], entry["port"]);
+    }
+
+    let listener = tunnel.entry("r2.yaml")["extra_ports"][&service_arg]
+        .as_u64()
+        .unwrap() as u16;
+    let mut socket = TcpStream::connect(("127.0.0.1", listener)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut reader = BufReader::new(socket.try_clone().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(line, "hello\n");
+    socket.write_all(b"<hello/>\n").unwrap();
+    line.clear();
+    reader.read_line(&mut line).unwrap();
+    assert_eq!(line, "<hello/>\n");
+    drop((socket, reader));
+    tunnel.end();
+}
+
+#[test]
+fn a_bad_port_is_a_usage_error_and_opens_nothing() {
+    let jump = JumpHost::start();
+    let (setup, _app) = behind_a_jump_host(&jump, closed_port());
+    for value in ["0", "65536", "-1", "+830", "830.0", "ssh", ""] {
+        let output = setup
+            .command(&["tunnel", setup.ws(), "--port", "830", "--port", value])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{value:?}");
+        assert!(output.stdout.is_empty(), "{value:?}");
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(said.contains("--port"), "{value:?}: {said}");
+    }
+    let output = setup
+        .command(&["tunnel", setup.ws(), "--port"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--port needs a value"));
 }
 
 #[test]
@@ -359,7 +622,8 @@ fn a_command_line_it_does_not_understand() {
         vec!["tunnel"],
         vec!["tunnel", setup.ws(), "--folder"],
         vec!["tunnel", setup.ws(), "--folder", "a", "--filter", "b"],
-        vec!["tunnel", setup.ws(), "--port", "1"],
+        vec!["tunnel", setup.ws(), "--port", "0"],
+        vec!["tunnel", setup.ws(), "--hosts", "1"],
     ] {
         let output = setup.command(&args).stdin(Stdio::null()).output().unwrap();
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -371,5 +635,7 @@ fn a_command_line_it_does_not_understand() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     let help = setup.command(&["--help"]).output().unwrap();
-    assert!(String::from_utf8_lossy(&help.stdout).contains("tunnel <workspace folder>"));
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("tunnel <workspace folder>"));
+    assert!(help.contains("[--port <number>...]"), "{help}");
 }

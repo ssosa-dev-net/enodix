@@ -144,6 +144,7 @@ It also hands out logins and opens tunnels, for scripts:
 netterm-cli credentials C:\Work\inventory Europe/Madrid/core-r1.yaml
 netterm-cli secret C:\Work\inventory netbox-token
 netterm-cli tunnel C:\Work\inventory --folder Europe/Madrid
+netterm-cli tunnel C:\Work\inventory --folder Europe/Madrid --port 830 --port 443
 ```
 
 - `credentials` prints the login of the credential profile a host uses, and
@@ -157,6 +158,12 @@ netterm-cli tunnel C:\Work\inventory --folder Europe/Madrid
   standard input ends. It asks no host-key or login question: a jump host
   or device whose key the app has not trusted is refused, with the reason
   in its output.
+  Each `--port` adds a port on `127.0.0.1` per host for that device port
+  (NETCONF on 830, an API on 443, any TCP port), through the same jump
+  chain; its output lists them as `extra_ports`. Nothing checks that the
+  device listens there: a connection to a closed port is closed, with the
+  reason on standard error. The app does not check a device's TLS
+  certificate through a tunnel; the script decides how to.
 
 ## Python and Nornir
 

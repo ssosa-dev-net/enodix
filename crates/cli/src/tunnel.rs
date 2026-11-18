@@ -1,5 +1,6 @@
-//! `tunnel <workspace> [limit]`: loopback tunnels to the hosts behind jump
-//! hosts, for the Python bridge (see `netterm_core::tunnel`).
+//! `tunnel <workspace> [limit] [--port <number>...]`: loopback tunnels to
+//! the hosts behind jump hosts, for the Python bridge (see
+//! `netterm_core::tunnel`).
 //!
 //! The hosts are those `inventory` would export with the same limit (a
 //! script job's scope included). Each chain is connected through the core
@@ -8,7 +9,9 @@
 //! on the terminal) and the app's known host keys; no host-key or login
 //! question is asked. One JSON line on stdout says, per host behind jump
 //! hosts, where its tunnel listens (`127.0.0.1` and a port) with the
-//! device's trusted host keys, or why it is not tunnelled. The tunnels then
+//! device's trusted host keys, or why it is not tunnelled. Each `--port`
+//! is a device port tunnelled too, for every host: a listening entry then
+//! has `extra_ports`, from device port to the loopback port serving it. The tunnels then
 //! serve until stdin ends (the starting process closed it, ended or was
 //! killed); what goes wrong meanwhile is reported on stderr, one line each.
 
@@ -26,7 +29,8 @@ use crate::{print, scoped_export, Failure, NAME};
 const FORMAT: u32 = 1;
 
 pub fn run(args: &[String]) -> Result<(), Failure> {
-    let (workspace, exported) = scoped_export(args)?;
+    let (args, ports) = ports(args)?;
+    let (workspace, exported) = scoped_export(&args)?;
     let ids: Vec<HostId> = exported.hosts.into_iter().map(|host| host.id).collect();
     let behind = tunnel::behind_jump_hosts(&workspace, &ids);
     let known_hosts = KnownHosts::in_data_folder(&data_folder()?);
@@ -41,6 +45,7 @@ pub fn run(args: &[String]) -> Result<(), Failure> {
             &Profiles::new(store.as_ref(), &workspace),
             &known_hosts,
             &behind,
+            &ports,
         )
     };
 
@@ -67,4 +72,34 @@ pub fn run(args: &[String]) -> Result<(), Failure> {
     drop(tunnels);
     runtime.shutdown_background();
     Ok(())
+}
+
+/// Takes the `--port <number>` options out of `args`: the rest, and the
+/// ports in the order given. A value that is not a port (1 to 65535, in
+/// digits) is a usage error.
+fn ports(args: &[String]) -> Result<(Vec<String>, Vec<u16>), Failure> {
+    let mut rest = Vec::with_capacity(args.len());
+    let mut ports = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg != "--port" {
+            rest.push(arg.clone());
+            continue;
+        }
+        let value = args
+            .next()
+            .filter(|value| !value.starts_with('-'))
+            .ok_or_else(|| Failure::Usage("--port needs a value".into()))?;
+        let port = Some(value)
+            .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|&port| port != 0)
+            .ok_or_else(|| {
+                Failure::Usage(format!(
+                    "--port takes a port from 1 to 65535, not {value:?}"
+                ))
+            })?;
+        ports.push(port);
+    }
+    Ok((rest, ports))
 }

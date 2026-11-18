@@ -24,10 +24,8 @@ regex = "1"
 # rustls (`ring` provider, the system's certificate store, the system proxy)
 # as tauri-plugin-updater, so there is one TLS stack and no extra build tools.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
-# Pinned exactly: the russh API changes roughly monthly (see docs/spec-v1.md).
-# `ring` backend (no extra native build tooling on Windows); `des` and `dsa`
-# compile in the legacy algorithms, `rsa` the RSA host/user keys.
-russh = { version = "=0.65.1", default-features = false, features = ["ring", "rsa", "des", "dsa", "flate2"] }
+# Pinned exactly, in the workspace's Cargo.toml.
+russh = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # Comparing the running version with the latest release's.
 semver = "1"
