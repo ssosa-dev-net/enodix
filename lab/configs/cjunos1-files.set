@@ -1,0 +1,11 @@
+# Paste into cjunos1 after each deploy, in configuration mode (`configure`,
+# then these lines, then `commit and-quit`), with the settings of step 1 in
+# docs/containerlab.md. The topology gives cJunos Evolved no startup config.
+#
+# SFTP is refused ("subsystem request failed") until the SFTP server is
+# turned on. SCP works without it.
+set system services ssh sftp-server
+# Only to reach the device from your own network without the jump host
+# (the containerlab server routes 172.20.30.0/24): cJunos's management
+# interface has no route back otherwise. Use your own network's prefix.
+set routing-options static route 192.0.2.0/24 next-hop 172.20.30.1

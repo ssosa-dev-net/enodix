@@ -90,6 +90,15 @@ files).
    commit and-quit
    ```
 
+   For file transfers (#96), two devices need more after each deploy,
+   pasted by hand like the lines above (the topology gives neither a
+   startup configuration): `lab/configs/cjunos1-files.set` on cjunos1
+   (the SFTP server, and a route back to your own network for reaching it
+   without the jump host) and `lab/configs/csr1-files.cfg` on csr1 (the
+   SCP server and SSH bulk mode, then `write memory`). The other devices
+   offer SFTP and SCP as the topology deploys them. What each offers is in
+   [Files on the lab devices](#files-on-the-lab-devices).
+
    Docker inside a Proxmox LXC container needs two entries in the
    container's `/etc/pve/lxc/<id>.conf` on the Proxmox host (besides
    `features: nesting=1` and `lxc.apparmor.profile: unconfined`), then a
@@ -231,3 +240,34 @@ exercised (the in-process device-mode server covers it).
 
 Not covered yet: NX-OS (needs an n9kv image), legacy-crypto devices,
 public-key logins to the devices themselves other than through the agent.
+
+## Files on the lab devices
+
+What the file transfer prototype (#96, branch `prototype/96-files`, not
+merged) found on 2026-11-18, with the accounts the lab uses and the lab
+configuration of step 1 (`lab/configs/csr1-files.cfg`,
+`lab/configs/cjunos1-files.set`). The suite does not check file transfers
+yet; the numbers and texts below come from the prototype's runs.
+
+| Device | SFTP | SCP | What was configured | Login lands in | Files belong in | Account needs |
+| ------ | ---- | --- | ------------------- | -------------- | --------------- | ------------- |
+| srl1 (SR Linux 24.10.1) | yes | yes | nothing | `/home/admin` | the login folder | the image's `admin` (no other account tried) |
+| ceos1 (cEOS 4.36.0.1F) | yes | yes | nothing | `/home/admin` | `/mnt/flash` | privilege 15: at privilege 1 SFTP is accepted and closed at once, and SCP answers `% The 'scp' command is only available in privileged mode.` |
+| frr1 (FRR 10.2.1 image) | yes | **no**: the image has no `scp` program (`sh: scp: not found`, exit 127) | nothing | `/root` (`/home/vtysh` for `vtysh`, whose login shell is vtysh: SFTP still works) | the login folder | any account |
+| csr1 (IOS-XE 17.03.08) | **no**: accepts the subsystem, then exits 0 and closes before SFTP's first reply | yes, once turned on (`Administratively disabled.` before) | `ip scp server enable`, `ip ssh bulk-mode` | not applicable | `bootflash:` (`flash:` also works) | privilege 15: privilege 1 gets `Privilege denied.` |
+| cjunos1 (cJunos Evolved 25.4R1.13) | yes, once turned on (`subsystem request failed` before) | yes | `set system services ssh sftp-server`; a route back for reaching it directly | `/var/home/admin` | `/var/tmp` | any login class: `read-only` uploads and downloads, but cannot delete (`Permission denied`) |
+
+Every device takes a file connection while a terminal session to it is
+open. csr1 has five vty lines (`line vty 0 4`); with five terminal
+sessions open it closes a sixth connection before sending its SSH banner
+(OpenSSH: `kex_exchange_identification: Connection closed by remote
+host`). An idle file connection with no channel holds one of those lines,
+and csr1 closes the whole connection once an SCP transfer ends (cjunos1
+runs several on one connection). No device dropped a file connection left
+idle for 21 minutes with SSH keepalives every 30 seconds.
+
+The lab's speeds are those of virtual machines and containers on one
+server, not of real devices: the unregistered CSR 1000v is held to
+1 Mbit/s (`show platform hardware throughput level`), which caps its
+downloads at 0.12 MB/s, and srl1 takes uploads at about 0.3 MB/s with any
+tool. The prototype's comparison with OpenSSH is on #96.
