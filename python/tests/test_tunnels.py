@@ -18,6 +18,7 @@ import unittest
 from pathlib import Path
 from typing import List
 
+import paramiko
 from nornir import InitNornir
 from nornir.core import Nornir
 from nornir_netmiko.tasks import netmiko_send_command
@@ -26,7 +27,7 @@ import netterm
 from netterm._tunnel import _close_all as close_all_tunnels
 from netterm.nornir import NettermInventory
 
-from support import DEVICE_HOSTNAME, BridgeTest, JumpServer
+from support import DEVICE_HOSTNAME, BridgeTest, JumpServer, Relay
 
 BEHIND = ["behind/r1.yaml", "behind/r2.yaml", "chain/r3.yaml"]
 
@@ -62,7 +63,10 @@ class Records(logging.Handler):
         raise AssertionError(f"nothing said {text!r}: {self.lines}")
 
 
-class Tunnels(BridgeTest):
+class JumpHostsTest(BridgeTest):
+    """The workspace of the tests below: hosts behind one jump host and
+    behind a chain of two, all reaching the device-mode server."""
+
     def setUp(self) -> None:
         super().setUp()
         self.bastion = JumpServer()
@@ -118,6 +122,9 @@ class Tunnels(BridgeTest):
         self.addCleanup(close_all_tunnels)
         self.addCleanup(nr.close_connections)
         return nr
+
+
+class Tunnels(JumpHostsTest):
 
     def test_a_nornir_task_logs_in_behind_one_and_two_jump_hosts(self) -> None:
         nr = self.nornir(BEHIND)
@@ -273,6 +280,210 @@ class Tunnels(BridgeTest):
             self.assertIn(DEVICE_HOSTNAME, driver.send_command("show hostname").result)
         finally:
             driver.close()
+
+
+def banner(port: int) -> bytes:
+    """The first bytes a service on ``127.0.0.1:port`` sends."""
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as connection:
+        return connection.recv(4)
+
+
+class TunnelPorts(JumpHostsTest):
+    """Extra device ports (#93). The device's second port is a relay to
+    its SSH service, so it shows the device's own host key; the plain test
+    server's port, as a port of the same device, shows another key."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mirror = Relay(self.server.device_port)
+        self.addCleanup(self.mirror.close)
+        #: A port of the device that shows a key the app never trusted.
+        self.stranger = self.server.port
+
+    def test_tunnels_report_the_loopback_port_of_each_named_port(self) -> None:
+        device = self.server.device_port
+        ports = [self.mirror.port, self.stranger, device, self.mirror.port]
+        opened = netterm.tunnels(self.workspace.root, hosts=BEHIND, ports=ports)
+        self.addCleanup(opened.close)
+        loopbacks = set()
+        for name in BEHIND:
+            with self.subTest(host=name):
+                entry = opened.hosts[name]
+                extra = entry["extra_ports"]
+                # The SSH port named again and a port named twice add nothing.
+                self.assertEqual(set(extra), {self.mirror.port, self.stranger})
+                self.assertNotIn(entry["port"], extra.values())
+                loopbacks.update(extra.values())
+                known = Path(entry["known_hosts"]).read_text(encoding="utf-8")
+                for loopback in [entry["port"], *extra.values()]:
+                    self.assertEqual(banner(loopback), b"SSH-")
+                    self.assertIn(f"[127.0.0.1]:{loopback} {self.server.device_key}", known)
+        self.assertEqual(len(loopbacks), 2 * len(BEHIND))
+
+    def test_without_ports_an_entry_is_as_before(self) -> None:
+        opened = netterm.tunnels(self.workspace.root, hosts=["behind/r1.yaml"])
+        self.addCleanup(opened.close)
+        self.assertEqual(
+            set(opened.hosts["behind/r1.yaml"]), {"address", "port", "host_keys", "known_hosts"}
+        )
+
+    def test_a_port_that_is_not_a_port_opens_nothing(self) -> None:
+        for bad in (0, 65536, -1, True, "830", 830.0):
+            with self.subTest(port=bad):
+                with self.assertRaises(ValueError):
+                    netterm.tunnels(self.workspace.root, hosts=BEHIND, ports=[bad])
+        with self.assertRaises(ValueError):
+            netterm.tunnels(self.workspace.root, hosts=BEHIND, ports=830)
+
+    def test_endpoint_says_where_to_connect_or_why_not(self) -> None:
+        self.workspace.write("refused/new-device.yaml", "address: 192.0.2.7\njump_host: jumps/bastion.yaml\n")
+        exported = {host["id"]: host for host in netterm.inventory(self.workspace.root)["hosts"]}
+        named = self.mirror.port
+        opened = netterm.tunnels(self.workspace.root, ports=[named])
+        self.addCleanup(opened.close)
+        r1 = exported["behind/r1.yaml"]
+        entry = opened.hosts["behind/r1.yaml"]
+        # A tunnelled host: its tunnel's listener for that port.
+        self.assertEqual(netterm.endpoint(r1, named, opened), ("127.0.0.1", entry["extra_ports"][named]))
+        self.assertEqual(opened.endpoint(r1, named), ("127.0.0.1", entry["extra_ports"][named]))
+        address, port = opened.endpoint(r1, self.server.device_port)
+        self.assertEqual((address, port), ("127.0.0.1", entry["port"]))
+        # A direct host: its own address and the port, tunnels or not.
+        direct = exported["devices/r-pass.yaml"]
+        self.assertEqual(netterm.endpoint(direct, 830, opened), ("127.0.0.1", 830))
+        self.assertEqual(netterm.endpoint(direct, 830), ("127.0.0.1", 830))
+        self.assertEqual(netterm.endpoint(direct, 443).port, 443)
+        # A host that could not be tunnelled: the tunnel's reason.
+        with self.assertRaises(netterm.Unreachable) as refused:
+            opened.endpoint(exported["refused/new-device.yaml"], named)
+        self.assertIn("refused/new-device.yaml", str(refused.exception))
+        self.assertIn("connect to it once in the app", str(refused.exception))
+        # A port that was not named.
+        with self.assertRaises(netterm.Unreachable) as unnamed:
+            opened.endpoint(r1, 4444)
+        self.assertIn("port 4444 was not named", str(unnamed.exception))
+        # A host behind a jump host, and no tunnels.
+        with self.assertRaises(netterm.Unreachable) as none:
+            netterm.endpoint(r1, named)
+        self.assertIn("no tunnels", str(none.exception))
+        self.assertIsInstance(none.exception, netterm.NettermError)
+
+    def test_the_nornir_option_opens_the_ports_and_the_host_data_answers(self) -> None:
+        self.workspace.write("refused/new-device.yaml", "address: 192.0.2.7\njump_host: jumps/bastion.yaml\n")
+        named = self.mirror.port
+        loader = NettermInventory(
+            str(self.workspace.root), credentials=False, tunnels=True, tunnel_ports=[named, 443]
+        )
+        inventory = loader.load()
+        self.addCleanup(loader.opened.close)
+        for name in BEHIND:
+            with self.subTest(host=name):
+                host = inventory.hosts[name]
+                entry = loader.opened.hosts[name]
+                # hostname and port stay the SSH endpoint.
+                self.assertEqual((host.hostname, host.port), ("127.0.0.1", entry["port"]))
+                answers = host["netterm"]["ports"]
+                self.assertEqual(set(answers), {named, 443})
+                self.assertEqual(answers[named], {"address": "127.0.0.1", "port": entry["extra_ports"][named]})
+                self.assertEqual(banner(answers[named]["port"]), b"SSH-")
+                # No connection plugin is given options for the extra ports.
+                self.assertFalse({"ncclient", "scrapli_netconf"} & set(host.connection_options))
+        direct = inventory.hosts["devices/r-pass.yaml"]["netterm"]["ports"]
+        self.assertEqual(direct, {named: {"address": "127.0.0.1", "port": named}, 443: {"address": "127.0.0.1", "port": 443}})
+        refused = inventory.hosts["refused/new-device.yaml"]["netterm"]["ports"][named]
+        self.assertIn("connect to it once in the app", refused["error"])
+
+    def test_a_script_that_names_no_ports_gets_no_answers(self) -> None:
+        nr = self.nornir(BEHIND)
+        for name in BEHIND:
+            self.assertEqual(nr.inventory.hosts[name]["netterm"]["ports"], {})
+            self.assertNotIn("extra_ports", nr.inventory.hosts[name]["netterm"]["tunnel"])
+        self.assertEqual(nr.inventory.hosts["behind/r1.yaml"].port, nr.inventory.hosts["behind/r1.yaml"]["netterm"]["tunnel"]["port"])
+
+    def open_ports(self) -> "tuple[dict, dict]":
+        """Tunnels to r1 with the mirror and the stranger named, and r1's login."""
+        opened = netterm.tunnels(self.workspace.root, hosts=["behind/r1.yaml"], ports=[self.mirror.port, self.stranger])
+        self.addCleanup(opened.close)
+        login = netterm.credentials(self.workspace.root, "behind/r1.yaml")
+        return opened.hosts["behind/r1.yaml"], login
+
+    def test_a_strict_key_client_through_an_extra_port_checks_the_device_key(self) -> None:
+        entry, login = self.open_ports()
+        for port, accepted in ((self.mirror.port, True), (self.stranger, False)):
+            with self.subTest(port=port):
+                client = paramiko.SSHClient()
+                client.load_host_keys(entry["known_hosts"])
+                client.set_missing_host_key_policy(paramiko.RejectPolicy())
+                try:
+                    connect = lambda: client.connect(  # noqa: E731
+                        "127.0.0.1",
+                        port=entry["extra_ports"][port],
+                        username=login["username"],
+                        password=login["auth"]["password"],
+                        look_for_keys=False,
+                        allow_agent=False,
+                        timeout=10,
+                    )
+                    if accepted:
+                        connect()
+                        self.assertTrue(client.get_transport().is_authenticated())
+                    else:
+                        with self.assertRaises(paramiko.SSHException):
+                            connect()
+                finally:
+                    client.close()
+
+    def test_ncclient_checks_the_device_key_through_an_extra_port(self) -> None:
+        try:
+            from ncclient import manager
+            from ncclient.transport.errors import SSHUnknownHostError
+        except ImportError:
+            self.skipTest("ncclient is not installed")
+        entry, login = self.open_ports()
+        options = netterm.host_key_options(entry)["ncclient"]
+        self.assertTrue(options["hostkey_verify"])
+        for port, accepted in ((self.mirror.port, True), (self.stranger, False)):
+            with self.subTest(port=port):
+                with self.assertRaises(Exception) as failed:
+                    # The test device speaks no NETCONF: the session fails
+                    # after the key check, or at it.
+                    manager.connect(
+                        host="127.0.0.1",
+                        port=entry["extra_ports"][port],
+                        username=login["username"],
+                        password=login["auth"]["password"],
+                        look_for_keys=False,
+                        allow_agent=False,
+                        timeout=10,
+                        **options,
+                    )
+                self.assertEqual(isinstance(failed.exception, SSHUnknownHostError), not accepted, failed.exception)
+
+    def test_scrapli_netconf_checks_the_device_key_through_an_extra_port(self) -> None:
+        try:
+            from scrapli_netconf.driver import NetconfDriver
+        except ImportError:
+            self.skipTest("scrapli_netconf is not installed")
+        entry, login = self.open_ports()
+        options = netterm.host_key_options(entry)["scrapli_netconf"]
+        for port, accepted in ((self.mirror.port, True), (self.stranger, False)):
+            with self.subTest(port=port):
+                driver = NetconfDriver(
+                    host="127.0.0.1",
+                    port=entry["extra_ports"][port],
+                    auth_username=login["username"],
+                    auth_password=login["auth"]["password"],
+                    transport="paramiko",
+                    timeout_socket=10,
+                    timeout_transport=10,
+                    timeout_ops=10,
+                    **options,
+                )
+                with self.assertRaises(Exception) as failed:
+                    driver.open()
+                driver.close()
+                said = str(failed.exception)
+                self.assertEqual("public key does not match" in said, not accepted, said)
 
 
 if __name__ == "__main__":

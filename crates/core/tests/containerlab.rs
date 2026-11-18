@@ -150,6 +150,41 @@ async fn lab_enrichment() {
     }
 }
 
+/// Tunnel ports: a script reaches NETCONF on the Junos device's port 830
+/// (ncclient, the device key checked) and eAPI on the cEOS device's port
+/// 443 (HTTPS) through the jump host.
+#[tokio::test]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+async fn lab_tunnel_ports() {
+    let Ok(Some(lab)) = lab::from_environment().map_err(|error| panic!("{error}")) else {
+        eprintln!("{}", lab::SKIP_MESSAGE);
+        return;
+    };
+    match lab::tunnel_ports::check(&lab).await {
+        Err(reason) => eprintln!("[lab] tunnel ports: NOT CHECKED: {reason}"),
+        Ok(reported) => {
+            let mut failures = Vec::new();
+            for r in &reported {
+                eprintln!(
+                    "[lab] tunnel ports: {} {}: {}: {}",
+                    r.check,
+                    r.host,
+                    r.result.to_uppercase(),
+                    r.detail
+                );
+                if r.result == "failed" {
+                    failures.push(format!("{} {}: {}", r.check, r.host, r.detail));
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "tunnel ports failed:\n{}",
+                failures.join("\n")
+            );
+        }
+    }
+}
+
 // The suite's own tests (no lab needed).
 
 fn env_with(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {

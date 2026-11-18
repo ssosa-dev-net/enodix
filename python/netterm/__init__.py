@@ -7,7 +7,9 @@ binary's output pipe to this process; nothing is written to disk or put in
 the environment.
 
 Hosts behind the app's jump hosts are reached through loopback tunnels the
-binary opens (:func:`tunnels`); the Nornir plugin opens them itself.
+binary opens (:func:`tunnels`), for their SSH port and any other device
+port a script names; :func:`endpoint` says where to connect for a port of
+a host, tunnelled or not. The Nornir plugin opens them itself.
 
 The Nornir inventory plugin is :class:`netterm.nornir.NettermInventory`
 (registered as ``NettermInventory``); it needs Nornir, which this package
@@ -25,7 +27,7 @@ from os import PathLike, fspath
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 from ._cli import CliFailed, CliNotFound, NettermError, default_location, find_cli, run
-from ._tunnel import Tunnels
+from ._tunnel import Endpoint, Tunnels, Unreachable, endpoint, host_key_options, ports_of
 
 try:
     from ._build import VERSION as __version__
@@ -35,12 +37,16 @@ except ImportError:  # the source tree
 __all__ = [
     "CliFailed",
     "CliNotFound",
+    "Endpoint",
     "NettermError",
     "Tunnels",
+    "Unreachable",
     "credentials",
     "default_location",
+    "endpoint",
     "job_workspace",
     "find_cli",
+    "host_key_options",
     "inventory",
     "secret",
     "tunnels",
@@ -111,6 +117,7 @@ def tunnels(
     folder: Optional[str] = None,
     filter: Optional[str] = None,
     hosts: Optional[Iterable[str]] = None,
+    ports: Optional[Iterable[int]] = None,
 ) -> Tunnels:
     """Loopback tunnels to the hosts behind jump hosts among those
     :func:`inventory` gives with the same limit (``netterm-cli tunnel``):
@@ -119,8 +126,13 @@ def tunnels(
     The result's ``hosts`` maps each such host id to where to connect
     instead (``address`` ``127.0.0.1``, ``port``) with a ``known_hosts``
     file of the device's trusted keys, or to an ``error`` saying why it is
-    not tunnelled. They stay open until closed or this process ends."""
-    return Tunnels([_workspace(workspace), *_limit(folder, filter, hosts)])
+    not tunnelled. ``ports`` are other device ports to carry for every
+    such host (``[830, 443]``: NETCONF, an HTTPS API); each tunnelled
+    host's entry then has ``extra_ports``, device port -> loopback port.
+    :func:`endpoint` answers where to connect for any host and port. They
+    stay open until closed or this process ends."""
+    named = ports_of(ports)
+    return Tunnels([_workspace(workspace), *_limit(folder, filter, hosts)], named)
 
 
 def credentials(workspace: Optional[Folder], host: str) -> Dict[str, Any]:

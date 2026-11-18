@@ -1183,6 +1183,18 @@ impl Handler for ScriptedShell {
         session.data(channel, self.prompt(channel))
     }
 
+    /// No subsystem (NETCONF, SFTP) is served: refused at once, so a
+    /// client that asks for one fails instead of waiting for an answer.
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        _name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        session.channel_failure(channel)?;
+        Ok(())
+    }
+
     async fn data(
         &mut self,
         channel: ChannelId,

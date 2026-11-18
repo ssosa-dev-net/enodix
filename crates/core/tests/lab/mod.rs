@@ -21,6 +21,8 @@
 #![allow(dead_code)]
 
 pub mod enrichment;
+pub mod scripts;
+pub mod tunnel_ports;
 
 use std::fs;
 use std::path::{Path, PathBuf};
