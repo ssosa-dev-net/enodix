@@ -5,7 +5,13 @@ in the project's tracker.
 
 ## Unreleased
 
-Nothing yet.
+### Fixes
+
+- The buttons of a question drawn over a terminal take the mouse again:
+  the host-key question (Trust once, Trust and remember, Cancel), a
+  server's login question, and the cards after a failed connection. A
+  click went to the terminal underneath, so the question could only be
+  answered with the keyboard.
 
 ## 0.4.0
 

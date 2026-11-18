@@ -880,6 +880,46 @@ async function until(description, probe, timeout = TIMEOUT_MS) {
   fail(`timed out waiting for ${description} (last: ${String(last)})`);
 }
 
+/**
+ * Fails unless a mouse at the centre of `selector` would reach it: nothing
+ * drawn over it takes the click (the terminal's WebGL layers once covered
+ * the questions drawn over a terminal). Resolves to that centre.
+ */
+async function reachable(evaluate, selector) {
+  const hit = await evaluate(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) return null;
+    element.scrollIntoView({ block: "nearest" });
+    const box = element.getBoundingClientRect();
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    const top = document.elementFromPoint(x, y);
+    return {
+      x,
+      y,
+      reached: !!top && (top === element || element.contains(top)),
+      top: top ? top.tagName.toLowerCase() + "." + String(top.className) : null,
+    };
+  })()`);
+  if (!hit) fail(`${selector} is not on screen`);
+  if (!hit.reached) fail(`a click on ${selector} would land on ${hit.top}`);
+  return hit;
+}
+
+/** Clicks `selector` with the mouse, as a user does, if it is reachable. */
+async function mouseClick(evaluate, devtools, selector) {
+  const { x, y } = await reachable(evaluate, selector);
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+    await devtools.send("Input.dispatchMouseEvent", {
+      type,
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+  }
+}
+
 /** The ids of the open session menu's entries (header or tab, #67). */
 const menuEntries = (evaluate) =>
   evaluate(
@@ -1461,8 +1501,9 @@ async function main() {
         };
       })()`),
     );
+  // With the mouse: a button something is drawn over fails here.
   const decideHostKey = (decision) =>
-    evaluate(`document.querySelector("[data-decision=${decision}]").click()`);
+    mouseClick(evaluate, devtools, `[data-decision=${decision}]`);
   const step = (message) => console.log(`ok - ${message}`);
   // Set SMOKE_SCREENSHOTS to a folder to keep pictures of the window.
   // Every screen photographed is also checked for contrast, in both
@@ -8968,6 +9009,8 @@ async function agentAndKeyboardInteractive({
     fail("the question's instructions are not shown");
   }
   await screenshot("login-question");
+  for (const control of ["[name=answer-0]", "button[type=submit]"])
+    await reachable(evaluate, `${loginPrompt} ${control}`);
   await fillForm({ "answer-0": ONE_TIME_CODE }, loginPrompt);
   await connected();
   if (await exists(loginPrompt)) fail("the question stayed on screen");
@@ -9128,6 +9171,7 @@ async function legacyCrypto({
     }
   }
   if (await exists(marker)) fail("a failed session is marked as legacy");
+  await reachable(evaluate, `${failureCard} button`);
   await screenshot("negotiation-failure");
   step("a failed negotiation listed the device's algorithms and the switch");
 
