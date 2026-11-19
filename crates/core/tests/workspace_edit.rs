@@ -207,7 +207,7 @@ fn creating_or_moving_into_a_folder_outside_the_workspace_is_refused() {
 fn renaming_a_folder_renames_its_directory_and_keeps_its_contents() {
     let (_temp, root, mut workspace) = edit_workspace();
 
-    let path = workspace.rename_folder("Core", "Backbone").unwrap();
+    let path = workspace.rename_folder("Core", "Backbone").unwrap().to;
 
     assert_eq!(path, "Backbone");
     assert_eq!(read(&root, "Backbone/core-r1.yaml"), CORE_R1);
@@ -223,7 +223,7 @@ fn renaming_a_folder_renames_its_directory_and_keeps_its_contents() {
 
     // Changing only the case is a rename too.
     assert_eq!(
-        workspace.rename_folder("Backbone", "backbone").unwrap(),
+        workspace.rename_folder("Backbone", "backbone").unwrap().to,
         "backbone"
     );
     assert!(files(&root).contains(&"backbone/".to_string()));
@@ -236,7 +236,8 @@ fn renaming_a_host_renames_its_file_and_its_name() {
     // A host with a `name` key: the key follows the new name.
     let id = workspace
         .rename_host(&HostId::new("Core/core-r1.yaml"), "spine-1")
-        .unwrap();
+        .unwrap()
+        .to;
     assert_eq!(id, HostId::new("Core/spine-1.yaml"));
     assert_eq!(
         read(&root, "Core/spine-1.yaml"),
@@ -246,7 +247,8 @@ fn renaming_a_host_renames_its_file_and_its_name() {
     // A host named by its file stays that way, and keeps its extension.
     let id = workspace
         .rename_host(&HostId::new("Core/core-r2.yml"), "spine-2")
-        .unwrap();
+        .unwrap()
+        .to;
     assert_eq!(id, HostId::new("Core/spine-2.yml"));
     assert_eq!(read(&root, "Core/spine-2.yml"), "address: 10.0.0.2\n");
     assert_eq!(host(&workspace, "Core/spine-2.yml").name, "spine-2");
@@ -266,7 +268,8 @@ fn moving_a_host_moves_its_file_unchanged() {
 
     let id = workspace
         .move_host(&HostId::new("Core/core-r1.yaml"), "Access")
-        .unwrap();
+        .unwrap()
+        .to;
 
     assert_eq!(id, HostId::new("Access/core-r1.yaml"));
     assert_eq!(read(&root, "Access/core-r1.yaml"), CORE_R1);
@@ -274,9 +277,9 @@ fn moving_a_host_moves_its_file_unchanged() {
     assert_eq!(workspace.folder("Access").unwrap().hosts.len(), 2);
 
     // To the root, and to where it already is.
-    let id = workspace.move_host(&id, "").unwrap();
+    let id = workspace.move_host(&id, "").unwrap().to;
     assert_eq!(id, HostId::new("core-r1.yaml"));
-    assert_eq!(workspace.move_host(&id, "").unwrap(), id);
+    assert_eq!(workspace.move_host(&id, "").unwrap().to, id);
     assert_eq!(read(&root, "core-r1.yaml"), CORE_R1);
 }
 
@@ -284,7 +287,7 @@ fn moving_a_host_moves_its_file_unchanged() {
 fn moving_a_folder_moves_its_whole_subtree() {
     let (_temp, root, mut workspace) = edit_workspace();
 
-    let path = workspace.move_folder("Access", "Core").unwrap();
+    let path = workspace.move_folder("Access", "Core").unwrap().to;
 
     assert_eq!(path, "Core/Access");
     assert_eq!(read(&root, "Core/Access/sw1.yaml"), "address: 10.0.2.1\n");
@@ -295,7 +298,10 @@ fn moving_a_folder_moves_its_whole_subtree() {
         .is_some());
 
     // Back to the root.
-    assert_eq!(workspace.move_folder("Core/Access", "").unwrap(), "Access");
+    assert_eq!(
+        workspace.move_folder("Core/Access", "").unwrap().to,
+        "Access"
+    );
     assert!(root.join("Access/sw1.yaml").exists());
 }
 

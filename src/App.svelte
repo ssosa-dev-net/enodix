@@ -88,6 +88,7 @@
     inventory,
     newFolder,
     newHost,
+    onHostsMoved,
     openBackup,
     openConfigHistory,
     openCsvImport,
@@ -357,6 +358,36 @@
     void edit({ kind: "openView", view: view.view, subject: view.subject });
   }
   setViewOpener(openViewTab);
+
+  // A host renamed or moved (#99): the sessions to it and its config
+  // history tab follow it to its new id.
+  $effect(() =>
+    onHostsMoved((moves, root) => {
+      untrack(() => {
+        const tree = inventory.workspace?.tree;
+        for (const session of Object.values(sessions)) {
+          if (session.workspace !== root || session.hostId === null) continue;
+          const moved = moves.find((move) => move.from === session.hostId);
+          if (!moved) continue;
+          session.hostId = moved.to;
+          const host = tree ? findHost(tree, moved.to) : null;
+          if (session.profileLogin && host) session.profileLogin.host = host;
+        }
+        for (const item of viewTabs) {
+          if (item.view !== "configs" || item.subject === null) continue;
+          const moved = moves.find((move) => move.from === item.subject);
+          if (moved) {
+            void edit({
+              kind: "retargetView",
+              view: "configs",
+              from: moved.from,
+              to: moved.to,
+            });
+          }
+        }
+      });
+    }),
+  );
 
   /** The view tabs, by tab id, as the core's layout names them. */
   const viewTabs = $derived(

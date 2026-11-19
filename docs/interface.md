@@ -161,6 +161,7 @@ else. Each of its features, and where it is now:
 | New folder, new host                             | Hosts view's add control; tree context menu; palette                               |
 | CSV import, Nornir import                        | Add control, folder context menu, folder details, palette; open as tabs            |
 | Rename, move, delete                             | Tree context menu; drag and drop (window-modal confirmations)                      |
+| What a rename or move left behind (#99)          | Notice at the top of the Hosts view                                                |
 | Host and folder properties, inherited settings   | Details sheet (sections device, connection, tags, custom fields, description)      |
 | Web links                                        | Details sheet's ways in                                                            |
 | Open log folder                                  | Details sheet; tree context menu                                                   |

@@ -163,6 +163,13 @@ impl ConfigStore {
         Ok(folder)
     }
 
+    /// Holds saves back while `work` runs (moving a host's versions), so
+    /// that none lands in a folder being moved.
+    pub(crate) fn while_not_saving<T>(&self, work: impl FnOnce() -> T) -> T {
+        let _saving = self.saving.lock().unwrap_or_else(PoisonError::into_inner);
+        work()
+    }
+
     /// Keeps `text` as a new version of `host`'s configuration, unless it
     /// is the same as the latest version once the lines matching `ignored`
     /// (a pattern, applied to each line) are left out of both.

@@ -52,6 +52,7 @@ mod identity;
 pub(crate) mod import;
 mod jobs;
 mod jumps;
+mod moves;
 mod platforms;
 mod roles;
 mod scripts;
@@ -67,6 +68,7 @@ pub use highlights::HIGHLIGHTS_FILE;
 pub use identity::WORKSPACE_FILE;
 pub use jobs::{SavedJob, JOBS_FILE};
 pub use jumps::JumpChainError;
+pub use moves::{HostMove, Moved};
 pub use platforms::PLATFORMS_FILE;
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
 pub use scripts::{ScriptError, SCRIPT_EXTENSION};
@@ -1166,23 +1168,24 @@ impl Workspace {
         Ok(path)
     }
 
-    /// Renames the folder at `path`; returns its new path.
-    pub fn rename_folder(&mut self, path: &str, name: &str) -> Result<String, EditError> {
+    /// Renames the folder at `path`; returns its new path, the hosts that
+    /// moved with it and the references to them rewritten (see [`Moved`]).
+    pub fn rename_folder(&mut self, path: &str, name: &str) -> Result<Moved<String>, EditError> {
         self.existing_subfolder(path, "renamed")?;
         let name = check_name(name)?;
         let (parent, old_name) = split_path(path);
         if name == old_name {
-            return Ok(path.to_string());
+            return Ok(Moved::nothing(path.to_string()));
         }
         let new_path = join(parent, name);
         self.ensure_free(parent, Entry::Folder(name), Some(old_name))?;
-        self.rename(path, &new_path)?;
-        Ok(new_path)
+        self.move_folder_to(path, new_path)
     }
 
     /// Moves the folder at `path`, with everything in it, into the folder at
-    /// `parent`; returns its new path.
-    pub fn move_folder(&mut self, path: &str, parent: &str) -> Result<String, EditError> {
+    /// `parent`; returns its new path, the hosts that moved with it and the
+    /// references to them rewritten (see [`Moved`]).
+    pub fn move_folder(&mut self, path: &str, parent: &str) -> Result<Moved<String>, EditError> {
         self.existing_subfolder(path, "moved")?;
         self.existing_folder(parent)?;
         if parent == path || parent.starts_with(&format!("{path}/")) {
@@ -1192,12 +1195,31 @@ impl Workspace {
         }
         let (old_parent, name) = split_path(path);
         if old_parent == parent {
-            return Ok(path.to_string());
+            return Ok(Moved::nothing(path.to_string()));
         }
         let new_path = join(parent, name);
         self.ensure_free(parent, Entry::Folder(name), None)?;
+        self.move_folder_to(path, new_path)
+    }
+
+    /// Renames the folder at `path` to `new_path` (checked free), then
+    /// rewrites what named it or its hosts.
+    fn move_folder_to(&mut self, path: &str, new_path: String) -> Result<Moved<String>, EditError> {
+        let hosts = moves::folder_moves(self.existing_folder(path)?, path, &new_path);
         self.rename(path, &new_path)?;
-        Ok(new_path)
+        let mut moved = Moved {
+            hosts,
+            ..Moved::nothing(new_path)
+        };
+        let to = moved.to.clone();
+        self.rewrite_references(
+            &mut moved,
+            Some(moves::FolderMove {
+                from: path,
+                to: &to,
+            }),
+        );
+        Ok(moved)
     }
 
     /// Deletes the folder at `path` and everything in it, files the app does
@@ -1327,8 +1349,9 @@ impl Workspace {
     }
 
     /// Renames the host `id`: its file (keeping the extension) and, if the
-    /// file names it explicitly, its `name`. Returns its new id.
-    pub fn rename_host(&mut self, id: &HostId, name: &str) -> Result<HostId, EditError> {
+    /// file names it explicitly, its `name`. Returns its new id and the
+    /// references to it rewritten (see [`Moved`]).
+    pub fn rename_host(&mut self, id: &HostId, name: &str) -> Result<Moved<HostId>, EditError> {
         let host = self.existing_host(id)?.clone();
         let name = check_name(name)?;
         let (folder, file_name) = id.split();
@@ -1347,23 +1370,38 @@ impl Workspace {
             write_mapping(&self.root, new_id.as_str(), &document)?;
         }
         self.reload()?;
-        Ok(new_id)
+        Ok(self.moved_host(id, new_id))
     }
 
     /// Moves the host `id` into the folder at `folder`; its file is moved
-    /// unchanged. Returns its new id.
-    pub fn move_host(&mut self, id: &HostId, folder: &str) -> Result<HostId, EditError> {
+    /// unchanged. Returns its new id and the references to it rewritten
+    /// (see [`Moved`]).
+    pub fn move_host(&mut self, id: &HostId, folder: &str) -> Result<Moved<HostId>, EditError> {
         self.existing_host(id)?;
         self.existing_folder(folder)?;
         let (old_folder, file_name) = id.split();
         if old_folder == folder {
-            return Ok(id.clone());
+            return Ok(Moved::nothing(id.clone()));
         }
         let stem = yaml_stem(file_name).unwrap_or(file_name);
         self.ensure_free(folder, Entry::Host(stem), None)?;
         let new_id = HostId::new(join(folder, file_name));
         self.rename(id.as_str(), new_id.as_str())?;
-        Ok(new_id)
+        Ok(self.moved_host(id, new_id))
+    }
+
+    /// The host `from` is now `to` (on disk and loaded): rewrites what
+    /// named it.
+    fn moved_host(&mut self, from: &HostId, to: HostId) -> Moved<HostId> {
+        let mut moved = Moved::nothing(to.clone());
+        if *from != to {
+            moved.hosts.push(HostMove {
+                from: from.clone(),
+                to,
+            });
+            self.rewrite_references(&mut moved, None);
+        }
+        moved
     }
 
     /// Deletes the host `id`'s file.
@@ -1752,6 +1790,12 @@ fn write_mapping(root: &Path, file: &str, document: &Mapping) -> Result<(), Edit
         file: file.to_string(),
         source: io::Error::other(error),
     })?;
+    write_text(root, file, &text)
+}
+
+/// Writes `text` to `file` (relative to `root`): whole to a hidden file
+/// beside it, then renamed over it.
+fn write_text(root: &Path, file: &str, text: &str) -> Result<(), EditError> {
     let path = root.join(file);
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     let temporary = path.with_file_name(format!(".{file_name}.tmp"));

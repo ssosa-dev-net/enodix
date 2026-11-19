@@ -16,11 +16,12 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::workspace::{forbidden_in_file_names, is_device_name, HostId, Workspace};
 
 /// The folder below the log folder for workspace hosts' logs.
-const WORKSPACES: &str = "workspaces";
+pub(crate) const WORKSPACES: &str = "workspaces";
 
 /// The folder below the log folder for quick connections' logs.
 const QUICK_CONNECT: &str = "quick connect";
@@ -49,6 +50,12 @@ impl LogFolder {
     /// `None` if the workspace has no such host.
     pub fn host_folder(&self, workspace: &Workspace, id: &HostId) -> Option<PathBuf> {
         workspace.host(id)?;
+        Some(self.folder_of(workspace, id))
+    }
+
+    /// The folder the logs of the host `id` of `workspace` go to, whether
+    /// or not the workspace has it (any more).
+    pub(crate) fn folder_of(&self, workspace: &Workspace, id: &HostId) -> PathBuf {
         let mut folder = self.root.join(WORKSPACES).join(workspace_name(workspace));
         let (parents, file) = id.as_str().rsplit_once('/').unwrap_or(("", id.as_str()));
         for part in parents.split('/').filter(|part| !part.is_empty()) {
@@ -58,7 +65,7 @@ impl LogFolder {
             .file_stem()
             .map_or_else(|| file.into(), |stem| stem.to_string_lossy());
         folder.push(portable(&host));
-        Some(folder)
+        folder
     }
 
     /// Creates the host's log folder if it is not there yet (to show it
@@ -81,33 +88,61 @@ impl LogFolder {
         if !resolved.settings.logging.value {
             return None;
         }
-        Some(SessionLog {
-            folder: self.host_folder(workspace, id)?,
-        })
+        Some(SessionLog::new(self.host_folder(workspace, id)?))
     }
 
     /// Where a session to something outside any workspace (a quick
     /// connection) is logged: `quick connect/<name>`, `name` being the
     /// address or serial port, made a portable folder name.
     pub fn quick_log(&self, name: &str) -> SessionLog {
-        SessionLog {
-            folder: self.root.join(QUICK_CONNECT).join(portable(name)),
-        }
+        SessionLog::new(self.root.join(QUICK_CONNECT).join(portable(name)))
     }
 }
 
 /// Where one session is logged: a folder that gets a file per connection.
 /// Nothing is written until the session connects.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Clones share the folder: when the host's logs move
+/// ([`crate::history::carry`]), its open sessions log to the new folder
+/// from then on, reconnections included.
+#[derive(Debug, Clone)]
 pub struct SessionLog {
-    folder: PathBuf,
+    folder: Arc<Mutex<PathBuf>>,
 }
 
 impl SessionLog {
-    pub fn folder(&self) -> &Path {
-        &self.folder
+    fn new(folder: PathBuf) -> Self {
+        Self {
+            folder: Arc::new(Mutex::new(folder)),
+        }
+    }
+
+    pub fn folder(&self) -> PathBuf {
+        self.folder
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Logs to `folder` from now on, if it logs to `from` now; whether it
+    /// did.
+    pub(crate) fn move_folder(&self, from: &Path, folder: &Path) -> bool {
+        let mut current = self.folder.lock().unwrap_or_else(PoisonError::into_inner);
+        let moved = *current == from;
+        if moved {
+            *current = folder.to_path_buf();
+        }
+        moved
     }
 }
+
+impl PartialEq for SessionLog {
+    fn eq(&self, other: &Self) -> bool {
+        self.folder() == other.folder()
+    }
+}
+
+impl Eq for SessionLog {}
 
 /// A session log could not be written; the session goes on, unlogged from
 /// then on.
@@ -128,17 +163,21 @@ impl LogFailure {
     }
 }
 
-/// Writes one connection's output to its log file.
+/// Writes one connection's output to its log file. The file may be moved
+/// while it is open (with the host's logs): writing goes on into it there.
 pub(crate) struct Logger {
     file: File,
-    path: PathBuf,
+    /// The session's log, and the file's name in its folder.
+    log: SessionLog,
+    name: String,
     text: PlainText,
 }
 
 impl Logger {
     /// Creates the log file for a connection starting now.
     pub(crate) fn start(log: &SessionLog) -> Result<Self, LogFailure> {
-        fs::create_dir_all(&log.folder).map_err(|error| LogFailure::new(&log.folder, &error))?;
+        let folder = log.folder();
+        fs::create_dir_all(&folder).map_err(|error| LogFailure::new(&folder, &error))?;
         let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
         let mut attempt = 1;
         loop {
@@ -146,12 +185,13 @@ impl Logger {
                 1 => format!("{stamp}.log"),
                 n => format!("{stamp}_{n}.log"),
             };
-            let path = log.folder.join(name);
+            let path = folder.join(&name);
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => {
                     return Ok(Self {
                         file,
-                        path,
+                        log: log.clone(),
+                        name,
                         text: PlainText::new(),
                     })
                 }
@@ -162,6 +202,11 @@ impl Logger {
                 Err(error) => return Err(LogFailure::new(&path, &error)),
             }
         }
+    }
+
+    /// Where the file is now.
+    fn path(&self) -> PathBuf {
+        self.log.folder().join(&self.name)
     }
 
     /// Logs output: the lines it completes are written at once.
@@ -176,7 +221,7 @@ impl Logger {
         self.write_text(&rest)?;
         self.file
             .sync_all()
-            .map_err(|error| LogFailure::new(&self.path, &error))
+            .map_err(|error| LogFailure::new(&self.path(), &error))
     }
 
     fn write_text(&mut self, text: &str) -> Result<(), LogFailure> {
@@ -185,7 +230,7 @@ impl Logger {
         }
         self.file
             .write_all(text.as_bytes())
-            .map_err(|error| LogFailure::new(&self.path, &error))
+            .map_err(|error| LogFailure::new(&self.path(), &error))
     }
 }
 

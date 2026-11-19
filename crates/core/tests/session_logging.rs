@@ -357,7 +357,7 @@ async fn quick_connections_are_logged_by_their_address() {
     connected(&mut events).await;
     manager.write(id, b"exit\r".to_vec()).unwrap();
     closed(&mut events).await;
-    let files = logs_in(log.folder());
+    let files = logs_in(&log.folder());
     assert_eq!(files.len(), 1, "{files:?}");
     assert_eq!(fs::read_to_string(&files[0]).unwrap(), "test-ssh$ exit\n");
 }

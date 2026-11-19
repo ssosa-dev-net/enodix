@@ -71,6 +71,8 @@ export type LayoutEdit =
   | { kind: "openTab" }
   /** Shows the view's tab if it is open, else opens one. */
   | { kind: "openView"; view: ViewName; subject: string | null }
+  /** The view about `from` is about `to` now (its host moved, #99). */
+  | { kind: "retargetView"; view: ViewName; from: string; to: string }
   | { kind: "openTabBeside"; tab: TabId }
   | { kind: "activate"; tab: TabId }
   | { kind: "activatePane"; pane: PaneId }

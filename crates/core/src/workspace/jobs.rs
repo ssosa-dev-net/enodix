@@ -93,12 +93,7 @@ fn parse(name: &str, definition: &Value) -> Result<SavedJob, String> {
             }),
             SCRIPT => steps.push(JobStep::Script { path: text()? }),
             FOLDER => targets.push(JobTarget::Folder {
-                // `folder:` alone is the root.
-                path: if value.is_null() {
-                    String::new()
-                } else {
-                    text()?
-                },
+                path: folder_text(value).ok_or_else(|| format!("`{key}` must be text"))?,
             }),
             FILTER => targets.push(JobTarget::Filter { name: text()? }),
             HOST => targets.push(JobTarget::Hosts {
@@ -135,6 +130,51 @@ fn parse(name: &str, definition: &Value) -> Result<SavedJob, String> {
         step,
         target,
     })
+}
+
+/// A `folder` target's path: `folder:` alone is the root.
+fn folder_text(value: &Value) -> Option<String> {
+    if value.is_null() {
+        Some(String::new())
+    } else {
+        scalar_text(value)
+    }
+}
+
+/// Points the entries of the jobs file's `document` whose `host` names a
+/// moved host, or whose `folder` is a moved folder, at the new path: `host`
+/// and `folder` give it, if the value moved. Entries defined badly are
+/// changed too. Returns whether anything changed.
+pub(super) fn retarget(
+    document: &mut Mapping,
+    host: impl Fn(&str) -> Option<String>,
+    folder: impl Fn(&str) -> Option<String>,
+) -> bool {
+    let mut changed = false;
+    for (_, entry) in document.iter_mut() {
+        let Value::Mapping(entry) = entry else {
+            continue;
+        };
+        for (key, moved) in [
+            (
+                HOST,
+                entry.get(HOST).and_then(scalar_text).and_then(|v| host(&v)),
+            ),
+            (
+                FOLDER,
+                entry
+                    .get(FOLDER)
+                    .and_then(folder_text)
+                    .and_then(|v| folder(&v)),
+            ),
+        ] {
+            if let Some(to) = moved {
+                entry.insert(key.into(), to.into());
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 fn parse_answers(value: &Value) -> Result<BTreeMap<String, String>, String> {

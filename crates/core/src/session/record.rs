@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use super::{SessionId, Transport};
 use crate::paste::PasteSafety;
-use crate::workspace::{HostId, Role, Workspace};
+use crate::workspace::{HostId, HostMove, Role, Workspace};
 
 /// A session's name, host and header facts, and its paste safety, as they
 /// were when it opened.
@@ -156,6 +156,25 @@ impl SessionRecords {
             return PasteSafety::default();
         };
         workspace.map_or(record.safety, |workspace| record.safety_in(workspace))
+    }
+
+    /// The hosts of `moves` in the workspace at `root` have new ids: the
+    /// records of sessions to them name the new ones (so their snippets,
+    /// pastes and history follow the host). Returns the sessions changed.
+    pub fn move_hosts(&self, root: &std::path::Path, moves: &[HostMove]) -> Vec<SessionId> {
+        let mut changed = Vec::new();
+        for (session, record) in self.lock().iter_mut() {
+            if !record.of_workspace(root) {
+                continue;
+            }
+            let Some(host) = &record.host else { continue };
+            if let Some(moved) = moves.iter().find(|moved| moved.from == *host) {
+                record.host = Some(moved.to.clone());
+                changed.push(*session);
+            }
+        }
+        changed.sort_by_key(|session| session.0);
+        changed
     }
 
     /// Forgets `session`'s record: the session was discarded.
