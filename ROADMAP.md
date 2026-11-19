@@ -28,7 +28,7 @@ What comes after v1. The order and the decisions below were settled in a design 
 Settled on 2026-11-18. The two items left are built in the order 9, 4:
 
 1. **Tunnel ports for scripts** (9): built on 2026-11-18 (spec #91, tickets #92 and #93).
-2. **SFTP/SCP browser** (4): the most use day to day. Designed (spec #95); a prototype against the lab comes first (#96).
+2. **SFTP/SCP browser** (4): the most use day to day. Designed (spec #95) and prototyped against the lab (#96); to build: #101 to #108.
 
 These are the last features before the app goes into daily use. Nothing is released in between. Each feature ends with a sweep of its spec's user stories; then comes a second pass over Hardening, reordered by what has been found by then; then one release, 0.5.0, still an unsigned pre-release. That release is installed and run on Windows before it is published (the check owed since 0.3.0), and daily use starts with it.
 
@@ -61,7 +61,8 @@ The parts below are not in an order yet: they are ordered in the pass that follo
 - In short: an activity rail with one foldable side view replaces the toolbar and the permanent side columns; jobs, config history, preferences and the imports open as tabs beside the terminals; only short confirmations stay dialogs; job runs and config history can open as real windows. Behaviour does not change.
 - Found in use after 0.3.0: the system title bar wasted a line and did not match, so the app now draws its own window frame (#80, built). The cosmetic fixes made after 0.3.0 and the window frame are in 0.4.0.
 - Also found in use: terminals could not leave the main window, which engineers with several monitors need when troubleshooting across devices (spec #81, closed). The risky part, handing a live session from one window to another without losing output, was proven by a prototype (#82) and its mechanism is in the core with tests. Built on 2026-11-15 (#83 to #90) and released in 0.4.0: a session moves to a window of its own and back, session windows hold tabs and split panes, and safety markers, questions, multi-send and the closing rules follow. Checked with twenty sessions over three windows on two monitors. A session window whose page crashes hands its sessions to the main window (#89). A new session window is placed by physical position, so it opens beside the main window on monitors with different scaling too (#90, checked at 100% and 150%). Still open: a session window whose page hangs without crashing, or the web engine dying as a whole, leaves sessions stuck until the app is closed; the crash handling is untried on a Linux desktop.
-- Small limits of the new window, known and left for now: Windows 11's snap-layouts menu on the Maximize button is not offered (dragging to an edge and the Win+arrow keys still snap); in a narrow top-right pane the pane's own tools (join, split, close pane) are cut off first; a window cannot be moved while a window-wide dialog is open.
+- Small limits of the new window, known and left for now: Windows 11's snap-layouts menu on the Maximize button is not offered (dragging to an edge and the Win+arrow keys still snap); a window cannot be moved while a window-wide dialog is open. In a narrow top-right pane the pane's own tools (join, split, close pane) used to be cut off and could not be clicked; since #100 they fold into a "…" menu (on main, not released).
+- Found on 2026-11-19, in 0.4.0 and on main alike, not ticketed: when the top-right pane's bar gets narrower than about 175 px, the window's own Minimize, Maximize and Close start to leave the window. With the side view open that is a main window under about 560 px wide, or under about 685 px with two panes side by side; the window can be made as narrow as 480 px. Folding the side view brings them back.
 
 **Edge testing**
 
@@ -156,15 +157,20 @@ Move images and configs to and from devices without a separate tool.
 - SFTP and SCP file browser for a host, opened from the side panel.
 - Push a file to a device from the inventory.
 - SFTP uses `russh-sftp`; SCP has no library support and runs over a remote command.
-- Designed on 2026-11-18 (spec #95). A prototype against the lab devices comes first (#96); the build tickets follow its findings.
+- Designed on 2026-11-18 (spec #95). The prototype against the lab devices (#96) reported the same day, and the build tickets were written from it on 2026-11-19 (#101 to #108). None is built yet.
   - A Files tab per host, beside the terminals. It logs in with the host's credential profile through its jump hosts, on a connection of its own, so the terminal is never slowed. A login that must be typed and an unknown host key are asked in the tab.
   - Devices with SFTP get a browser: list, upload, download, rename, delete, new folder. Devices with SCP only (IOS, IOS-XE) get transfer by path; the app falls back by itself.
   - The local side is the operating system: a file dialog, files dropped from Explorer, a folder to download into.
   - Transfers show progress and speed and can be cancelled; one at a time per host. Sizes are checked, and the uploaded file's MD5 and SHA-256 are shown for comparing with the device's own verify command. No resume.
-  - On a production host, uploading, deleting and renaming ask first; overwriting asks on every host.
+  - On a production host, uploading, deleting and renaming ask first; overwriting asks wherever the device can say the file is there.
   - A platform definition gains a seventh value, the folder where files belong on that platform.
   - "Send a file to many hosts" is a job step, for staging an image on a folder of devices: three in parallel by default, a host that already has the file counts as done, and the kept run records what was sent where.
 - Left out: editing in place, whole folders, a two-pane view, using the open terminal's connection, fetching a file from many hosts, file commands in the headless binary.
+- What the prototype found (the detail is on #96 and in `docs/containerlab.md`):
+  - The SFTP library works with the pinned SSH library and, once tuned, moves a 500 MB file as fast as OpenSSH over the same path.
+  - SR Linux, cEOS and FRR offer SFTP as they come; cJunos offers it once its SFTP server is turned on, and SCP before that; IOS-XE offers SCP only, and only once `ip scp server enable` is set.
+  - IOS-XE closes the connection after each SCP transfer and has five lines in all, so on a device with SCP only the app connects per file and holds no connection in between.
+- Decided from it: the app runs no commands on a device to make up for what SCP lacks. So on a device with SCP only there is no listing, an existing file is replaced without a question (the form says so), a wrong folder fails only once the whole file has been sent, and the file job cannot tell that the file is already there: such a host fails unless "overwrite" is ticked.
 
 ## 5. Headless binary, Python bridge and script jobs
 
@@ -246,4 +252,4 @@ Let scripts reach more than a host's SSH port through the app's jump hosts.
 - **Linux:** the check on a real desktop (Ubuntu and Fedora, X11 and Wayland), before Linux is claimed as supported.
 - **Script tunnels:** job pre-flight does not know host keys, so a host whose device or jump-host key is not trusted yet is refused only when the job runs.
 - **Tunnel ports:** the app checks no TLS certificate (eAPI, RESTCONF, NX-API through a tunnel are only as safe as the script's own check beyond the last jump host); whether certificates should ever be learned or pinned like host keys is undecided. ncclient fails to negotiate with a device for which the app trusts only an RSA key and that offers RSA only as `rsa-sha2-*` (an ncclient limit). scrapli-netconf's `system` transport, gNMI, RESTCONF and NX-API were not tried; the ports were tried on Windows only.
-- **SFTP/SCP browser:** what the prototype (#96) finds: whether the SFTP library fits and is fast enough, and what each lab device offers.
+- **SFTP/SCP browser:** the lab is virtual, so speeds on real hardware are unknown (the lab's CSR is held to 1 Mbit/s). Not verified: NX-OS (no image), the name of flash on physical Catalyst switches, a jump host that needs a typed login. Whether the file job should be able to ask an IOS device if the file is already there, which needs a command per platform, is left until it is missed.
