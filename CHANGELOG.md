@@ -5,6 +5,13 @@ in the project's tracker.
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.4.1
+
+A pre-release: not code-signed, and without automatic updates (install it
+over 0.4.0 by hand).
+
 ### New
 
 - Scripts reach more than a device's SSH port through the app's jump
@@ -23,6 +30,15 @@ in the project's tracker.
 
 ### Fixes
 
+- Renaming or moving a host, or a folder holding hosts, keeps what
+  belongs to them [99]. Their session logs and config history move to
+  the new name (a session open on the host goes on logging there), and
+  the jump host settings and saved jobs that named them are changed to
+  the new name, so the hosts behind a renamed bastion still connect
+  through it. Only the files that named them are written, and only that
+  value. History that cannot move, because an earlier host of the new
+  name left its own there, stays where it was and is never mixed with it;
+  a notice in the Hosts view says what stayed and where.
 - The buttons of a question drawn over a terminal take the mouse again:
   the host-key question (Trust once, Trust and remember, Cancel), a
   server's login question, and the cards after a failed connection. A
