@@ -605,6 +605,42 @@ fn the_same_view_about_another_subject_is_another_tab() {
 }
 
 #[test]
+fn a_view_whose_subject_moved_stays_in_its_tab_about_the_new_one() {
+    let configs = |host: &str| View::new("configs", Some(host.into()));
+    let mut layout = Layout::new();
+    let r1 = layout.open_view(configs("Lab/r1.yaml")).unwrap();
+    let other = layout.open_tab();
+    let revision = layout.revision();
+
+    assert_eq!(
+        layout.retarget_view(&configs("Lab/r1.yaml"), Some("Hops/r1.yaml".into())),
+        Some(r1)
+    );
+    assert!(layout.revision() > revision);
+    assert_eq!(
+        layout.tab_kind(r1),
+        Some(&TabKind::View(configs("Hops/r1.yaml")))
+    );
+    assert_eq!(layout.view_tab(&configs("Lab/r1.yaml")), None);
+    // Its place and the tab shown are kept.
+    assert_eq!(tabs(&layout, layout.active_pane()), vec![r1, other]);
+    assert_eq!(layout.active_tab(), Some(other));
+
+    // A view that is not open: nothing to do.
+    assert_eq!(
+        layout.retarget_view(&configs("Lab/r2.yaml"), Some("Hops/r2.yaml".into())),
+        None
+    );
+    // The new subject already has its tab: the old one closes.
+    let r3 = layout.open_view(configs("r3.yaml")).unwrap();
+    assert_eq!(
+        layout.retarget_view(&configs("Hops/r1.yaml"), Some("r3.yaml".into())),
+        Some(r3)
+    );
+    assert_eq!(layout.tab_kind(r1), None);
+}
+
+#[test]
 fn a_closed_view_opens_again_as_a_new_tab() {
     let mut layout = Layout::new();
     let view = layout.open_view(preferences()).unwrap();

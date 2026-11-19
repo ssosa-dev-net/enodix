@@ -535,6 +535,37 @@
     </p>
   {/if}
 
+  {#if inventory.moveReport}
+    {@const report = inventory.moveReport}
+    <div class="move-report" role="alert" data-move-report={report.item}>
+      <p class="move-report-line">
+        <span
+          >{report.item} moved, but not everything that belongs to it followed:</span
+        >
+        <button
+          class="dismiss"
+          aria-label="Dismiss"
+          data-move-report-dismiss
+          onclick={() => (inventory.moveReport = null)}
+          ><X size={14} aria-hidden="true" /></button
+        >
+      </p>
+      <ul>
+        {#each report.left as left (left.kind + left.from)}
+          <li data-move-left={left.host} data-kind={left.kind}>
+            {left.kind === "sessionLogs" ? "Session logs" : "Config history"}
+            of {left.host} stayed in <code>{left.folder}</code>: {left.reason}
+          </li>
+        {/each}
+        {#each report.notRewritten as problem, index (index)}
+          <li data-move-not-rewritten={problem.file}>
+            {problem.file} still names the old path: {problem.message}
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+
   {#if workspace}
     {#if empty}
       <div class="empty" data-hosts-empty>
@@ -868,6 +899,33 @@
     background: none;
     padding: 0 var(--space-1);
     color: var(--muted);
+  }
+
+  .move-report {
+    margin: var(--space-2) var(--space-2) 0;
+    border: 1px solid var(--warning-border);
+    border-radius: var(--radius-md);
+    background: var(--warning-bg);
+    padding: var(--space-1-5) var(--space-2);
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
+  }
+
+  .move-report-line {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-1-5);
+    margin: 0;
+    color: var(--warning);
+  }
+
+  .move-report-line span {
+    flex: 1;
+  }
+
+  .move-report ul {
+    margin: var(--space-1) 0 0;
+    padding-left: var(--space-4);
   }
 
   .problems {

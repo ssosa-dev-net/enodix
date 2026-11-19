@@ -754,6 +754,19 @@ impl SessionManager {
         Ok(self.add(target, options, channel_of, size))
     }
 
+    /// Makes every session (open or closed, not discarded) that logs to
+    /// the folder `from` log to `to` from now on: a connection already
+    /// logging goes on in its file wherever it was moved to, and the next
+    /// ones start there. Returns how many sessions it changed.
+    pub fn move_logs(&self, from: &std::path::Path, to: &std::path::Path) -> usize {
+        self.inner
+            .sessions()
+            .values()
+            .filter_map(|entry| entry.options.log.as_ref())
+            .filter(|log| log.move_folder(from, to))
+            .count()
+    }
+
     /// Forgets the session, closing it first if it is open: it can no
     /// longer be reconnected or duplicated, and what it held (its login
     /// included) is dropped. Nothing happens if it is unknown.

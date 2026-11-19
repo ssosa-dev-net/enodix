@@ -17,6 +17,7 @@ use netterm_core::credentials::{
 use netterm_core::diff::DiffLine;
 use netterm_core::enrich::{self, EnrichPreview, EnrichReport};
 use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
+use netterm_core::history::{self, LeftHistory};
 use netterm_core::import::csv::{
     suggest_mapping, ColumnTarget, CsvImport, CsvTable, ImportPreview, Separator,
 };
@@ -48,8 +49,8 @@ use netterm_core::template::Variables;
 use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
 use netterm_core::workspace::{
     EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion, Host, HostId,
-    HostWebLink, Problem, Protocol, ResolvedHost, Role, SavedFilter, SavedJob, SearchResults,
-    Settings, Snippet, WatchOptions, Workspace, WorkspaceWatcher, WORKSPACE_FILE,
+    HostMove, HostWebLink, Moved, Problem, Protocol, ResolvedHost, Role, SavedFilter, SavedJob,
+    SearchResults, Settings, Snippet, WatchOptions, Workspace, WorkspaceWatcher, WORKSPACE_FILE,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -510,6 +511,57 @@ struct Edited<T> {
     result: T,
 }
 
+/// The workspace after renaming or moving a host or folder (#99): the new
+/// id or path, the hosts that moved, the references to them that could not
+/// be rewritten and the history that did not follow them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Relocated<T> {
+    workspace: WorkspaceView,
+    result: T,
+    moved: Vec<HostMove>,
+    not_rewritten: Vec<Problem>,
+    left: Vec<LeftHistory>,
+}
+
+/// Renames or moves a host or folder of the open workspace, then carries
+/// what belongs to the hosts concerned: their session logs and config
+/// history (open sessions log to the new place) and the app's records of
+/// sessions to them.
+fn relocate<T>(
+    app: &AppHandle,
+    change: impl FnOnce(&mut Workspace) -> Result<Moved<T>, EditError>,
+) -> Result<Relocated<T>, String> {
+    let shell = app.state::<Shell>();
+    let mut guard = shell.workspace();
+    let workspace = guard.as_mut().ok_or("no workspace is open")?;
+    let moved = change(workspace).map_err(|error| error.to_string())?;
+    let records = app.state::<SessionRecords>();
+    let carried = history::carry(
+        workspace,
+        &moved.hosts,
+        &shell.logs,
+        &app.state::<Configs>().0,
+        Some(history::Sessions {
+            manager: &app.state::<SessionManager>(),
+            records: &records,
+        }),
+    );
+    let sessions_moved = !carried.sessions.is_empty();
+    let relocated = Relocated {
+        workspace: WorkspaceView::from(&*workspace),
+        result: moved.to,
+        moved: moved.hosts,
+        not_rewritten: moved.not_rewritten,
+        left: carried.left,
+    };
+    drop(guard);
+    if sessions_moved {
+        session_windows::announce(app, &app.state::<Tabs>(), &records);
+    }
+    Ok(relocated)
+}
+
 /// What deleting a folder did.
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -547,21 +599,13 @@ fn folder_create(
 }
 
 #[tauri::command]
-fn folder_rename(
-    shell: State<'_, Shell>,
-    path: String,
-    name: String,
-) -> Result<Edited<String>, String> {
-    edit(&shell, |workspace| workspace.rename_folder(&path, &name))
+fn folder_rename(app: AppHandle, path: String, name: String) -> Result<Relocated<String>, String> {
+    relocate(&app, |workspace| workspace.rename_folder(&path, &name))
 }
 
 #[tauri::command]
-fn folder_move(
-    shell: State<'_, Shell>,
-    path: String,
-    parent: String,
-) -> Result<Edited<String>, String> {
-    edit(&shell, |workspace| workspace.move_folder(&path, &parent))
+fn folder_move(app: AppHandle, path: String, parent: String) -> Result<Relocated<String>, String> {
+    relocate(&app, |workspace| workspace.move_folder(&path, &parent))
 }
 
 #[tauri::command]
@@ -1097,21 +1141,13 @@ fn host_create(
 }
 
 #[tauri::command]
-fn host_rename(
-    shell: State<'_, Shell>,
-    id: HostId,
-    name: String,
-) -> Result<Edited<HostId>, String> {
-    edit(&shell, |workspace| workspace.rename_host(&id, &name))
+fn host_rename(app: AppHandle, id: HostId, name: String) -> Result<Relocated<HostId>, String> {
+    relocate(&app, |workspace| workspace.rename_host(&id, &name))
 }
 
 #[tauri::command]
-fn host_move(
-    shell: State<'_, Shell>,
-    id: HostId,
-    folder: String,
-) -> Result<Edited<HostId>, String> {
-    edit(&shell, |workspace| workspace.move_host(&id, &folder))
+fn host_move(app: AppHandle, id: HostId, folder: String) -> Result<Relocated<HostId>, String> {
+    relocate(&app, |workspace| workspace.move_host(&id, &folder))
 }
 
 #[tauri::command]
@@ -2291,6 +2327,12 @@ enum LayoutEdit {
         view: String,
         subject: Option<String>,
     },
+    /// The view `view` about `from` is about `to` now (its host moved).
+    RetargetView {
+        view: String,
+        from: String,
+        to: String,
+    },
     OpenTabBeside {
         tab: TabId,
     },
@@ -2428,6 +2470,9 @@ fn apply_layout_edit(
         LayoutEdit::OpenView { view, subject } => {
             Some(layout.open_view(View::new(view, subject))?.0)
         }
+        LayoutEdit::RetargetView { view, from, to } => layout
+            .retarget_view(&View::new(view, Some(from)), Some(to))
+            .map(|tab| tab.0),
         LayoutEdit::OpenTabBeside { tab } => Some(layout.open_tab_beside(tab).map(|t| t.0)?),
         LayoutEdit::Activate { tab } => layout.activate(tab).map(|()| None)?,
         LayoutEdit::ActivatePane { pane } => layout.activate_pane(pane).map(|()| None)?,

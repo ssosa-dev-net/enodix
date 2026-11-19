@@ -19,7 +19,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const SSH_PORT = 22722;
@@ -5824,6 +5824,7 @@ async function jobs({
   const profilesDialog = CREDENTIALS;
   const folder = join(workspace, "Jobs");
   const backupHostFile = join(folder, "jobs-b1.yaml");
+  const renamedHostFile = join(folder, "jobs-b2.yaml");
   const snippetsFile = join(workspace, "_snippets.yaml");
   const savedSnippets = existsSync(snippetsFile)
     ? readFileSync(snippetsFile, "utf8")
@@ -6807,9 +6808,70 @@ async function jobs({
     step(
       "closing the history's window closed only it; Dock back opened the history as a tab again",
     );
+
+    // Renamed (#99): its session logs and its config versions follow it
+    // to the new path, and its open history tab shows them under it.
+    const logsOf = (name) =>
+      join(appData, "logs", "workspaces", basename(workspace), "Jobs", name);
+    const logsBefore = existsSync(logsOf("jobs-b1"))
+      ? readdirSync(logsOf("jobs-b1"))
+      : [];
+    if (logsBefore.length === 0) fail("jobs-b1 has no session log");
+    const versionsOf = (name) => {
+      const root = join(appData, "configs");
+      return readdirSync(root).flatMap((id) => {
+        const folder = join(root, id, "Jobs", name);
+        return existsSync(folder)
+          ? readdirSync(folder).filter((file) => file.endsWith(".txt"))
+          : [];
+      });
+    };
+    const versionsBefore = versionsOf("jobs-b1");
+    await backToHost();
+    await evaluate(`(() => {
+      const input = document.querySelector(".side [name=name]");
+      input.value = "jobs-b2";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await until(
+      "the renamed host file",
+      () => existsSync(renamedHostFile) && !existsSync(backupHostFile),
+    );
+    await until("the history tab following the host", () =>
+      exists(
+        `${history}[data-host="Jobs/jobs-b2.yaml"] [data-config-version="${loginVersion}"]`,
+      ),
+    );
+    if (json(versionsOf("jobs-b2")) !== json(versionsBefore)) {
+      fail(`versions after the rename: ${json(versionsOf("jobs-b2"))}`);
+    }
+    if (versionsOf("jobs-b1").length !== 0) {
+      fail("versions were left under the old name");
+    }
+    const logsAfter = existsSync(logsOf("jobs-b2"))
+      ? readdirSync(logsOf("jobs-b2"))
+      : [];
+    if (json(logsAfter) !== json(logsBefore) || existsSync(logsOf("jobs-b1"))) {
+      fail(`logs after the rename: ${json(logsAfter)}`);
+    }
+    if (await exists("[data-move-report]")) {
+      fail("the rename reported history left behind");
+    }
+    await showSideView(evaluate, "backups");
+    await until("the renamed host in the backups view", () =>
+      exists(
+        `${backupsView} [data-backup-host="Jobs/jobs-b2.yaml"][data-versions="${versionsBefore.length}"]`,
+      ),
+    );
+    await screenshot("renamed-host-history");
+    step(
+      "renaming a host kept its session logs and config versions, and its history tab followed it",
+    );
     await closeTabOf(evaluate, history);
   } finally {
     rmSync(backupHostFile, { force: true });
+    rmSync(renamedHostFile, { force: true });
     if (savedSnippets === null) rmSync(snippetsFile, { force: true });
     else writeFileSync(snippetsFile, savedSnippets);
   }

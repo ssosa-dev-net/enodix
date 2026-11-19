@@ -81,7 +81,33 @@ export const inventory = $state({
   csvImport: null as string | null,
   /** The same for the Nornir import tab. */
   nornirImport: null as string | null,
+  /**
+   * What the last rename or move could not bring along (#99): history
+   * left where it was and references not rewritten; null when it brought
+   * everything.
+   */
+  moveReport: null as MoveReport | null,
 });
+
+/** What a rename or move of `item` (its new path) could not bring along. */
+export interface MoveReport {
+  item: string;
+  left: api.LeftHistory[];
+  notRewritten: api.Problem[];
+}
+
+type HostsMovedListener = (moves: api.HostMove[], root: string) => void;
+const hostsMovedListeners = new Set<HostsMovedListener>();
+
+/**
+ * Calls `listener` after every rename or move that changed host ids, with
+ * the moves and the workspace's root (what holds a host id follows it:
+ * session tabs, config history tabs). Returns the unsubscribe function.
+ */
+export function onHostsMoved(listener: HostsMovedListener): () => void {
+  hostsMovedListeners.add(listener);
+  return () => hostsMovedListeners.delete(listener);
+}
 
 /**
  * Opens a job tab running a snippet on `target`, called `label`; at the
@@ -248,6 +274,7 @@ export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.selected = null;
   inventory.expanded = {};
   inventory.editError = null;
+  inventory.moveReport = null;
   inventory.activeFilter = null;
   inventory.query = "";
   inventory.filterView = null;
@@ -677,24 +704,42 @@ export function newHost(folder: string) {
   };
 }
 
+/** Takes in a rename or move: the workspace, what follows the hosts that
+ * moved, and the report of what did not. */
+function relocated(from: string, relocation: api.Relocated<string>) {
+  const to = apply(relocation);
+  moved(from, to);
+  const root = relocation.workspace.root;
+  if (relocation.moved.length > 0) {
+    for (const listener of hostsMovedListeners)
+      listener(relocation.moved, root);
+  }
+  inventory.moveReport =
+    relocation.left.length > 0 || relocation.notRewritten.length > 0
+      ? {
+          item: to,
+          left: relocation.left,
+          notRewritten: relocation.notRewritten,
+        }
+      : null;
+}
+
 async function renameItem(item: Item, name: string) {
-  const from = itemPath(item);
-  const to = apply(
+  relocated(
+    itemPath(item),
     item.kind === "host"
       ? await api.renameHost(item.id, name)
       : await api.renameFolder(item.path, name),
   );
-  moved(from, to);
 }
 
 async function moveItem(item: Item, folder: string) {
-  const from = itemPath(item);
-  const to = apply(
+  relocated(
+    itemPath(item),
     item.kind === "host"
       ? await api.moveHost(item.id, folder)
       : await api.moveFolder(item.path, folder),
   );
-  moved(from, to);
 }
 
 /** Renames without a dialog (from the side panel). */

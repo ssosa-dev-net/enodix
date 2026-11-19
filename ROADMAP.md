@@ -82,7 +82,6 @@ Done so far, on 2026-11-15 for the session windows (the record is in the window 
 - A review of the 0.2.0 work (#34 to #57) against its spec. The script tunnels (#60) were reviewed after they were built, and the redesign and the session windows each ended with a sweep of their spec's user stories (#79, #88); the rest of 0.2.0 was not.
 - A release installed and run: the Windows installer and the portable zip. This is done with 0.5.0, before it is published. The Linux packages are part of the Linux desktop check (#58).
 - The items listed under Status as built but not verified.
-- Renaming or moving a host (found on 2026-11-18, #99): its session logs and config history stay under the old name, and any host or folder that names it as its jump host loses that jump host.
 
 **Trust, written down**
 

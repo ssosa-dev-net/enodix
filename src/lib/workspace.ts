@@ -363,6 +363,34 @@ export interface Edited<T> {
   result: T;
 }
 
+/** A host whose id changed: renamed or moved, or a folder above it was. */
+export interface HostMove {
+  from: string;
+  to: string;
+}
+
+/** History that did not follow its host to the new path (#99). */
+export interface LeftHistory {
+  /** The host's new id, and its id before. */
+  host: string;
+  from: string;
+  kind: "sessionLogs" | "configHistory";
+  /** Where the history (or the part not moved) is. */
+  folder: string;
+  reason: string;
+}
+
+/**
+ * The workspace after renaming or moving a host or folder: the new id or
+ * path, the hosts that moved, the references to them that could not be
+ * rewritten and the history that stayed behind.
+ */
+export interface Relocated<T> extends Edited<T> {
+  moved: HostMove[];
+  notRewritten: Problem[];
+  left: LeftHistory[];
+}
+
 export type FolderDeleted =
   | { kind: "deleted"; workspace: WorkspaceView }
   | { kind: "needsConfirmation"; hosts: number };
@@ -474,12 +502,12 @@ export function createFolder(parent: string, name: string) {
 
 /** Returns the folder's new path. */
 export function renameFolder(path: string, name: string) {
-  return invoke<Edited<string>>("folder_rename", { path, name });
+  return invoke<Relocated<string>>("folder_rename", { path, name });
 }
 
 /** Returns the folder's new path. */
 export function moveFolder(path: string, parent: string) {
-  return invoke<Edited<string>>("folder_move", { path, parent });
+  return invoke<Relocated<string>>("folder_move", { path, parent });
 }
 
 /**
@@ -764,12 +792,12 @@ export function importCsv(
 
 /** Returns the host's new id. */
 export function renameHost(id: string, name: string) {
-  return invoke<Edited<string>>("host_rename", { id, name });
+  return invoke<Relocated<string>>("host_rename", { id, name });
 }
 
 /** Returns the host's new id. */
 export function moveHost(id: string, folder: string) {
-  return invoke<Edited<string>>("host_move", { id, folder });
+  return invoke<Relocated<string>>("host_move", { id, folder });
 }
 
 export function deleteHost(id: string) {

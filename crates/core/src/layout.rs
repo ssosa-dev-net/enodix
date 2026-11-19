@@ -282,6 +282,25 @@ impl Layout {
         Ok(self.open_new(TabKind::View(view)))
     }
 
+    /// The tab showing `from` shows it about `subject` from now on (its
+    /// subject was renamed: a host moved, say), in its place; returns that
+    /// tab, or `None` if `from` is not open. If a tab already shows the
+    /// view about `subject`, that one stays and `from`'s tab closes.
+    pub fn retarget_view(&mut self, from: &View, subject: Option<String>) -> Option<TabId> {
+        let tab = self.view_tab(from)?;
+        let to = View::new(from.view.clone(), subject);
+        if to == *from {
+            return Some(tab);
+        }
+        if let Some(open) = self.view_tab(&to) {
+            self.close_tab(tab).expect("the view's tab exists");
+            return Some(open);
+        }
+        self.kinds.insert(tab, TabKind::View(to));
+        self.changed();
+        Some(tab)
+    }
+
     fn open_new(&mut self, kind: TabKind) -> TabId {
         let tab = TabId(self.new_id());
         self.kinds.insert(tab, kind);

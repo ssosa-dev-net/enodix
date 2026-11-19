@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod diff;
 pub mod enrich;
 pub mod highlight;
+pub mod history;
 pub mod import;
 pub mod inventory;
 pub mod job;
