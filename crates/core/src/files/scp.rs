@@ -345,7 +345,18 @@ impl FileConnection {
     pub async fn scp_fetch(
         &self,
         path: &str,
+        destination: impl AsyncWrite + Unpin,
+    ) -> Result<u64, ScpError> {
+        self.scp_fetch_announcing(path, destination, |_| {}).await
+    }
+
+    /// [`Self::scp_fetch`], telling `announced` the size the header gives
+    /// before the data comes.
+    pub(crate) async fn scp_fetch_announcing(
+        &self,
+        path: &str,
         mut destination: impl AsyncWrite + Unpin,
+        announced: impl FnOnce(u64),
     ) -> Result<u64, ScpError> {
         let _channel = self.channel_permit().ok_or(ScpError::Busy)?;
         let (mut answers, write) = self.scp_channel(&format!("scp -f {path}")).await?;
@@ -386,6 +397,7 @@ impl FileConnection {
         if send(vec![0]).await.is_err() {
             return Err(why_not_written(&mut answers).await);
         }
+        announced(size);
         let mut received = 0u64;
         while received < size {
             if answers.pending.is_empty() {

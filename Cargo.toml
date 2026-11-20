@@ -26,3 +26,11 @@ opt-level = 3
 
 [profile.dev.package.blake2]
 opt-level = 3
+
+# An upload's hashes are computed as it is read; unoptimised, they would be
+# slower than the transfer.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.md5]
+opt-level = 3
