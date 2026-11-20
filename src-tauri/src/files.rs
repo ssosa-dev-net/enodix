@@ -1,12 +1,21 @@
-//! The Files tab's commands (#103): thin over the core's
+//! The Files tab's commands (#103, #106): thin over the core's
 //! `netterm_core::files::FileBrowsers`. A browser's events reach the
 //! interface on a `Channel`; it belongs to the app, is closed when its tab
-//! closes (`files_close`), and all are closed with the main window.
+//! closes (`files_close_host`, with the host's transfers), and all are
+//! closed with the main window. Each call adding transfers gives a
+//! `Channel` of their states.
 
-use netterm_core::files::{BrowserEvent, BrowserId, EntryKind, FileBrowsers, Listing};
+use std::path::PathBuf;
+use std::time::Duration;
+
+use netterm_core::files::{
+    existing_locally, follow, Added, BrowserEvent, BrowserId, EntryKind, FileBrowsers, Listing,
+    TransferId, TransferState, TransferWatch,
+};
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::HostKeyDecision;
 use netterm_core::workspace::HostId;
+use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -43,15 +52,22 @@ pub(super) async fn files_open(
         }
         None => profiles.profile_target(&host),
     })?;
-    let start = folder.or_else(|| {
-        shell
-            .workspace()
-            .as_ref()
-            .and_then(|workspace| workspace.host_file_folder(&host).map(str::to_owned))
-    });
-    let (id, mut events) = files
-        .browsers
-        .open(target, files.known_hosts.clone(), start);
+    let (start, platform) = {
+        let workspace = shell.workspace();
+        let workspace = workspace.as_ref();
+        let start = folder.or_else(|| {
+            workspace.and_then(|workspace| workspace.host_file_folder(&host).map(str::to_owned))
+        });
+        let platform = workspace.and_then(|workspace| workspace.host_platform(&host).cloned());
+        (start, platform)
+    };
+    let (id, mut events) = files.browsers.open(
+        host.as_str(),
+        target,
+        files.known_hosts.clone(),
+        start,
+        platform.as_ref(),
+    );
     tauri::async_runtime::spawn(async move {
         while let Some(event) = events.recv().await {
             if on_event.send(event).is_err() {
@@ -84,6 +100,136 @@ pub(super) fn files_cancel(files: State<'_, FileTabs>, id: BrowserId) {
 #[tauri::command]
 pub(super) fn files_close(files: State<'_, FileTabs>, id: BrowserId) {
     files.browsers.close(id);
+}
+
+/// The host's Files tab closed: its browsers close, its transfers are
+/// cancelled.
+/// (Async: the core lets a cancelled upload remove its partial file over
+/// the closing connection, on the runtime.)
+#[tauri::command]
+pub(super) async fn files_close_host(
+    files: State<'_, FileTabs>,
+    host: HostId,
+) -> Result<(), String> {
+    files.browsers.close_host(host.as_str());
+    Ok(())
+}
+
+/// A transfer's new state, on the channel of the call that added it.
+#[derive(Clone, Serialize)]
+pub(super) struct TransferUpdate {
+    id: TransferId,
+    state: TransferState,
+}
+
+/// How often a transfer's progress reaches the interface, at most.
+const PROGRESS_EVERY: Duration = Duration::from_millis(200);
+
+/// Sends each transfer's states on `on_update` until it ends. The commands
+/// adding transfers are async: the engine starts them on the runtime.
+fn forward(added: Vec<(Added, TransferWatch)>, on_update: Channel<TransferUpdate>) -> Vec<Added> {
+    added
+        .into_iter()
+        .map(|(added, watch)| {
+            let id = added.id;
+            let channel = on_update.clone();
+            tauri::async_runtime::spawn(follow(watch, PROGRESS_EVERY, move |state| {
+                channel.send(TransferUpdate { id, state }).is_ok()
+            }));
+            added
+        })
+        .collect()
+}
+
+/// Uploads the local files `paths` into `folder` on the device.
+#[tauri::command]
+pub(super) async fn files_upload(
+    files: State<'_, FileTabs>,
+    id: BrowserId,
+    folder: String,
+    paths: Vec<PathBuf>,
+    on_update: Channel<TransferUpdate>,
+) -> Result<Vec<Added>, String> {
+    let added = files
+        .browsers
+        .upload(id, &folder, paths)
+        .map_err(|error| error.to_string())?;
+    Ok(forward(added, on_update))
+}
+
+/// Downloads the files `names` in `folder` into the local folder `into`.
+#[tauri::command]
+pub(super) async fn files_download(
+    files: State<'_, FileTabs>,
+    id: BrowserId,
+    folder: String,
+    names: Vec<String>,
+    into: PathBuf,
+    on_update: Channel<TransferUpdate>,
+) -> Result<Vec<Added>, String> {
+    let added = files
+        .browsers
+        .download(id, &folder, names, &into)
+        .map_err(|error| error.to_string())?;
+    Ok(forward(added, on_update))
+}
+
+/// Sends the local file `local` to the device path `remote`.
+#[tauri::command]
+pub(super) async fn files_send(
+    files: State<'_, FileTabs>,
+    id: BrowserId,
+    local: PathBuf,
+    remote: String,
+    on_update: Channel<TransferUpdate>,
+) -> Result<Added, String> {
+    let added = files
+        .browsers
+        .send(id, local, &remote)
+        .map_err(|error| error.to_string())?;
+    Ok(forward(vec![added], on_update).remove(0))
+}
+
+/// Fetches the device path `remote` into the local folder `into`.
+#[tauri::command]
+pub(super) async fn files_fetch(
+    files: State<'_, FileTabs>,
+    id: BrowserId,
+    remote: String,
+    into: PathBuf,
+    on_update: Channel<TransferUpdate>,
+) -> Result<Added, String> {
+    let added = files
+        .browsers
+        .fetch(id, &remote, &into)
+        .map_err(|error| error.to_string())?;
+    Ok(forward(vec![added], on_update).remove(0))
+}
+
+/// Which of `names` are already in `folder` on the device (none over SCP).
+#[tauri::command]
+pub(super) async fn files_present(
+    files: State<'_, FileTabs>,
+    id: BrowserId,
+    folder: String,
+    names: Vec<String>,
+) -> Result<Vec<String>, String> {
+    files
+        .browsers
+        .present(id, &folder, names)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Which of `names` are already in the local folder `folder`.
+#[tauri::command]
+pub(super) fn files_existing_locally(folder: PathBuf, names: Vec<String>) -> Vec<String> {
+    existing_locally(&folder, &names)
+}
+
+#[tauri::command]
+pub(super) fn files_cancel_transfer(files: State<'_, FileTabs>, transfer: TransferId) -> bool {
+    files.browsers.cancel_transfer(transfer)
 }
 
 /// `path` as typed in the path box while `folder` was shown.

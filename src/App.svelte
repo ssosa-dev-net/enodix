@@ -17,6 +17,7 @@
   import PasteConfirm, { type PasteMember } from "./lib/PasteConfirm.svelte";
   import ConfirmSwitch from "./lib/ConfirmSwitch.svelte";
   import ConfirmQuit from "./lib/ConfirmQuit.svelte";
+  import { activeTransfers } from "./lib/fileTransfers.svelte";
   import { addressBesides, hostConnection } from "./lib/hostConnect";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import CredentialsPrompt from "./lib/CredentialsPrompt.svelte";
@@ -219,6 +220,9 @@
   let focusRequest = $state(0);
   /** The tab whose closing waits for the user's confirmation. */
   let closing = $state<TabId | null>(null);
+  /** A Files tab whose closing would cancel its transfers, waiting for
+   * the user's confirmation (#106). */
+  let closingFiles = $state<{ tab: TabId; host: string } | null>(null);
   /** Each tab's terminal, for sending snippets to it. */
   const terminals: Record<TabId, TerminalSession | null> = {};
   /** Whether the workspace switcher is open. */
@@ -229,6 +233,8 @@
     live: number;
     /** How many of them are in session windows (#88). */
     elsewhere: number;
+    /** Transfers the Files tabs have running or waiting (#106). */
+    transfers: number;
     decide: (choice: "keep" | "close" | "cancel") => void;
   } | null>(null);
   /** A snippet waiting for the user to give its variables a value. */
@@ -630,10 +636,18 @@
     body: (pane) => panesArea.body(pane),
   };
 
-  /** Closes `tab`, first asking if its session is still live. */
+  /** Closes `tab`, first asking if its session is still live, or if it
+   * is a Files tab with transfers running or waiting. */
   function closeTab(tab: TabId) {
-    if (layout && viewOf(layout, tab)) {
-      closeViewTab(tab);
+    const shows = layout ? viewOf(layout, tab) : null;
+    if (shows) {
+      if (
+        shows.view === "files" &&
+        shows.subject &&
+        activeTransfers(shows.subject) > 0
+      )
+        closingFiles = { tab, host: shows.subject };
+      else closeViewTab(tab);
       return;
     }
     if (!sessions[tab]) return;
@@ -954,7 +968,11 @@
 
   /** Closing the main window while sessions are live (#88), waiting for
    * the user's answer. */
-  let quitting = $state<{ live: number; elsewhere: number } | null>(null);
+  let quitting = $state<{
+    live: number;
+    elsewhere: number;
+    transfers: number;
+  } | null>(null);
 
   // Closing the main window (its Close button, Alt+F4, the taskbar) closes
   // every window and every session: asked once if a session is opening or
@@ -964,8 +982,10 @@
     if (quitting) return;
     const elsewhere = await liveInSessionWindows();
     const live = liveSessions + elsewhere;
-    if (live === 0) await closeMainWindow();
-    else quitting = { live, elsewhere };
+    // Files tabs are in this window only (#106).
+    const transfers = activeTransfers();
+    if (live + transfers === 0) await closeMainWindow();
+    else quitting = { live, elsewhere, transfers };
   });
 
   // Changes from outside the app (a git pull) show without a restart. The
@@ -1007,13 +1027,16 @@
     const live = tabs.filter((tab) => tabState(tab) !== "disconnected");
     // Those in session windows are asked about alike (#88).
     const elsewhere = current ? await liveInSessionWindows(current.root) : 0;
+    // Files tabs close with the workspace, cancelling their transfers.
+    const transfers = current ? activeTransfers() : 0;
     let choice: "keep" | "close" | "cancel" = "keep";
-    if (current && live.length + elsewhere > 0) {
+    if (current && live.length + elsewhere + transfers > 0) {
       choice = await new Promise((decide) => {
         switching = {
           from: current.tree.name,
           live: live.length + elsewhere,
           elsewhere,
+          transfers,
           decide,
         };
       });
@@ -1488,6 +1511,7 @@
       switcher ||
       switching ||
       quitting ||
+      closingFiles !== null ||
       joining ||
       closing !== null;
     const action = zoomShortcut(event) ?? (busy ? null : shortcut(event));
@@ -1722,6 +1746,39 @@
             />
           </div>
         {/if}
+        {#if closingFiles}
+          {@const question = closingFiles}
+          {@const pane = placement.get(question.tab)?.pane}
+          {@const rect = pane === undefined ? undefined : rects[pane]}
+          <div
+            class="pane-question"
+            data-pane-dialog={pane}
+            style:left={rect ? `${rect.left}px` : "0"}
+            style:top={rect ? `${rect.top}px` : "0"}
+            style:width={rect ? `${rect.width}px` : "100%"}
+            style:height={rect ? `${rect.height}px` : "100%"}
+          >
+            <ConfirmClose
+              name={(inventory.workspace &&
+                findHost(inventory.workspace.tree, question.host)?.name) ??
+                question.host}
+              state="connected"
+              environment={hostSafety(question.host)?.environment ?? null}
+              files
+              transfers={activeTransfers(question.host)}
+              onclose={() => {
+                // Read before clearing: `question` follows `closingFiles`.
+                const tab = question.tab;
+                closingFiles = null;
+                closeViewTab(tab);
+              }}
+              oncancel={() => {
+                closingFiles = null;
+                focusRequest += 1;
+              }}
+            />
+          </div>
+        {/if}
         {#if closing !== null && sessions[closing]}
           {@const tab = closing}
           {@const state = tabState(tab)}
@@ -1873,11 +1930,12 @@
 {/if}
 
 {#if quitting}
-  {@const { live, elsewhere } = quitting}
+  {@const { live, elsewhere, transfers } = quitting}
   <ConfirmQuit
     product={name}
     {live}
     {elsewhere}
+    {transfers}
     onquit={() => void closeMainWindow()}
     oncancel={() => {
       quitting = null;
@@ -1887,11 +1945,12 @@
 {/if}
 
 {#if switching}
-  {@const { from, live, elsewhere, decide } = switching}
+  {@const { from, live, elsewhere, transfers, decide } = switching}
   <ConfirmSwitch
     {from}
     {live}
     {elsewhere}
+    {transfers}
     onkeep={() => decide("keep")}
     onclosesessions={() => decide("close")}
     oncancel={() => decide("cancel")}

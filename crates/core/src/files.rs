@@ -26,8 +26,8 @@ mod transfer;
 
 pub use crate::session::connection::{ConnectError, FileConnection, Lost, Opening, OpeningEvent};
 pub use browser::{
-    join_path, parent_folder, resolve_path, BrowseError, BrowserEvent, BrowserId, FileBrowsers,
-    Listing,
+    existing_locally, follow, join_path, parent_folder, resolve_path, Added, BrowseError,
+    BrowserEvent, BrowserId, FileBrowsers, Listing, TransferState,
 };
 pub use scp::{Files, Protocol, Scp, ScpError};
 pub use sftp::{

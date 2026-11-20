@@ -29,6 +29,8 @@ const OLD_DEVICE_PORT = 22723;
 const TELNET_PORT = 22724;
 // The device-mode SSH server (prompt `lab-r1# `), for jobs.
 const DEVICE_PORT = 22725;
+// A server with SCP only, no SFTP (#106), serving `scpFolder`.
+const SCP_PORT = 22726;
 const DEVTOOLS_PORT = 9333;
 const USERNAME = "engineer";
 const PASSWORD = "correct horse";
@@ -121,6 +123,8 @@ const goneWorkspace = join(userData, "gone-workspace");
 const openedLinks = join(userData, "opened-links.txt");
 /** The folder the test SSH server serves over SFTP, as `/` (#103). */
 const sftpFolder = join(userData, "sftp");
+/** The folder the SCP-only server serves, as `/` (#106). */
+const scpFolder = join(userData, "scp");
 // Beside the built program, the first makes the app an installed copy (the
 // installer writes its uninstaller there; the smoke's is an empty file,
 // never run), the second a portable one (the release script puts it in the
@@ -1213,6 +1217,9 @@ function startServer() {
       String(DEVICE_PORT),
       "--sftp",
       sftpFolder,
+      "--scp-only",
+      String(SCP_PORT),
+      scpFolder,
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
@@ -2520,6 +2527,16 @@ async function main() {
   await filesTab({
     evaluate,
     devtools,
+    fillForm,
+    doubleClick,
+    screen,
+    type,
+    screenshot,
+    step,
+  });
+
+  await fileTransfers({
+    evaluate,
     fillForm,
     doubleClick,
     screen,
@@ -7137,7 +7154,8 @@ async function filesTab({
     const cells = await evaluate(
       `[...document.querySelectorAll(${json(`${tabOf(typed)} [data-files-entry="notes.txt"] td`)})].map((cell) => cell.textContent.trim())`,
     );
-    if (cells[1] !== "12 B" || !cells[2] || !/^[rwx-]{9}$/.test(cells[3] ?? ""))
+    // The first cell holds the file's Download tick box (#106).
+    if (cells[2] !== "12 B" || !cells[3] || !/^[rwx-]{9}$/.test(cells[4] ?? ""))
       fail(`notes.txt shows ${json(cells)}`);
     if (
       (await evaluate(
@@ -7380,6 +7398,10 @@ async function filesTab({
       `document.querySelector(${json(tabOf(r1))}).closest(".slot").dataset.tab`,
     );
     await clickOn(`[data-tab-bar] [data-tab="${r1Tab}"]`);
+    // The tab is shown before its button is clicked.
+    await until("files-r1's tab shown", () =>
+      exists(`.slot[data-tab="${r1Tab}"]:not([hidden])`),
+    );
     await clickOn(`${tabOf(r1)} [data-files-action=reconnect]`);
     await listed(r1, "/flash");
     step(
@@ -7484,6 +7506,636 @@ async function filesTab({
     else writeFileSync(platformsFile, savedPlatforms);
     rmSync(folder, { recursive: true, force: true });
     rmSync(typedFile, { force: true });
+  }
+}
+
+/**
+ * The Files tab's transfers (#106), after `filesTab` (its `files-login`
+ * profile stays): uploads by the Upload button and by files dropped on the
+ * tab (sent as the event Tauri delivers; a drop elsewhere does nothing)
+ * into the folder shown, the listing refreshed; the question over files of
+ * the same name (one for several), Cancel and Replace; downloads of ticked
+ * files into a folder picked, remembered for the next, asking over a local
+ * file; a production host's question with Cancel focused; the transfer
+ * list (progress, speed, waiting order, Remove, Cancel with the partial
+ * file's fate, MD5 and SHA-256 copied); a transfer going on while the
+ * terminal is shown; closing the tab and the main window while one runs
+ * asking first, Cancel keeping everything; and a device with SCP only: the
+ * form, sent to and fetched from typed paths, a drop filling the file, the
+ * line that an existing file is replaced, and a refusal with its hint.
+ *
+ * The system's file and folder dialogs are answered in the page, on the
+ * IPC protocol (DevTools cannot click them); the buttons that open them
+ * are clicked.
+ * The test shell's `hold sftp` keeps a transfer running.
+ */
+async function fileTransfers({
+  evaluate,
+  fillForm,
+  doubleClick,
+  screen,
+  type,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
+  const folder = join(workspace, "Transfers");
+  const platformsFile = join(workspace, "_platforms.yaml");
+  const knownHosts = join(appData, "known_hosts");
+  const savedKnownHosts = existsSync(knownHosts)
+    ? readFileSync(knownHosts, "utf8")
+    : null;
+  const savedPlatforms = existsSync(platformsFile)
+    ? readFileSync(platformsFile, "utf8")
+    : null;
+  const r1 = "Transfers/xfer-r1.yaml";
+  const prod = "Transfers/xfer-prod.yaml";
+  const scp = "Transfers/xfer-scp.yaml";
+  const tabOf = (host) => `.slot.view [data-view=files][data-host="${host}"]`;
+  const row = (host) => `nav [data-host="${host}"]`;
+  const localFolder = join(userData, "transfers-local");
+  const into = join(userData, "transfers-downloads");
+  const fetched = join(userData, "transfers-fetched");
+  const localFile = (name) => join(localFolder, name);
+  const remote = (path) => join(sftpFolder, path);
+  const md5 = (path) =>
+    createHash("md5").update(readFileSync(path)).digest("hex");
+  const sha256 = (path) =>
+    createHash("sha256").update(readFileSync(path)).digest("hex");
+  const filesState = (host) =>
+    evaluate(
+      `document.querySelector(${json(tabOf(host))})?.dataset.filesState ?? null`,
+    );
+  const names = (host) =>
+    evaluate(
+      `[...document.querySelectorAll(${json(`${tabOf(host)} [data-files-entry]`)})].map((r) => r.dataset.filesEntry)`,
+    );
+  /** The transfer rows of `host`'s tab, in order. */
+  const transfers = (host) =>
+    evaluate(`[...document.querySelectorAll(${json(`${tabOf(host)} [data-transfer]`)})].map((r) => ({
+      id: r.dataset.transfer,
+      name: r.dataset.transferName,
+      direction: r.dataset.direction,
+      state: r.dataset.transferState,
+      text: r.textContent.replace(/\\s+/g, " ").trim(),
+    }))`);
+  const transferAt = (host, index) => async () =>
+    (await transfers(host))[index] ?? null;
+  const ended = async (host, index, state) => {
+    const seen = await until(
+      `transfer ${index} of ${host} ${state}`,
+      async () => {
+        const each = await transferAt(host, index)();
+        return each &&
+          !["waiting", "connecting", "running"].includes(each.state)
+          ? each
+          : null;
+      },
+    );
+    if (seen.state !== state)
+      fail(`transfer ${index} of ${host} ended ${seen.state}: ${seen.text}`);
+    return seen;
+  };
+  /** The selector of `host`'s transfer at `index`, and `inner` in it. */
+  const transferSelector = async (host, index, inner = "") => {
+    const each = (await transfers(host))[index];
+    if (!each) fail(`${host} has no transfer ${index}`);
+    return `${tabOf(host)} [data-transfer="${each.id}"] ${inner}`.trim();
+  };
+  /** Answers the next system file dialogs with `answers`, in order, and
+   * keeps what each was asked with. Tauri's own `invoke` cannot be
+   * replaced, so its request on the IPC protocol is answered (the page's
+   * `fetch`, looked up at each call). */
+  const answerDialogs = (answers) =>
+    evaluate(`(() => {
+      if (!window.__smokeFetch) {
+        window.__smokeFetch = window.fetch;
+        window.fetch = async (url, init) => {
+          if (String(url).includes(encodeURIComponent("plugin:dialog|open"))) {
+            try {
+              window.__smokeDialogs.push(JSON.parse(init.body).options ?? null);
+            } catch {
+              window.__smokeDialogs.push(null);
+            }
+            return new Response(JSON.stringify(window.__smokeAnswers.shift() ?? null), {
+              headers: { "Tauri-Response": "ok", "Content-Type": "application/json" },
+            });
+          }
+          return window.__smokeFetch(url, init);
+        };
+      }
+      window.__smokeAnswers = ${json(answers)};
+      window.__smokeDialogs = [];
+      return window.fetch !== window.__smokeFetch;
+    })()`);
+  const dialogsAsked = () => evaluate(`window.__smokeDialogs`);
+  /** Files dropped from Explorer on the middle of `selector`, as Tauri
+   * delivers it: drag-enter, drag-over and drag-drop, in physical pixels. */
+  const drop = async (selector, paths) => {
+    const position = await evaluate(`(() => {
+      const box = document.querySelector(${json(selector)}).getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      return { x: (box.left + box.width / 2) * ratio, y: (box.top + box.height / 2) * ratio };
+    })()`);
+    for (const [event, payload] of [
+      ["tauri://drag-enter", { paths, position }],
+      ["tauri://drag-over", { position }],
+      ["tauri://drag-drop", { paths, position }],
+    ])
+      await evaluate(
+        `window.__TAURI_INTERNALS__.invoke("plugin:event|emit_to", { target: { kind: "Webview", label: "main" }, event: ${json(event)}, payload: ${json(payload)} })`,
+      );
+  };
+  const question = (host) => `${tabOf(host)} [data-files-transfer-confirm]`;
+  const focused = (selector) =>
+    evaluate(
+      `document.activeElement === document.querySelector(${json(selector)})`,
+    );
+  const openFiles = async (host) => {
+    await mouseClick(evaluate, row(host), { button: "right" });
+    await until("Files in the context menu", () =>
+      exists("[role=menu] [data-menu=files]"),
+    );
+    await clickOn("[role=menu] [data-menu=files]");
+  };
+  const listed = (host, where) =>
+    until(
+      `${host}'s files listed in ${where}`,
+      async () =>
+        (await filesState(host)) === "connected" &&
+        (await evaluate(
+          `document.querySelector(${json(`${tabOf(host)} [data-files-folder]`)})?.dataset.filesFolder`,
+        )) === where,
+    );
+  const tabIdOf = (selector) =>
+    evaluate(
+      `document.querySelector(${json(selector)})?.closest(".slot")?.dataset.tab ?? null`,
+    );
+  const showTab = async (tab) => {
+    await clickOn(`[data-tab-bar] [data-tab="${tab}"]`);
+    await until("the tab shown", () =>
+      exists(`.slot[data-tab="${tab}"]:not([hidden])`),
+    );
+  };
+
+  rmSync(localFolder, { recursive: true, force: true });
+  rmSync(into, { recursive: true, force: true });
+  rmSync(fetched, { recursive: true, force: true });
+  mkdirSync(localFolder, { recursive: true });
+  mkdirSync(into, { recursive: true });
+  mkdirSync(fetched, { recursive: true });
+  rmSync(remote("xfer"), { recursive: true, force: true });
+  mkdirSync(remote("xfer"), { recursive: true });
+  mkdirSync(join(scpFolder, "scp"), { recursive: true });
+  writeFileSync(localFile("up1.cfg"), "hostname up1\n");
+  writeFileSync(localFile("up2.cfg"), "hostname up2\n");
+  writeFileSync(localFile("up3.cfg"), "hostname up3\n");
+  writeFileSync(localFile("wait.txt"), "waited\n");
+  // Big enough to be held part way (`hold sftp`).
+  const big = Buffer.alloc(8 * 1024 * 1024);
+  for (let i = 0; i < big.length; i += 4096) big[i] = i % 251;
+  writeFileSync(localFile("big.bin"), big);
+
+  let terminalTab = null;
+  const terminal = async (command, expect) => {
+    await showTab(terminalTab);
+    await type(`${command}\r`);
+    await until(`${expect} in the terminal`, async () =>
+      (await screen()).includes(expect),
+    );
+  };
+
+  try {
+    writeFileSync(
+      platformsFile,
+      `${savedPlatforms ?? ""}smoke-xfer:\n  prompt: 'test-ssh\\$ '\n  file_folder: /xfer\nsmoke-scp:\n  prompt: 'test-ssh\\$ '\n  file_folder: /scp\n`,
+    );
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(
+      join(folder, "_folder.yaml"),
+      `credential_profile: files-login\nport: ${SSH_PORT}\nplatform: smoke-xfer\n`,
+    );
+    writeFileSync(join(folder, "xfer-r1.yaml"), "address: 127.0.0.1\n");
+    writeFileSync(
+      join(folder, "xfer-prod.yaml"),
+      "address: 127.0.0.1\nenvironment: production\n",
+    );
+    writeFileSync(
+      join(folder, "xfer-scp.yaml"),
+      `address: 127.0.0.1\nport: ${SCP_PORT}\nplatform: smoke-scp\n`,
+    );
+    const folderRow = 'nav button[data-item=folder][data-path="Transfers"]';
+    await until("the Transfers folder in the tree", () => exists(folderRow));
+    await expandFolder(evaluate, folderRow);
+    await until("the transfer hosts in the tree", () => exists(row(scp)));
+
+    // A terminal to the same server, for its test shell's commands.
+    await doubleClick(row(r1));
+    await until("xfer-r1's terminal", async () =>
+      (await screen()).includes("test-ssh$"),
+    );
+    terminalTab = await tabIdOf(SHOWN_SESSION);
+
+    // Upload by the button: the dialog's two files go into /xfer.
+    await openFiles(r1);
+    await listed(r1, "/xfer");
+    if (!(await answerDialogs([[localFile("up1.cfg"), localFile("up2.cfg")]])))
+      fail("the file dialog could not be answered");
+    await clickOn(`${tabOf(r1)} [data-files-action=upload]`);
+    await ended(r1, 0, "done");
+    await ended(r1, 1, "done");
+    if (await exists(question(r1)))
+      fail("an upload of new files on a lab host asked");
+    await until(
+      "the uploads listed",
+      async () => json(await names(r1)) === json(["up1.cfg", "up2.cfg"]),
+    );
+    if (readFileSync(remote("xfer/up1.cfg"), "utf8") !== "hostname up1\n")
+      fail("up1.cfg did not reach the device");
+    const asked = (await dialogsAsked())[0];
+    if (!asked?.multiple) fail(`the upload dialog was ${json(asked)}`);
+    const hashOf = (kind) =>
+      transferSelector(r1, 0, `[data-transfer-hash=${kind}]`).then((selector) =>
+        evaluate(
+          `document.querySelector(${json(selector)})?.querySelector("code")?.textContent ?? ""`,
+        ),
+      );
+    if ((await hashOf("md5")) !== md5(localFile("up1.cfg")))
+      fail("the upload's MD5 is not the file's");
+    if ((await hashOf("sha256")) !== sha256(localFile("up1.cfg")))
+      fail("the upload's SHA-256 is not the file's");
+    for (const kind of ["md5", "sha256"]) {
+      await clickOn(
+        await transferSelector(r1, 0, `[data-transfer-hash=${kind}] button`),
+      );
+      const want =
+        kind === "md5"
+          ? md5(localFile("up1.cfg"))
+          : sha256(localFile("up1.cfg"));
+      await until(
+        `the ${kind} on the clipboard`,
+        () => readClipboard() === want,
+      );
+    }
+    await screenshot("files-uploaded");
+    step(
+      "Upload puts the files chosen in the folder shown, the listing shows them; the list gives each upload's MD5 and SHA-256, copied with a click",
+    );
+
+    // Drops: elsewhere does nothing; on the tab over an existing name asks
+    // once for several, Cancel keeps the device's files, Replace sends.
+    const before = (await transfers(r1)).length;
+    await drop("nav", [localFile("up3.cfg")]);
+    await sleep(500);
+    if ((await transfers(r1)).length !== before || (await exists(question(r1))))
+      fail("a drop on the tree started an upload");
+    writeFileSync(localFile("up1.cfg"), "hostname up1 changed\n");
+    await drop(`${tabOf(r1)} [data-files-folder]`, [
+      localFile("up1.cfg"),
+      localFile("up2.cfg"),
+    ]);
+    await until("the replace question", () => exists(question(r1)));
+    const listedNames = await evaluate(
+      `[...document.querySelectorAll(${json(`${question(r1)} [data-files-replace-name]`)})].map((e) => e.dataset.filesReplaceName)`,
+    );
+    if (json(listedNames) !== json(["up1.cfg", "up2.cfg"]))
+      fail(`the replace question lists ${json(listedNames)}`);
+    if (await exists(`${question(r1)}[data-environment=production]`))
+      fail("a lab host's upload asked as production");
+    await screenshot("files-replace-question");
+    await clickOn(`${question(r1)} [data-files-transfer-action=cancel]`);
+    await until("the question gone", async () => !(await exists(question(r1))));
+    if ((await transfers(r1)).length !== before)
+      fail("Cancel started an upload");
+    if (readFileSync(remote("xfer/up1.cfg"), "utf8") !== "hostname up1\n")
+      fail("Cancel replaced up1.cfg");
+    await drop(`${tabOf(r1)} [data-files-folder]`, [localFile("up1.cfg")]);
+    await until("the replace question again", () => exists(question(r1)));
+    await clickOn(`${question(r1)} [data-files-transfer-action=confirm]`);
+    await ended(r1, before, "done");
+    if (
+      readFileSync(remote("xfer/up1.cfg"), "utf8") !== "hostname up1 changed\n"
+    )
+      fail("Replace did not send up1.cfg");
+    step(
+      "a drop on the tree does nothing; a drop on the tab over existing names asks once listing them, Cancel keeps the device's files, Replace sends",
+    );
+
+    // Download the ticked files into a folder picked; the next download
+    // starts there and asks over a local file of that name.
+    await clickOn(`${tabOf(r1)} [data-files-select="up1.cfg"]`);
+    await clickOn(`${tabOf(r1)} [data-files-select="up2.cfg"]`);
+    await answerDialogs([into]);
+    let count = (await transfers(r1)).length;
+    await clickOn(`${tabOf(r1)} [data-files-action=download]`);
+    await ended(r1, count, "done");
+    await ended(r1, count + 1, "done");
+    if (
+      readFileSync(join(into, "up1.cfg"), "utf8") !==
+        "hostname up1 changed\n" ||
+      readFileSync(join(into, "up2.cfg"), "utf8") !== "hostname up2\n"
+    )
+      fail("the downloads are not the device's files");
+    writeFileSync(join(into, "up2.cfg"), "local edit\n");
+    await clickOn(`${tabOf(r1)} [data-files-select="up1.cfg"]`);
+    await answerDialogs([into]);
+    count = (await transfers(r1)).length;
+    await clickOn(`${tabOf(r1)} [data-files-action=download]`);
+    await until("the local replace question", () =>
+      exists(`${tabOf(r1)} [data-files-transfer-confirm=download]`),
+    );
+    const folderAsked = (await dialogsAsked())[0];
+    if (folderAsked?.defaultPath !== into || !folderAsked?.directory)
+      fail(`the second download's folder dialog was ${json(folderAsked)}`);
+    if (!(await exists(`${question(r1)} [data-files-replace-name="up2.cfg"]`)))
+      fail("the local replace question does not name up2.cfg");
+    await clickOn(`${question(r1)} [data-files-transfer-action=cancel]`);
+    if (readFileSync(join(into, "up2.cfg"), "utf8") !== "local edit\n")
+      fail("Cancel replaced the local file");
+    await answerDialogs([into]);
+    await clickOn(`${tabOf(r1)} [data-files-action=download]`);
+    await until("the local replace question again", () => exists(question(r1)));
+    await clickOn(`${question(r1)} [data-files-transfer-action=confirm]`);
+    await ended(r1, count, "done");
+    if (readFileSync(join(into, "up2.cfg"), "utf8") !== "hostname up2\n")
+      fail("Replace did not download up2.cfg");
+    step(
+      "Download puts the ticked files in the folder picked; the next starts there and asks before replacing a local file",
+    );
+
+    // Production: an upload asks first, Cancel focused.
+    await openFiles(prod);
+    await listed(prod, "/xfer");
+    await answerDialogs([[localFile("up3.cfg")]]);
+    await clickOn(`${tabOf(prod)} [data-files-action=upload]`);
+    await until("the production question", () =>
+      exists(`${question(prod)}[data-environment=production]`),
+    );
+    await until("Cancel focused", () =>
+      focused(`${question(prod)} [data-files-transfer-action=cancel]`),
+    );
+    await screenshot("files-production-upload");
+    await clickOn(`${question(prod)} [data-files-transfer-action=cancel]`);
+    await sleep(300);
+    if (existsSync(remote("xfer/up3.cfg"))) fail("Cancel uploaded up3.cfg");
+    await answerDialogs([[localFile("up3.cfg")]]);
+    await clickOn(`${tabOf(prod)} [data-files-action=upload]`);
+    await until("the production question again", () => exists(question(prod)));
+    await clickOn(`${question(prod)} [data-files-transfer-action=confirm]`);
+    await ended(prod, 0, "done");
+    if (!existsSync(remote("xfer/up3.cfg"))) fail("up3.cfg was not uploaded");
+    await closeTabOf(evaluate, tabOf(prod));
+    step(
+      "an upload to a production host asks first with Cancel focused; Cancel sends nothing, the answer sends",
+    );
+
+    // A held transfer: progress and speed, the next waiting in order and
+    // removed; going on while the terminal is shown.
+    await terminal("hold sftp 1048576", "sftp held from 1048576");
+    const r1Tab = await tabIdOf(tabOf(r1));
+    await showTab(r1Tab);
+    count = (await transfers(r1)).length;
+    await answerDialogs([[localFile("big.bin"), localFile("wait.txt")]]);
+    await clickOn(`${tabOf(r1)} [data-files-action=upload]`);
+    // Held part way: the client has up to 2 MiB in flight, so where its
+    // count stops varies; it stays put.
+    const heldAt = async () => {
+      const each = await transferAt(r1, count)();
+      return each?.state === "running" && / of 8\.0 MiB/.test(each.text)
+        ? each.text
+        : null;
+    };
+    await until("big.bin held part way", async () => {
+      const first = await heldAt();
+      if (!first) return false;
+      await sleep(1000);
+      return (await heldAt()) === first;
+    });
+    await until("its speed shown", async () =>
+      /\/s/.test(
+        await evaluate(
+          `document.querySelector(${json(await transferSelector(r1, count, "[data-transfer-speed]"))})?.textContent ?? ""`,
+        ),
+      ),
+    );
+    const waiting = await transferAt(r1, count + 1)();
+    if (waiting?.state !== "waiting" || !/after 1/.test(waiting.text))
+      fail(`wait.txt is not waiting behind big.bin: ${json(waiting)}`);
+    await screenshot("files-transfers");
+    await clickOn(
+      await transferSelector(r1, count + 1, "[data-transfer-action=cancel]"),
+    );
+    await until(
+      "wait.txt taken off the list",
+      async () => (await transfers(r1)).length === count + 1,
+    );
+    if (!(await exists(`${tabOf(r1)} [data-transfer-name="big.bin"]`)))
+      fail("Remove took the running transfer off the list");
+    await terminal("release sftp", "sftp released");
+    await ended(r1, count, "done");
+    if (readFileSync(remote("xfer/big.bin")).length !== big.length)
+      fail("big.bin did not arrive whole while the terminal was shown");
+    step(
+      "a running transfer shows progress and speed, the next waits in order and Remove takes it off the list; it goes on to the end while another tab is shown",
+    );
+
+    // Cancel a running upload: its partial file is removed.
+    rmSync(remote("xfer/big.bin"));
+    await terminal("hold sftp 1048576", "sftp held from 1048576");
+    await showTab(r1Tab);
+    await clickOn(`${tabOf(r1)} [data-files-action=refresh]`);
+    count = (await transfers(r1)).length;
+    await answerDialogs([[localFile("big.bin")]]);
+    await clickOn(`${tabOf(r1)} [data-files-action=upload]`);
+    await until(
+      "big.bin running",
+      async () => (await transferAt(r1, count)())?.state === "running",
+    );
+    await clickOn(
+      await transferSelector(r1, count, "[data-transfer-action=cancel]"),
+    );
+    await terminal("release sftp", "sftp released");
+    await showTab(r1Tab);
+    const cancelled = await ended(r1, count, "cancelled");
+    if (
+      !cancelled.text.includes("The partial file was removed from the device")
+    )
+      fail(`the cancelled upload says ${cancelled.text}`);
+    if (existsSync(remote("xfer/big.bin")))
+      fail("the cancelled upload's partial file remains");
+    step(
+      "a cancelled upload says its partial file was removed, and it is gone",
+    );
+
+    // Closing the tab and the main window while a transfer runs asks
+    // first; Cancel keeps everything.
+    await terminal("hold sftp 1048576", "sftp held from 1048576");
+    await showTab(r1Tab);
+    count = (await transfers(r1)).length;
+    await answerDialogs([[localFile("big.bin")]]);
+    await clickOn(`${tabOf(r1)} [data-files-action=upload]`);
+    await until(
+      "big.bin running",
+      async () => (await transferAt(r1, count)())?.state === "running",
+    );
+    await clickOn(`[data-tab-bar] [data-tab="${r1Tab}"] [data-tab-close]`);
+    await until("the close question", () =>
+      exists("[data-confirm-close][data-confirm-transfers='1']"),
+    );
+    await until("Cancel focused", () => focused("[data-confirm=cancel]"));
+    await clickOn("[data-confirm=cancel]");
+    await until(
+      "the close question gone",
+      async () => !(await exists("[data-confirm-close]")),
+    );
+    if ((await transferAt(r1, count)())?.state !== "running")
+      fail("Cancel on the close question stopped the transfer");
+    await closeWithButton(evaluate);
+    const quit = await until("the quit question", () =>
+      evaluate(
+        `document.querySelector("[data-confirm-quit]")?.textContent ?? null`,
+      ),
+    );
+    if (!/1 transfer is running or waiting/.test(quit))
+      fail(`the quit question does not name the transfer: ${quit}`);
+    await mouseClick(evaluate, "[data-quit=cancel]");
+    await until(
+      "the quit question gone",
+      async () => !(await exists("[data-confirm-quit]")),
+    );
+    if ((await transferAt(r1, count)())?.state !== "running")
+      fail("Cancel on the quit question stopped the transfer");
+    await clickOn(`[data-tab-bar] [data-tab="${r1Tab}"] [data-tab-close]`);
+    await until("the close question again", () =>
+      exists("[data-confirm-close][data-confirm-transfers]"),
+    );
+    await clickOn("[data-confirm=close]");
+    await until("the Files tab closed", async () => !(await exists(tabOf(r1))));
+    await terminal("release sftp", "sftp released");
+    await until(
+      "the cancelled upload's file removed",
+      async () => !existsSync(remote("xfer/big.bin")),
+    );
+    // Its connection goes once the file is removed.
+    await sleep(1000);
+    await terminal("show sftp", "sftp connections: 0");
+    step(
+      "closing a Files tab or the main window while a transfer runs asks first (the app's question names it); Cancel keeps it running, Close tab cancels it",
+    );
+
+    // SCP only: the form in place of the listing.
+    await openFiles(scp);
+    await until("the SCP host's key asked", () =>
+      exists(`${tabOf(scp)} [data-decision=trustAndRemember]:not(:disabled)`),
+    );
+    await clickOn(`${tabOf(scp)} [data-decision=trustAndRemember]`);
+    await until(
+      "the SCP form",
+      async () => (await filesState(scp)) === "transfer-only",
+    );
+    const status = await evaluate(
+      `document.querySelector(${json(`${tabOf(scp)} [data-files-status]`)})?.textContent ?? ""`,
+    );
+    if (!/No connection held/.test(status))
+      fail(`the SCP tab's status says ${status}`);
+    if (!(await exists(`${tabOf(scp)} [data-files-replaced]`)))
+      fail("the SCP form does not say an existing file is replaced");
+    if (await exists(`${tabOf(scp)} [data-files-folder]`))
+      fail("the SCP tab shows a listing");
+    await answerDialogs([localFile("up1.cfg")]);
+    await clickOn(`${tabOf(scp)} [data-files-action=choose-send]`);
+    const field = (name) =>
+      evaluate(
+        `document.querySelector(${json(`${tabOf(scp)} [name=${name}]`)})?.value ?? null`,
+      );
+    await until(
+      "the path filled in",
+      async () => (await field("files-send-remote")) === "/scp/up1.cfg",
+    );
+    await screenshot("files-scp");
+    await clickOn(`${tabOf(scp)} [data-files-action=send]`);
+    const sent = await ended(scp, 0, "done");
+    if (!sent.text.includes("could not be checked"))
+      fail(`the SCP upload says ${sent.text}`);
+    if (
+      readFileSync(join(scpFolder, "scp/up1.cfg"), "utf8") !==
+      "hostname up1 changed\n"
+    )
+      fail("the SCP send did not reach the device");
+    await drop(`${tabOf(scp)} [data-files-send]`, [localFile("up2.cfg")]);
+    await until(
+      "the dropped file in the form",
+      async () => (await field("files-send-local")) === localFile("up2.cfg"),
+    );
+    if ((await field("files-send-remote")) !== "/scp/up2.cfg")
+      fail("the dropped file's path was not filled in");
+    await fillForm(
+      { "files-fetch-remote": "/scp/up1.cfg", "files-fetch-local": fetched },
+      `${tabOf(scp)} [data-files-fetch]`,
+    );
+    await ended(scp, 1, "done");
+    if (
+      readFileSync(join(fetched, "up1.cfg"), "utf8") !==
+      "hostname up1 changed\n"
+    )
+      fail("the SCP fetch did not arrive");
+    step(
+      "a device with SCP only shows the form, says no connection is held and that an existing file is replaced; it sends a chosen or dropped file to the path filled in and fetches a typed path",
+    );
+
+    // A refusal in the device's words, the hint under it.
+    await doubleClick(row(scp));
+    await until("xfer-scp's terminal", async () =>
+      (await screen()).includes("test-ssh$"),
+    );
+    const scpTerminal = await tabIdOf(SHOWN_SESSION);
+    await type("scp off\r");
+    await until("scp off", async () => (await screen()).includes("scp off"));
+    await showTab(await tabIdOf(tabOf(scp)));
+    await clickOn(`${tabOf(scp)} [data-files-action=send]`);
+    await ended(scp, 2, "failed");
+    const reasonText = await evaluate(
+      `document.querySelector(${json(await transferSelector(scp, 2, "[data-transfer-reason]"))})?.textContent ?? ""`,
+    );
+    const hintText = await evaluate(
+      `document.querySelector(${json(await transferSelector(scp, 2, "[data-transfer-hint]"))})?.textContent ?? ""`,
+    );
+    if (!reasonText.includes("Administratively disabled"))
+      fail(`the refusal says ${reasonText}`);
+    if (!hintText.includes("ip scp server enable"))
+      fail(`the refusal's hint says ${hintText}`);
+    await screenshot("files-scp-refused");
+    await showTab(scpTerminal);
+    await type("scp on\r");
+    await until("scp on", async () => (await screen()).includes("scp on"));
+    step("a device's refusal shows in its own words with the hint under it");
+
+    await closeTabOf(evaluate, tabOf(scp));
+    for (const tab of [scpTerminal, terminalTab]) {
+      await clickOn(`[data-tab-bar] [data-tab="${tab}"] [data-tab-close]`);
+      await until("the close question", () => exists("[data-confirm=close]"));
+      await clickOn("[data-confirm=close]");
+      await until(
+        "the session's tab closed",
+        async () => !(await exists(`.slot[data-tab="${tab}"]`)),
+      );
+    }
+  } finally {
+    // The dialogs answer for themselves again.
+    await evaluate(`(() => {
+      if (window.__smokeFetch) {
+        window.fetch = window.__smokeFetch;
+        delete window.__smokeFetch;
+      }
+    })()`).catch(() => {});
+    if (savedKnownHosts === null) rmSync(knownHosts, { force: true });
+    else writeFileSync(knownHosts, savedKnownHosts);
+    if (savedPlatforms === null) rmSync(platformsFile, { force: true });
+    else writeFileSync(platformsFile, savedPlatforms);
+    rmSync(folder, { recursive: true, force: true });
   }
 }
 

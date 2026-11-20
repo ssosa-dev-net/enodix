@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { transfersText } from "./fileTransfers.svelte";
   import type { Environment } from "./workspace";
 
   interface Props {
@@ -8,18 +9,34 @@
     state: "connecting" | "connected";
     /** The session's environment: on production Cancel has the focus. */
     environment?: Environment | null;
+    /** A Files tab's transfers running or waiting (#106): the question is
+     * about them, and Cancel has the focus. */
+    transfers?: number;
+    /** A Files tab's question: it stays when its transfers end meanwhile
+     * (closing then clears their kept outcomes). */
+    files?: boolean;
     onclose: () => void;
     oncancel: () => void;
   }
 
-  let { name, state, environment = null, onclose, oncancel }: Props = $props();
+  let {
+    name,
+    state,
+    environment = null,
+    transfers = 0,
+    files = false,
+    onclose,
+    oncancel,
+  }: Props = $props();
 
   let cancel: HTMLButtonElement;
   let confirm: HTMLButtonElement;
 
   // Taken from the terminal, which would otherwise keep the keys. On a
-  // production host Enter by reflex keeps the session.
-  onMount(() => (environment === "production" ? cancel : confirm).focus());
+  // production host, or with transfers to lose, Enter by reflex keeps them.
+  onMount(() =>
+    (environment === "production" || files ? cancel : confirm).focus(),
+  );
 
   function onkeydown(event: KeyboardEvent) {
     if (event.key === "Escape") {
@@ -37,6 +54,7 @@
   {onkeydown}
   aria-labelledby="confirm-close-title"
   data-confirm-close
+  data-confirm-transfers={files ? transfers : undefined}
   data-environment={environment ?? undefined}
 >
   <form
@@ -45,10 +63,23 @@
       onclose();
     }}
   >
-    <h2 id="confirm-close-title">Close the session to {name}?</h2>
-    <p>
-      It is still {state}. Closing the tab ends the session.
-    </p>
+    {#if files}
+      <h2 id="confirm-close-title">Close the files of {name}?</h2>
+      <p>
+        {#if transfers > 0}
+          {transfersText(transfers)}
+          {transfers === 1 ? "is" : "are"} running or waiting. Closing the tab cancels
+          {transfers === 1 ? "it" : "them"}.
+        {:else}
+          Its transfers have ended. Closing the tab clears their list.
+        {/if}
+      </p>
+    {:else}
+      <h2 id="confirm-close-title">Close the session to {name}?</h2>
+      <p>
+        It is still {state}. Closing the tab ends the session.
+      </p>
+    {/if}
     <div class="actions">
       <button
         type="button"
@@ -57,7 +88,7 @@
         onclick={oncancel}>Cancel</button
       >
       <button type="submit" data-confirm="close" bind:this={confirm}
-        >Close session</button
+        >{files ? "Close tab" : "Close session"}</button
       >
     </div>
   </form>

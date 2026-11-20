@@ -60,8 +60,26 @@ everything 0.2.0 could do, the app still does, reached differently.
   or an empty folder) on each row. On a production host each change asks
   first, Cancel focused, and the tab has the production colour and mark.
   A lost connection is said with its reason, with Reconnect. Closing the
-  tab closes its connection. A device without SFTP is said to offer no
-  listing; sending and fetching files comes later.
+  tab closes its connection.
+  Transfers (#106): Upload opens a file dialog (several files), or files
+  dropped from Explorer on the tab go up; either way into the folder
+  shown, and the listing is refreshed after each transfer. Tick files and
+  Download puts them in a folder you pick; the next download starts there.
+  An upload asks first on a production host (Cancel focused) and when a
+  file of that name is already there (one question listing them all); a
+  download asks only before replacing a local file. Below the listing,
+  the transfers: direction, name, progress and speed, waiting ones in
+  order (Remove), running ones with Cancel, finished ones with their
+  outcome (a cancelled upload says whether its partial file was removed),
+  an upload's MD5 and SHA-256 with a copy button. Transfers go on while
+  another tab is shown; closing the tab, the main window or switching
+  workspace while one runs or waits asks first.
+  A device without SFTP shows, in place of the listing, a form: Send (a
+  local file, chosen or dropped, to a path filled in with the platform's
+  file folder and the file's name) and Fetch (a path into a local folder).
+  It says that a file of that name is replaced (the device cannot be
+  asked), that no connection is held between transfers, and shows a
+  device's refusal in its words with the app's hint under it.
 - **Real windows**: a job run and a host's config history can open in a
   window of their own ("Open in window") and dock back. Closing the main
   window closes them; closing a run's window leaves its job running.
@@ -132,8 +150,8 @@ everything 0.2.0 could do, the app still does, reached differently.
 - **Questions**: those about one terminal (host key, login questions,
   paste confirmation, a snippet's variables, closing a live tab, joining
   multi-send) cover only that terminal's pane; the other panes stay usable.
-  So do a Files tab's (its login, host key, names and production
-  questions).
+  So do a Files tab's (its login, host key, names, production, upload
+  and download questions, and closing it while transfers run).
   Those about the whole app stay window-modal: delete, rename, new host or
   folder, switching workspace (and keeping or closing its sessions), the
   workspace switcher, the vault's forms, the unlock and start-over screen,
@@ -214,7 +232,7 @@ else. Each of its features, and where it is now:
 | Past runs (search, compare, save, delete, again) | Jobs view, run tab (can open in its own window)                                    |
 | Saved jobs                                       | Jobs view; "Save as job" in the job and run tabs                                   |
 | Config history and diff                          | Config backups view, details sheet, context menu; history tab (or its own window) |
-| A host's files (new, #103)                       | Details sheet, tree context menu, session menu, tab context menu; Files tab        |
+| A host's files, upload, download (new, #103/106) | Details sheet, tree context menu, session menu, tab context menu; Files tab        |
 | Back up on login                                 | Setting in the details sheet; marker in the session header                         |
 | Python setup                                     | Preferences tab, then the Python setup tab; palette                                |
 | Terminal search, copy, paste, zoom               | Terminal (unchanged)                                                               |

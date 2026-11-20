@@ -2,7 +2,7 @@
 //! tried by hand without a real device:
 //!
 //! ```text
-//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>]
+//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>] [--scp-only <port> <folder>]
 //! ```
 //!
 //! Port 0 (for any of them) takes a free one; the lines printed name it.
@@ -32,7 +32,10 @@
 //! `device host key: `), for tests that trust them as the app would. With
 //! `--sftp`, the first server and the `--device` server serve the folder
 //! (created if missing) over SFTP, as `/` (`tests/support/sftp.rs`); without
-//! it they refuse the subsystem, as a device without SFTP. The
+//! it they refuse the subsystem, as a device without SFTP. With
+//! `--scp-only`, a server with the same login listens on the given port,
+//! refuses SFTP and serves the folder (created if missing) over SCP, as
+//! `/` (`tests/support/scp.rs`), as a device with SCP only. The
 //! shells behind them are
 //! scripted; see `tests/support/mod.rs` and `tests/support/telnet.rs` for
 //! their commands.
@@ -45,7 +48,7 @@ const DEVICE_HOSTNAME: &str = "lab-r1";
 
 fn usage() -> ! {
     eprintln!(
-        "usage: test_ssh_server [port] [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>]"
+        "usage: test_ssh_server [port] [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>] [--scp-only <port> <folder>]"
     );
     std::process::exit(2);
 }
@@ -59,6 +62,7 @@ async fn main() {
     let mut device_port = None;
     let mut credential_agent = None;
     let mut sftp_folder = None;
+    let mut scp_only = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--agent" {
@@ -76,6 +80,13 @@ async fn main() {
         } else if arg == "--sftp" {
             let folder = args.next().unwrap_or_else(|| usage());
             sftp_folder = Some(std::path::PathBuf::from(folder));
+        } else if arg == "--scp-only" {
+            let port: u16 = args
+                .next()
+                .and_then(|port| port.parse().ok())
+                .unwrap_or_else(|| usage());
+            let folder = args.next().unwrap_or_else(|| usage());
+            scp_only = Some((port, std::path::PathBuf::from(folder)));
         } else if arg == "--telnet" {
             let port = args.next().unwrap_or_else(|| usage());
             telnet_port = Some(port.parse().unwrap_or_else(|_| usage()));
@@ -106,6 +117,15 @@ async fn main() {
         }
         println!("sftp folder: {}", folder.display());
     }
+    let scp_only = match scp_only {
+        Some((port, folder)) => {
+            std::fs::create_dir_all(&folder).expect("the SCP folder can be created");
+            let scp = support::TestSshServer::start_on(port).await;
+            scp.serve_scp(&folder);
+            Some(scp)
+        }
+        None => None,
+    };
     let telnet = match telnet_port {
         Some(port) => Some(
             support::telnet::TestTelnetServer::start_on(port, support::telnet::EchoMode::Remote)
@@ -161,6 +181,9 @@ async fn main() {
             "device {DEVICE_HOSTNAME} (device-mode shell) listening on 127.0.0.1:{}",
             device.port()
         );
+    }
+    if let Some(scp) = &scp_only {
+        println!("SCP-only device listening on 127.0.0.1:{}", scp.port());
     }
     if let Some(telnet) = &telnet {
         println!("telnet device listening on 127.0.0.1:{}", telnet.port());

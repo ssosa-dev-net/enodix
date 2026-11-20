@@ -53,7 +53,10 @@ const BUFFER_SIZE: usize = 256 * 1024;
 const LOST_REASON_WAIT: Duration = Duration::from_secs(1);
 
 /// One transfer, as [`Transfers::add`] numbers it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
 pub struct TransferId(u64);
 
 /// Which way a transfer goes.
@@ -361,6 +364,11 @@ impl TransferWatch {
     /// The latest status.
     pub fn status(&self) -> Status {
         self.status.borrow().clone()
+    }
+
+    /// The latest status, marked as seen.
+    pub(crate) fn latest(&mut self) -> Status {
+        self.status.borrow_and_update().clone()
     }
 
     /// The next status not seen yet (statuses in between may be skipped);

@@ -1,6 +1,8 @@
-// The Files tab's IPC (#103): a browser of one host's files over SFTP, in
-// the core (`netterm_core::files::FileBrowsers`). Its events arrive on a
-// Channel; the shell closes it with `files_close` or with the window.
+// The Files tab's IPC (#103, #106): a browser of one host's files over
+// SFTP (or, without SFTP, transfers by path over SCP), in the core
+// (`netterm_core::files::FileBrowsers`), and its transfers. Its events
+// arrive on a Channel; each call adding transfers gives another for their
+// states. The shell closes them with `files_close_host` or with the window.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { HostKeyDecision, HostKeyQuestion, LoginPrompt } from "./session";
@@ -32,7 +34,12 @@ export type BrowserEvent =
   | { kind: "hostKey"; question: HostKeyQuestion }
   | { kind: "prompt"; prompt: LoginPrompt }
   | { kind: "connected"; listing: Listing; notice: string | null }
-  | { kind: "noSftp"; reason: string }
+  | {
+      kind: "transferOnly";
+      reason: string;
+      hint: string | null;
+      folder: string | null;
+    }
   | { kind: "failed"; reason: string }
   | { kind: "lost"; reason: string };
 
@@ -101,4 +108,127 @@ export function sizeText(bytes: number | null): string {
 /** A modification time in the computer's own format. */
 export function timeText(seconds: number | null): string {
   return seconds === null ? "" : new Date(seconds * 1000).toLocaleString();
+}
+
+export type Direction = "upload" | "download";
+
+/** A transfer the tab added. */
+export interface Added {
+  id: number;
+  direction: Direction;
+  /** The file's name. */
+  name: string;
+  /** Its path on the device. */
+  remote: string;
+  /** The local file. */
+  local: string;
+}
+
+/** Where a transfer is, in the core's words. */
+export type TransferState =
+  | { kind: "waiting" }
+  | { kind: "connecting" }
+  | { kind: "running"; done: number; total: number | null }
+  | {
+      kind: "done";
+      bytes: number;
+      hashes: { md5: string; sha256: string } | null;
+      size: string;
+      checked: boolean;
+    }
+  | { kind: "failed"; reason: string; hint: string | null; partial: string }
+  | { kind: "cancelled"; partial: string };
+
+export interface TransferUpdate {
+  id: number;
+  state: TransferState;
+}
+
+const updates = (onupdate: (update: TransferUpdate) => void) =>
+  new Channel<TransferUpdate>(onupdate);
+
+/** Uploads the local files `paths` into `folder` on the device. */
+export const uploadFiles = (
+  id: number,
+  folder: string,
+  paths: string[],
+  onupdate: (update: TransferUpdate) => void,
+) =>
+  invoke<Added[]>("files_upload", {
+    id,
+    folder,
+    paths,
+    onUpdate: updates(onupdate),
+  });
+
+/** Downloads the files `names` in `folder` into the local folder `into`. */
+export const downloadFiles = (
+  id: number,
+  folder: string,
+  names: string[],
+  into: string,
+  onupdate: (update: TransferUpdate) => void,
+) =>
+  invoke<Added[]>("files_download", {
+    id,
+    folder,
+    names,
+    into,
+    onUpdate: updates(onupdate),
+  });
+
+/** Sends the local file `local` to the device path `remote` (SCP form). */
+export const sendFile = (
+  id: number,
+  local: string,
+  remote: string,
+  onupdate: (update: TransferUpdate) => void,
+) =>
+  invoke<Added>("files_send", {
+    id,
+    local,
+    remote,
+    onUpdate: updates(onupdate),
+  });
+
+/** Fetches the device path `remote` into the local folder `into`. */
+export const fetchFile = (
+  id: number,
+  remote: string,
+  into: string,
+  onupdate: (update: TransferUpdate) => void,
+) =>
+  invoke<Added>("files_fetch", {
+    id,
+    remote,
+    into,
+    onUpdate: updates(onupdate),
+  });
+
+/** Which of `names` are in `folder` on the device (none over SCP). */
+export const presentFiles = (id: number, folder: string, names: string[]) =>
+  invoke<string[]>("files_present", { id, folder, names });
+
+/** Which of `names` are in the local folder `folder`. */
+export const existingLocally = (folder: string, names: string[]) =>
+  invoke<string[]>("files_existing_locally", { folder, names });
+
+export const cancelTransfer = (transfer: number) =>
+  invoke<boolean>("files_cancel_transfer", { transfer });
+
+/** The host's Files tab closed: its browsers and transfers go. */
+export const closeFilesHost = (host: string) =>
+  invoke<void>("files_close_host", { host });
+
+/** `name` in `folder`, as the device writes paths (the core's
+ * `join_path`). */
+export function joinPath(folder: string, name: string): string {
+  return folder.endsWith("/") || folder.endsWith(":")
+    ? `${folder}${name}`
+    : `${folder}/${name}`;
+}
+
+/** A local path's last part. */
+export function baseName(path: string): string {
+  return path.split(/[\\/]/).pop() ?? path;
 }
