@@ -301,6 +301,8 @@ export interface PlatformDefinition {
   privilegePrompt: string | null;
   showConfig: string | null;
   ignoredLines: string | null;
+  /** Where files belong on the device, as it writes the path (`flash:`). */
+  fileFolder: string | null;
 }
 
 /** A platform definition as the workspace lists it. */

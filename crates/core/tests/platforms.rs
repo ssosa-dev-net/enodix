@@ -30,6 +30,7 @@ fn definition(name: &str, prompt: &str) -> PlatformDefinition {
         privilege_prompt: None,
         show_config: None,
         ignored_lines: None,
+        file_folder: None,
     }
 }
 
@@ -53,6 +54,12 @@ fn matched(workspace: &Workspace, platform: &str) -> Option<String> {
     workspace
         .platform(platform)
         .map(|definition| definition.name.clone())
+}
+
+fn file_folder(workspace: &Workspace, id: &str) -> Option<String> {
+    workspace
+        .host_file_folder(&HostId::new(id))
+        .map(str::to_string)
 }
 
 fn host_platform(workspace: &Workspace, id: &str) -> Option<String> {
@@ -454,4 +461,137 @@ fn an_unreadable_platforms_file_keeps_the_built_in_ones() {
         .iter()
         .any(|problem| problem.file == PLATFORMS_FILE));
     assert_eq!(matched(&workspace, "eos").as_deref(), Some("eos"));
+}
+
+#[test]
+fn the_built_ins_say_where_files_belong() {
+    let folders: Vec<(&str, Option<String>)> = BUILT_IN_PLATFORMS
+        .iter()
+        .map(|platform| (platform.name, platform.definition().file_folder))
+        .collect();
+    let some = |folder: &str| Some(folder.to_string());
+    assert_eq!(
+        folders,
+        [
+            ("srlinux", None),
+            ("eos", some("/mnt/flash")),
+            ("frr", None),
+            ("ios", some("flash:")),
+            ("nxos", some("bootflash:")),
+            ("junos", some("/var/tmp")),
+        ]
+    );
+}
+
+#[test]
+fn a_file_folder_is_read_and_written_with_the_other_values() {
+    // Surrounding blanks of a path are dropped, whoever wrote the file.
+    let (temp, mut workspace) = workspace_with("mine:\n  prompt: x\n  file_folder: ' disk0: '\n");
+    assert_eq!(
+        listed(&workspace, "mine").definition.file_folder.as_deref(),
+        Some("disk0:")
+    );
+    assert!(workspace.problems().is_empty());
+
+    let mut vyos = definition("vyos", "y");
+    vyos.show_config = Some("show configuration".into());
+    vyos.file_folder = Some(" /config ".into());
+    workspace.save_platform(None, &vyos).unwrap();
+    assert_eq!(
+        read(temp.path(), PLATFORMS_FILE),
+        "mine:\n  prompt: x\n  file_folder: ' disk0: '\nvyos:\n  prompt: y\n  show_config: show configuration\n  file_folder: /config\n"
+    );
+    assert_eq!(
+        listed(&workspace, "vyos").definition.file_folder.as_deref(),
+        Some("/config")
+    );
+
+    // Cleared: the key goes.
+    vyos.file_folder = Some("  ".into());
+    workspace.save_platform(Some("vyos"), &vyos).unwrap();
+    assert!(read(temp.path(), PLATFORMS_FILE)
+        .ends_with("vyos:\n  prompt: y\n  show_config: show configuration\n"));
+    assert_eq!(listed(&workspace, "vyos").definition.file_folder, None);
+
+    let (_bad, bad) = workspace_with("bad:\n  prompt: x\n  file_folder: [a]\n");
+    assert!(matches!(
+        bad.problems().first(),
+        Some(problem) if problem.message.contains("file_folder")
+    ));
+}
+
+#[test]
+fn a_changed_built_in_can_set_change_or_clear_its_file_folder() {
+    let temp = TempDir::new().unwrap();
+    let mut workspace = Workspace::open(temp.path()).unwrap();
+
+    let mut eos = built_in("eos");
+    eos.file_folder = Some("/mnt/flash/images".into());
+    workspace.save_platform(Some("eos"), &eos).unwrap();
+    assert_eq!(
+        read(temp.path(), PLATFORMS_FILE),
+        "eos:\n  file_folder: /mnt/flash/images\n"
+    );
+    assert_eq!(listed(&workspace, "eos").definition, eos);
+
+    eos.file_folder = None;
+    workspace.save_platform(Some("eos"), &eos).unwrap();
+    assert_eq!(
+        read(temp.path(), PLATFORMS_FILE),
+        "eos:\n  file_folder: ''\n"
+    );
+    assert_eq!(listed(&workspace, "eos").definition.file_folder, None);
+
+    let mut frr = built_in("frr");
+    frr.file_folder = Some("/tmp".into());
+    workspace.save_platform(Some("frr"), &frr).unwrap();
+    assert_eq!(
+        listed(&workspace, "frr").definition.file_folder.as_deref(),
+        Some("/tmp")
+    );
+
+    // Back to the built-in value: nothing left to write for eos.
+    workspace
+        .save_platform(Some("eos"), &built_in("eos"))
+        .unwrap();
+    assert_eq!(
+        read(temp.path(), PLATFORMS_FILE),
+        "frr:\n  file_folder: /tmp\n"
+    );
+}
+
+#[test]
+fn a_hosts_file_folder_follows_its_effective_platform() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    fs::write(root.join(PLATFORMS_FILE), "mine:\n  prompt: x\n").unwrap();
+    fs::create_dir(root.join("Arista")).unwrap();
+    fs::write(root.join("Arista/_folder.yaml"), "platform: arista_eos\n").unwrap();
+    for (file, text) in [
+        ("Arista/a1.yaml", "address: 192.0.2.1\n"),
+        (
+            "Arista/a2.yaml",
+            "address: 192.0.2.2\nplatform: juniper_junos\n",
+        ),
+        ("c1.yaml", "address: 192.0.2.3\nplatform: cisco_xe\n"),
+        ("s1.yaml", "address: 192.0.2.4\nplatform: srlinux\n"),
+        ("m1.yaml", "address: 192.0.2.5\nplatform: mine\n"),
+        ("u1.yaml", "address: 192.0.2.6\nplatform: unknown-os\n"),
+        ("n1.yaml", "address: 192.0.2.7\n"),
+    ] {
+        fs::write(root.join(file), text).unwrap();
+    }
+    let workspace = Workspace::open(root).unwrap();
+
+    let folder = |id: &str| file_folder(&workspace, id);
+    // From the folder's platform, the host's own, and an other name.
+    assert_eq!(folder("Arista/a1.yaml").as_deref(), Some("/mnt/flash"));
+    assert_eq!(folder("Arista/a2.yaml").as_deref(), Some("/var/tmp"));
+    assert_eq!(folder("c1.yaml").as_deref(), Some("flash:"));
+    // A definition without the value, an unknown platform, none at all.
+    assert_eq!(folder("s1.yaml"), None);
+    assert_eq!(folder("m1.yaml"), None);
+    assert_eq!(folder("u1.yaml"), None);
+    assert_eq!(folder("n1.yaml"), None);
+    assert_eq!(folder("missing.yaml"), None);
 }

@@ -238,6 +238,13 @@ Privileged mode was reached with `enable` on accounts that are already
 privilege 15; an enable password question on a real device is not
 exercised (the in-process device-mode server covers it).
 
+Each built-in definition's file folder (#102) comes from
+[Files on the lab devices](#files-on-the-lab-devices): `eos` `/mnt/flash`
+(cEOS), `junos` `/var/tmp` (cJunos), `ios` `flash:` (on the CSR 1000v it
+works as well as `bootflash:`), `srlinux` and `frr` none (files belong
+in the login folder). Not verified: `nxos`'s `bootflash:` (no NX-OS image)
+and `flash:` on physical Catalyst hardware.
+
 Not covered yet: NX-OS (needs an n9kv image), legacy-crypto devices,
 public-key logins to the devices themselves other than through the agent.
 

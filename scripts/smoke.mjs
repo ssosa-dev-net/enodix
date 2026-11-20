@@ -10051,12 +10051,19 @@ async function editInventory({
   }
   await clickOn(`${platformsDialog} [data-platform-action=new]`);
   await until("the new platform form", formOpen);
+  if (
+    !(await evaluate(
+      `!!document.querySelector(${JSON.stringify(`${platformForm} [data-platform-note=file-folder]`)})?.textContent.includes("Where files belong")`,
+    ))
+  )
+    fail("the platform form does not say what the file folder is for");
   await fillForm(
     {
       "platform-name": "mikrotik",
       "platform-other-names": "routeros, mikro",
       "platform-prompt": "\\[\\S+@\\S+\\] >",
       "platform-show-config": "/export",
+      "platform-file-folder": "flash/",
     },
     platformForm,
   );
@@ -10064,24 +10071,33 @@ async function editInventory({
     "the new definition in the platforms file",
     () =>
       contents(platformsFile) ===
-      "mikrotik:\n  other_names:\n  - routeros\n  - mikro\n  prompt: \\[\\S+@\\S+\\] >\n  show_config: /export\n",
+      "mikrotik:\n  other_names:\n  - routeros\n  - mikro\n  prompt: \\[\\S+@\\S+\\] >\n  show_config: /export\n  file_folder: flash/\n",
   );
   await until(
     "the new definition listed",
     async () => (await platformSource("mikrotik")) === "workspace",
   );
+  if (
+    (await evaluate(
+      `document.querySelector(${JSON.stringify(`${platformRow("mikrotik")} [data-platform-file-folder]`)})?.textContent ?? null`,
+    )) !== "files in flash/"
+  )
+    fail("the new definition's file folder is not listed");
   await screenshot("platforms");
 
   // A built-in changed: only the difference is written; reset removes it.
   await clickOn(`${platformRow("eos")} [data-platform-action=edit]`);
   await until("the eos form", formOpen);
   await fillForm(
-    { "platform-disable-paging": "terminal pager 0" },
+    {
+      "platform-disable-paging": "terminal pager 0",
+      "platform-file-folder": "/mnt/flash/images",
+    },
     platformForm,
   );
   await until("the changed built-in in the platforms file", () =>
     contents(platformsFile)?.endsWith(
-      "eos:\n  disable_paging: terminal pager 0\n",
+      "eos:\n  disable_paging: terminal pager 0\n  file_folder: /mnt/flash/images\n",
     ),
   );
   await until(

@@ -806,6 +806,13 @@ impl Workspace {
         self.platform(&resolved.settings.platform?.value)
     }
 
+    /// Where files belong on host `id`: the file folder of the definition
+    /// its effective platform names ([`Self::host_platform`]); `None`
+    /// without a platform, a usable definition or the value.
+    pub fn host_file_folder(&self, id: &HostId) -> Option<&str> {
+        self.host_platform(id)?.file_folder.as_deref()
+    }
+
     /// Every name and other name of a definition, trimmed and in lower
     /// case, with the definition it finds (as [`Self::platform`] does, but
     /// also one that cannot be used), for the interface.

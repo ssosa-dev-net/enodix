@@ -8,7 +8,8 @@
 //!   disable_paging: ...           # optional commands and patterns:
 //!   privilege_command: enable     #   disable_paging, privilege_command,
 //!   privilege_prompt: 'Password:' #   privilege_prompt, show_config,
-//!   show_config: /export          #   ignored_lines
+//!   show_config: /export          #   ignored_lines, file_folder
+//!   file_folder: 'flash:'         # where files belong on the device
 //! eos:                            # a built-in name: changes only the keys
 //!   disable_paging: terminal pager 0  # given ('' clears a built-in value)
 //! ```
@@ -24,7 +25,7 @@ use serde_norway::{Mapping, Value};
 use super::scalar_text;
 use crate::platform::{
     built_in_platform, built_in_platforms, same, BuiltInPlatform, ListedPlatform,
-    PlatformDefinition, PlatformSource, DISABLE_PAGING, IGNORED_LINES, OTHER_NAMES,
+    PlatformDefinition, PlatformSource, DISABLE_PAGING, FILE_FOLDER, IGNORED_LINES, OTHER_NAMES,
     PRIVILEGE_COMMAND, PRIVILEGE_PROMPT, PROMPT, SHOW_CONFIG,
 };
 
@@ -32,12 +33,13 @@ use crate::platform::{
 pub const PLATFORMS_FILE: &str = "_platforms.yaml";
 
 /// The optional text values, in file order after the prompt.
-const OPTIONAL: [&str; 5] = [
+const OPTIONAL: [&str; 6] = [
     DISABLE_PAGING,
     PRIVILEGE_COMMAND,
     PRIVILEGE_PROMPT,
     SHOW_CONFIG,
     IGNORED_LINES,
+    FILE_FOLDER,
 ];
 
 /// The definitions of the platforms file (`document`) and the built-in
@@ -163,14 +165,26 @@ fn optional(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
 
+/// Optional value `key` as kept: none when blank; the file folder, a
+/// path, without surrounding blanks (never meant), whoever wrote it.
+fn optional_value(key: &str, value: Option<String>) -> Option<String> {
+    let value = optional(value)?;
+    Some(if key == FILE_FOLDER {
+        value.trim().to_string()
+    } else {
+        value
+    })
+}
+
 /// The optional values of `definition`, in [`OPTIONAL`] order.
-fn optional_values(definition: &mut PlatformDefinition) -> [&mut Option<String>; 5] {
+fn optional_values(definition: &mut PlatformDefinition) -> [&mut Option<String>; 6] {
     [
         &mut definition.disable_paging,
         &mut definition.privilege_command,
         &mut definition.privilege_prompt,
         &mut definition.show_config,
         &mut definition.ignored_lines,
+        &mut definition.file_folder,
     ]
 }
 
@@ -187,9 +201,10 @@ fn own(name: &str, values: &Value) -> Result<PlatformDefinition, String> {
         privilege_prompt: None,
         show_config: None,
         ignored_lines: None,
+        file_folder: None,
     };
     for (key, value) in OPTIONAL.into_iter().zip(optional_values(&mut definition)) {
-        *value = optional(text(fields, key)?);
+        *value = optional_value(key, text(fields, key)?);
     }
     Ok(definition)
 }
@@ -212,7 +227,7 @@ fn changed(original: &BuiltInPlatform, values: &Value) -> Result<PlatformDefinit
     }
     for (key, value) in OPTIONAL.into_iter().zip(optional_values(&mut definition)) {
         if let Some(given) = text(fields, key)? {
-            *value = optional(Some(given));
+            *value = optional_value(key, Some(given));
         }
     }
     Ok(definition)
@@ -235,8 +250,8 @@ pub(super) fn clean(definition: &PlatformDefinition) -> Result<PlatformDefinitio
             .collect(),
         ..definition.clone()
     };
-    for value in optional_values(&mut clean) {
-        *value = optional(value.take());
+    for (key, value) in OPTIONAL.into_iter().zip(optional_values(&mut clean)) {
+        *value = optional_value(key, value.take());
     }
     if clean.prompt.trim().is_empty() {
         return Err(format!("the platform {name} needs a prompt pattern"));

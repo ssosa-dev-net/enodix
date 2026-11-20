@@ -122,7 +122,7 @@ Act on many devices at once, with config backup as the proving use case.
 
 **Platform definitions**
 
-- A definition has six values: prompt pattern, disable-paging command, privilege command, privilege password prompt, show-config command, and a pattern for lines to ignore when comparing configs. All but the prompt are optional.
+- A definition has seven values: prompt pattern, disable-paging command, privilege command, privilege password prompt, show-config command, a pattern for lines to ignore when comparing configs, and the file folder (where files belong on the device, such as `flash:` or `/mnt/flash`; #102). All but the prompt are optional.
 - Stored in `_platforms.yaml` at the workspace root and shared through git, but created and edited only in the app.
 - A definition is matched to a host by its `platform` field, ignoring case. The field becomes a dropdown of defined platforms that still accepts typed text, and it can be set on a folder so a folder of identical devices needs one assignment.
 - Built in: SR Linux, EOS, FRR, IOS, NX-OS and Junos, each verified in the containerlab suite before it ships (NX-OS is still to verify).
