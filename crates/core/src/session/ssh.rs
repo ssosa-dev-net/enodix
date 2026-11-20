@@ -1310,6 +1310,35 @@ impl Connected {
         }
     }
 
+    /// A channel running `command` (`scp -t flash:x`). Whether the device
+    /// accepted it is left to what comes on the channel: some devices never
+    /// answer the request, and a refusal arrives there as `Failure`.
+    pub(super) async fn exec(&self, command: &str) -> Result<Channel<client::Msg>, String> {
+        let starting = async {
+            let channel = self.connections[0]
+                .channel_open_session()
+                .await
+                .map_err(|error| match error {
+                    russh::Error::ChannelOpenFailure(reason) => {
+                        format!("the device refused to open a channel ({reason:?})")
+                    }
+                    _ => CONNECTION_LOST.into(),
+                })?;
+            channel
+                .exec(true, command)
+                .await
+                .map_err(|_| String::from(CONNECTION_LOST))?;
+            Ok(channel)
+        };
+        match tokio::time::timeout(self.connect_timeout, starting).await {
+            Ok(started) => started,
+            Err(_) => Err(OpenError::TimedOut {
+                after: self.connect_timeout,
+            }
+            .to_string()),
+        }
+    }
+
     /// Whether the device's connection is still up.
     pub(super) fn is_open(&self) -> bool {
         !self.connections.is_empty() && !self.connections[0].is_closed()
