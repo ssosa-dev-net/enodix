@@ -78,6 +78,7 @@ pub mod credentials;
 pub mod http;
 pub mod python;
 pub mod serial;
+pub mod sftp;
 pub mod tcp;
 pub mod telnet;
 pub mod workspaces;
@@ -260,6 +261,12 @@ pub struct TestSshServer {
     one_channel: Arc<AtomicBool>,
     /// The tasks serving its connections, to cut them.
     serving: Arc<Mutex<Vec<russh::server::Handle>>>,
+    /// How it answers a request for the `sftp` subsystem.
+    sftp: Arc<Mutex<sftp::SftpMode>>,
+    /// How many shells its clients started.
+    shells: Arc<AtomicUsize>,
+    /// How many connections it has now, logged in or not.
+    alive: Arc<AtomicUsize>,
 }
 
 /// How a device-mode shell starts.
@@ -444,6 +451,9 @@ impl TestSshServer {
         let one_channel = Arc::<AtomicBool>::default();
         let serving = Arc::<Mutex<Vec<russh::server::Handle>>>::default();
         let tasks = serving.clone();
+        let sftp = Arc::<Mutex<sftp::SftpMode>>::default();
+        let shells = Arc::<AtomicUsize>::default();
+        let alive = Arc::<AtomicUsize>::default();
         let mut server = ScriptedServer {
             authorized_keys,
             forwarded: counter,
@@ -451,6 +461,9 @@ impl TestSshServer {
             open: open.clone(),
             logins: logins.clone(),
             one_channel: one_channel.clone(),
+            sftp: sftp.clone(),
+            shells: shells.clone(),
+            alive: alive.clone(),
         };
         let task = tokio::spawn(async move {
             // `run_on_socket`, but keeping what each client sends first.
@@ -482,7 +495,37 @@ impl TestSshServer {
             logins,
             one_channel,
             serving,
+            sftp,
+            shells,
+            alive,
         }
+    }
+
+    /// From now on, serves `folder` over SFTP (see [`sftp`]).
+    pub fn serve_sftp(&self, folder: &std::path::Path) {
+        *self.sftp.lock().unwrap() = sftp::SftpMode::Serve(folder.to_path_buf());
+    }
+
+    /// From now on, refuses the `sftp` subsystem (the default).
+    pub fn refuse_sftp(&self) {
+        *self.sftp.lock().unwrap() = sftp::SftpMode::Refuse;
+    }
+
+    /// From now on, accepts the `sftp` subsystem and closes the channel at
+    /// once, before SFTP's first reply (as IOS-XE does).
+    pub fn close_sftp_at_once(&self) {
+        *self.sftp.lock().unwrap() = sftp::SftpMode::CloseAtOnce;
+    }
+
+    /// How many shells its clients have asked for.
+    pub fn shell_requests(&self) -> usize {
+        self.shells.load(Ordering::SeqCst)
+    }
+
+    /// How many connections it has now (from accepting one until it ends),
+    /// whatever they opened.
+    pub fn connections_alive(&self) -> usize {
+        self.alive.load(Ordering::SeqCst)
     }
 
     /// Cuts every connection made to it so far (their sockets close), as
@@ -608,6 +651,37 @@ impl Drop for SilentServer {
     }
 }
 
+/// A loopback port where every connection is closed as soon as it is
+/// accepted, before the SSH banner: a device with all its lines in use.
+/// Stops listening when dropped.
+pub struct HangUpServer {
+    port: u16,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl HangUpServer {
+    pub async fn start() -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        Self { port, task }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for HangUpServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 /// A loopback port nothing listens on.
 pub async fn closed_port() -> u16 {
     // Bind a free port, then stop listening on it.
@@ -636,12 +710,16 @@ struct ScriptedServer {
     open: Arc<OpenConnections>,
     logins: Arc<AtomicUsize>,
     one_channel: Arc<AtomicBool>,
+    sftp: Arc<Mutex<sftp::SftpMode>>,
+    shells: Arc<AtomicUsize>,
+    alive: Arc<AtomicUsize>,
 }
 
 impl Server for ScriptedServer {
     type Handler = ScriptedShell;
 
     fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> ScriptedShell {
+        self.alive.fetch_add(1, Ordering::SeqCst);
         ScriptedShell {
             authorized_keys: self.authorized_keys.clone(),
             forwarded: self.forwarded.clone(),
@@ -653,6 +731,10 @@ impl Server for ScriptedServer {
             logins: self.logins.clone(),
             one_channel: self.one_channel.clone(),
             session_channels: 0,
+            unclaimed: HashMap::new(),
+            sftp: self.sftp.clone(),
+            shells: self.shells.clone(),
+            alive: self.alive.clone(),
         }
     }
 }
@@ -708,6 +790,14 @@ struct ScriptedShell {
     one_channel: Arc<AtomicBool>,
     /// How many session channels this connection has opened.
     session_channels: usize,
+    /// Session channels that have asked for neither a pty nor a shell yet:
+    /// one may still become an SFTP session. A shell's is dropped (it is
+    /// answered through the session, and a channel nobody reads would
+    /// block the connection).
+    unclaimed: HashMap<ChannelId, Channel<Msg>>,
+    sftp: Arc<Mutex<sftp::SftpMode>>,
+    shells: Arc<AtomicUsize>,
+    alive: Arc<AtomicUsize>,
 }
 
 impl Drop for ScriptedShell {
@@ -715,6 +805,7 @@ impl Drop for ScriptedShell {
         if self.counted {
             self.open.closed();
         }
+        self.alive.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -1108,6 +1199,7 @@ impl Handler for ScriptedShell {
             self.counted = true;
             self.open.opened();
         }
+        self.unclaimed.insert(channel.id(), channel);
         reply.accept().await;
         Ok(())
     }
@@ -1153,6 +1245,7 @@ impl Handler for ScriptedShell {
         _modes: &[(Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.unclaimed.remove(&channel);
         let state = self.channels.entry(channel).or_default();
         state.cols = col_width;
         state.rows = row_height;
@@ -1179,19 +1272,39 @@ impl Handler for ScriptedShell {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.unclaimed.remove(&channel);
+        self.shells.fetch_add(1, Ordering::SeqCst);
         session.channel_success(channel)?;
         session.data(channel, self.prompt(channel))
     }
 
-    /// No subsystem (NETCONF, SFTP) is served: refused at once, so a
-    /// client that asks for one fails instead of waiting for an answer.
+    /// SFTP as [`TestSshServer::serve_sftp`] and its siblings say; any
+    /// other subsystem (NETCONF) is refused at once, so a client that asks
+    /// for one fails instead of waiting for an answer.
     async fn subsystem_request(
         &mut self,
         channel: ChannelId,
-        _name: &str,
+        name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        session.channel_failure(channel)?;
+        let mode = self.sftp.lock().unwrap().clone();
+        let claimed = self.unclaimed.remove(&channel);
+        match (name, mode, claimed) {
+            ("sftp", sftp::SftpMode::Serve(root), Some(claimed)) => {
+                // Its data is the SFTP server's, not a shell's.
+                self.channels.remove(&channel);
+                session.channel_success(channel)?;
+                russh_sftp::server::run(claimed.into_stream(), sftp::FolderServer::new(root)).await;
+            }
+            ("sftp", sftp::SftpMode::CloseAtOnce, _) => {
+                self.channels.remove(&channel);
+                session.channel_success(channel)?;
+                session.exit_status_request(channel, 0)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            }
+            _ => session.channel_failure(channel)?,
+        }
         Ok(())
     }
 

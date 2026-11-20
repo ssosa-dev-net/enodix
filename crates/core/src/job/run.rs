@@ -913,7 +913,7 @@ fn seconds(duration: Duration) -> String {
 }
 
 /// Why a host whose key was not trusted failed.
-fn host_key_refused(question: &HostKeyQuestion) -> String {
+pub(crate) fn host_key_refused(question: &HostKeyQuestion) -> String {
     let at = format!("{} port {}", question.host, question.port);
     if question.changed() {
         format!(
@@ -929,7 +929,7 @@ fn host_key_refused(question: &HostKeyQuestion) -> String {
 }
 
 /// Why a host that asked a login question failed.
-fn login_question_refused(prompt: &LoginPrompt) -> String {
+pub(crate) fn login_question_refused(prompt: &LoginPrompt) -> String {
     let questions: Vec<String> = prompt
         .questions
         .iter()

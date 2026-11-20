@@ -22,6 +22,15 @@ impl FirstBytes {
         Self(Arc::new(Mutex::new(Some(Vec::new()))))
     }
 
+    /// Whether nothing has been read yet (or the bytes were taken).
+    pub(super) fn is_empty(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(Vec::is_empty)
+    }
+
     /// The bytes kept so far; nothing more is kept after this.
     pub(super) fn take(&self) -> Vec<u8> {
         self.0

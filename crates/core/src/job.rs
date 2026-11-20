@@ -68,6 +68,8 @@ pub use run::{
     StartError, DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL, JOB_TERMINAL_SIZE, MAX_PARALLEL,
     PROMPT_SETTLE,
 };
+/// The reasons an unattended file connection gives for a refused question.
+pub(crate) use run::{host_key_refused, login_question_refused};
 pub use script::{ScriptOptions, ScriptTargets, SCRIPT_OUTPUT};
 
 /// Which hosts a job runs on.

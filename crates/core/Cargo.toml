@@ -26,6 +26,8 @@ regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
 # Pinned exactly, in the workspace's Cargo.toml.
 russh = { workspace = true }
+# SFTP on a file connection, and its server half in the tests' SSH server.
+russh-sftp = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # Comparing the running version with the latest release's.
 semver = "1"
