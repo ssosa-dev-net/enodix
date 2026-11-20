@@ -27,7 +27,7 @@ const WRITE_SIZE: u32 = 32 * 1024;
 
 /// How many connect timeouts a request may wait for its answer: the
 /// spec's stall rule.
-const STALL_TIMEOUTS: u32 = 3;
+pub(super) const STALL_TIMEOUTS: u32 = 3;
 
 /// Why a device has no SFTP ([`StartError::NoSftp`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -81,6 +81,10 @@ pub enum FileError {
     /// what it said, if it said more than its bare code.
     #[error("the device could not {action}{}", detail(.message))]
     Refused { action: String, message: String },
+    /// The device has no SFTP and offers transfer only (SCP): it cannot
+    /// `action` ("list a folder").
+    #[error("this device offers transfer only (SCP, no SFTP), so it cannot {action}")]
+    TransferOnly { action: String },
 }
 
 fn detail(message: &str) -> String {

@@ -77,6 +77,7 @@ pub mod algorithms;
 pub mod credentials;
 pub mod http;
 pub mod python;
+pub mod scp;
 pub mod serial;
 pub mod sftp;
 pub mod tcp;
@@ -263,6 +264,9 @@ pub struct TestSshServer {
     serving: Arc<Mutex<Vec<russh::server::Handle>>>,
     /// How it answers a request for the `sftp` subsystem.
     sftp: Arc<Mutex<sftp::SftpMode>>,
+    /// How it answers `scp -t` and `scp -f`, and how many run now.
+    scp: Arc<Mutex<scp::ScpMode>>,
+    scp_running: scp::Running,
     /// How many shells its clients started.
     shells: Arc<AtomicUsize>,
     /// How many connections it has now, logged in or not.
@@ -452,6 +456,8 @@ impl TestSshServer {
         let serving = Arc::<Mutex<Vec<russh::server::Handle>>>::default();
         let tasks = serving.clone();
         let sftp = Arc::<Mutex<sftp::SftpMode>>::default();
+        let scp = Arc::<Mutex<scp::ScpMode>>::default();
+        let scp_running = scp::Running::default();
         let shells = Arc::<AtomicUsize>::default();
         let alive = Arc::<AtomicUsize>::default();
         let mut server = ScriptedServer {
@@ -463,6 +469,8 @@ impl TestSshServer {
             one_channel: one_channel.clone(),
             sftp: sftp.clone(),
             sftp_serving: SftpServing::default(),
+            scp: scp.clone(),
+            scp_running: scp_running.clone(),
             shells: shells.clone(),
             alive: alive.clone(),
         };
@@ -497,6 +505,8 @@ impl TestSshServer {
             one_channel,
             serving,
             sftp,
+            scp,
+            scp_running,
             shells,
             alive,
         }
@@ -510,6 +520,24 @@ impl TestSshServer {
     /// From now on, refuses the `sftp` subsystem (the default).
     pub fn refuse_sftp(&self) {
         *self.sftp.lock().unwrap() = sftp::SftpMode::Refuse;
+    }
+
+    /// From now on, serves `folder` over SCP (see [`scp`]), with no quirks.
+    pub fn serve_scp(&self, folder: &std::path::Path) {
+        *self.scp.lock().unwrap() = scp::ScpMode {
+            root: Some(folder.to_path_buf()),
+            quirks: Vec::new(),
+        };
+    }
+
+    /// From now on, SCP also behaves as `quirk` says.
+    pub fn scp_quirk(&self, quirk: scp::ScpQuirk) {
+        self.scp.lock().unwrap().quirks.push(quirk);
+    }
+
+    /// How many SCP transfers are running on the server now.
+    pub fn scp_running(&self) -> usize {
+        self.scp_running.load(Ordering::SeqCst)
     }
 
     /// From now on, accepts the `sftp` subsystem and closes the channel at
@@ -713,6 +741,8 @@ struct ScriptedServer {
     one_channel: Arc<AtomicBool>,
     sftp: Arc<Mutex<sftp::SftpMode>>,
     sftp_serving: SftpServing,
+    scp: Arc<Mutex<scp::ScpMode>>,
+    scp_running: scp::Running,
     shells: Arc<AtomicUsize>,
     alive: Arc<AtomicUsize>,
 }
@@ -741,6 +771,8 @@ impl Server for ScriptedServer {
             unclaimed: HashMap::new(),
             sftp: self.sftp.clone(),
             sftp_serving: self.sftp_serving.clone(),
+            scp: self.scp.clone(),
+            scp_running: self.scp_running.clone(),
             connection: {
                 static NEXT: AtomicUsize = AtomicUsize::new(0);
                 NEXT.fetch_add(1, Ordering::SeqCst)
@@ -811,6 +843,8 @@ struct ScriptedShell {
     sftp_serving: SftpServing,
     /// This connection's number in `sftp_serving`.
     connection: usize,
+    scp: Arc<Mutex<scp::ScpMode>>,
+    scp_running: scp::Running,
     shells: Arc<AtomicUsize>,
     alive: Arc<AtomicUsize>,
 }
@@ -1366,6 +1400,40 @@ impl Handler for ScriptedShell {
                 session.exit_status_request(channel, 0)?;
                 session.eof(channel)?;
                 session.close(channel)?;
+            }
+            _ => session.channel_failure(channel)?,
+        }
+        Ok(())
+    }
+
+    /// `scp -t` / `scp -f` as [`TestSshServer::serve_scp`] and
+    /// [`TestSshServer::scp_quirk`] say; any other command is refused.
+    async fn exec_request(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let mode = self.scp.lock().unwrap().clone();
+        let offered = mode.root.is_some() || !mode.quirks.is_empty();
+        let command = String::from_utf8_lossy(data).into_owned();
+        match (
+            scp::parse(&command),
+            offered,
+            self.unclaimed.remove(&channel),
+        ) {
+            (Some((to_server, path)), true, Some(claimed)) => {
+                // Its data is SCP's, not a shell's.
+                self.channels.remove(&channel);
+                session.channel_success(channel)?;
+                tokio::spawn(scp::serve(
+                    claimed,
+                    to_server,
+                    path,
+                    mode,
+                    session.handle(),
+                    self.scp_running.clone(),
+                ));
             }
             _ => session.channel_failure(channel)?,
         }

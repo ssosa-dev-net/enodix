@@ -25,6 +25,10 @@ use crate::known_hosts::KnownHosts;
 /// Its SSH window is russh's (2 MiB), which downloads need.
 pub struct FileConnection {
     connected: Connected,
+    /// What it was opened with, to connect again (SCP connects for each
+    /// transfer).
+    target: SshTarget,
+    known_hosts: KnownHosts,
     /// The one channel it may carry at a time.
     channel: Arc<Semaphore>,
 }
@@ -124,25 +128,30 @@ impl FileConnection {
             user,
         };
         let task = tokio::spawn(async move {
-            let opening = ssh::open_connection(&target, known_hosts, asker, &mut prompter);
-            tokio::pin!(opening);
-            let opened = loop {
-                tokio::select! {
-                    biased;
-                    Some(event) = asked.recv() => {
-                        let event = match event {
-                            SessionEvent::HostKey(question) => OpeningEvent::HostKey(question),
-                            SessionEvent::Prompt(prompt) => OpeningEvent::Prompt(prompt),
-                            _ => continue,
-                        };
-                        let _ = events_tx.send(event);
+            let opened = {
+                let opening =
+                    ssh::open_connection(&target, known_hosts.clone(), asker, &mut prompter);
+                tokio::pin!(opening);
+                loop {
+                    tokio::select! {
+                        biased;
+                        Some(event) = asked.recv() => {
+                            let event = match event {
+                                SessionEvent::HostKey(question) => OpeningEvent::HostKey(question),
+                                SessionEvent::Prompt(prompt) => OpeningEvent::Prompt(prompt),
+                                _ => continue,
+                            };
+                            let _ = events_tx.send(event);
+                        }
+                        opened = &mut opening => break opened,
                     }
-                    opened = &mut opening => break opened,
                 }
             };
             let _ = events_tx.send(match opened {
                 Ok(connected) => OpeningEvent::Opened(FileConnection {
                     connected,
+                    target,
+                    known_hosts,
                     channel: Arc::new(Semaphore::new(1)),
                 }),
                 Err(error) => OpeningEvent::Failed(error),
@@ -230,6 +239,19 @@ impl FileConnection {
         name: &str,
     ) -> Result<russh::Channel<russh::client::Msg>, SubsystemRefusal> {
         self.connected.subsystem(name).await
+    }
+
+    /// A channel running `command`.
+    pub(crate) async fn exec(
+        &self,
+        command: &str,
+    ) -> Result<russh::Channel<russh::client::Msg>, String> {
+        self.connected.exec(command).await
+    }
+
+    /// The target and known hosts it was opened with.
+    pub(crate) fn opened_with(&self) -> (&SshTarget, &KnownHosts) {
+        (&self.target, &self.known_hosts)
     }
 
     /// Follows why the connection ended (`Some` once it has; the sender
