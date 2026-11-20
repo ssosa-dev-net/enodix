@@ -262,8 +262,12 @@ pub struct TestSshServer {
     one_channel: Arc<AtomicBool>,
     /// The tasks serving its connections, to cut them.
     serving: Arc<Mutex<Vec<russh::server::Handle>>>,
+    /// A duplicate of each socket it accepted whose session is still on,
+    /// to sever them.
+    accepted: Arc<Mutex<HashMap<usize, std::net::TcpStream>>>,
     /// How it answers a request for the `sftp` subsystem.
     sftp: Arc<Mutex<sftp::SftpMode>>,
+    sftp_quirks: Arc<sftp::SftpQuirks>,
     /// How it answers `scp -t` and `scp -f`, and how many run now.
     scp: Arc<Mutex<scp::ScpMode>>,
     scp_running: scp::Running,
@@ -455,7 +459,10 @@ impl TestSshServer {
         let one_channel = Arc::<AtomicBool>::default();
         let serving = Arc::<Mutex<Vec<russh::server::Handle>>>::default();
         let tasks = serving.clone();
+        let accepted = Arc::<Mutex<HashMap<usize, std::net::TcpStream>>>::default();
+        let sockets = accepted.clone();
         let sftp = Arc::<Mutex<sftp::SftpMode>>::default();
+        let sftp_quirks = Arc::<sftp::SftpQuirks>::default();
         let scp = Arc::<Mutex<scp::ScpMode>>::default();
         let scp_running = scp::Running::default();
         let shells = Arc::<AtomicUsize>::default();
@@ -468,6 +475,7 @@ impl TestSshServer {
             logins: logins.clone(),
             one_channel: one_channel.clone(),
             sftp: sftp.clone(),
+            sftp_quirks: sftp_quirks.clone(),
             sftp_serving: SftpServing::default(),
             scp: scp.clone(),
             scp_running: scp_running.clone(),
@@ -476,8 +484,24 @@ impl TestSshServer {
         };
         let task = tokio::spawn(async move {
             // `run_on_socket`, but keeping what each client sends first.
+            let mut accepted_total = 0;
             while let Ok((socket, address)) = listener.accept().await {
                 let _ = socket.set_nodelay(true);
+                // A duplicate of the socket, to sever it from outside. It
+                // is dropped when the session ends: held, it would keep
+                // the connection open after the server closed its side.
+                let number = accepted_total;
+                accepted_total += 1;
+                let socket = match socket.into_std() {
+                    Ok(socket) => {
+                        if let Ok(duplicate) = socket.try_clone() {
+                            sockets.lock().unwrap().insert(number, duplicate);
+                        }
+                        TcpStream::from_std(socket).unwrap()
+                    }
+                    Err(_) => continue,
+                };
+                let sockets = sockets.clone();
                 let bytes = Arc::<Mutex<Vec<u8>>>::default();
                 connections.lock().unwrap().push(bytes.clone());
                 let handler = server.new_client(Some(address));
@@ -489,6 +513,7 @@ impl TestSshServer {
                         tasks.lock().unwrap().push(session.handle());
                         let _ = session.await;
                     }
+                    sockets.lock().unwrap().remove(&number);
                 });
             }
         });
@@ -504,7 +529,9 @@ impl TestSshServer {
             logins,
             one_channel,
             serving,
+            accepted,
             sftp,
+            sftp_quirks,
             scp,
             scp_running,
             shells,
@@ -515,6 +542,11 @@ impl TestSshServer {
     /// From now on, serves `folder` over SFTP (see [`sftp`]).
     pub fn serve_sftp(&self, folder: &std::path::Path) {
         *self.sftp.lock().unwrap() = sftp::SftpMode::Serve(folder.to_path_buf());
+    }
+
+    /// How its SFTP side misbehaves (see [`sftp::SftpQuirks`]).
+    pub fn sftp_quirks(&self) -> &sftp::SftpQuirks {
+        &self.sftp_quirks
     }
 
     /// From now on, refuses the `sftp` subsystem (the default).
@@ -569,6 +601,17 @@ impl TestSshServer {
                     "en".into(),
                 )
                 .await;
+        }
+    }
+
+    /// Severs every connection made to it so far, without a word: their
+    /// sockets are shut down, as when the network between goes. Unlike
+    /// [`Self::cut_connections`], this works when the server's side of a
+    /// connection is stuck (a channel nobody reads).
+    pub fn sever_connections(&self) {
+        let sockets: Vec<_> = self.accepted.lock().unwrap().drain().collect();
+        for (_, socket) in sockets {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
         }
     }
 
@@ -740,6 +783,7 @@ struct ScriptedServer {
     logins: Arc<AtomicUsize>,
     one_channel: Arc<AtomicBool>,
     sftp: Arc<Mutex<sftp::SftpMode>>,
+    sftp_quirks: Arc<sftp::SftpQuirks>,
     sftp_serving: SftpServing,
     scp: Arc<Mutex<scp::ScpMode>>,
     scp_running: scp::Running,
@@ -770,6 +814,7 @@ impl Server for ScriptedServer {
             session_channels: 0,
             unclaimed: HashMap::new(),
             sftp: self.sftp.clone(),
+            sftp_quirks: self.sftp_quirks.clone(),
             sftp_serving: self.sftp_serving.clone(),
             scp: self.scp.clone(),
             scp_running: self.scp_running.clone(),
@@ -840,6 +885,7 @@ struct ScriptedShell {
     /// block the connection).
     unclaimed: HashMap<ChannelId, Channel<Msg>>,
     sftp: Arc<Mutex<sftp::SftpMode>>,
+    sftp_quirks: Arc<sftp::SftpQuirks>,
     sftp_serving: SftpServing,
     /// This connection's number in `sftp_serving`.
     connection: usize,
@@ -1392,7 +1438,8 @@ impl Handler for ScriptedShell {
                     .lock()
                     .unwrap()
                     .insert(self.connection, session.handle());
-                russh_sftp::server::run(claimed.into_stream(), sftp::FolderServer::new(root)).await;
+                let server = sftp::FolderServer::new(root, self.sftp_quirks.clone());
+                russh_sftp::server::run(claimed.into_stream(), server).await;
             }
             ("sftp", sftp::SftpMode::CloseAtOnce, _) => {
                 self.channels.remove(&channel);

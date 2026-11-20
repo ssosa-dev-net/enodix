@@ -7,17 +7,25 @@
 //! is a bare `Failure`: renaming onto an existing name, making a folder that
 //! exists, deleting a folder that is not empty. Anything inside a folder
 //! named [`SFTP_LOCKED`] is refused as permission denied.
+//!
+//! [`SftpQuirks`] make it misbehave as devices do, for the transfer
+//! engine's tests: holding transfers mid-file (a device that stops
+//! answering), keeping fewer bytes than were written, refusing removes (a
+//! Junos read-only login).
 
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
 use russh_sftp::protocol::{
     Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
 };
 use russh_sftp::server::StatusReply;
+use tokio::sync::watch;
 
 /// Where the login lands: the served folder.
 pub const SFTP_HOME: &str = "/";
@@ -38,11 +46,63 @@ pub enum SftpMode {
     Serve(PathBuf),
 }
 
+/// How the SFTP side misbehaves, shared by every session of a server.
+pub struct SftpQuirks {
+    /// Reads and writes from this offset on wait until released. SFTP's
+    /// requests are answered one at a time, so everything after them
+    /// waits too, as on a device that stopped answering.
+    hold: watch::Sender<Option<u64>>,
+    /// Writes past this many bytes of a file are acknowledged and dropped.
+    keep_at_most: Mutex<Option<u64>>,
+    /// Removing a file is refused as permission denied.
+    refuse_remove: AtomicBool,
+}
+
+impl Default for SftpQuirks {
+    fn default() -> Self {
+        Self {
+            hold: watch::Sender::new(None),
+            keep_at_most: Mutex::new(None),
+            refuse_remove: AtomicBool::new(false),
+        }
+    }
+}
+
+impl SftpQuirks {
+    /// From now on, reads and writes from `offset` on wait (and every
+    /// request after them) until [`Self::release`].
+    pub fn hold_from(&self, offset: u64) {
+        self.hold.send_replace(Some(offset));
+    }
+
+    /// Lets held reads and writes go on.
+    pub fn release(&self) {
+        self.hold.send_replace(None);
+    }
+
+    pub fn keep_at_most(&self, bytes: u64) {
+        *self.keep_at_most.lock().unwrap() = Some(bytes);
+    }
+
+    pub fn refuse_remove(&self) {
+        self.refuse_remove.store(true, Ordering::SeqCst);
+    }
+
+    /// Waits while a hold covers `offset`.
+    async fn held(&self, offset: u64) {
+        let mut hold = self.hold.subscribe();
+        let _ = hold
+            .wait_for(|from| from.is_none_or(|from| offset < from))
+            .await;
+    }
+}
+
 /// One client's SFTP session over the served folder.
 pub struct FolderServer {
     root: PathBuf,
     handles: HashMap<String, Open>,
     next: u64,
+    quirks: Arc<SftpQuirks>,
 }
 
 enum Open {
@@ -52,11 +112,12 @@ enum Open {
 }
 
 impl FolderServer {
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf, quirks: Arc<SftpQuirks>) -> Self {
         Self {
             root,
             handles: HashMap::new(),
             next: 0,
+            quirks,
         }
     }
 
@@ -262,6 +323,9 @@ impl russh_sftp::server::Handler for FolderServer {
 
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
         let file = self.local(&filename)?;
+        if self.quirks.refuse_remove.load(Ordering::SeqCst) {
+            return Err(StatusCode::PermissionDenied.into());
+        }
         if file.is_dir() {
             return Err(StatusCode::Failure.into());
         }
@@ -313,6 +377,7 @@ impl russh_sftp::server::Handler for FolderServer {
         offset: u64,
         len: u32,
     ) -> Result<Data, Self::Error> {
+        self.quirks.held(offset).await;
         let Some(Open::File(file)) = self.handles.get_mut(&handle) else {
             return Err(StatusCode::Failure.into());
         };
@@ -338,8 +403,16 @@ impl russh_sftp::server::Handler for FolderServer {
         id: u32,
         handle: String,
         offset: u64,
-        data: Vec<u8>,
+        mut data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
+        self.quirks.held(offset).await;
+        let keep = *self.quirks.keep_at_most.lock().unwrap();
+        if let Some(keep) = keep {
+            data.truncate(keep.saturating_sub(offset) as usize);
+            if data.is_empty() {
+                return Ok(ok(id));
+            }
+        }
         let Some(Open::File(file)) = self.handles.get_mut(&handle) else {
             return Err(StatusCode::Failure.into());
         };

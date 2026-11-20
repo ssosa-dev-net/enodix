@@ -2971,6 +2971,7 @@ dependencies = [
  "chrono",
  "futures",
  "libc",
+ "md5",
  "notify",
  "rand",
  "regex",

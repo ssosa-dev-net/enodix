@@ -32,6 +32,10 @@ pub enum ScpQuirk {
     WriteFailedAfterData,
     /// A fetch announces the file's size, sends half of it and ends.
     ShortFetch,
+    /// Half way through a file it stops: a send is no longer read, a fetch
+    /// no longer sent, and the channel stays open (a device that stopped
+    /// answering).
+    StallMidway,
 }
 
 /// What the server's SCP does.
@@ -194,6 +198,7 @@ pub async fn serve(
                 &mut link,
                 &local(&root, &path),
                 quirk(ScpQuirk::WriteFailedAfterData),
+                quirk(ScpQuirk::StallMidway),
             )
             .await
         } else {
@@ -202,6 +207,7 @@ pub async fn serve(
                 &path,
                 &local(&root, &path),
                 quirk(ScpQuirk::ShortFetch),
+                quirk(ScpQuirk::StallMidway),
             )
             .await
         };
@@ -216,7 +222,7 @@ pub async fn serve(
 
 /// `scp -t`: takes one file into `target` (a file, or a folder to put it
 /// in). Whether the transfer went through.
-async fn receive(link: &mut Link, target: &Path, write_fails: bool) -> bool {
+async fn receive(link: &mut Link, target: &Path, write_fails: bool, stall: bool) -> bool {
     link.send(&[0]).await;
     let Some(header) = link.line().await else {
         return false;
@@ -253,6 +259,9 @@ async fn receive(link: &mut Link, target: &Path, write_fails: bool) -> bool {
     link.send(&[0]).await;
     let mut left = size;
     while left > 0 {
+        if stall && left <= size / 2 {
+            std::future::pending::<()>().await;
+        }
         if link.pending.is_empty() && !link.fill().await {
             // Cut short: the partial file stays, as on cEOS and Junos.
             return false;
@@ -280,34 +289,38 @@ async fn receive(link: &mut Link, target: &Path, write_fails: bool) -> bool {
 }
 
 /// `scp -f`: sends the file at `source`. Whether the transfer went through.
-async fn send(link: &mut Link, asked: &str, source: &Path, short: bool) -> bool {
+async fn send(link: &mut Link, asked: &str, source: &Path, short: bool, stall: bool) -> bool {
     if link.byte().await != Some(0) {
         return false;
     }
-    let bytes = match fs::read(source) {
-        Ok(bytes) if source.is_file() => bytes,
+    // Read a piece at a time, so that a large file is never in memory.
+    let mut file = match fs::File::open(source) {
+        Ok(file) if source.is_file() => file,
         _ => {
             link.refuse(&format!("scp: {asked}: No such file or directory"))
                 .await;
             return false;
         }
     };
+    let size = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     let name = source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    link.send(format!("C0644 {} {name}\n", bytes.len()).as_bytes())
-        .await;
+    link.send(format!("C0644 {size} {name}\n").as_bytes()).await;
     if link.byte().await != Some(0) {
         return false;
     }
-    let sent = if short {
-        &bytes[..bytes.len() / 2]
-    } else {
-        &bytes[..]
-    };
-    for chunk in sent.chunks(32 * 1024) {
-        link.send(chunk).await;
+    let mut left = if short || stall { size / 2 } else { size };
+    let mut chunk = vec![0; 32 * 1024];
+    while left > 0 {
+        let want = chunk.len().min(left as usize);
+        std::io::Read::read_exact(&mut file, &mut chunk[..want]).unwrap();
+        link.send(&chunk[..want]).await;
+        left -= want as u64;
+    }
+    if stall {
+        std::future::pending::<()>().await;
     }
     if short {
         link.end(1).await;

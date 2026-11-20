@@ -177,7 +177,9 @@ fn last_part(path: &str) -> String {
 /// SFTP on a file connection: the device's file system. Dropping it (and
 /// its streams) ends SFTP and frees the connection's channel; dropping the
 /// connection ends it too, and its operations then fail with
-/// [`FileError::ConnectionLost`].
+/// [`FileError::ConnectionLost`]. Cloning gives another handle on the same
+/// session (the Files tab's browser and the transfer engine share one).
+#[derive(Clone)]
 pub struct Sftp {
     shared: Arc<Shared>,
 }
@@ -295,7 +297,7 @@ impl Shared {
 }
 
 /// A stream's `io::Error` as the [`FileError`] it carries.
-fn file_error(error: io::Error) -> FileError {
+pub(super) fn file_error(error: io::Error) -> FileError {
     match error
         .get_ref()
         .and_then(|inner| inner.downcast_ref::<FileError>())
@@ -309,6 +311,34 @@ fn file_error(error: io::Error) -> FileError {
 }
 
 impl Sftp {
+    /// Why the connection ended, once it has.
+    pub(crate) fn lost_reason(&self) -> Option<Lost> {
+        let ended = &self.shared.ended;
+        if let Some(lost) = ended.borrow().clone() {
+            return Some(lost);
+        }
+        ended
+            .has_changed()
+            .is_err()
+            .then(|| Lost::Broken("the connection ended".into()))
+    }
+
+    /// Resolves once the connection has ended, with why. russh-sftp does
+    /// not wake every request waiting for its answer when the session
+    /// ends (a write does not), so a transfer races its requests against
+    /// this.
+    pub(crate) async fn ended(&self) -> Lost {
+        let mut ended = self.shared.ended.clone();
+        let _ = ended.wait_for(Option::is_some).await;
+        self.lost_reason()
+            .unwrap_or_else(|| Lost::Broken("the connection ended".into()))
+    }
+
+    /// How long a request may wait for its answer: three connect timeouts.
+    pub(crate) fn stall_limit(&self) -> Duration {
+        self.shared.timeout
+    }
+
     /// The folder the login lands in, as an absolute path.
     pub async fn home(&self) -> Result<String, FileError> {
         let shared = &self.shared;
