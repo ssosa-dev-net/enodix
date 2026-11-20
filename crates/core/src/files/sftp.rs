@@ -94,7 +94,8 @@ fn detail(message: &str) -> String {
 }
 
 /// What kind of thing a [`RemoteEntry`] is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum EntryKind {
     File,
     Folder,
@@ -106,13 +107,15 @@ pub enum EntryKind {
 
 /// A file or folder on the device, as a listing or [`Sftp::stat`] gives
 /// it. A device may leave any of the details out.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RemoteEntry {
     /// Its name, without its folder.
     pub name: String,
     pub kind: EntryKind,
     /// In bytes.
     pub size: Option<u64>,
+    /// Sent to the interface as seconds since 1970.
+    #[serde(serialize_with = "unix_seconds")]
     pub modified: Option<SystemTime>,
     /// As `ls` shows them: `rwxr-xr-x`.
     pub permissions: Option<String>,
@@ -136,6 +139,14 @@ impl RemoteEntry {
             permissions: metadata.permissions.map(permission_text),
         }
     }
+}
+
+fn unix_seconds<S: serde::Serializer>(
+    time: &Option<SystemTime>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let seconds = time.and_then(|time| time.duration_since(UNIX_EPOCH).ok());
+    serializer.serialize_some(&seconds.map(|seconds| seconds.as_secs()))
 }
 
 /// `mode`'s permission bits as `ls` shows them.
@@ -302,6 +313,17 @@ impl Sftp {
             .canonicalize(".")
             .await
             .map_err(|error| shared.failed(error, ".", || "tell its home folder".into()))
+    }
+
+    /// `path` as the device names it (its realpath): absolute, without
+    /// `.` and `..`.
+    pub(crate) async fn canonical(&self, path: &str) -> Result<String, FileError> {
+        let shared = &self.shared;
+        shared
+            .session
+            .canonicalize(path)
+            .await
+            .map_err(|error| shared.failed(error, path, || format!("find {path}")))
     }
 
     /// What is in the folder `path`: files, folders and links, hidden ones

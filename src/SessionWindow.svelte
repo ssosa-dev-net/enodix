@@ -977,6 +977,9 @@
             ondetails={record.host === null
               ? undefined
               : () => void ask(tab, { kind: "details" })}
+            onfiles={record.host === null
+              ? undefined
+              : () => void ask(tab, { kind: "files" })}
             onpasswordlogin={record.host === null
               ? undefined
               : async (reason) => {

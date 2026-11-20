@@ -40,9 +40,28 @@ everything 0.2.0 could do, the app still does, reached differently.
   fold into a "…" button that lists them.
 - **View tabs**: job (pre-flight, running, result), past run, config
   history (one per host), Preferences, CSV import, Nornir import, platform
-  definitions, highlight rules, fill-in review and Python setup. They have
-  an icon and no connection dot, move, split and close like session tabs,
-  and never join multi-send.
+  definitions, highlight rules, fill-in review, Python setup and Files
+  (one per host). They have an icon and no connection dot, move, split
+  and close like session tabs, and never join multi-send.
+- **Files tab** (#103): an SSH host's files over SFTP, titled "Files" and
+  the host's name, in the main window only (not in a window of its own).
+  Opened from the host's details sheet, the tree's context menu, and a
+  session's menu or its tab's menu; from a session window it opens in the
+  main window, which comes forward. Not offered for telnet or serial hosts
+  or quick connections; asking again shows the open tab. It connects when
+  it opens, with the host's stored profile; a login to type, an unknown or
+  changed host key and a login question are asked over the tab; Cancel
+  leaves the tab saying why it is not connected, with "Connect again". It
+  starts in the folder the host's platform puts files in, or else where
+  the login lands. The listing (folders first, then by name, hidden files
+  included) shows size, time and permissions; the path box takes an
+  absolute path or one from the folder shown, a folder's name opens it,
+  and there are Up, Refresh and New folder, with Rename and Delete (a file
+  or an empty folder) on each row. On a production host each change asks
+  first, Cancel focused, and the tab has the production colour and mark.
+  A lost connection is said with its reason, with Reconnect. Closing the
+  tab closes its connection. A device without SFTP is said to offer no
+  listing; sending and fetching files comes later.
 - **Real windows**: a job run and a host's config history can open in a
   window of their own ("Open in window") and dock back. Closing the main
   window closes them; closing a run's window leaves its job running.
@@ -113,6 +132,8 @@ everything 0.2.0 could do, the app still does, reached differently.
 - **Questions**: those about one terminal (host key, login questions,
   paste confirmation, a snippet's variables, closing a live tab, joining
   multi-send) cover only that terminal's pane; the other panes stay usable.
+  So do a Files tab's (its login, host key, names and production
+  questions).
   Those about the whole app stay window-modal: delete, rename, new host or
   folder, switching workspace (and keeping or closing its sessions), the
   workspace switcher, the vault's forms, the unlock and start-over screen,
@@ -193,6 +214,7 @@ else. Each of its features, and where it is now:
 | Past runs (search, compare, save, delete, again) | Jobs view, run tab (can open in its own window)                                    |
 | Saved jobs                                       | Jobs view; "Save as job" in the job and run tabs                                   |
 | Config history and diff                          | Config backups view, details sheet, context menu; history tab (or its own window) |
+| A host's files (new, #103)                       | Details sheet, tree context menu, session menu, tab context menu; Files tab        |
 | Back up on login                                 | Setting in the details sheet; marker in the session header                         |
 | Python setup                                     | Preferences tab, then the Python setup tab; palette                                |
 | Terminal search, copy, paste, zoom               | Terminal (unchanged)                                                               |

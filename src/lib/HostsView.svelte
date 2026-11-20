@@ -31,6 +31,7 @@
     openScript,
     openNornirImport,
     openConfigHistory,
+    openFiles,
     remove,
     removeFilter,
     rename,
@@ -226,6 +227,24 @@
     openBackup({ kind: "filter", name }, `the hosts of ${name}`);
   }
 
+  /** Moves a menu opened near the window's bottom or right edge back
+   * inside it, whole (a host's menu is long). */
+  function inWindow(element: HTMLElement) {
+    const fit = () => {
+      const box = element.getBoundingClientRect();
+      const margin = 4;
+      if (box.bottom > window.innerHeight - margin)
+        element.style.top = `${Math.max(margin, window.innerHeight - box.height - margin)}px`;
+      if (box.right > window.innerWidth - margin)
+        element.style.left = `${Math.max(margin, window.innerWidth - box.width - margin)}px`;
+    };
+    fit();
+    // Entries can change once the host's settings are resolved.
+    const observer = new ResizeObserver(fit);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }
+
   /** An entry of the tree's context menu: `id` is its `data-menu`. */
   interface Entry {
     id: string;
@@ -280,6 +299,16 @@
           label: "Config history",
           action: () => openConfigHistory(item.id),
         },
+        // Over SFTP: SSH hosts only (#103).
+        ...(settings?.protocol.value === "ssh"
+          ? [
+              {
+                id: "files",
+                label: "Files",
+                action: () => openFiles(item.id),
+              },
+            ]
+          : []),
         {
           id: "log-folder",
           label: "Open log folder",
@@ -669,7 +698,13 @@
 {/if}
 
 {#if menu}
-  <div class="menu" role="menu" style:left="{menu.x}px" style:top="{menu.y}px">
+  <div
+    class="menu"
+    role="menu"
+    style:left="{menu.x}px"
+    style:top="{menu.y}px"
+    {@attach inWindow}
+  >
     {#each entries(menu.item, menu.settings) as entry (entry.id)}
       <button
         role="menuitem"

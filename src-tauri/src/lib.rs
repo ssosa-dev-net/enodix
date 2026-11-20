@@ -57,6 +57,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
+mod files;
 mod group;
 mod page_watch;
 mod python;
@@ -2396,12 +2397,15 @@ fn layout_reset(
     app: AppHandle,
     window: tauri::WebviewWindow,
     tabs: State<'_, Tabs>,
+    files: State<'_, files::FileTabs>,
     records: State<'_, SessionRecords>,
 ) -> Result<WindowView, String> {
     let window = calling_window(&window)?;
     if window != WindowId::MAIN {
         return Err("a session window's layout is its session's".into());
     }
+    // A page loaded afresh has no Files tab: their connections go.
+    files.browsers.close_all();
     let view = {
         let mut windows = tabs.lock();
         windows.reset(window).map_err(|error| error.to_string())?;
@@ -3038,9 +3042,13 @@ pub fn run() {
             .ok();
             app.manage(CredentialAgent(agent));
             // Trusted host keys are per user, beside the app state.
-            app.manage(SessionManager::new(KnownHosts::in_data_folder(
-                &data_folder,
-            )));
+            let known_hosts = KnownHosts::in_data_folder(&data_folder);
+            app.manage(SessionManager::new(known_hosts.clone()));
+            // The Files tab's connections (#103) check the same keys.
+            app.manage(files::FileTabs {
+                browsers: netterm_core::files::FileBrowsers::new(),
+                known_hosts,
+            });
             app.manage(Tabs::new());
             app.manage(SessionRelays::new());
             app.manage(SessionRecords::new());
@@ -3118,12 +3126,23 @@ pub fn run() {
                 return;
             }
             if window.label() == MAIN_WINDOW {
+                // The Files tabs' connections go with their window.
+                window.state::<files::FileTabs>().browsers.close_all();
                 close_detached(window.app_handle());
             } else {
                 session_windows::destroyed(window.app_handle(), window.label());
             }
         })
         .invoke_handler(tauri::generate_handler![
+            files::files_open,
+            files::files_answer,
+            files::files_decide_host_key,
+            files::files_cancel,
+            files::files_close,
+            files::files_list,
+            files::files_rename,
+            files::files_delete,
+            files::files_make_folder,
             enrich_preview,
             workspace_current,
             window_detach_run,

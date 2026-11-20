@@ -79,6 +79,7 @@
   import RunView from "./lib/RunView.svelte";
   import EnrichReview from "./lib/EnrichReview.svelte";
   import ConfigHistory from "./lib/ConfigHistory.svelte";
+  import FilesTab from "./lib/FilesTab.svelte";
   import { stepTitle } from "./lib/jobs";
   import { liveJob, startLiveJobs, type LiveJob } from "./lib/jobs.svelte";
   import { forgetClosedDrafts, jobDrafts } from "./lib/jobTabs.svelte";
@@ -93,6 +94,7 @@
     openConfigHistory,
     openCsvImport,
     openDetails,
+    openFiles,
     openNornirImport,
     selectedFolder,
     selectedHost,
@@ -374,12 +376,16 @@
           if (session.profileLogin && host) session.profileLogin.host = host;
         }
         for (const item of viewTabs) {
-          if (item.view !== "configs" || item.subject === null) continue;
+          if (
+            (item.view !== "configs" && item.view !== "files") ||
+            item.subject === null
+          )
+            continue;
           const moved = moves.find((move) => move.from === item.subject);
           if (moved) {
             void edit({
               kind: "retargetView",
-              view: "configs",
+              view: item.view,
               from: moved.from,
               to: moved.to,
             });
@@ -566,7 +572,11 @@
           name,
           title: name,
           role: null,
-          environment: null,
+          // A host's Files tab is coloured as its sessions are (#103).
+          environment:
+            shows.view === "files" && shows.subject
+              ? (hostSafety(shows.subject)?.environment ?? null)
+              : null,
           state: "connected",
           member: false,
         };
@@ -687,6 +697,7 @@
             item.view === "job" ||
             item.view === "run" ||
             item.view === "configs" ||
+            item.view === "files" ||
             item.view === "csv-import" ||
             item.view === "nornir-import" ||
             item.view === "enrich"
@@ -1213,6 +1224,14 @@
     }
   }
 
+  /** Opens the session's host's Files tab: an SSH session to a host of
+   * the open workspace (#103). */
+  function filesOf(session: OpenSession) {
+    const id = liveHost(session);
+    if (id === null || !inventory.workspace) return undefined;
+    return () => openFiles(id);
+  }
+
   /** Opens the details sheet on the session's host, if it is in the open
    * workspace. */
   function detailsOf(session: OpenSession) {
@@ -1272,6 +1291,10 @@
     }
     if (request.kind === "details") {
       showDetails({ kind: "host", id: host.id });
+      return;
+    }
+    if (request.kind === "files") {
+      openFiles(host.id);
       return;
     }
     // From a session window's palette (#88): a host whose credentials are
@@ -1575,6 +1598,7 @@
               onduplicate={(id) => duplicate(tab, id)}
               onpasswordlogin={passwordLogin(tab, session)}
               ondetails={detailsOf(session)}
+              onfiles={filesOf(session)}
               moves={windowMoves(
                 (into) => void openInWindow(tab, into),
                 "Ctrl+Shift+N",
@@ -1652,6 +1676,8 @@
                 host={item.subject}
                 onclose={() => closeViewTab(item.tab, true)}
               />
+            {:else if item.view === "files" && item.subject && inventory.workspace}
+              <FilesTab host={item.subject} />
             {:else if item.view === "csv-import" && inventory.workspace}
               <CsvImport
                 folder={inventory.csvImport ?? ""}

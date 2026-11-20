@@ -272,7 +272,9 @@ export function onSnippetSend(
 export type MainRequest =
   | { kind: "details" }
   | { kind: "passwordLogin"; reason: string }
-  | { kind: "connect" };
+  | { kind: "connect" }
+  /** Open the host's Files tab, which lives in the main window (#103). */
+  | { kind: "files" };
 
 /** Asks the main window to do `request` for the session of this session
  * window's tab `tab`; the main window comes forward. */

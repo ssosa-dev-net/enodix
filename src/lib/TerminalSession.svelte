@@ -104,6 +104,12 @@
      */
     ondetails?: () => void;
     /**
+     * Opens the host's Files tab (#103), in the main window; offered for
+     * SSH sessions only. Without it (quick connect, a host not in the open
+     * workspace) there is none.
+     */
+    onfiles?: () => void;
+    /**
      * Moving the session to another window (#84, #85): into a new window
      * or an open session window, or back to the main window. Offered in
      * the session's menu, each disabled while `moveRefusal` (or its own
@@ -139,6 +145,7 @@
     onduplicate,
     onpasswordlogin,
     ondetails,
+    onfiles,
     moves = [],
     windowQuestion = null,
   }: Props = $props();
@@ -452,6 +459,15 @@
         title: "Show this host's details over the Hosts view",
         attributes: { "data-session-details": "" },
         run: details,
+      });
+    }
+    if (onfiles && session?.transport === "ssh") {
+      list.push({
+        id: "files",
+        label: "Files",
+        title:
+          "Browse this host's files over SFTP, in a tab of the main window",
+        run: onfiles,
       });
     }
     if (onduplicate) {

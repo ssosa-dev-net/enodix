@@ -4,6 +4,7 @@
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import FileCode from "@lucide/svelte/icons/file-code";
   import FolderInput from "@lucide/svelte/icons/folder-input";
+  import FolderOpen from "@lucide/svelte/icons/folder-open";
   import Logs from "@lucide/svelte/icons/logs";
   import Play from "@lucide/svelte/icons/play";
   import RotateCcwClock from "@lucide/svelte/icons/rotate-ccw-clock";
@@ -28,6 +29,7 @@
     openBackup,
     openEnrich,
     openConfigHistory,
+    openFiles,
     openJob,
     openScript,
     remove,
@@ -238,6 +240,16 @@
           >Open log folder</span
         ></button
       >
+      {#if effective.current?.protocol.value === "ssh"}
+        <button
+          data-open-files
+          title="Browse this host's files over SFTP, in a tab"
+          onclick={() => openFiles(host.id)}
+          ><FolderOpen size={15} aria-hidden="true" /><span
+            class="visually-hidden">Files</span
+          ></button
+        >
+      {/if}
       <button
         data-open-config-history
         title="Earlier versions of this host's configuration, kept by config backups"
