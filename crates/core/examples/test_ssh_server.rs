@@ -2,7 +2,7 @@
 //! tried by hand without a real device:
 //!
 //! ```text
-//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>]
+//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>]
 //! ```
 //!
 //! Port 0 (for any of them) takes a free one; the lines printed name it.
@@ -29,7 +29,10 @@
 //! the secret `netbox-token`. It prints them, secrets included, as one
 //! JSON line after `credential agent: `, for the Python bridge's tests
 //! (`python/tests`). It also prints each server's host key (`host key: `,
-//! `device host key: `), for tests that trust them as the app would. The
+//! `device host key: `), for tests that trust them as the app would. With
+//! `--sftp`, the first server and the `--device` server serve the folder
+//! (created if missing) over SFTP, as `/` (`tests/support/sftp.rs`); without
+//! it they refuse the subsystem, as a device without SFTP. The
 //! shells behind them are
 //! scripted; see `tests/support/mod.rs` and `tests/support/telnet.rs` for
 //! their commands.
@@ -42,7 +45,7 @@ const DEVICE_HOSTNAME: &str = "lab-r1";
 
 fn usage() -> ! {
     eprintln!(
-        "usage: test_ssh_server [port] [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>]"
+        "usage: test_ssh_server [port] [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>]"
     );
     std::process::exit(2);
 }
@@ -55,6 +58,7 @@ async fn main() {
     let mut telnet_port = None;
     let mut device_port = None;
     let mut credential_agent = None;
+    let mut sftp_folder = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--agent" {
@@ -69,6 +73,9 @@ async fn main() {
             let folder = args.next().unwrap_or_else(|| usage());
             let scope = args.next().unwrap_or_else(|| usage());
             credential_agent = Some((std::path::PathBuf::from(folder), scope));
+        } else if arg == "--sftp" {
+            let folder = args.next().unwrap_or_else(|| usage());
+            sftp_folder = Some(std::path::PathBuf::from(folder));
         } else if arg == "--telnet" {
             let port = args.next().unwrap_or_else(|| usage());
             telnet_port = Some(port.parse().unwrap_or_else(|_| usage()));
@@ -91,6 +98,14 @@ async fn main() {
         Some(port) => Some(support::TestSshServer::start_device_on(port, DEVICE_HOSTNAME).await),
         None => None,
     };
+    if let Some(folder) = &sftp_folder {
+        std::fs::create_dir_all(folder).expect("the SFTP folder can be created");
+        server.serve_sftp(folder);
+        if let Some(device) = &device {
+            device.serve_sftp(folder);
+        }
+        println!("sftp folder: {}", folder.display());
+    }
     let telnet = match telnet_port {
         Some(port) => Some(
             support::telnet::TestTelnetServer::start_on(port, support::telnet::EchoMode::Remote)

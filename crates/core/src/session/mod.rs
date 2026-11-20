@@ -8,6 +8,7 @@
 
 mod agent;
 mod algorithms;
+pub(crate) mod connection;
 mod output;
 mod record;
 mod recording;
@@ -355,6 +356,12 @@ pub enum OpenError {
     /// connection broke while it was being set up.
     #[error("could not connect: {0}")]
     Connect(String),
+    /// The device closed the connection before sending a byte of SSH: a
+    /// device whose lines (vty) are all in use does that, as IOS does.
+    #[error(
+        "the device closed the connection before the login began; all its lines may be in use"
+    )]
+    ClosedBeforeLogin,
     #[error("authentication failed")]
     AuthenticationFailed,
     /// The private key to log in with could not be read or decrypted.

@@ -10,6 +10,7 @@ pub mod configs;
 pub mod credentials;
 pub mod diff;
 pub mod enrich;
+pub mod files;
 pub mod highlight;
 pub mod history;
 pub mod import;

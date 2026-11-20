@@ -19,6 +19,7 @@ use russh::{
 };
 
 use super::algorithms::{self, AlgorithmKind, NegotiationFailure};
+use super::connection::Lost;
 use super::recording::{FirstBytes, Recording};
 use super::tcp;
 use super::{
@@ -42,6 +43,9 @@ struct Client {
     asker: SharedAsker,
     /// The algorithms the last key exchange agreed on.
     negotiated: Arc<std::sync::Mutex<Option<russh::Names>>>,
+    /// Told why the connection ended, for a file connection; dropped (with
+    /// the handler) when it has.
+    ended: Option<watch::Sender<Option<Lost>>>,
 }
 
 /// Asks about the host keys of every hop of a session, one at a time.
@@ -122,6 +126,34 @@ impl client::Handler for Client {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(names.clone());
         Ok(())
+    }
+
+    /// Notes why an established connection ended, then does as russh's
+    /// default does.
+    async fn disconnected(
+        &mut self,
+        reason: client::DisconnectReason<Self::Error>,
+    ) -> Result<(), Self::Error> {
+        let (lost, result) = match reason {
+            client::DisconnectReason::ReceivedDisconnect(info) => (
+                Lost::Closed {
+                    message: info.message,
+                },
+                Ok(()),
+            ),
+            client::DisconnectReason::Error(error) => {
+                let lost = match &error {
+                    ClientError::Ssh(russh::Error::KeepaliveTimeout) => Lost::NotAnswering,
+                    ClientError::Ssh(error) => Lost::Broken(error.to_string()),
+                    ClientError::Refused(error) => Lost::Broken(error.to_string()),
+                };
+                (lost, Err(error))
+            }
+        };
+        if let Some(ended) = &self.ended {
+            ended.send_replace(Some(lost));
+        }
+        result
     }
 }
 
@@ -657,6 +689,8 @@ struct Hop<'a> {
     auth: &'a SshAuth,
     legacy_crypto: bool,
     connect_timeout: Duration,
+    /// For a file connection's device: told why the connection ended.
+    ended: Option<watch::Sender<Option<Lost>>>,
 }
 
 /// The jump host a hop is reached through.
@@ -665,15 +699,24 @@ struct Via<'a> {
     connection: &'a Handle<Client>,
 }
 
+/// A logged-in connection to the device, with its jump connections (in
+/// connect order) and what each agreed on, jump hosts first.
+type Device = (
+    Handle<Client>,
+    Vec<Handle<Client>>,
+    Vec<NegotiatedAlgorithms>,
+);
+
 /// Connects to each jump host in turn, each through the one before, then
-/// to the target through the last, and starts the shell there.
-async fn open_shell(
+/// to the target through the last, and logs in there; `ended` is told why
+/// the device's connection ends (a file connection's).
+async fn connect_device(
     target: &SshTarget,
     known_hosts: KnownHosts,
     asker: HostKeyAsker,
-    size: TerminalSize,
     prompter: &mut Prompter,
-) -> Result<Shell, OpenError> {
+    ended: Option<watch::Sender<Option<Lost>>>,
+) -> Result<Device, OpenError> {
     let asker = Arc::new(Mutex::new(asker));
     let (jumps, mut algorithms) =
         connect_jumps(&target.jump_hosts, &known_hosts, &asker, prompter).await?;
@@ -685,10 +728,24 @@ async fn open_shell(
         auth: &target.auth,
         legacy_crypto: target.legacy_crypto,
         connect_timeout: target.connect_timeout,
+        ended,
     };
     let through = last_via(&target.jump_hosts, &jumps);
     let (connection, agreed) = connect(hop, through, &known_hosts, &asker, prompter).await?;
     algorithms.push(agreed);
+    Ok((connection, jumps, algorithms))
+}
+
+/// [`connect_device`], then starts the shell there.
+async fn open_shell(
+    target: &SshTarget,
+    known_hosts: KnownHosts,
+    asker: HostKeyAsker,
+    size: TerminalSize,
+    prompter: &mut Prompter,
+) -> Result<Shell, OpenError> {
+    let (connection, jumps, algorithms) =
+        connect_device(target, known_hosts, asker, prompter, None).await?;
 
     let (channel, early_output) = within(
         target.connect_timeout,
@@ -725,6 +782,7 @@ async fn connect_jumps(
             auth: &jump.auth,
             legacy_crypto: jump.legacy_crypto,
             connect_timeout: jump.connect_timeout,
+            ended: None,
         };
         let through = last_via(jump_hosts, &jumps);
         prompter.jump_host = Some(jump.name.clone());
@@ -939,6 +997,7 @@ async fn connect_and_log_in(
         known_hosts: known_hosts.clone(),
         asker: asker.clone(),
         negotiated: Arc::clone(&negotiated),
+        ended: hop.ended,
     };
     // What the server sends first, for reporting a failed negotiation.
     let first_bytes = FirstBytes::new();
@@ -968,6 +1027,12 @@ async fn connect_and_log_in(
         match connected {
             Ok(connection) => Ok(connection),
             Err(ClientError::Refused(error)) => Err(error),
+            // Not a byte from the device: it hung up before its banner.
+            Err(ClientError::Ssh(russh::Error::IO(_) | russh::Error::Disconnect))
+                if first_bytes.is_empty() =>
+            {
+                Err(OpenError::ClosedBeforeLogin)
+            }
             Err(ClientError::Ssh(russh::Error::IO(error))) => Err(handshake_broke(&error)),
             Err(ClientError::Ssh(russh::Error::NoCommonAlgo { kind, theirs, .. })) => Err(
                 negotiation_failure(kind, theirs, &first_bytes.take(), hop.legacy_crypto),
@@ -1145,4 +1210,136 @@ async fn close(connection: &Handle<Client>, jumps: &[Handle<Client>]) -> CloseRe
             .await;
     }
     CloseReason::ClosedLocally
+}
+
+/// A connection to the device, through its jump hosts, that is logged in
+/// and has opened no channel: a file connection's.
+pub(super) struct Connected {
+    /// The device's connection first, then the jump hosts', the nearest
+    /// first: the order they are closed in.
+    connections: Vec<Handle<Client>>,
+    /// The jump hosts' names, in connect order.
+    jump_names: Vec<String>,
+    /// What each hop agreed on, jump hosts first.
+    pub(super) algorithms: Vec<NegotiatedAlgorithms>,
+    /// Why the device's connection ended, once it has.
+    pub(super) ended: watch::Receiver<Option<Lost>>,
+    /// The device's connect timeout: the wait for a channel.
+    pub(super) connect_timeout: Duration,
+}
+
+/// [`open_shell`] without the shell: [`connect_device`], watching why the
+/// device's connection ends.
+pub(super) async fn open_connection(
+    target: &SshTarget,
+    known_hosts: KnownHosts,
+    asker: HostKeyAsker,
+    prompter: &mut Prompter,
+) -> Result<Connected, OpenError> {
+    let (ended_tx, ended) = watch::channel(None);
+    let (connection, jumps, algorithms) =
+        connect_device(target, known_hosts, asker, prompter, Some(ended_tx)).await?;
+    let mut connections = vec![connection];
+    connections.extend(jumps.into_iter().rev());
+    Ok(Connected {
+        connections,
+        jump_names: target.jump_hosts.iter().map(|j| j.name.clone()).collect(),
+        algorithms,
+        ended,
+        connect_timeout: target.connect_timeout,
+    })
+}
+
+/// What a request that never reached the device reports.
+const CONNECTION_LOST: &str = "the connection was lost";
+
+/// Why a subsystem did not start on a new channel.
+pub(crate) enum SubsystemRefusal {
+    /// The device said no.
+    Refused,
+    /// The device closed the channel instead (before or after saying yes).
+    Closed,
+    /// The connection failed, or the device did not answer.
+    Failed(String),
+}
+
+impl Connected {
+    /// A channel running the subsystem `name` (`sftp`), once the device has
+    /// accepted it.
+    pub(super) async fn subsystem(
+        &self,
+        name: &str,
+    ) -> Result<Channel<client::Msg>, SubsystemRefusal> {
+        let starting =
+            async {
+                let mut channel = self.connections[0].channel_open_session().await.map_err(
+                    |error| match error {
+                        russh::Error::ChannelOpenFailure(reason) => SubsystemRefusal::Failed(
+                            format!("the device refused to open a channel ({reason:?})"),
+                        ),
+                        _ => SubsystemRefusal::Failed(CONNECTION_LOST.into()),
+                    },
+                )?;
+                channel
+                    .request_subsystem(true, name)
+                    .await
+                    .map_err(|_| SubsystemRefusal::Failed(CONNECTION_LOST.into()))?;
+                loop {
+                    match channel.wait().await {
+                        Some(ChannelMsg::Success) => return Ok(channel),
+                        Some(ChannelMsg::Failure) => return Err(SubsystemRefusal::Refused),
+                        Some(ChannelMsg::Close | ChannelMsg::Eof) => {
+                            return Err(SubsystemRefusal::Closed)
+                        }
+                        Some(_) => {}
+                        None if self.connections[0].is_closed() => {
+                            return Err(SubsystemRefusal::Failed(CONNECTION_LOST.into()))
+                        }
+                        None => return Err(SubsystemRefusal::Closed),
+                    }
+                }
+            };
+        match tokio::time::timeout(self.connect_timeout, starting).await {
+            Ok(started) => started,
+            Err(_) => Err(SubsystemRefusal::Failed(
+                OpenError::TimedOut {
+                    after: self.connect_timeout,
+                }
+                .to_string(),
+            )),
+        }
+    }
+
+    /// Whether the device's connection is still up.
+    pub(super) fn is_open(&self) -> bool {
+        !self.connections.is_empty() && !self.connections[0].is_closed()
+    }
+
+    /// The first jump host whose connection has ended, if any.
+    pub(super) fn lost_jump_host(&self) -> Option<&str> {
+        // The jump hosts' connections follow the device's, nearest first.
+        let jumps = self.connections.iter().skip(1).rev();
+        self.jump_names
+            .iter()
+            .zip(jumps)
+            .find(|(_, connection)| connection.is_closed())
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Closing every connection, the device's first, then the jump
+    /// hosts', the nearest first: `None` if they were already. None are
+    /// left to close afterwards.
+    pub(super) fn closing(&mut self) -> Option<impl Future<Output = ()> + Send + 'static> {
+        let connections = std::mem::take(&mut self.connections);
+        if connections.is_empty() {
+            return None;
+        }
+        Some(async move {
+            for connection in connections {
+                let _ = connection
+                    .disconnect(Disconnect::ByApplication, "", "en")
+                    .await;
+            }
+        })
+    }
 }
