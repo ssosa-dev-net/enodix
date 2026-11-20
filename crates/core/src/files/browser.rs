@@ -3,18 +3,37 @@
 //! time, and the few changes made on the device (rename, delete, new
 //! folder). [`FileBrowsers`] holds every open browser by id, so the shell
 //! only passes commands and events through.
+//!
+//! Each browser belongs to a host (the tab's): its transfers (#106) go
+//! through the transfer engine under that host, so they outlive a browser
+//! lost and opened again, and end when the host is closed
+//! ([`FileBrowsers::close_host`]). A device without SFTP gives a browser
+//! that only sends and fetches by path, over SCP, holding no connection
+//! between transfers ([`BrowserEvent::TransferOnly`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use serde::Serialize;
 use tokio::sync::mpsc;
 
 use super::sftp::{EntryKind, FileError, RemoteEntry, Sftp, StartError};
+use super::transfer::{
+    Direction, Hashes, Link, Outcome, Presence, SizeCheck, Status, Transfer, TransferError,
+    TransferId, TransferWatch, Transfers,
+};
+use super::Files;
 use crate::known_hosts::KnownHosts;
+use crate::platform::PlatformDefinition;
 use crate::session::connection::{FileConnection, OpeningEvent};
 use crate::session::{HostKeyDecision, HostKeyQuestion, LoginPrompt, SshTarget};
+
+/// How long a closed browser's connection stays for its host's cancelled
+/// transfer to clean up (remove its partial file).
+const CLOSE_WAIT: Duration = Duration::from_secs(30);
 
 /// Which browser a command is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
@@ -48,8 +67,16 @@ pub enum BrowserEvent {
         listing: Listing,
         notice: Option<String>,
     },
-    /// Logged in, but the device offers no SFTP (to this account).
-    NoSftp { reason: String },
+    /// Logged in, but the device offers no SFTP (to this account): the
+    /// browser sends and fetches by path over SCP, connecting for each
+    /// transfer, and holds no connection meanwhile. `reason` says why there
+    /// is no SFTP, `hint` how to get a listing (Junos), `folder` is the
+    /// folder it was asked to start in (the platform's file folder).
+    TransferOnly {
+        reason: String,
+        hint: Option<String>,
+        folder: Option<String>,
+    },
     /// It could not be opened (cancelled included): why.
     Failed { reason: String },
     /// The connection ended: why.
@@ -80,10 +107,19 @@ struct Browser {
     connection: FileConnection,
 }
 
+/// What a browser has once logged in: SFTP (listing and transfers), or
+/// only the SCP link (transfers by path).
+#[derive(Default)]
+struct Reach {
+    browser: Option<Arc<Browser>>,
+    link: Option<Link>,
+}
+
 struct Slot {
+    host: String,
     commands: mpsc::UnboundedSender<Command>,
     task: tokio::task::JoinHandle<()>,
-    open: Arc<Mutex<Option<Arc<Browser>>>>,
+    open: Arc<Mutex<Reach>>,
 }
 
 impl Drop for Slot {
@@ -92,12 +128,123 @@ impl Drop for Slot {
     }
 }
 
-/// The open browsers, by id. Closing one (or dropping this) closes its
-/// connection.
+/// A transfer a browser added, as the Files tab lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Added {
+    pub id: TransferId,
+    pub direction: Direction,
+    /// The file's name (the last part of its path).
+    pub name: String,
+    /// The path on the device.
+    pub remote: String,
+    /// The local file.
+    pub local: PathBuf,
+}
+
+/// A transfer's [`Status`] as the Files tab shows it: the outcome's parts
+/// in the app's words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TransferState {
+    Waiting,
+    /// Connecting for the transfer (SCP).
+    Connecting,
+    Running {
+        done: u64,
+        total: Option<u64>,
+    },
+    Done {
+        bytes: u64,
+        /// An upload's local file.
+        hashes: Option<Hashes>,
+        /// Whether the size was checked, in words.
+        size: String,
+        checked: bool,
+    },
+    Failed {
+        /// The device's words, or the app's.
+        reason: String,
+        /// The app's hint for that refusal, apart from it.
+        hint: Option<String>,
+        /// What was left behind.
+        partial: String,
+    },
+    Cancelled {
+        partial: String,
+    },
+}
+
+impl From<&Status> for TransferState {
+    fn from(status: &Status) -> Self {
+        match status {
+            Status::Waiting => Self::Waiting,
+            Status::Connecting => Self::Connecting,
+            Status::Running { done, total } => Self::Running {
+                done: *done,
+                total: *total,
+            },
+            Status::Finished(Outcome::Done(done)) => Self::Done {
+                bytes: done.bytes,
+                hashes: done.hashes.clone(),
+                size: done.size.to_string(),
+                checked: done.size == SizeCheck::Checked,
+            },
+            Status::Finished(Outcome::Failed { error, partial }) => Self::Failed {
+                reason: error.to_string(),
+                hint: match error {
+                    TransferError::Scp(error) => error.hint().map(str::to_owned),
+                    _ => None,
+                },
+                partial: partial.to_string(),
+            },
+            Status::Finished(Outcome::Cancelled { partial }) => Self::Cancelled {
+                partial: partial.to_string(),
+            },
+        }
+    }
+}
+
+/// Follows a transfer for the interface: its state now, then each change,
+/// at most one per `every` (states in between are skipped, never the last
+/// one). Ends after the last state, or when `send` returns `false`.
+pub async fn follow(
+    mut watch: TransferWatch,
+    every: Duration,
+    mut send: impl FnMut(TransferState) -> bool,
+) {
+    let mut status = watch.latest();
+    loop {
+        let finished = matches!(status, Status::Finished(_));
+        if !send(TransferState::from(&status)) || finished {
+            return;
+        }
+        tokio::time::sleep(every).await;
+        status = match watch.changed().await {
+            Some(status) => status,
+            None => return,
+        };
+    }
+}
+
+/// Which of `names` are already in the local folder `folder`.
+pub fn existing_locally(folder: &Path, names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .filter(|name| folder.join(name).exists())
+        .cloned()
+        .collect()
+}
+
+/// The open browsers, by id, and their hosts' transfers. Closing one (or
+/// dropping this) closes its connection.
 #[derive(Default)]
 pub struct FileBrowsers {
     slots: Mutex<HashMap<BrowserId, Slot>>,
     next: AtomicU64,
+    transfers: Transfers,
+    /// Every host given a transfer, for [`FileBrowsers::close_all`].
+    hosts: Mutex<HashSet<String>>,
 }
 
 impl FileBrowsers {
@@ -109,26 +256,35 @@ impl FileBrowsers {
         self.slots.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Opens a browser on `target` (build it with
+    /// Opens a browser on the host `host` at `target` (build it with
     /// `Profiles::profile_target` / `prompted_target`), checking host keys
     /// against `known_hosts`. It starts in `start` (the platform's file
     /// folder, or where a reconnect was) or, without one or when that
-    /// cannot be listed, in the login's folder. Returns at once; follow
-    /// the events. Must be called from within a Tokio runtime.
+    /// cannot be listed, in the login's folder. `platform` is the host's,
+    /// for the hint after a fall back to SCP. Once connected, `host`'s
+    /// waiting transfers go through it. Returns at once; follow the events.
+    /// Must be called from within a Tokio runtime.
     pub fn open(
         &self,
+        host: &str,
         target: SshTarget,
         known_hosts: KnownHosts,
         start: Option<String>,
+        platform: Option<&PlatformDefinition>,
     ) -> (BrowserId, mpsc::UnboundedReceiver<BrowserEvent>) {
         let id = BrowserId(self.next.fetch_add(1, Ordering::Relaxed) + 1);
         let (events_tx, events) = mpsc::unbounded_channel();
         let (commands_tx, commands) = mpsc::unbounded_channel();
-        let open = Arc::new(Mutex::new(None));
+        let open = Arc::new(Mutex::new(Reach::default()));
         let task = tokio::spawn(run(
-            target,
-            known_hosts,
-            start,
+            Run {
+                host: host.to_owned(),
+                transfers: self.transfers.clone(),
+                target,
+                known_hosts,
+                start,
+                platform: platform.cloned(),
+            },
             events_tx,
             commands,
             open.clone(),
@@ -136,6 +292,7 @@ impl FileBrowsers {
         self.slots().insert(
             id,
             Slot {
+                host: host.to_owned(),
                 commands: commands_tx,
                 task,
                 open,
@@ -171,17 +328,204 @@ impl FileBrowsers {
         drop(slot);
     }
 
-    /// Closes every browser (the window that showed them is gone).
+    /// Closes the host's browsers and cancels its transfers, running and
+    /// waiting (its tab closed).
+    pub fn close_host(&self, host: &str) {
+        let slots: Vec<Slot> = {
+            let mut all = self.slots();
+            let ids: Vec<BrowserId> = all
+                .iter()
+                .filter(|(_, slot)| slot.host == host)
+                .map(|(id, _)| *id)
+                .collect();
+            ids.iter().filter_map(|id| all.remove(id)).collect()
+        };
+        self.transfers.close(host);
+        self.hosts().remove(host);
+        self.drop_after_cancelled(vec![host.to_owned()], slots);
+    }
+
+    /// Closes every browser and cancels every transfer (the window that
+    /// showed them is gone).
     pub fn close_all(&self) {
         let slots: Vec<Slot> = self.slots().drain().map(|(_, slot)| slot).collect();
-        drop(slots);
+        let hosts: Vec<String> = self.hosts().drain().collect();
+        for host in &hosts {
+            self.transfers.close(host);
+        }
+        self.drop_after_cancelled(hosts, slots);
+    }
+
+    /// Drops closed browsers once `hosts`' cancelled transfers have ended
+    /// (at most [`CLOSE_WAIT`]): a cancelled upload removes its partial
+    /// file over the browser's connection. Outside a runtime, at once.
+    fn drop_after_cancelled(&self, hosts: Vec<String>, slots: Vec<Slot>) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return drop(slots);
+        };
+        let transfers = self.transfers.clone();
+        runtime.spawn(async move {
+            let _ = tokio::time::timeout(CLOSE_WAIT, async {
+                while hosts.iter().any(|host| transfers.running(host).is_some()) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await;
+            drop(slots);
+        });
+    }
+
+    fn hosts(&self) -> MutexGuard<'_, HashSet<String>> {
+        self.hosts.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn browser(&self, id: BrowserId) -> Result<Arc<Browser>, BrowseError> {
         let slots = self.slots();
         let slot = slots.get(&id).ok_or(BrowseError::NotConnected)?;
         let open = slot.open.lock().unwrap_or_else(|e| e.into_inner());
-        open.clone().ok_or(BrowseError::NotConnected)
+        open.browser.clone().ok_or(BrowseError::NotConnected)
+    }
+
+    /// The browser's host and its link (SFTP while connected, SCP once
+    /// fallen back).
+    fn link(&self, id: BrowserId) -> Result<(String, Link), BrowseError> {
+        let slots = self.slots();
+        let slot = slots.get(&id).ok_or(BrowseError::NotConnected)?;
+        let open = slot.open.lock().unwrap_or_else(|e| e.into_inner());
+        let link = open.link.clone().ok_or(BrowseError::NotConnected)?;
+        Ok((slot.host.clone(), link))
+    }
+
+    /// Adds `transfers` (each with its file's name) to the end of the
+    /// browser's host's waiting list.
+    fn add(
+        &self,
+        id: BrowserId,
+        transfers: Vec<(String, Transfer)>,
+    ) -> Result<Vec<(Added, TransferWatch)>, BrowseError> {
+        let (host, link) = self.link(id)?;
+        // A link the engine dropped (an SCP connection that failed) is
+        // given again: the browser still reaches the device that way.
+        if !self.transfers.is_connected(&host) {
+            self.transfers.connect(&host, link);
+        }
+        self.hosts().insert(host.clone());
+        Ok(transfers
+            .into_iter()
+            .map(|(name, transfer)| {
+                let direction = transfer.direction;
+                let remote = transfer.remote.clone();
+                let local = transfer.local.clone();
+                let (id, watch) = self.transfers.add(&host, transfer);
+                let added = Added {
+                    id,
+                    direction,
+                    name,
+                    remote,
+                    local,
+                };
+                (added, watch)
+            })
+            .collect())
+    }
+
+    /// Uploads the local files `locals` into `folder` on the device, under
+    /// their own names, replacing files there, after the host's other
+    /// transfers.
+    pub fn upload(
+        &self,
+        id: BrowserId,
+        folder: &str,
+        locals: Vec<PathBuf>,
+    ) -> Result<Vec<(Added, TransferWatch)>, BrowseError> {
+        let transfers = locals
+            .into_iter()
+            .map(|local| {
+                let name = local_name(&local)?;
+                let remote = join_path(folder, &name);
+                Ok((name, Transfer::upload(local, remote)))
+            })
+            .collect::<Result<Vec<_>, BrowseError>>()?;
+        self.add(id, transfers)
+    }
+
+    /// Downloads the files `names` in `folder` into the local folder
+    /// `into`, under their own names, replacing files there.
+    pub fn download(
+        &self,
+        id: BrowserId,
+        folder: &str,
+        names: Vec<String>,
+        into: &Path,
+    ) -> Result<Vec<(Added, TransferWatch)>, BrowseError> {
+        let transfers = names
+            .into_iter()
+            .map(|name| {
+                let name = checked_name(&name)?.to_owned();
+                let remote = join_path(folder, &name);
+                let local = into.join(&name);
+                Ok((name, Transfer::download(remote, local)))
+            })
+            .collect::<Result<Vec<_>, BrowseError>>()?;
+        self.add(id, transfers)
+    }
+
+    /// Sends the local file `local` to the path `remote` (the device's own
+    /// form), replacing a file there.
+    pub fn send(
+        &self,
+        id: BrowserId,
+        local: PathBuf,
+        remote: &str,
+    ) -> Result<(Added, TransferWatch), BrowseError> {
+        let remote = remote.trim();
+        let name = checked_name(remote_name(remote))
+            .map_err(|_| bad_name("a path on the device, ending in the file's name, is needed"))?
+            .to_owned();
+        local_name(&local)?;
+        let mut added = self.add(id, vec![(name, Transfer::upload(local, remote))])?;
+        Ok(added.pop().expect("one added"))
+    }
+
+    /// Fetches the file at `remote` into the local folder `into`, under
+    /// its own name, replacing a file there.
+    pub fn fetch(
+        &self,
+        id: BrowserId,
+        remote: &str,
+        into: &Path,
+    ) -> Result<(Added, TransferWatch), BrowseError> {
+        let remote = remote.trim();
+        let name = checked_name(remote_name(remote))
+            .map_err(|_| bad_name("a path to a file on the device is needed"))?
+            .to_owned();
+        let local = into.join(&name);
+        let mut added = self.add(id, vec![(name, Transfer::download(remote, local))])?;
+        Ok(added.pop().expect("one added"))
+    }
+
+    /// Which of `names` are already in `folder` on the device. Over SCP
+    /// nothing can be asked: none.
+    pub async fn present(
+        &self,
+        id: BrowserId,
+        folder: &str,
+        names: Vec<String>,
+    ) -> Result<Vec<String>, BrowseError> {
+        let (_, link) = self.link(id)?;
+        let mut present = Vec::new();
+        for name in names {
+            let path = join_path(folder, &name);
+            if let Presence::Exists { .. } = link.presence(&path).await? {
+                present.push(name);
+            }
+        }
+        Ok(present)
+    }
+
+    /// Cancels a waiting or running transfer; `false` once it has ended.
+    pub fn cancel_transfer(&self, id: TransferId) -> bool {
+        self.transfers.cancel(id)
     }
 
     /// Lists `path`, typed in the path box while `folder` was shown: a
@@ -247,16 +591,33 @@ impl FileBrowsers {
     }
 }
 
-/// A browser's life: log in (passing questions out and answers in), start
-/// SFTP, list the starting folder, then wait for the connection to end.
-async fn run(
+/// What a browser's task is given.
+struct Run {
+    host: String,
+    transfers: Transfers,
     target: SshTarget,
     known_hosts: KnownHosts,
     start: Option<String>,
+    platform: Option<PlatformDefinition>,
+}
+
+/// A browser's life: log in (passing questions out and answers in), start
+/// SFTP (or fall back to SCP), list the starting folder, then wait for the
+/// connection to end.
+async fn run(
+    run: Run,
     events: mpsc::UnboundedSender<BrowserEvent>,
     mut commands: mpsc::UnboundedReceiver<Command>,
-    open: Arc<Mutex<Option<Arc<Browser>>>>,
+    open: Arc<Mutex<Reach>>,
 ) {
+    let Run {
+        host,
+        transfers,
+        target,
+        known_hosts,
+        start,
+        platform,
+    } = run;
     let send = |event| {
         let _ = events.send(event);
     };
@@ -287,12 +648,19 @@ async fn run(
         }
     };
     drop(opening);
-    let sftp = match connection.start_sftp().await {
-        Ok(sftp) => sftp,
-        Err(StartError::NoSftp(why)) => {
-            return send(BrowserEvent::NoSftp {
-                reason: StartError::NoSftp(why).to_string(),
-            })
+    let (connection, sftp) = match connection.start_files(platform.as_ref()).await {
+        Ok(Files::Sftp { connection, sftp }) => (connection, sftp),
+        Ok(Files::Scp(scp)) => {
+            let reason = StartError::NoSftp(scp.no_sftp()).to_string();
+            let hint = scp.hint().map(str::to_owned);
+            let link = Link::scp(scp);
+            open.lock().unwrap_or_else(|e| e.into_inner()).link = Some(link.clone());
+            transfers.connect(&host, link);
+            return send(BrowserEvent::TransferOnly {
+                reason,
+                hint,
+                folder: start,
+            });
         }
         Err(error) => {
             return send(BrowserEvent::Failed {
@@ -321,11 +689,17 @@ async fn run(
             })
         }
     };
+    let link = Link::sftp(sftp.clone());
     let browser = Arc::new(Browser { sftp, connection });
-    *open.lock().unwrap_or_else(|e| e.into_inner()) = Some(browser.clone());
+    *open.lock().unwrap_or_else(|e| e.into_inner()) = Reach {
+        browser: Some(browser.clone()),
+        link: Some(link.clone()),
+    };
+    // The host's waiting transfers (from before a loss) go on through it.
+    transfers.connect(&host, link);
     send(BrowserEvent::Connected { listing, notice });
     let lost = browser.connection.lost().await;
-    open.lock().unwrap_or_else(|e| e.into_inner()).take();
+    *open.lock().unwrap_or_else(|e| e.into_inner()) = Reach::default();
     drop(browser);
     send(BrowserEvent::Lost {
         reason: lost.to_string(),
@@ -362,6 +736,26 @@ async fn listing(sftp: &Sftp, path: &str) -> Result<Listing, FileError> {
         folder,
         entries,
     })
+}
+
+fn bad_name(reason: &str) -> BrowseError {
+    BrowseError::BadName {
+        reason: reason.into(),
+    }
+}
+
+/// A local file's name, as it is called on the device.
+fn local_name(local: &Path) -> Result<String, BrowseError> {
+    local
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .ok_or_else(|| bad_name(&format!("{} is not a file", local.display())))
+}
+
+/// The last part of a device path (after `/` or a file system's `:`).
+fn remote_name(path: &str) -> &str {
+    path.rsplit(['/', ':']).next().unwrap_or(path)
 }
 
 /// A name for a new folder or a rename, trimmed, unless it cannot be one.

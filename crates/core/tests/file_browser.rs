@@ -21,6 +21,9 @@ use support::{
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+/// The host the browsers belong to.
+const HOST: &str = "r1";
+
 struct Opened {
     server: TestSshServer,
     folder: TempDir,
@@ -48,8 +51,13 @@ impl Opened {
         }
         server.serve_sftp(folder.path());
         let browsers = FileBrowsers::new();
-        let (id, mut events) =
-            browsers.open(server.target(), known_hosts(), start.map(str::to_owned));
+        let (id, mut events) = browsers.open(
+            HOST,
+            server.target(),
+            known_hosts(),
+            start.map(str::to_owned),
+            None,
+        );
         let listing = match next(&mut events).await {
             BrowserEvent::Connected { listing, .. } => listing,
             other => panic!("expected a listing, got {other:?}"),
@@ -123,7 +131,13 @@ async fn it_starts_in_the_folder_given_and_falls_back_to_the_login_folder_with_a
     let folder = TempDir::new().unwrap();
     server.serve_sftp(folder.path());
     let browsers = FileBrowsers::new();
-    let (_, mut events) = browsers.open(server.target(), known_hosts(), Some("/nowhere".into()));
+    let (_, mut events) = browsers.open(
+        HOST,
+        server.target(),
+        known_hosts(),
+        Some("/nowhere".into()),
+        None,
+    );
     match next(&mut events).await {
         BrowserEvent::Connected { listing, notice } => {
             assert_eq!(listing.folder, "/");
@@ -238,7 +252,8 @@ async fn an_unknown_host_key_is_asked_and_cancelling_it_says_why() {
     server.serve_sftp(folder.path());
     let browsers = FileBrowsers::new();
 
-    let (id, mut events) = browsers.open(server.target(), KnownHosts::in_memory(), None);
+    let (id, mut events) =
+        browsers.open(HOST, server.target(), KnownHosts::in_memory(), None, None);
     assert!(matches!(
         next(&mut events).await,
         BrowserEvent::HostKey { .. }
@@ -249,7 +264,8 @@ async fn an_unknown_host_key_is_asked_and_cancelling_it_says_why() {
         other => panic!("expected a failure, got {other:?}"),
     }
 
-    let (id, mut events) = browsers.open(server.target(), KnownHosts::in_memory(), None);
+    let (id, mut events) =
+        browsers.open(HOST, server.target(), KnownHosts::in_memory(), None, None);
     assert!(matches!(
         next(&mut events).await,
         BrowserEvent::HostKey { .. }
@@ -270,7 +286,7 @@ async fn a_login_question_is_asked_and_answered_or_cancelled() {
     let mut target = server.target();
     target.username = OTP_USERNAME.into();
 
-    let (id, mut events) = browsers.open(target.clone(), known_hosts(), None);
+    let (id, mut events) = browsers.open(HOST, target.clone(), known_hosts(), None, None);
     match next(&mut events).await {
         BrowserEvent::Prompt { prompt } => assert_eq!(prompt.questions[0].text, CODE_QUESTION),
         other => panic!("expected a question, got {other:?}"),
@@ -281,7 +297,7 @@ async fn a_login_question_is_asked_and_answered_or_cancelled() {
         BrowserEvent::Connected { .. }
     ));
 
-    let (id, mut events) = browsers.open(target, known_hosts(), None);
+    let (id, mut events) = browsers.open(HOST, target, known_hosts(), None, None);
     assert!(matches!(
         next(&mut events).await,
         BrowserEvent::Prompt { .. }
@@ -310,10 +326,13 @@ async fn a_cut_connection_is_reported_with_its_reason_and_a_new_one_lists_again(
     ));
 
     opened.browsers.close(opened.id);
-    let (_, mut events) =
-        opened
-            .browsers
-            .open(opened.server.target(), known_hosts(), Some("/".into()));
+    let (_, mut events) = opened.browsers.open(
+        HOST,
+        opened.server.target(),
+        known_hosts(),
+        Some("/".into()),
+        None,
+    );
     match next(&mut events).await {
         BrowserEvent::Connected { listing, .. } => assert_eq!(names(&listing), ["a.txt"]),
         other => panic!("expected a listing, got {other:?}"),
@@ -354,14 +373,14 @@ async fn closing_closes_the_connection_and_a_terminal_session_beside_it_goes_on(
 }
 
 #[tokio::test]
-async fn a_device_without_sftp_says_so() {
+async fn a_device_without_sftp_says_so_and_offers_transfer_only() {
     let server = TestSshServer::start().await;
     server.refuse_sftp();
     let browsers = FileBrowsers::new();
-    let (_, mut events) = browsers.open(server.target(), known_hosts(), None);
+    let (_, mut events) = browsers.open(HOST, server.target(), known_hosts(), None, None);
     match next(&mut events).await {
-        BrowserEvent::NoSftp { reason } => assert!(reason.contains("SFTP"), "{reason}"),
-        other => panic!("expected no SFTP, got {other:?}"),
+        BrowserEvent::TransferOnly { reason, .. } => assert!(reason.contains("SFTP"), "{reason}"),
+        other => panic!("expected transfer only, got {other:?}"),
     }
 }
 

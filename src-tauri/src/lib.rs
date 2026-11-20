@@ -2404,8 +2404,12 @@ fn layout_reset(
     if window != WindowId::MAIN {
         return Err("a session window's layout is its session's".into());
     }
-    // A page loaded afresh has no Files tab: their connections go.
-    files.browsers.close_all();
+    // A page loaded afresh has no Files tab: their connections go (on the
+    // runtime, so that a cancelled upload removes its partial file first).
+    {
+        let _runtime = tauri::async_runtime::handle().inner().enter();
+        files.browsers.close_all();
+    }
     let view = {
         let mut windows = tabs.lock();
         windows.reset(window).map_err(|error| error.to_string())?;
@@ -3139,6 +3143,14 @@ pub fn run() {
             files::files_decide_host_key,
             files::files_cancel,
             files::files_close,
+            files::files_close_host,
+            files::files_upload,
+            files::files_download,
+            files::files_send,
+            files::files_fetch,
+            files::files_present,
+            files::files_existing_locally,
+            files::files_cancel_transfer,
             files::files_list,
             files::files_rename,
             files::files_delete,

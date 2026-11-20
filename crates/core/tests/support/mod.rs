@@ -1071,6 +1071,35 @@ impl ScriptedShell {
                 });
             }
             Some("drop") => return Err(russh::Error::Disconnect),
+            // Holds SFTP transfers from a byte offset on (the smoke test's
+            // transfer that stays running), and lets them go again.
+            Some("hold") if line.split_whitespace().nth(1) == Some("sftp") => {
+                let offset: u64 = line
+                    .split_whitespace()
+                    .nth(2)
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(0);
+                self.sftp_quirks.hold_from(offset);
+                session.data(channel, format!("sftp held from {offset}\r\n").into_bytes())?;
+            }
+            Some("release") if line.split_whitespace().nth(1) == Some("sftp") => {
+                self.sftp_quirks.release();
+                session.data(channel, b"sftp released\r\n".to_vec())?;
+            }
+            // SCP refused as IOS does before `ip scp server enable`, or
+            // served again.
+            Some("scp") if matches!(line.split_whitespace().nth(1), Some("off" | "on")) => {
+                let off = line.split_whitespace().nth(1) == Some("off");
+                let mut mode = self.scp.lock().unwrap();
+                mode.quirks
+                    .retain(|quirk| *quirk != scp::ScpQuirk::AdministrativelyDisabled);
+                if off {
+                    mode.quirks.push(scp::ScpQuirk::AdministrativelyDisabled);
+                }
+                drop(mode);
+                let text: &[u8] = if off { b"scp off\r\n" } else { b"scp on\r\n" };
+                session.data(channel, text.to_vec())?;
+            }
             // The connections serving SFTP (the Files tab's): how many, or
             // cut them as a device going down would.
             Some("show") if line.split_whitespace().nth(1) == Some("sftp") => {
