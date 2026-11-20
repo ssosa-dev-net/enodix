@@ -462,6 +462,7 @@ impl TestSshServer {
             logins: logins.clone(),
             one_channel: one_channel.clone(),
             sftp: sftp.clone(),
+            sftp_serving: SftpServing::default(),
             shells: shells.clone(),
             alive: alive.clone(),
         };
@@ -711,9 +712,15 @@ struct ScriptedServer {
     logins: Arc<AtomicUsize>,
     one_channel: Arc<AtomicBool>,
     sftp: Arc<Mutex<sftp::SftpMode>>,
+    sftp_serving: SftpServing,
     shells: Arc<AtomicUsize>,
     alive: Arc<AtomicUsize>,
 }
+
+/// The connections serving SFTP now, by connection number: the scripted
+/// shell's `show sftp` counts them and `cut sftp` cuts them, so the smoke
+/// test can see a Files tab's connection go and cut it.
+type SftpServing = Arc<Mutex<HashMap<usize, russh::server::Handle>>>;
 
 impl Server for ScriptedServer {
     type Handler = ScriptedShell;
@@ -733,6 +740,11 @@ impl Server for ScriptedServer {
             session_channels: 0,
             unclaimed: HashMap::new(),
             sftp: self.sftp.clone(),
+            sftp_serving: self.sftp_serving.clone(),
+            connection: {
+                static NEXT: AtomicUsize = AtomicUsize::new(0);
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            },
             shells: self.shells.clone(),
             alive: self.alive.clone(),
         }
@@ -796,6 +808,9 @@ struct ScriptedShell {
     /// block the connection).
     unclaimed: HashMap<ChannelId, Channel<Msg>>,
     sftp: Arc<Mutex<sftp::SftpMode>>,
+    sftp_serving: SftpServing,
+    /// This connection's number in `sftp_serving`.
+    connection: usize,
     shells: Arc<AtomicUsize>,
     alive: Arc<AtomicUsize>,
 }
@@ -805,6 +820,7 @@ impl Drop for ScriptedShell {
         if self.counted {
             self.open.closed();
         }
+        self.sftp_serving.lock().unwrap().remove(&self.connection);
         self.alive.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -975,6 +991,50 @@ impl ScriptedShell {
                 });
             }
             Some("drop") => return Err(russh::Error::Disconnect),
+            // The connections serving SFTP (the Files tab's): how many, or
+            // cut them as a device going down would.
+            Some("show") if line.split_whitespace().nth(1) == Some("sftp") => {
+                let count = self.sftp_serving.lock().unwrap().len();
+                session.data(
+                    channel,
+                    format!(
+                        "sftp connections: {count}
+
+"
+                    )
+                    .into_bytes(),
+                )?;
+            }
+            Some("cut") if words.next() == Some("sftp") => {
+                let handles: Vec<_> = self
+                    .sftp_serving
+                    .lock()
+                    .unwrap()
+                    .drain()
+                    .map(|(_, h)| h)
+                    .collect();
+                session.data(
+                    channel,
+                    format!(
+                        "cut {} sftp connections
+
+",
+                        handles.len()
+                    )
+                    .into_bytes(),
+                )?;
+                for handle in handles {
+                    tokio::spawn(async move {
+                        let _ = handle
+                            .disconnect(
+                                russh::Disconnect::ByApplication,
+                                "going down".into(),
+                                "en".into(),
+                            )
+                            .await;
+                    });
+                }
+            }
             Some("show") if words.next() == Some("hostname") && device => {
                 if let Some(device) = &self.device {
                     session.data(channel, format!("{}\r\n", device.hostname).into_bytes())?;
@@ -1294,6 +1354,10 @@ impl Handler for ScriptedShell {
                 // Its data is the SFTP server's, not a shell's.
                 self.channels.remove(&channel);
                 session.channel_success(channel)?;
+                self.sftp_serving
+                    .lock()
+                    .unwrap()
+                    .insert(self.connection, session.handle());
                 russh_sftp::server::run(claimed.into_stream(), sftp::FolderServer::new(root)).await;
             }
             ("sftp", sftp::SftpMode::CloseAtOnce, _) => {

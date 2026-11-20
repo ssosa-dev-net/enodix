@@ -220,6 +220,11 @@ export function openConfigHistory(id: string) {
   openView("configs", id);
 }
 
+/** Opens the Files tab of the host `id` (or brings it forward, #103). */
+export function openFiles(id: string) {
+  openView("files", id);
+}
+
 /** Opens the CSV import tab (or brings it forward) with `folder` as its
  * target. */
 export function openCsvImport(folder: string) {

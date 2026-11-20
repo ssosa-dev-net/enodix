@@ -13,6 +13,7 @@ import Cpu from "@lucide/svelte/icons/cpu";
 import FileClock from "@lucide/svelte/icons/file-clock";
 import FileInput from "@lucide/svelte/icons/file-input";
 import FileSpreadsheet from "@lucide/svelte/icons/file-spreadsheet";
+import FolderOpen from "@lucide/svelte/icons/folder-open";
 import Highlighter from "@lucide/svelte/icons/highlighter";
 import ListChecks from "@lucide/svelte/icons/list-checks";
 import Package from "@lucide/svelte/icons/package";
@@ -59,6 +60,9 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
   enrich: { title: () => "Fill in from devices", icon: ClipboardCheck },
   /** Setting up the app's Python environment (#73; one tab). */
   "python-setup": { title: () => "Python setup", icon: Package },
+  /** A host's files over SFTP (#103; subject: the host; one per host,
+   * main window only). */
+  files: { title: (host) => `Files ${hostName(host)}`, icon: FolderOpen },
 };
 
 /** The open workspace's name for the host `id` (else the id). */

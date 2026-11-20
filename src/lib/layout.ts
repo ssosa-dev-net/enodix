@@ -45,7 +45,8 @@ export type ViewName =
   | "platforms"
   | "highlights"
   | "enrich"
-  | "python-setup";
+  | "python-setup"
+  | "files";
 
 /** What a tab holds: a session's terminal, or a view. */
 export type TabKind = { kind: "session" } | ({ kind: "view" } & ViewRef);

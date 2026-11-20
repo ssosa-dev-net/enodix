@@ -425,6 +425,8 @@ pub(super) enum MainRequest {
     /// Connect to the host, asking its credentials (#88: from a session
     /// window's palette, `main_window_connect`).
     Connect,
+    /// Open its host's Files tab (#103), which lives in the main window.
+    Files,
 }
 
 /// A request, with the session's record, as the main window is told it.

@@ -119,6 +119,8 @@ const goneWorkspace = join(userData, "gone-workspace");
 // Where the app writes the web links it would open in the browser (the
 // smoke test never starts a browser).
 const openedLinks = join(userData, "opened-links.txt");
+/** The folder the test SSH server serves over SFTP, as `/` (#103). */
+const sftpFolder = join(userData, "sftp");
 // Beside the built program, the first makes the app an installed copy (the
 // installer writes its uninstaller there; the smoke's is an empty file,
 // never run), the second a portable one (the release script puts it in the
@@ -1209,6 +1211,8 @@ function startServer() {
       String(TELNET_PORT),
       "--device",
       String(DEVICE_PORT),
+      "--sftp",
+      sftpFolder,
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
@@ -2512,6 +2516,17 @@ async function main() {
   });
 
   await savedJobs({ evaluate, fillForm, text, screenshot, step });
+
+  await filesTab({
+    evaluate,
+    devtools,
+    fillForm,
+    doubleClick,
+    screen,
+    type,
+    screenshot,
+    step,
+  });
 
   await workspaces({
     evaluate,
@@ -6874,6 +6889,601 @@ async function jobs({
     rmSync(renamedHostFile, { force: true });
     if (savedSnippets === null) rmSync(snippetsFile, { force: true });
     else writeFileSync(snippetsFile, savedSnippets);
+  }
+}
+
+/**
+ * The Files tab (#103) against the test SSH server's SFTP folder: a typed
+ * login and an unknown host key asked over the tab (mouse and keyboard,
+ * Cancel saying why), a stored profile listing the platform's file folder
+ * without a question, one tab per host from the details sheet, the tree's
+ * context menu, a session's menu and its tab's menu, and from a session
+ * window; not offered for telnet, serial or quick connections; the path
+ * box, a folder clicked, Up and Refresh; rename, delete, new folder and a
+ * rename onto an existing name; production's colour, mark and questions
+ * (Cancel focused); a cut connection with its reason and Reconnect; closing
+ * the tab closing its connection (the server counts them), the terminal to
+ * the same host unaffected.
+ */
+async function filesTab({
+  evaluate,
+  devtools,
+  fillForm,
+  doubleClick,
+  screen,
+  type,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
+  const press = async (key, code, windowsVirtualKeyCode) => {
+    const event = { key, code, windowsVirtualKeyCode };
+    await devtools.send("Input.dispatchKeyEvent", {
+      type: "rawKeyDown",
+      ...event,
+    });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...event });
+  };
+  const folder = join(workspace, "Files");
+  const platformsFile = join(workspace, "_platforms.yaml");
+  const typedFile = join(workspace, "files-typed.yaml");
+  const knownHosts = join(appData, "known_hosts");
+  const savedKnownHosts = existsSync(knownHosts)
+    ? readFileSync(knownHosts, "utf8")
+    : null;
+  const savedPlatforms = existsSync(platformsFile)
+    ? readFileSync(platformsFile, "utf8")
+    : null;
+  const r1 = "Files/files-r1.yaml";
+  const prod = "Files/files-prod.yaml";
+  const typed = "files-typed.yaml";
+  const tabOf = (host) => `.slot.view [data-view=files][data-host="${host}"]`;
+  const row = (host) => `nav [data-host="${host}"]`;
+  const local = (path) => join(sftpFolder, path);
+  const filesState = (host) =>
+    evaluate(
+      `document.querySelector(${json(tabOf(host))})?.dataset.filesState ?? null`,
+    );
+  const shownFolder = (host) =>
+    evaluate(
+      `document.querySelector(${json(`${tabOf(host)} [data-files-folder]`)})?.dataset.filesFolder ?? null`,
+    );
+  const names = (host) =>
+    evaluate(
+      `[...document.querySelectorAll(${json(`${tabOf(host)} [data-files-entry]`)})].map((r) => r.dataset.filesEntry)`,
+    );
+  const reason = (host) =>
+    evaluate(
+      `document.querySelector(${json(`${tabOf(host)} [data-files-reason]`)})?.textContent ?? ""`,
+    );
+  const filesTabs = (host) =>
+    evaluate(`document.querySelectorAll(${json(tabOf(host))}).length`);
+  const listed = async (host, where) => {
+    try {
+      await until(
+        `${host}'s files listed in ${where}`,
+        async () =>
+          (await filesState(host)) === "connected" &&
+          (await shownFolder(host)) === where,
+      );
+    } catch (error) {
+      const seen = await evaluate(`(() => {
+        const tab = document.querySelector(${json(tabOf(host))});
+        return tab && {
+          state: tab.dataset.filesState,
+          folder: tab.querySelector("[data-files-folder]")?.dataset.filesFolder,
+          text: tab.textContent.slice(0, 300),
+          focused: document.activeElement?.outerHTML.slice(0, 120),
+        };
+      })()`);
+      fail(`${error.message}; the tab shows ${json(seen)}`);
+    }
+  };
+  const contextMenu = async (host) => {
+    await mouseClick(evaluate, row(host), { button: "right" });
+    await until(`${host}'s context menu`, () =>
+      exists("[role=menu] [data-menu=details]"),
+    );
+  };
+  const closeMenu = async () => {
+    await press("Escape", "Escape", 27);
+    await until(
+      "the menu closed",
+      async () =>
+        !(await exists("[role=menu]")) &&
+        !(await exists("[data-session-actions]")),
+    );
+  };
+  // Types the login over the tab with the keyboard: the username field
+  // has the focus, Tab goes to the password, Enter sends.
+  const typeLogin = async (host) => {
+    const form = `${tabOf(host)} [data-login-prompt]`;
+    await until("the login asked over the tab", async () =>
+      evaluate(
+        `document.activeElement === document.querySelector(${json(`${form} input[name=answer-0]`)})`,
+      ),
+    );
+    await type(USERNAME);
+    await press("Tab", "Tab", 9);
+    await until("the password field focused", () =>
+      evaluate(
+        `document.activeElement === document.querySelector(${json(`${form} input[name=answer-1]`)})`,
+      ),
+    );
+    await type(`${PASSWORD}\r`);
+  };
+  const closeFilesTab = (host) => closeTabOf(evaluate, tabOf(host));
+
+  rmSync(sftpFolder, { recursive: true, force: true });
+  mkdirSync(local("flash"), { recursive: true });
+  mkdirSync(local("logs"), { recursive: true });
+  mkdirSync(local("Zeta"), { recursive: true });
+  mkdirSync(local("empty"), { recursive: true });
+  writeFileSync(local("flash/boot.bin"), "boot");
+  writeFileSync(local("logs/old.log"), "old");
+  writeFileSync(local("notes.txt"), "hostname r1\n");
+  writeFileSync(local(".hidden"), "x");
+  writeFileSync(local("b.cfg"), "b");
+
+  try {
+    await newProfile(evaluate);
+    await fillForm(
+      {
+        "profile-name": "files-login",
+        "profile-username": USERNAME,
+        "profile-password": PASSWORD,
+      },
+      `${CREDENTIALS} form`,
+    );
+    await until("the files profile listed", () =>
+      exists(`${CREDENTIALS}[data-mode=list] [data-profile="files-login"]`),
+    );
+    await showSideView(evaluate, "hosts");
+    // The platform puts files in /flash; a typed login at the top.
+    writeFileSync(
+      platformsFile,
+      `${savedPlatforms ?? ""}smoke-files:\n  prompt: 'test-ssh\\$ '\n  file_folder: /flash\n`,
+    );
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(
+      join(folder, "_folder.yaml"),
+      `credential_profile: files-login\nport: ${SSH_PORT}\n`,
+    );
+    writeFileSync(
+      join(folder, "files-r1.yaml"),
+      "address: 127.0.0.1\nplatform: smoke-files\n",
+    );
+    writeFileSync(
+      join(folder, "files-prod.yaml"),
+      "address: 127.0.0.1\nenvironment: production\n",
+    );
+    writeFileSync(
+      join(folder, "files-telnet.yaml"),
+      `address: 127.0.0.1\nport: ${TELNET_PORT}\nprotocol: telnet\n`,
+    );
+    writeFileSync(
+      join(folder, "files-serial.yaml"),
+      "address: 192.0.2.51\nprotocol: serial\nserial:\n  port: COM250\n",
+    );
+    writeFileSync(typedFile, `address: 127.0.0.1\nport: ${SSH_PORT}\n`);
+    const folderRow = 'nav button[data-item=folder][data-path="Files"]';
+    await until("the Files folder in the tree", () => exists(folderRow));
+    await expandFolder(evaluate, folderRow);
+    await until(
+      "the files hosts in the tree",
+      async () => (await exists(row(r1))) && (await exists(row(typed))),
+    );
+
+    // A typed login and an unknown host key, over the tab. The key is
+    // unknown: the trusted keys start empty (and are put back after).
+    writeFileSync(knownHosts, "");
+    await contextMenu(typed);
+    await until("Files in the context menu", () =>
+      exists("[role=menu] [data-menu=files]"),
+    );
+    await clickOn("[role=menu] [data-menu=files]");
+    await until("the login asked over the Files tab", () =>
+      exists(`${tabOf(typed)} [data-files-login] [data-login-prompt]`),
+    );
+    await clickOn(
+      `${tabOf(typed)} [data-login-prompt] .actions button[type=button]`,
+    );
+    await until(
+      "the cancelled login said",
+      async () =>
+        (await filesState(typed)) === "failed" &&
+        (await reason(typed)).includes("no login was given"),
+    );
+    await clickOn(`${tabOf(typed)} [data-files-action=reconnect]`);
+    await typeLogin(typed);
+    await until("the unknown key asked over the tab", () =>
+      exists(
+        `${tabOf(typed)} [data-host-key=first-use] [data-decision=cancel]:not(:disabled)`,
+      ),
+    );
+    await clickOn(`${tabOf(typed)} [data-decision=cancel]`);
+    await until(
+      "the refused key said",
+      async () =>
+        (await filesState(typed)) === "failed" &&
+        (await reason(typed)).includes("host key"),
+    );
+    await screenshot("files-not-connected");
+    await clickOn(`${tabOf(typed)} [data-files-action=reconnect]`);
+    await typeLogin(typed);
+    // Trust and remember has the focus: Enter takes it.
+    await until("the key asked again, focused", () =>
+      evaluate(
+        `document.activeElement === document.querySelector(${json(`${tabOf(typed)} [data-decision=trustAndRemember]`)})`,
+      ),
+    );
+    // A key with its character, as typing sends it: a button acts on that.
+    await type(String.fromCharCode(13));
+    await listed(typed, "/");
+    const expected = [
+      "empty",
+      "flash",
+      "logs",
+      "Zeta",
+      ".hidden",
+      "b.cfg",
+      "notes.txt",
+    ];
+    if (json(await names(typed)) !== json(expected))
+      fail(`the listing is ${json(await names(typed))}`);
+    const cells = await evaluate(
+      `[...document.querySelectorAll(${json(`${tabOf(typed)} [data-files-entry="notes.txt"] td`)})].map((cell) => cell.textContent.trim())`,
+    );
+    if (cells[1] !== "12 B" || !cells[2] || !/^[rwx-]{9}$/.test(cells[3] ?? ""))
+      fail(`notes.txt shows ${json(cells)}`);
+    if (
+      (await evaluate(
+        `document.querySelector("[data-tab-bar] [data-tab-view=files] [data-tab-name]")?.textContent`,
+      )) !== "Files files-typed"
+    )
+      fail("the Files tab is not named after its host");
+    await screenshot("files");
+    step(
+      "a typed login and an unknown host key are asked over the Files tab (mouse and keyboard; Cancel says why); folders first, hidden files, size, time and permissions",
+    );
+    await closeFilesTab(typed);
+
+    // A stored profile: no question; the platform's file folder.
+    await clickOn(row(r1));
+    await showDetails(evaluate);
+    await until("Files in the details", () =>
+      exists(".side [data-open-files]"),
+    );
+    await clickOn(".side [data-open-files]");
+    await listed(r1, "/flash");
+    if (json(await names(r1)) !== json(["boot.bin"]))
+      fail(`/flash lists ${json(await names(r1))}`);
+    if (
+      await exists(
+        `${tabOf(r1)} [data-host-key], ${tabOf(r1)} [data-login-prompt]`,
+      )
+    )
+      fail("a stored profile asked a question");
+    await contextMenu(r1);
+    await until("Files in the context menu", () =>
+      exists("[role=menu] [data-menu=files]"),
+    );
+    await clickOn("[role=menu] [data-menu=files]");
+    await until("the same tab shown", () =>
+      exists(
+        `.slot.view[data-view-active] [data-view=files][data-host="${r1}"]`,
+      ),
+    );
+    if ((await filesTabs(r1)) !== 1)
+      fail(`files-r1 has ${await filesTabs(r1)} Files tabs`);
+    step(
+      "with a stored profile the Files tab lists the platform's file folder without a question; the details and the context menu show one tab per host",
+    );
+
+    // The path box, a folder clicked, Up and Refresh; a missing path.
+    const bar = `${tabOf(r1)} form`;
+    await fillForm({ "files-path": "/logs" }, bar);
+    await listed(r1, "/logs");
+    if (json(await names(r1)) !== json(["old.log"]))
+      fail(`/logs lists ${json(await names(r1))}`);
+    await clickOn(`${tabOf(r1)} [data-files-action=up]`);
+    await listed(r1, "/");
+    await clickOn(`${tabOf(r1)} [data-files-open="logs"]`);
+    await listed(r1, "/logs");
+    await clickOn(`${tabOf(r1)} [data-files-action=up]`);
+    await listed(r1, "/");
+    writeFileSync(local("fresh.txt"), "fresh");
+    await clickOn(`${tabOf(r1)} [data-files-action=refresh]`);
+    await until("fresh.txt after Refresh", async () =>
+      (await names(r1)).includes("fresh.txt"),
+    );
+    await fillForm({ "files-path": "/missing" }, bar);
+    await until("the missing path said", async () =>
+      (
+        await evaluate(
+          `document.querySelector(${json(`${tabOf(r1)} [data-files-error]`)})?.textContent ?? ""`,
+        )
+      ).includes("no such file"),
+    );
+    if (
+      (await shownFolder(r1)) !== "/" ||
+      !(await names(r1)).includes("fresh.txt")
+    )
+      fail("a missing path moved the listing");
+    step(
+      "the path box, a folder, Up and Refresh list; a missing path says so and the listing stays",
+    );
+
+    // Rename, a rename onto an existing name, new folder, delete.
+    const entryAction = (host, name, action) =>
+      `${tabOf(host)} [data-files-entry="${name}"] [data-files-entry-action=${action}]`;
+    const nameForm = (host) => `${tabOf(host)} [data-files-name-form]`;
+    await clickOn(entryAction(r1, "notes.txt", "rename"));
+    await until("the rename form", () => exists(nameForm(r1)));
+    await fillForm({ "files-name": "renamed.txt" }, nameForm(r1));
+    await until("renamed.txt listed", async () =>
+      (await names(r1)).includes("renamed.txt"),
+    );
+    if (!existsSync(local("renamed.txt")) || existsSync(local("notes.txt")))
+      fail("the rename did not reach the device");
+    await clickOn(entryAction(r1, "renamed.txt", "rename"));
+    await until("the rename form", () => exists(nameForm(r1)));
+    await fillForm({ "files-name": "b.cfg" }, nameForm(r1));
+    await until("the existing name said", async () =>
+      (
+        await evaluate(
+          `document.querySelector(${json(`${tabOf(r1)} [data-files-error]`)})?.textContent ?? ""`,
+        )
+      ).includes("exists already"),
+    );
+    if (
+      !existsSync(local("renamed.txt")) ||
+      readFileSync(local("b.cfg"), "utf8") !== "b"
+    )
+      fail("a rename onto an existing name changed something");
+    await clickOn(`${tabOf(r1)} [data-files-action=new-folder]`);
+    await until("the new folder form", () => exists(nameForm(r1)));
+    await fillForm({ "files-name": "made" }, nameForm(r1));
+    await until("made listed", async () => (await names(r1)).includes("made"));
+    await clickOn(entryAction(r1, "fresh.txt", "delete"));
+    await until(
+      "fresh.txt deleted",
+      async () => !(await names(r1)).includes("fresh.txt"),
+    );
+    await clickOn(entryAction(r1, "made", "delete"));
+    await until(
+      "made deleted",
+      async () => !(await names(r1)).includes("made"),
+    );
+    if (existsSync(local("fresh.txt")) || existsSync(local("made")))
+      fail("the deletes did not reach the device");
+    step(
+      "rename, new folder and delete work on the device; a rename onto an existing name shows the core's message",
+    );
+
+    // Production: its colour and mark, and each change asks first, Cancel
+    // focused.
+    await contextMenu(prod);
+    await until("Files in the context menu", () =>
+      exists("[role=menu] [data-menu=files]"),
+    );
+    await clickOn("[role=menu] [data-menu=files]");
+    await listed(prod, "/");
+    const prodTab = await evaluate(
+      `document.querySelector(${json(tabOf(prod))}).closest(".slot").dataset.tab`,
+    );
+    if (
+      !(await exists(
+        `[data-tab-bar] [data-tab="${prodTab}"][data-environment=production] [data-tab-production]`,
+      ))
+    )
+      fail("the production host's Files tab has no production colour and mark");
+    const confirm = `${tabOf(prod)} [data-files-confirm]`;
+    const cancelFocused = () =>
+      until("Cancel focused", () =>
+        evaluate(
+          `document.activeElement === document.querySelector(${json(`${confirm} [data-files-confirm-action=cancel]`)})`,
+        ),
+      );
+    await clickOn(entryAction(prod, "b.cfg", "delete"));
+    await cancelFocused();
+    await screenshot("files-production");
+    await clickOn(`${confirm} [data-files-confirm-action=cancel]`);
+    await until("the question gone", async () => !(await exists(confirm)));
+    if (!existsSync(local("b.cfg"))) fail("Cancel deleted b.cfg");
+    await clickOn(`${tabOf(prod)} [data-files-action=new-folder]`);
+    await until("the new folder form", () => exists(nameForm(prod)));
+    await fillForm({ "files-name": "prod-made" }, nameForm(prod));
+    await cancelFocused();
+    await clickOn(`${confirm} [data-files-confirm-action=cancel]`);
+    await clickOn(entryAction(prod, "renamed.txt", "rename"));
+    await until("the rename form", () => exists(nameForm(prod)));
+    await fillForm({ "files-name": "prod.txt" }, nameForm(prod));
+    await cancelFocused();
+    await clickOn(`${confirm} [data-files-confirm-action=confirm]`);
+    await until("prod.txt listed", async () =>
+      (await names(prod)).includes("prod.txt"),
+    );
+    await clickOn(entryAction(prod, "b.cfg", "delete"));
+    await cancelFocused();
+    await clickOn(`${confirm} [data-files-confirm-action=confirm]`);
+    await until(
+      "b.cfg deleted",
+      async () => !(await names(prod)).includes("b.cfg"),
+    );
+    if (
+      existsSync(local("prod-made")) ||
+      existsSync(local("b.cfg")) ||
+      !existsSync(local("prod.txt"))
+    )
+      fail("production's answers were not followed");
+    step(
+      "a production host's Files tab has its colour and mark; rename, delete and new folder ask first with Cancel focused",
+    );
+
+    // A session's menu and its tab's menu; a cut connection; closing.
+    await closeFilesTab(r1);
+    await doubleClick(row(r1));
+    await until("files-r1's terminal", async () =>
+      (await screen()).includes("test-ssh$"),
+    );
+    const sessionTab = await evaluate(
+      `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
+    );
+    await sessionAction(evaluate, "files");
+    await listed(r1, "/flash");
+    await mouseClick(evaluate, `[data-tab-bar] [data-tab="${sessionTab}"]`, {
+      button: "right",
+    });
+    await until("the tab's menu", () => exists("[data-session-actions]"));
+    if (!(await menuEntries(evaluate)).includes("files"))
+      fail("the session tab's menu offers no Files");
+    await clickOn("[data-session-actions] [data-session-action=files]");
+    await until(
+      "the menu closed",
+      async () => !(await exists("[data-session-actions]")),
+    );
+    if ((await filesTabs(r1)) !== 1)
+      fail(`files-r1 has ${await filesTabs(r1)} Files tabs`);
+    step("a session's menu and its tab's menu open its host's one Files tab");
+
+    const terminal = async (command, expect) => {
+      await clickOn(`[data-tab-bar] [data-tab="${sessionTab}"]`);
+      await until("the terminal shown", () =>
+        exists(`.slot[data-tab="${sessionTab}"][data-active]`),
+      );
+      await type(`${command}\r`);
+      await until(`${expect} in the terminal`, async () =>
+        (await screen()).includes(expect),
+      );
+    };
+    await terminal("show sftp", "sftp connections: 2");
+    await terminal("cut sftp", "cut 2 sftp connections");
+    for (const host of [r1, prod]) {
+      await until(
+        `${host}'s lost connection said`,
+        async () =>
+          (await filesState(host)) === "lost" &&
+          (await reason(host)).includes("going down"),
+      );
+    }
+    if (
+      !(await exists(
+        `[data-tab-bar] [data-tab="${sessionTab}"][data-tab-state=connected]`,
+      ))
+    )
+      fail("cutting the files connections cut the terminal");
+    const r1Tab = await evaluate(
+      `document.querySelector(${json(tabOf(r1))}).closest(".slot").dataset.tab`,
+    );
+    await clickOn(`[data-tab-bar] [data-tab="${r1Tab}"]`);
+    await clickOn(`${tabOf(r1)} [data-files-action=reconnect]`);
+    await listed(r1, "/flash");
+    step(
+      "a cut connection says so with its reason; Reconnect lists again; the terminal stays connected",
+    );
+
+    await terminal("show sftp", "sftp connections: 1");
+    await closeFilesTab(prod);
+    await closeFilesTab(r1);
+    await terminal("show sftp", "sftp connections: 0");
+    if (
+      !(await exists(
+        `[data-tab-bar] [data-tab="${sessionTab}"][data-tab-state=connected]`,
+      ))
+    )
+      fail("closing the Files tabs touched the terminal");
+    step(
+      "closing a Files tab closes its connection (the server sees it go); the terminal is unaffected",
+    );
+
+    // From a session window: the tab opens in the main window.
+    const window = await moveToNewWindow(evaluate, "files-r1");
+    await sessionAction(window.evaluate, "files", SHOWN_SESSION);
+    await listed(r1, "/flash");
+    if (await window.evaluate(`!!document.querySelector("[data-view=files]")`))
+      fail("the Files tab opened in the session window");
+    await sessionAction(window.evaluate, "dock", SHOWN_SESSION);
+    window.devtools.close();
+    await until(
+      `${window.label} closed`,
+      async () => !(await windowOpen(window.label)),
+    );
+    await closeFilesTab(r1);
+    step("from a session window the Files tab opens in the main window");
+
+    // Not offered: telnet and serial hosts, quick connections.
+    for (const host of ["Files/files-telnet.yaml", "Files/files-serial.yaml"]) {
+      await contextMenu(host);
+      // The host's settings are resolved meanwhile.
+      await sleep(500);
+      if (await exists("[role=menu] [data-menu=files]"))
+        fail(`${host}'s context menu offers Files`);
+      await closeMenu();
+      await clickOn(row(host));
+      await showDetails(evaluate);
+      await sleep(500);
+      if (await exists(".side [data-open-files]"))
+        fail(`${host}'s details offer Files`);
+    }
+    // The active pane's new-tab button (folded into "…" when narrow).
+    await paneTool(
+      evaluate,
+      `document.querySelector('[data-tab-bar] [data-tab="' + document.querySelector("${SHOWN_SESSION}").dataset.tab + '"]').closest("[data-tab-bar]")`,
+      "new-tab",
+      "the terminal's pane",
+    );
+    // Its own form: the details sheet left open has forms too.
+    await until("the quick-connect form", () =>
+      exists("form input[name=host]"),
+    );
+    await fillForm(
+      {
+        host: "127.0.0.1",
+        port: String(SSH_PORT),
+        username: USERNAME,
+        password: PASSWORD,
+      },
+      "form:has(input[name=host])",
+    );
+    await until("the quick connection", async () =>
+      (await screen()).includes("test-ssh$"),
+    );
+    await mouseClick(evaluate, `${SHOWN_SESSION} [data-session-menu]`);
+    await until("the session's menu", () => exists("[data-session-actions]"));
+    if ((await menuEntries(evaluate)).includes("files"))
+      fail("a quick connection offers Files");
+    await closeMenu();
+    const quickTab = await evaluate(
+      `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
+    );
+    // files-r1's terminal came back from its window in a new tab.
+    const docked = (await tabsIn(evaluate)).find(
+      (each) => each.name === "files-r1",
+    );
+    if (!docked) fail("files-r1's terminal did not come back");
+    for (const tab of [quickTab, docked.id]) {
+      await clickOn(`[data-tab-bar] [data-tab="${tab}"] [data-tab-close]`);
+      await until("the close question", () => exists("[data-confirm=close]"));
+      await clickOn("[data-confirm=close]");
+      await until(
+        "the session's tab closed",
+        async () => !(await exists(`.slot[data-tab="${tab}"]`)),
+      );
+    }
+    step(
+      "Files is not offered for telnet or serial hosts, nor for a quick connection",
+    );
+  } finally {
+    if (savedKnownHosts === null) rmSync(knownHosts, { force: true });
+    else writeFileSync(knownHosts, savedKnownHosts);
+    if (savedPlatforms === null) rmSync(platformsFile, { force: true });
+    else writeFileSync(platformsFile, savedPlatforms);
+    rmSync(folder, { recursive: true, force: true });
+    rmSync(typedFile, { force: true });
   }
 }
 
