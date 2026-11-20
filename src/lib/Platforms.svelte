@@ -19,42 +19,55 @@
     | "privilegeCommand"
     | "privilegePrompt"
     | "showConfig"
-    | "ignoredLines";
+    | "ignoredLines"
+    | "fileFolder";
   const FIELDS: readonly {
     key: Field;
     id: string;
     label: string;
-    pattern: boolean;
+    /** Shown in the code font (a pattern or a path). */
+    mono: boolean;
+    placeholder?: string;
+    /** A line under the field saying what it is for. */
+    note?: string;
   }[] = [
     {
       key: "disablePaging",
       id: "disable-paging",
       label: "Disable paging",
-      pattern: false,
+      mono: false,
     },
     {
       key: "privilegeCommand",
       id: "privilege-command",
       label: "Privilege command",
-      pattern: false,
+      mono: false,
     },
     {
       key: "privilegePrompt",
       id: "privilege-prompt",
       label: "Privilege password prompt",
-      pattern: true,
+      mono: true,
     },
     {
       key: "showConfig",
       id: "show-config",
       label: "Show config",
-      pattern: false,
+      mono: false,
     },
     {
       key: "ignoredLines",
       id: "ignored-lines",
       label: "Ignored lines",
-      pattern: true,
+      mono: true,
+    },
+    {
+      key: "fileFolder",
+      id: "file-folder",
+      label: "File folder",
+      mono: true,
+      placeholder: "optional, e.g. flash: or /mnt/flash",
+      note: "Where files belong on the device, with the path written as the device writes it (flash:, /mnt/flash).",
     },
   ];
 
@@ -91,6 +104,7 @@
         privilegePrompt: definition.privilegePrompt ?? "",
         showConfig: definition.showConfig ?? "",
         ignoredLines: definition.ignoredLines ?? "",
+        fileFolder: definition.fileFolder ?? "",
       },
     };
   }
@@ -109,6 +123,7 @@
       privilegePrompt: value(form.values.privilegePrompt),
       showConfig: value(form.values.showConfig),
       ignoredLines: value(form.values.ignoredLines),
+      fileFolder: value(form.values.fileFolder),
     };
   }
 
@@ -152,6 +167,7 @@
         privilegePrompt: null,
         showConfig: null,
         ignoredLines: null,
+        fileFolder: null,
       }),
     };
   }
@@ -228,16 +244,22 @@
           <input
             id="platform-{field.id}"
             name="platform-{field.id}"
-            class:mono={field.pattern}
+            class:mono={field.mono}
             spellcheck="false"
-            placeholder="optional"
+            placeholder={field.placeholder ?? "optional"}
             bind:value={form.values[field.key]}
           />
+          {#if field.note}
+            <small class="hint" data-platform-note={field.id}
+              >{field.note}</small
+            >
+          {/if}
         {/each}
         <small class="hint">
           Only the prompt is required. Prompt, privilege password prompt and
-          ignored lines are regular expressions; the others are commands sent to
-          the device. Separate other names with commas.
+          ignored lines are regular expressions; the file folder is a path on
+          the device; the others are commands sent to the device. Separate other
+          names with commas.
         </small>
         <div class="actions">
           <button type="button" data-platform-action="cancel" onclick={cancel}
@@ -265,6 +287,11 @@
               <small class="mono" title={definition.prompt}
                 >prompt {definition.prompt}</small
               >
+              {#if definition.fileFolder}
+                <small class="mono" data-platform-file-folder
+                  >files in {definition.fileFolder}</small
+                >
+              {/if}
               {#if listed.error}
                 <small class="error" data-platform-error>{listed.error}</small>
               {/if}

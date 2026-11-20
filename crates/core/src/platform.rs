@@ -5,7 +5,8 @@
 //! to it: the prompt pattern (required), the commands that turn off paging,
 //! enter privileged mode and show the configuration, the pattern of the
 //! privilege password question, and the pattern of output lines to ignore
-//! (such as a configuration's timestamp).
+//! (such as a configuration's timestamp). It also says where files belong
+//! on the device (the file folder).
 //!
 //! The app ships [`BUILT_IN_PLATFORMS`]. A workspace adds its own and changes
 //! the built-in ones in its platforms file (see `Workspace::platforms`). A
@@ -38,6 +39,10 @@ pub struct PlatformDefinition {
     pub show_config: Option<String>,
     /// A pattern matching output lines to ignore.
     pub ignored_lines: Option<String>,
+    /// Where files belong on the device, as the device writes the path
+    /// (`flash:`, `/mnt/flash`): where the Files tab starts, and the
+    /// default path of copies to the device.
+    pub file_folder: Option<String>,
 }
 
 impl PlatformDefinition {
@@ -86,6 +91,7 @@ pub(crate) const PRIVILEGE_COMMAND: &str = "privilege_command";
 pub(crate) const PRIVILEGE_PROMPT: &str = "privilege_prompt";
 pub(crate) const SHOW_CONFIG: &str = "show_config";
 pub(crate) const IGNORED_LINES: &str = "ignored_lines";
+pub(crate) const FILE_FOLDER: &str = "file_folder";
 
 /// Where a definition of a workspace comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -120,6 +126,7 @@ pub struct BuiltInPlatform {
     pub privilege_prompt: Option<&'static str>,
     pub show_config: Option<&'static str>,
     pub ignored_lines: Option<&'static str>,
+    pub file_folder: Option<&'static str>,
 }
 
 impl BuiltInPlatform {
@@ -138,6 +145,7 @@ impl BuiltInPlatform {
             privilege_prompt: text(self.privilege_prompt),
             show_config: text(self.show_config),
             ignored_lines: text(self.ignored_lines),
+            file_folder: text(self.file_folder),
         }
     }
 }
@@ -151,6 +159,9 @@ const PASSWORD_PROMPT: &str = r"(?i)password:\s*$";
 /// SR Linux 24.10.1, cEOS 4.36.0.1F, FRR 10.2.1 (vtysh as the login
 /// shell), IOS-XE 17.03.08 (CSR 1000v) and cJunos Evolved 25.4R1
 /// (`docs/containerlab.md`). NX-OS has not been checked on a device.
+/// The file folders were checked on cEOS (`/mnt/flash`), cJunos
+/// (`/var/tmp`) and the CSR 1000v (`flash:`, `bootflash:`); NX-OS's
+/// `bootflash:` was not, nor `flash:` on physical Catalyst hardware.
 pub const BUILT_IN_PLATFORMS: [BuiltInPlatform; 6] = [
     BuiltInPlatform {
         name: "srlinux",
@@ -163,6 +174,7 @@ pub const BUILT_IN_PLATFORMS: [BuiltInPlatform; 6] = [
         privilege_prompt: None,
         show_config: Some("info flat"),
         ignored_lines: Some(r"^--\{.*\}--"),
+        file_folder: None,
     },
     BuiltInPlatform {
         name: "eos",
@@ -174,6 +186,7 @@ pub const BUILT_IN_PLATFORMS: [BuiltInPlatform; 6] = [
         privilege_prompt: Some(PASSWORD_PROMPT),
         show_config: Some("show running-config"),
         ignored_lines: Some(r"^! (Command|Time|device):"),
+        file_folder: Some("/mnt/flash"),
     },
     BuiltInPlatform {
         name: "frr",
@@ -185,6 +198,7 @@ pub const BUILT_IN_PLATFORMS: [BuiltInPlatform; 6] = [
         privilege_prompt: None,
         show_config: Some("show running-config"),
         ignored_lines: Some(r"^Building configuration"),
+        file_folder: None,
     },
     BuiltInPlatform {
         name: "ios",
@@ -204,6 +218,7 @@ pub const BUILT_IN_PLATFORMS: [BuiltInPlatform; 6] = [
         ignored_lines: Some(
             r"^(Building configuration|Current configuration :|! Last configuration change|! NVRAM config last updated|ntp clock-period)",
         ),
+        file_folder: Some("flash:"),
     },
     BuiltInPlatform {
         name: "nxos",
@@ -214,6 +229,7 @@ pub const BUILT_IN_PLATFORMS: [BuiltInPlatform; 6] = [
         privilege_prompt: None,
         show_config: Some("show running-config"),
         ignored_lines: Some(r"^!(Command|Running configuration last done at|Time):"),
+        file_folder: Some("bootflash:"),
     },
     BuiltInPlatform {
         name: "junos",
@@ -225,6 +241,7 @@ pub const BUILT_IN_PLATFORMS: [BuiltInPlatform; 6] = [
         privilege_prompt: None,
         show_config: Some("show configuration | display set"),
         ignored_lines: Some(r"^(## Last commit:|\{master)"),
+        file_folder: Some("/var/tmp"),
     },
 ];
 
