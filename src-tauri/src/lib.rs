@@ -80,6 +80,21 @@ const WEB_LINKS_TO_VARIABLE: &str = "NETTERM_WEB_LINKS_TO";
 /// local server). A release build has its own, from the release script.
 const UPDATE_ENDPOINT_VARIABLE: &str = "NETTERM_UPDATE_ENDPOINT";
 
+/// What every window's WebView2 is started with (#115). wry's own defaults
+/// (no mini menu, no PDF menu, no SmartScreen, sound without a click),
+/// which giving any arguments replaces, and three more: left to itself
+/// WebView2 fetches Edge's configuration from `config.edge.skype.com` (with
+/// a client id, the OS version and the install date), looks the name
+/// `wpad` up for a proxy script and, a minute in, asks
+/// `edge.microsoft.com` for component updates and downloads them. The page
+/// is the app's own and never leaves the computer, so it needs no
+/// background networking, no proxy and no components. (Typing still makes
+/// WebView2 reach Office servers now and then; nothing here stops it yet,
+/// see docs/trust.md.) Every window must use
+/// the same arguments: WebView2 refuses another set for the same data
+/// folder.
+pub(crate) const WEBVIEW_ARGUMENTS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-background-networking --no-proxy-server --disable-component-update";
+
 /// The event that brings the interface the workspace after changes made
 /// outside the app.
 const WORKSPACE_CHANGED_EVENT: &str = "workspace-changed";
@@ -2889,6 +2904,8 @@ fn open_detached(
     theme: Option<tauri::Theme>,
 ) -> Result<(), String> {
     WebviewWindowBuilder::new(app, label, WebviewUrl::default())
+        .additional_browser_args(WEBVIEW_ARGUMENTS)
+        .general_autofill_enabled(false)
         .title(title)
         .inner_size(900.0, 640.0)
         .min_inner_size(420.0, 320.0)
@@ -3121,6 +3138,8 @@ pub fn run() {
             });
             let title = product_name(app.handle());
             WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default())
+                .additional_browser_args(WEBVIEW_ARGUMENTS)
+                .general_autofill_enabled(false)
                 .title(title)
                 .inner_size(1100.0, 720.0)
                 .min_inner_size(480.0, 320.0)

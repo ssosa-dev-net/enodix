@@ -22,6 +22,12 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import {
+  netLogArguments,
+  netLogProblems,
+  watchConnections,
+} from "./connections.mjs";
+
 const SSH_PORT = 22722;
 // A second test server, restricted to an old device's algorithms.
 const OLD_DEVICE_PORT = 22723;
@@ -32,6 +38,8 @@ const DEVICE_PORT = 22725;
 // A server with SCP only, no SFTP (#106), serving `scpFolder`.
 const SCP_PORT = 22726;
 const DEVTOOLS_PORT = 9333;
+// A port of this computer nobody listens on, for the refused connection.
+const CLOSED_PORT = 1;
 const USERNAME = "engineer";
 const PASSWORD = "correct horse";
 // The test server's user who also needs a one-time code, and the code.
@@ -111,6 +119,12 @@ async function closePreferences(evaluate) {
 const OTHER_KEY_FILE = "crates/core/tests/fixtures/keys/rsa_client.pub";
 
 const children = [];
+/** Every copy of the app started, and the network log of each one's
+ * WebView2 (#115). */
+const apps = [];
+const netLogs = { file: "", copies: 0, found: [] };
+/** The watch on the app's connections over the whole run (#115). */
+let connections = null;
 const userData = mkdtempSync(join(tmpdir(), "netterm-smoke-"));
 // The app's own data folder, listing workspaces but none to reopen, so the
 // first window is the welcome view.
@@ -1234,11 +1248,22 @@ function startServer() {
 
 /** Starts the app; `env` adds to (or overrides) its usual environment. */
 function startApp(env = {}) {
+  // WebView2 logs its requests and the names it looks up. Every copy
+  // writes the same file (WebView2 refuses other arguments for a data
+  // folder whose browser is still ending), so the last copy's log is read
+  // before the next starts and truncates it.
+  // SMOKE_NET_LOGS=<folder> keeps the last copy's log there.
+  netLogs.file ||= join(
+    process.env.SMOKE_NET_LOGS ?? userData,
+    "webview-net-log.json",
+  );
+  harvestNetLog();
+  netLogs.copies += 1;
   const app = spawn("target/release/netterm.exe", [], {
     stdio: "inherit",
     env: {
       ...process.env,
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEVTOOLS_PORT}`,
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEVTOOLS_PORT} ${netLogArguments(netLogs.file)}`,
       WEBVIEW2_USER_DATA_FOLDER: userData,
       NETTERM_DATA_DIR: appData,
       // Credential profiles stay in memory: the smoke test never touches
@@ -1254,7 +1279,78 @@ function startApp(env = {}) {
     },
   });
   children.push(app);
+  apps.push(app);
   return app;
+}
+
+/** Keeps what the network log of the copies so far shows. */
+function harvestNetLog() {
+  if (netLogs.copies === 0) return;
+  for (const problem of netLogProblems(netLogs.file)) {
+    const found = `copy ${netLogs.copies}: ${problem}`;
+    if (!netLogs.found.includes(found)) netLogs.found.push(found);
+  }
+}
+
+/** Fails if the app connected anywhere it was not sent since the last
+ * check, naming too what WebView2's network logs show so far (the names
+ * behind the addresses). */
+function checkConnections() {
+  try {
+    connections.check();
+  } catch (error) {
+    harvestNetLog();
+    const logged = netLogs.found.map((problem) => `  ${problem}`);
+    if (logged.length > 0) {
+      error.message += ["", "WebView2's network logs so far:", ...logged].join(
+        String.fromCharCode(10),
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * The end of the whole-run watch (#115): every copy of the app is ended,
+ * then its connections seen over the run and its WebView2's network logs
+ * must show nothing but this computer.
+ */
+async function noConnectionOfItsOwn(step) {
+  // A copy killed earlier has a signal, not an exit code.
+  const running = apps.filter(
+    (app) => app.exitCode === null && app.signalCode === null,
+  );
+  await Promise.all(
+    running.map((app) => {
+      const exited = new Promise((resolve) => app.once("exit", resolve));
+      app.kill();
+      return exited;
+    }),
+  );
+  // The last samples, and WebView2's last log lines.
+  await sleep(2000);
+  checkConnections();
+  harvestNetLog();
+  const logged = netLogs.found.map((problem) => `  ${problem}`);
+  if (logged.length > 0) {
+    fail(
+      ["WebView2 reached beyond this computer:", ...logged].join(
+        String.fromCharCode(10),
+      ),
+    );
+  }
+  const { processes, connections: seen, udp, known } = connections.summary();
+  // Let through, but never silently (see connections.mjs).
+  for (const finding of known) {
+    console.log(`KNOWN FINDING - WebView2 reached Office: ${finding}`);
+  }
+  const names = Object.entries(processes)
+    .map(([name, count]) => `${name} ×${count}`)
+    .join(", ");
+  const total = Object.values(seen).reduce((sum, count) => sum + count, 0);
+  step(
+    `over the whole run the app's processes (${names}) made ${total} connections, all to the test or to each other on this computer but ${known.length} known ones of WebView2 to Office, ${udp} UDP sockets, and WebView2 (the network logs of ${netLogs.copies} copies) looked up and requested nothing beyond it`,
+  );
 }
 
 /** The app's pages (one per window) DevTools lists. */
@@ -1627,6 +1723,20 @@ async function main() {
   writeFileSync(INSTALLED_MARKER, "");
   await startReleaseServer();
   await startServer();
+  // From here on, every connection of the app's processes is watched: only
+  // the test's own servers on this computer may be reached (#115).
+  connections = await watchConnections({
+    ports: [
+      SSH_PORT,
+      OLD_DEVICE_PORT,
+      TELNET_PORT,
+      DEVICE_PORT,
+      SCP_PORT,
+      DEVTOOLS_PORT,
+      CLOSED_PORT,
+      Number(new URL(releaseServer.url).port),
+    ],
+  });
   const app = startApp();
   const devtools = await connectDevTools();
 
@@ -1720,7 +1830,12 @@ async function main() {
   // With the mouse: a button something is drawn over fails here.
   const decideHostKey = (decision) =>
     mouseClick(evaluate, `[data-decision=${decision}]`);
-  const step = (message) => console.log(`ok - ${message}`);
+  // A step passes only if the app connected nowhere else meanwhile.
+  const step = (message) => {
+    checkConnections();
+    console.log(`ok - ${message}`);
+    connections.during(`the step after "${message}"`);
+  };
   // Set SMOKE_SCREENSHOTS to a folder to keep pictures of the window.
   // Every screen photographed is also checked for contrast, in both
   // themes (#79), whether or not pictures are kept.
@@ -2233,14 +2348,15 @@ async function main() {
   );
   await fillForm({
     host: "127.0.0.1",
-    port: "1",
+    port: String(CLOSED_PORT),
     username: USERNAME,
     password: PASSWORD,
   });
   await until(
     "the refused connection",
     async () =>
-      (await status()) === "Closed: 127.0.0.1 refused the connection on port 1",
+      (await status()) ===
+      `Closed: 127.0.0.1 refused the connection on port ${CLOSED_PORT}`,
   );
   await until("the refused connection's advice", async () =>
     (
@@ -2775,6 +2891,8 @@ async function main() {
     step,
   });
   last.close();
+
+  await noConnectionOfItsOwn(step);
 }
 
 /** Runs `expression` in the page `devtools` is connected to. */
@@ -14558,6 +14676,7 @@ try {
   exitCode = 1;
 } finally {
   for (const child of children) child.kill();
+  connections?.stop();
   releaseServer.close();
   rmSync(INSTALLED_MARKER, { force: true });
   rmSync(PORTABLE_MARKER, { force: true });

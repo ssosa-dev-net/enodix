@@ -518,6 +518,8 @@ fn build(
     let first = place(Frame::default());
     let (min_width, min_height) = SESSION_WINDOW_MIN_SIZE;
     let built = WebviewWindowBuilder::new(app, label, WebviewUrl::default())
+        .additional_browser_args(crate::WEBVIEW_ARGUMENTS)
+        .general_autofill_enabled(false)
         .title(title)
         .inner_size(first.width, first.height)
         .min_inner_size(min_width, min_height)

@@ -303,6 +303,9 @@ else. Each of its features, and where it is now:
 | Python setup                                     | Preferences tab, then the Python setup tab; palette                                |
 | Terminal search, copy, paste, zoom               | Terminal (unchanged)                                                               |
 
+Where the app keeps logins and files, what is encrypted, and every
+connection it can make are in [trust.md](trust.md).
+
 Nothing of 0.2.0 is out of reach. Preferences and workspace files carry
 over unchanged: an old `preferences.yaml` loads with every choice kept (its
 right panel's width and folding are no longer used), and opening a

@@ -7,6 +7,10 @@ import App from "./App.svelte";
 import Detached from "./Detached.svelte";
 import SessionWindow from "./SessionWindow.svelte";
 import { detachedView, isSessionWindow } from "./lib/windows";
+import { noWritingSuggestions } from "./lib/writingSuggestions";
+
+// Before anything is drawn: Edge's writing suggestions off in every field.
+noWritingSuggestions();
 
 const target = document.getElementById("app")!;
 // A detached window shows one run (#77) or one host's config history

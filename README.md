@@ -12,7 +12,9 @@ git). Free and open source under the GPL-3.0.
 - **Credentials:** profiles are kept in the Windows Credential Manager, or
   in the app's own encrypted vault behind a master password (your choice;
   on Linux the vault is the only store). Workspace files hold only a
-  profile's name.
+  profile's name. [docs/trust.md](docs/trust.md) says where every login
+  and file is kept, what is encrypted, and every connection the app can
+  make.
 - **Jobs:** run a snippet on a folder, a saved filter, one host or a
   few hosts selected in the tree, with
   per-device output you can search, compare and save; nothing is asked
@@ -120,14 +122,16 @@ project's release key.
 
 Open **Preferences** (the gear at the foot of the rail, or Ctrl+,) and clear **Check for
 a new version at start**. With it off, the app makes no network connection
-that you did not start (sessions, file transfers, jobs, web links, **Check
-now**). The setting is
-kept per user in the app's data folder (`preferences.yaml`, key
+that you did not start (sessions, file transfers, jobs, scripts, a Python
+setup you confirmed, **Check now**; web links open in your browser). The
+setting is kept per user in the app's data folder (`preferences.yaml`, key
 `check_for_updates`).
 
 The app sends no telemetry and has no crash reporting. The update check is a
 plain request for the release manifest (`latest.json`) and sends nothing
-about you, your machine or your inventory.
+about you, your machine or your inventory (the server sees your address,
+as with any connection). [docs/trust.md](docs/trust.md) lists every
+connection the app can make.
 
 ## Uninstalling
 
@@ -144,15 +148,15 @@ page. That deletes:
 
 - `%APPDATA%\dev.netterm.app`: settings, the vault, known host keys, config
   backups, kept job results and the Python environment;
-- `%LOCALAPPDATA%\dev.netterm.app`: session logs (in their default folder)
-  and the window's web view data;
+- `%LOCALAPPDATA%\dev.netterm.app`: session logs and the window's web
+  view data;
 - the saved logins (credential profiles and named secrets) in Windows
   Credential Manager, the entries whose names start with `dev.netterm.app`;
 - the registry key `HKCU\Software\Sergio Sosa\netterm`, where the installer
   remembers the program folder.
 
-What always stays: your workspace folders, session logs written to a folder
-you chose, files you downloaded from devices, and a Python bridge you
+What always stays: your workspace folders, files you downloaded from
+devices, and a Python bridge you
 installed with `pip`. To remove the data by hand after an uninstall without
 the box, delete the two folders above and the Credential Manager entries
 (**Control Panel, Credential Manager, Windows Credentials**), or run
