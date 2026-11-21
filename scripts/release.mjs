@@ -56,6 +56,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_KEY_FILE = join(ROOT, "src-tauri", "updater-key.pub");
 /** The file that makes a copy portable (`netterm_core::update::PORTABLE_MARKER`). */
 const PORTABLE_MARKER = "portable.txt";
+/** Marks the Linux packages' copies (`netterm_core::update::PACKAGE_MARKER`). */
+const PACKAGE_MARKER = "package.txt";
 /** The updater's name for 64-bit Windows in `latest.json`. */
 const PLATFORM = "windows-x86_64";
 /** The headless binary, shipped beside the app (`crates/cli`). */
@@ -454,6 +456,19 @@ function linux() {
     ...cli,
     [LINUX_LICENCE[format]]: "../LICENSE",
   });
+  // The .deb and the .rpm (not the AppImage) carry PACKAGE_MARKER in the
+  // resource folder: the app then knows the package manager updates it
+  // (InstallKind::detect).
+  const marker = join(ROOT, "target", "release", PACKAGE_MARKER);
+  writeFileSync(
+    marker,
+    `This copy of ${productName} was installed by a system package: ` +
+      "update it with the package manager.\n",
+  );
+  const packaged = (format) => ({
+    ...withLicence(format),
+    [`/usr/lib/${productName}/${PACKAGE_MARKER}`]: `../target/release/${PACKAGE_MARKER}`,
+  });
   const configFile = writeConfig({
     bundle: {
       active: true,
@@ -462,8 +477,8 @@ function linux() {
         [`../target/release/python/${wheel}`]: `python/${wheel}`,
       },
       linux: {
-        deb: { files: withLicence("deb") },
-        rpm: { files: withLicence("rpm") },
+        deb: { files: packaged("deb") },
+        rpm: { files: packaged("rpm") },
         appimage: { files: withLicence("appimage") },
       },
     },
@@ -537,6 +552,12 @@ function checkLinuxPackage(format, file) {
     `/usr/lib/${productName}/python/${wheel}`,
     LINUX_LICENCE[format],
   ];
+  // The .deb and the .rpm say a package manager updates them; the AppImage
+  // must not (InstallKind::detect).
+  const marker = `/usr/lib/${productName}/${PACKAGE_MARKER}`;
+  if (format !== "appimage") expected.push(marker);
+  else if (files.has(marker))
+    fail(`${relative(ROOT, file)} holds ${marker}, which marks a package`);
   const missing = expected.filter((path) => !files.has(path));
   if (missing.length)
     fail(`${relative(ROOT, file)} lacks ${missing.join(", ")}`);

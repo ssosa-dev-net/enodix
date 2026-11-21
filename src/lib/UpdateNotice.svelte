@@ -1,7 +1,7 @@
 <script lang="ts">
   // A newer version exists: a card in the corner that never takes focus, so
   // work goes on. An installed copy offers to install it; a portable copy
-  // only points at the download.
+  // only points at the download, and a package's at the package manager.
   import {
     installUpdate,
     openReleasePage,
@@ -40,8 +40,11 @@
     <p class="title">Version {offer.version} is available</p>
     <p class="detail">
       You have {offer.current}.
-      {#if offer.action === "notify"}
-        This is a portable copy: download the new version and unpack it over
+      {#if offer.action === "notify" && updates.build?.kind === "package"}
+        It was installed by a package: update it with the system's package
+        manager.
+      {:else if offer.action === "notify"}
+        This is a portable copy: download the new version and put it in place of
         this one.
       {/if}
     </p>

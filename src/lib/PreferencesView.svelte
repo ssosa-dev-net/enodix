@@ -185,7 +185,9 @@
         {#if updates.build}
           Version {updates.build.version}{updates.build.kind === "portable"
             ? " (portable: new versions are announced, never installed)"
-            : ""}.
+            : updates.build.kind === "package"
+              ? " (installed by a package: new versions are announced and installed with the system's package manager)"
+              : ""}.
         {/if}
         {updates.busy ? "Checking…" : describeStatus(updates.status)}
       </p>

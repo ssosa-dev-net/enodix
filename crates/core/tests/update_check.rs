@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use netterm_core::preferences::Preferences;
 use netterm_core::update::{
     InstallKind, InstallRefused, UpdateAction, UpdateChecker, UpdateSource, UpdateSourceError,
-    UpdateStatus, INSTALLED_MARKER, PORTABLE_MARKER,
+    UpdateStatus, INSTALLED_MARKER, PACKAGE_MARKER, PORTABLE_MARKER,
 };
 use support::http::{Reply, TestHttpServer};
 use tempfile::TempDir;
@@ -163,7 +163,10 @@ fn a_copy_beside_the_installers_uninstaller_is_installed() {
     let folder = TempDir::new().unwrap();
     fs::write(folder.path().join(INSTALLED_MARKER), "").unwrap();
 
-    assert_eq!(InstallKind::detect(folder.path()), InstallKind::Installed);
+    assert_eq!(
+        InstallKind::detect(folder.path(), folder.path()),
+        InstallKind::Installed
+    );
 }
 
 #[test]
@@ -172,21 +175,33 @@ fn off_windows_every_copy_only_notifies_even_beside_an_uninstaller() {
     let folder = TempDir::new().unwrap();
     fs::write(folder.path().join(INSTALLED_MARKER), "").unwrap();
 
-    assert_eq!(InstallKind::detect(folder.path()), InstallKind::Portable);
+    assert_eq!(
+        InstallKind::detect(folder.path(), folder.path()),
+        InstallKind::Portable
+    );
 }
 
 #[test]
 fn any_other_copy_only_notifies() {
     // A copied program, a development build, the portable zip.
     let folder = TempDir::new().unwrap();
-    assert_eq!(InstallKind::detect(folder.path()), InstallKind::Portable);
+    assert_eq!(
+        InstallKind::detect(folder.path(), folder.path()),
+        InstallKind::Portable
+    );
 
     fs::write(folder.path().join(PORTABLE_MARKER), "portable").unwrap();
-    assert_eq!(InstallKind::detect(folder.path()), InstallKind::Portable);
+    assert_eq!(
+        InstallKind::detect(folder.path(), folder.path()),
+        InstallKind::Portable
+    );
 
     // The portable marker wins, even beside an uninstaller.
     fs::write(folder.path().join(INSTALLED_MARKER), "").unwrap();
-    assert_eq!(InstallKind::detect(folder.path()), InstallKind::Portable);
+    assert_eq!(
+        InstallKind::detect(folder.path(), folder.path()),
+        InstallKind::Portable
+    );
 }
 
 #[test]
@@ -194,7 +209,49 @@ fn a_folder_named_like_the_uninstaller_does_not_make_a_copy_installed() {
     let folder = TempDir::new().unwrap();
     fs::create_dir(folder.path().join(INSTALLED_MARKER)).unwrap();
 
-    assert_eq!(InstallKind::detect(folder.path()), InstallKind::Portable);
+    assert_eq!(
+        InstallKind::detect(folder.path(), folder.path()),
+        InstallKind::Portable
+    );
+}
+
+#[tokio::test]
+async fn a_copy_installed_by_a_package_only_notifies_and_never_installs() {
+    let server = TestHttpServer::serving(&manifest("0.2.0")).await;
+    let checker = checker(&server, "0.1.0", InstallKind::Package);
+
+    let status = checker.check_now().await;
+
+    let UpdateStatus::Available(offer) = status else {
+        panic!("expected a notification, got {status:?}");
+    };
+    assert_eq!(offer.action, UpdateAction::Notify);
+    assert_eq!(checker.installable(true), Err(InstallRefused::NotifyOnly));
+}
+
+#[test]
+fn a_copy_whose_resources_carry_the_package_marker_is_a_package() {
+    // A .deb or .rpm: the program in /usr/bin, the marker among the
+    // resources in /usr/lib/<product>.
+    let program = TempDir::new().unwrap();
+    let resources = TempDir::new().unwrap();
+    assert_eq!(
+        InstallKind::detect(program.path(), resources.path()),
+        InstallKind::Portable
+    );
+
+    fs::write(resources.path().join(PACKAGE_MARKER), "package").unwrap();
+    assert_eq!(
+        InstallKind::detect(program.path(), resources.path()),
+        InstallKind::Package
+    );
+
+    // The portable marker wins.
+    fs::write(program.path().join(PORTABLE_MARKER), "portable").unwrap();
+    assert_eq!(
+        InstallKind::detect(program.path(), resources.path()),
+        InstallKind::Portable
+    );
 }
 
 // --- Versions ------------------------------------------------------------------

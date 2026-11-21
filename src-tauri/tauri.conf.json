@@ -18,6 +18,7 @@
     "active": false,
     "publisher": "Sergio Sosa",
     "shortDescription": "A terminal for network engineers",
+    "category": "Utility",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]
   }
 }
