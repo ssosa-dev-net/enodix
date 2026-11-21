@@ -39,6 +39,9 @@ serde_json = "1"
 # YAML for workspace files; maintained fork of the deprecated serde_yaml.
 serde_norway = "0.9"
 serialport = "4"
+# TCP keepalive on telnet sockets (#133): its time, interval and count per
+# socket (`all` has the count); already in the tree through tokio.
+socket2 = { version = "0.6.5", features = ["all"] }
 thiserror = "2"
 # `fs`: the transfer engine reads and writes local files.
 tokio = { workspace = true, features = ["fs"] }
@@ -63,7 +66,8 @@ rand = { version = "0.10", features = ["thread_rng"] }
 tempfile = "3"
 
 # The in-process stand-in for Pageant needs Pageant's pipe name; the
-# transfer memory test reads the process's working set.
+# transfer memory test reads the process's working set; the TCP keepalive
+# test reads the socket's options back.
 [target.'cfg(windows)'.dev-dependencies]
 sha2 = "0.11"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }

@@ -221,8 +221,13 @@ async fn a_link_that_goes_silent_mid_command_ends_the_session_as_lost_in_bounded
     eprintln!("a silent link noticed after {:?}", started.elapsed());
 }
 
-/// While its reader is paused the session cannot notice a dead link (the
-/// connection's loop waits for the reader); once reading resumes it does.
+/// While its reader is paused the session cannot notice a dead link; once
+/// reading resumes it does. A known limit, pinned (#133): russh's
+/// connection loop hands each data packet to the channel's bounded queue
+/// and waits there when it is full, sending no keepalive meanwhile, and it
+/// reopens the SSH window as it decodes, not as the session reads, so
+/// taking packets to keep it going would hold output without bound
+/// (the sessions notes, "Links that go silent").
 #[tokio::test(flavor = "multi_thread")]
 async fn a_link_that_goes_silent_while_output_is_paused_is_noticed_once_reading_resumes() {
     let server = TestSshServer::start().await;

@@ -835,11 +835,50 @@ async fn connect_device(
         followed,
     };
     let through = last_via(&target.jump_hosts, &jumps);
-    let (connection, agreed) = connect(hop, through, &known_hosts, &asker, prompter)
-        .await
-        .map_err(|error| lost_jump_host(&target.jump_hosts, &jumps).unwrap_or(error))?;
+    let connected = connect(hop, through, &known_hosts, &asker, prompter).await;
+    let (connection, agreed) = match connected {
+        Ok(connected) => connected,
+        Err(error) => return Err(blame_jump_hosts(&target.jump_hosts, &jumps, error).await),
+    };
     algorithms.push(agreed);
     Ok((connection, jumps, algorithms))
+}
+
+/// Why reaching the hop after `jumps` failed with `error`: a jump host's
+/// failure if one is to blame, else `error`. The first jump host (in
+/// connect order) whose connection has ended (#118); or, when the hop's
+/// wait timed out, the first that does not answer a ping within its own
+/// connect timeout (#133): a jump host that went silent makes the next
+/// hop's wait end before its keepalives could tell.
+async fn blame_jump_hosts(
+    jump_hosts: &[JumpHost],
+    jumps: &[Handle<Client>],
+    error: OpenError,
+) -> OpenError {
+    if let Some(lost) = lost_jump_host(jump_hosts, jumps) {
+        return lost;
+    }
+    if !matches!(error, OpenError::TimedOut { .. }) {
+        return error;
+    }
+    for (jump, connection) in jump_hosts.iter().zip(jumps) {
+        // A ping to a hop crosses the ones before it, which answered.
+        let answered = tokio::time::timeout(jump.connect_timeout, connection.send_ping()).await;
+        if connection.is_closed() {
+            return lost_jump_host(jump_hosts, jumps).unwrap_or(error);
+        }
+        if answered.is_err() {
+            return OpenError::JumpHost {
+                name: jump.name.clone(),
+                error: Box::new(OpenError::Connect(format!(
+                    "it stopped answering while the session was being opened (no answer \
+                     within {} s)",
+                    jump.connect_timeout.as_secs_f64()
+                ))),
+            };
+        }
+    }
+    error
 }
 
 /// When reaching the device failed because a jump host's connection ended
@@ -869,12 +908,16 @@ async fn open_shell(
     let (connection, jumps, algorithms) =
         connect_device(target, known_hosts, asker, prompter, None).await?;
 
-    let (channel, early_output) = within(
+    let started = within(
         target.connect_timeout,
         prompter.user_wait(),
         start_shell(&connection, size),
     )
-    .await?;
+    .await;
+    let (channel, early_output) = match started {
+        Ok(started) => started,
+        Err(error) => return Err(blame_jump_hosts(&target.jump_hosts, &jumps, error).await),
+    };
 
     Ok(Shell {
         connection,
@@ -908,12 +951,22 @@ async fn connect_jumps(
         };
         let through = last_via(jump_hosts, &jumps);
         prompter.jump_host = Some(jump.name.clone());
-        let (connection, agreed) = connect(hop, through, known_hosts, asker, prompter)
-            .await
-            .map_err(|error| OpenError::JumpHost {
-                name: jump.name.clone(),
-                error: Box::new(error),
-            })?;
+        let connected = connect(hop, through, known_hosts, asker, prompter).await;
+        let (connection, agreed) = match connected {
+            Ok(connected) => connected,
+            Err(error) => {
+                let own = OpenError::JumpHost {
+                    name: jump.name.clone(),
+                    error: Box::new(error.clone()),
+                };
+                // Unless a jump host before it is to blame.
+                let blamed = blame_jump_hosts(jump_hosts, &jumps, error).await;
+                return Err(match blamed {
+                    blamed @ OpenError::JumpHost { .. } => blamed,
+                    _ => own,
+                });
+            }
+        };
         jumps.push(connection);
         algorithms.push(agreed);
     }

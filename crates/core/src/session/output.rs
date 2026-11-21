@@ -219,6 +219,12 @@ impl Flow {
         self.room.notify_one();
     }
 
+    /// Whether the consumer is less than a window behind: reading may go
+    /// on now.
+    pub(super) fn has_room(&self) -> bool {
+        self.unacknowledged.load(Ordering::Acquire) < self.window
+    }
+
     /// Resolves once the consumer is less than a window behind.
     pub(super) async fn room_to_read(&self) {
         // Only the session's transport waits here, so `notify_one`'s stored

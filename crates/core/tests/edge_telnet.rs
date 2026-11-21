@@ -13,10 +13,26 @@ use netterm_core::session::{
     CloseReason, SessionEvent, SessionEvents, SessionId, SessionManager, SessionState,
     SessionTarget, TelnetTarget, TerminalSize,
 };
-use support::raw::{RawDevice, DO, IAC, UNKNOWN_OPTION, WILL, WONT};
-use support::{next_state, output_ending_with, output_until_closed, WAIT};
+use support::proxy::LinkProxy;
+use support::raw::{RawDevice, DO, ECHO, IAC, UNKNOWN_OPTION, WILL, WONT};
+use support::telnet::{TestTelnetServer, PASSWORD_PROMPT, TELNET_PROMPT, USERNAME_PROMPT};
+use support::{
+    next_state, output_ending_with, output_until_closed, unacknowledged_output, CTRL_C,
+    INTERRUPTED, PASSWORD, USERNAME, WAIT,
+};
 
 const SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
+
+/// A connect timeout short enough for tests about silence: a quiet session
+/// probes the device this often.
+const SHORT: Duration = Duration::from_secs(1);
+
+/// How long a session may take to notice a link that went silent with
+/// [`SHORT`]: three timeouts, and room for a loaded machine.
+const NOTICED: Duration = Duration::from_secs(12);
+
+/// The telnet option a probe asks about (RFC 860).
+const TIMING_MARK: u8 = 6;
 
 const NAWS: u8 = 31;
 const SB: u8 = 250;
@@ -246,6 +262,145 @@ async fn a_megabyte_pasted_into_a_slow_device_arrives_whole_and_closing_does_not
         "{:?}",
         started.elapsed()
     );
+}
+
+// Links that go silent (#133). Telnet has no keepalives of its own: a
+// session that hears nothing for a connect timeout asks the device for a
+// timing mark (`IAC DO TIMING-MARK`), which a telnet server answers, and a
+// device that answered one and then answers nothing for about three
+// timeouts is lost.
+
+/// A telnet target behind `link`, with the short timeout.
+fn through(link: &LinkProxy) -> TelnetTarget {
+    TelnetTarget {
+        host: "127.0.0.1".into(),
+        port: link.port(),
+        connect_timeout: SHORT,
+    }
+}
+
+/// Whether the session asked `received`'s device for a timing mark, and
+/// how many times.
+fn probes_in(received: &[u8]) -> usize {
+    received
+        .windows(3)
+        .filter(|w| *w == [IAC, DO, TIMING_MARK])
+        .count()
+}
+
+/// A quiet session over a healthy link stays connected, the device
+/// answering a timing mark each timeout (nothing of it shown); the link
+/// going silent then ends it as lost within about three timeouts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_telnet_link_that_goes_silent_ends_the_session_as_lost_in_bounded_time() {
+    let server = TestTelnetServer::start().await;
+    let link = LinkProxy::start(server.port()).await;
+    let manager = support::manager();
+    let (id, mut events) = open(&manager, through(&link)).await;
+    output_ending_with(&mut events, USERNAME_PROMPT).await;
+
+    // Quiet for several timeouts: probed and answered, nothing shown.
+    wait_until(|| server.probes() >= 3, "three probes answered").await;
+    let shown = tokio::time::timeout(Duration::from_millis(50), events.next()).await;
+    assert!(shown.is_err(), "the session showed {shown:?}");
+    manager
+        .write(id, format!("{USERNAME}\r").into_bytes())
+        .unwrap();
+    output_ending_with(&mut events, PASSWORD_PROMPT).await;
+
+    link.stall();
+    let started = Instant::now();
+    let (_, reason) = output_until_closed(&mut events, NOTICED).await;
+
+    assert_eq!(reason, CloseReason::ConnectionLost);
+    eprintln!("a silent telnet link noticed after {:?}", started.elapsed());
+    assert!(started.elapsed() >= SHORT * 2, "{:?}", started.elapsed());
+}
+
+/// A device that speaks telnet but never answers a timing mark (it is not
+/// obliged to): asked a few times, then left alone, and never taken for
+/// dead however long it stays quiet.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_telnet_device_that_never_answers_a_timing_mark_is_not_taken_for_dead() {
+    let opening = [IAC, WILL, ECHO].to_vec();
+    let mut pieces = vec![(Duration::ZERO, opening)];
+    pieces.push((Duration::ZERO, b"Username: ".to_vec()));
+    let device = RawDevice::sending(pieces).await;
+    let manager = support::manager();
+    let target = TelnetTarget {
+        connect_timeout: SHORT,
+        ..device.telnet_target()
+    };
+    let (id, mut events) = open(&manager, target).await;
+    output_ending_with(&mut events, b"Username: ").await;
+
+    // Quiet for six timeouts.
+    let quiet = tokio::time::timeout(SHORT * 6, events.next()).await;
+    assert!(quiet.is_err(), "the session ended or showed {quiet:?}");
+
+    let probes = probes_in(&device.received());
+    assert!((1..=3).contains(&probes), "{probes} probes");
+    manager.write(id, b"admin\r".to_vec()).unwrap();
+    wait_until(
+        || device.received().ends_with(b"admin\r\n"),
+        "the input to arrive",
+    )
+    .await;
+}
+
+/// A device that never sends a telnet command (a console server's raw
+/// port, say) is never sent one either: the bytes would reach the console.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_never_negotiates_is_never_probed() {
+    let device = RawDevice::sending(vec![(Duration::ZERO, b"login: ".to_vec())]).await;
+    let manager = support::manager();
+    let target = TelnetTarget {
+        connect_timeout: SHORT,
+        ..device.telnet_target()
+    };
+    let (_id, mut events) = open(&manager, target).await;
+    output_ending_with(&mut events, b"login: ").await;
+
+    let quiet = tokio::time::timeout(SHORT * 4, events.next()).await;
+
+    assert!(quiet.is_err(), "the session ended or showed {quiet:?}");
+    assert_eq!(probes_in(&device.received()), 0);
+}
+
+/// While the session's output is held back (a hidden terminal behind), an
+/// answer to a probe could not be read: the silence does not count, and a
+/// healthy session held for several timeouts carries on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_telnet_session_held_back_for_several_timeouts_is_not_taken_for_dead() {
+    let server = TestTelnetServer::start().await;
+    let manager = support::manager();
+    let target = TelnetTarget {
+        connect_timeout: SHORT,
+        ..server.target()
+    };
+    let (id, mut events) = open(&manager, target).await;
+    output_ending_with(&mut events, USERNAME_PROMPT).await;
+    manager
+        .write(id, format!("{USERNAME}\r").into_bytes())
+        .unwrap();
+    output_ending_with(&mut events, PASSWORD_PROMPT).await;
+    manager
+        .write(id, format!("{PASSWORD}\r").into_bytes())
+        .unwrap();
+    output_ending_with(&mut events, TELNET_PROMPT).await;
+    // The device has answered a probe, so the session counts on its
+    // answers from now on (the answer itself is not shown).
+    wait_until(|| server.probes() >= 1, "a probe answered").await;
+    let quiet = tokio::time::timeout(Duration::from_millis(200), events.next()).await;
+    assert!(quiet.is_err(), "the session showed {quiet:?}");
+    manager.write(id, b"flood\r".to_vec()).unwrap();
+    let held = unacknowledged_output(&mut events, Duration::from_millis(300)).await;
+
+    tokio::time::sleep(SHORT * 4).await;
+    events.acknowledge(held.len());
+    manager.write(id, vec![CTRL_C]).unwrap();
+
+    output_ending_with(&mut events, &[INTERRUPTED, TELNET_PROMPT].concat()).await;
 }
 
 /// Output that is not UTF-8, and characters split across packets, reach
