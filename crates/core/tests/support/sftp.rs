@@ -59,6 +59,9 @@ pub struct SftpQuirks {
     keep_at_most: Mutex<Option<u64>>,
     /// Removing a file is refused as permission denied.
     refuse_remove: AtomicBool,
+    /// Writes past this many bytes of a file fail, as on a full disk
+    /// (SFTP v3 has no code for it: OpenSSH answers a plain failure).
+    full_after: Mutex<Option<u64>>,
 }
 
 impl Default for SftpQuirks {
@@ -67,6 +70,7 @@ impl Default for SftpQuirks {
             hold: watch::Sender::new(None),
             keep_at_most: Mutex::new(None),
             refuse_remove: AtomicBool::new(false),
+            full_after: Mutex::new(None),
         }
     }
 }
@@ -89,6 +93,12 @@ impl SftpQuirks {
 
     pub fn refuse_remove(&self) {
         self.refuse_remove.store(true, Ordering::SeqCst);
+    }
+
+    /// From now on, a write that would take a file past `bytes` fails: the
+    /// device's disk is full.
+    pub fn full_after(&self, bytes: u64) {
+        *self.full_after.lock().unwrap() = Some(bytes);
     }
 
     /// Waits while a hold covers `offset`.
@@ -409,6 +419,10 @@ impl russh_sftp::server::Handler for FolderServer {
         mut data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
         self.quirks.held(offset).await;
+        let full = *self.quirks.full_after.lock().unwrap();
+        if full.is_some_and(|full| offset + data.len() as u64 > full) {
+            return Err(StatusCode::Failure.into());
+        }
         let keep = *self.quirks.keep_at_most.lock().unwrap();
         if let Some(keep) = keep {
             data.truncate(keep.saturating_sub(offset) as usize);

@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, watch, Semaphore};
 use tokio::time::Instant;
 
 use super::script::{self, ScriptOptions};
-use super::{file, BackupWork, JobPlan, JobStep, PlannedHost};
+use super::{file, BackupWork, EnableSecret, JobPlan, JobStep, PlannedHost};
 use crate::configs::{ConfigStore, SaveOutcome};
 use crate::enrich::CollectedFacts;
 use crate::files::Hashes;
@@ -37,6 +37,11 @@ pub const DEFAULT_COMMAND_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// prompt to count, so that output merely ending in `#` for a moment is not
 /// taken for it (the containerlab suite's rule).
 pub const PROMPT_SETTLE: Duration = Duration::from_millis(300);
+/// How much of one host's (or one script's) output a job keeps when
+/// nothing says otherwise: 32 MiB of plain text. Past it the output is
+/// still read (the device or script goes on), but no longer kept, shown or
+/// written to the kept run; a line says so ([`output_cut`]).
+pub const DEFAULT_OUTPUT_LIMIT: usize = 32 * 1024 * 1024;
 /// The terminal size job sessions ask for: wide, so that devices wrap as
 /// few lines as possible.
 pub const JOB_TERMINAL_SIZE: TerminalSize = TerminalSize {
@@ -56,6 +61,9 @@ pub struct JobOptions {
     /// How long a host may go on showing output after each line without
     /// getting back to its prompt; a host that does fails.
     pub command_limit: Duration,
+    /// How many bytes of plain text of each host's output (a script's
+    /// output) are kept: in its result, its events and its kept run.
+    pub output_limit: usize,
     /// Where a config backup keeps the configurations it fetches; a config
     /// backup cannot start without it.
     pub configs: Option<ConfigStore>,
@@ -70,6 +78,7 @@ impl Default for JobOptions {
             parallel: DEFAULT_PARALLEL,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
             command_limit: DEFAULT_COMMAND_LIMIT,
+            output_limit: DEFAULT_OUTPUT_LIMIT,
             configs: None,
             script: None,
         }
@@ -282,7 +291,14 @@ pub fn start(
             .script
             .as_ref()
             .expect("plan keeps the script of a script step");
-        script::spawn(&plan, planned, script, events_tx, cancel);
+        script::spawn(
+            &plan,
+            planned,
+            script,
+            options.output_limit,
+            events_tx,
+            cancel,
+        );
         return Ok(Job {
             events,
             cancel: JobCanceller(Arc::new(cancel_tx)),
@@ -372,10 +388,13 @@ struct HostRunner {
     /// Where a config backup keeps what it fetches, and the workspace id.
     configs: Option<(ConfigStore, String)>,
     text: PlainText,
-    /// The plain text so far.
-    output: String,
+    /// The plain text so far, up to the output limit.
+    output: KeptOutput,
     /// What a config backup kept.
     backup: Option<SaveOutcome>,
+    /// The enable secret once it has been typed, never shown in the
+    /// output (a device that echoes it would put it there).
+    typed_secret: Option<EnableSecret>,
 }
 
 /// The host's session, once opened.
@@ -458,11 +477,12 @@ impl HostRunner {
             manager: manager.clone(),
             events,
             id: id.clone(),
+            output: KeptOutput::new(options.output_limit),
             options,
             configs,
             text: PlainText::new(),
-            output: String::new(),
             backup: None,
+            typed_secret: None,
         }
     }
 
@@ -514,7 +534,7 @@ impl HostRunner {
             id: host.id,
             name: host.name,
             state,
-            output: self.output,
+            output: self.output.text,
             backup: self.backup,
             exit_status: None,
             facts: None,
@@ -636,19 +656,31 @@ impl HostRunner {
         let command = &backup.command;
         // Output holds complete lines only: the prompt the command is
         // typed at is not in it yet, and the one after it never is.
-        let start = self.output.len();
+        let start = self.output.text.len();
         let prompt = self.text.current_line().trim_end().to_string();
         match self.send(id, events, command, patterns).await {
             Ok(Shown::Prompt) => {}
             Ok(Shown::PrivilegePrompt) => return Err(asked_for_password(command)),
             Err(error) => return Err(self.no_prompt_after(&quoted(command), error)),
         }
+        // Only part of it was kept: never a version.
+        if self.output.is_cut() {
+            return Err(format!(
+                "{command:?} showed more than the {} a job keeps of a host's output; nothing was backed up",
+                bytes(self.options.output_limit)
+            ));
+        }
         // A bad pattern is refused when the configuration is kept.
         let ignored = backup
             .ignored_lines
             .as_deref()
             .and_then(|pattern| Regex::new(pattern).ok());
-        let config = config_shown(&self.output[start..], &prompt, command, ignored.as_ref());
+        let config = config_shown(
+            &self.output.text[start..],
+            &prompt,
+            command,
+            ignored.as_ref(),
+        );
         if config.is_empty() {
             return Err(format!("{command:?} showed nothing to back up"));
         }
@@ -715,11 +747,11 @@ impl HostRunner {
     ) -> Result<(), String> {
         let work = &host.work;
         let before = self.text.current_line().trim().to_string();
-        let start = self.output.len();
+        let start = self.output.text.len();
         match self.send(id, events, command, patterns).await {
             Ok(Shown::Prompt) => {
                 let after = self.text.current_line().trim().to_string();
-                let said = said_after(&self.output[start..], command);
+                let said = said_after(&self.output.text[start..], command);
                 if after != before || said.is_empty() {
                     return Ok(());
                 }
@@ -753,6 +785,9 @@ impl HostRunner {
             }
             None => "the device refused the enable secret".to_string(),
         };
+        if !secret.0.trim().is_empty() {
+            self.typed_secret = Some(secret.clone());
+        }
         let shown = if self
             .manager
             .write(id, format!("{}\r", secret.0).into_bytes())
@@ -969,11 +1004,19 @@ impl HostRunner {
         self.add_output(lines);
     }
 
-    fn add_output(&mut self, text: String) {
+    fn add_output(&mut self, mut text: String) {
         if text.is_empty() {
             return;
         }
-        self.output.push_str(&text);
+        // Complete lines: an echoed secret is whole in one of them.
+        if let Some(secret) = &self.typed_secret {
+            if text.contains(&secret.0) {
+                text = text.replace(&secret.0, HIDDEN_SECRET);
+            }
+        }
+        let Some(text) = self.output.add(text) else {
+            return;
+        };
         let _ = self.events.send(JobEvent::Output {
             host: self.id.clone(),
             text,
@@ -987,6 +1030,9 @@ impl HostRunner {
         });
     }
 }
+
+/// What a job shows in place of the enable secret, should a device echo it.
+pub const HIDDEN_SECRET: &str = "********";
 
 /// The configuration in `shown`, the plain-text output of `command` typed
 /// at `prompt`: without the echo (the first line, if it is the prompt and
@@ -1054,6 +1100,84 @@ fn only_an_error(config: &str) -> Option<String> {
 
 fn failed(reason: String) -> HostState {
     HostState::Failed { reason }
+}
+
+/// The line that ends a host's kept output once it reached `limit` bytes
+/// ([`JobOptions::output_limit`]).
+pub fn output_cut(limit: usize) -> String {
+    format!(
+        "[netterm: the output went on past {}, the most a job keeps of it; the rest was not kept]\n",
+        bytes(limit)
+    )
+}
+
+/// `count` bytes for the user: whole MiB or KiB where it is, else bytes.
+fn bytes(count: usize) -> String {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * KIB;
+    if count >= MIB && count.is_multiple_of(MIB) {
+        format!("{} MiB", count / MIB)
+    } else if count >= KIB && count.is_multiple_of(KIB) {
+        format!("{} KiB", count / KIB)
+    } else {
+        format!("{count} bytes")
+    }
+}
+
+/// A host's (or a script's) output as a job keeps it: everything up to its
+/// limit, then a line saying the rest was not kept ([`output_cut`]), then
+/// nothing more. So a flood is never held whole: not in the result, not in
+/// the events, not in the kept run.
+#[derive(Debug)]
+pub(super) struct KeptOutput {
+    pub(super) text: String,
+    limit: usize,
+    cut: bool,
+}
+
+impl KeptOutput {
+    pub(super) fn new(limit: usize) -> Self {
+        Self {
+            text: String::new(),
+            limit,
+            cut: false,
+        }
+    }
+
+    /// Keeps what fits of `piece` (whole lines where it can); what was
+    /// kept, to report, if anything.
+    pub(super) fn add(&mut self, piece: String) -> Option<String> {
+        if self.cut || piece.is_empty() {
+            return None;
+        }
+        if self.text.len() + piece.len() <= self.limit {
+            self.text.push_str(&piece);
+            return Some(piece);
+        }
+        let mut end = self.limit.saturating_sub(self.text.len());
+        while !piece.is_char_boundary(end) {
+            end -= 1;
+        }
+        let end = piece[..end].rfind('\n').map_or(end, |at| at + 1);
+        let mut kept = piece[..end].to_string();
+        let ends_a_line = if kept.is_empty() {
+            self.text.is_empty() || self.text.ends_with('\n')
+        } else {
+            kept.ends_with('\n')
+        };
+        if !ends_a_line {
+            kept.push('\n');
+        }
+        kept.push_str(&output_cut(self.limit));
+        self.text.push_str(&kept);
+        self.cut = true;
+        Some(kept)
+    }
+
+    /// Whether the limit was reached.
+    pub(super) fn is_cut(&self) -> bool {
+        self.cut
+    }
 }
 
 /// `line` quoted, for messages.

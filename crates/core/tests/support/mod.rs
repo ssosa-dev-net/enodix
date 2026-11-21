@@ -91,6 +91,7 @@ pub mod agent;
 pub mod algorithms;
 pub mod credentials;
 pub mod http;
+pub mod jobs;
 pub mod memory;
 pub mod processes;
 pub mod proxy;
@@ -435,6 +436,9 @@ struct Device {
     /// and every line typed at that question.
     login_question: Arc<AtomicBool>,
     typed_at_login: Arc<Mutex<Vec<String>>>,
+    /// Whether the enable question echoes what is typed at it (a console
+    /// that does: the secret shows).
+    echo_secret: Arc<AtomicBool>,
 }
 
 /// The connections that opened a session channel, while they last.
@@ -503,6 +507,12 @@ impl TestSshServer {
     /// the type of `preferred.key`'s first entry (Ed25519, RSA or DSA).
     pub async fn start_with_algorithms(preferred: Preferred) -> Self {
         Self::start_with(0, None, preferred, None).await
+    }
+
+    /// An old device: [`Self::start_with_algorithms`] whose shell runs in
+    /// device mode as `hostname`.
+    pub async fn start_device_with_algorithms(hostname: &str, preferred: Preferred) -> Self {
+        Self::start_with(0, None, preferred, Some(Device::new(hostname, true))).await
     }
 
     /// [`Self::start_with_algorithms`] on the given loopback port.
@@ -861,6 +871,13 @@ impl TestSshServer {
         device.login_question.store(true, Ordering::SeqCst);
     }
 
+    /// From now on, the enable question echoes what is typed at it.
+    pub fn echo_enable_secret(&self) {
+        if let Some(device) = &self.device {
+            device.echo_secret.store(true, Ordering::SeqCst);
+        }
+    }
+
     /// Every line typed at [`LOGIN_QUESTION`] so far.
     pub fn typed_at_login(&self) -> Vec<String> {
         let device = self.device.as_ref().expect("a device-mode server");
@@ -1055,6 +1072,7 @@ impl Device {
             config_pace: Arc::default(),
             login_question: Arc::default(),
             typed_at_login: Arc::default(),
+            echo_secret: Arc::default(),
         }
     }
 
@@ -1163,6 +1181,9 @@ struct ShellState {
     waiting: Waiting,
     /// The last byte typed was CR (so a LF right after it ends no line).
     after_cr: bool,
+    /// In device mode: the name its prompt shows instead of the device's
+    /// hostname (`prompt <name>`: a prompt that changes, as in config mode).
+    prompt_name: Option<String>,
 }
 
 impl Default for ShellState {
@@ -1176,6 +1197,7 @@ impl Default for ShellState {
             page_length: PAGE_LENGTH,
             waiting: Waiting::Line,
             after_cr: false,
+            prompt_name: None,
         }
     }
 }
@@ -1245,8 +1267,13 @@ impl ScriptedShell {
 
     /// What the shell prints on `channel` when it waits for a line.
     fn prompt(&self, channel: ChannelId) -> Vec<u8> {
-        let privileged = self.channels.get(&channel).is_none_or(|s| s.privileged);
-        prompt_for(&self.device, privileged)
+        let state = self.channels.get(&channel);
+        let privileged = state.is_none_or(|s| s.privileged);
+        match (state.and_then(|s| s.prompt_name.as_deref()), &self.device) {
+            (Some(name), Some(_)) if privileged => device_prompt(name),
+            (Some(name), Some(_)) => unprivileged_prompt(name),
+            _ => prompt_for(&self.device, privileged),
+        }
     }
 
     fn run_line(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), russh::Error> {
@@ -1534,6 +1561,35 @@ impl ScriptedShell {
                 drip_lines(channel, session, lines, Duration::from_millis(millis));
                 return Ok(());
             }
+            // The prompt changes to show `name` (no name: the hostname
+            // again), as a device entering or leaving config mode.
+            Some("prompt") if device => {
+                state.prompt_name = words.next().map(str::to_string);
+            }
+            // A console that answers a byte at a time, `ms` apart, prompt
+            // included.
+            Some("crawl") if device => {
+                let millis: u64 = words.next().and_then(|n| n.parse().ok()).unwrap_or(10);
+                let text = words.collect::<Vec<_>>().join(" ");
+                let prompt = self.prompt(channel);
+                let bytes = [text.as_bytes(), b"\r\n", &prompt].concat();
+                let lines = bytes.into_iter().map(|byte| vec![byte]).collect();
+                drip_lines(channel, session, lines, Duration::from_millis(millis));
+                return Ok(());
+            }
+            // Shows `before`, says nothing for `ms`, then shows `after`, the
+            // line's end and the prompt: a device that answers after
+            // seconds, half way through a line.
+            Some("stall") if device => {
+                let millis: u64 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                let before = words.next().unwrap_or("").as_bytes().to_vec();
+                let after = words.collect::<Vec<_>>().join(" ");
+                let prompt = self.prompt(channel);
+                let rest = [after.as_bytes(), b"\r\n", &prompt].concat();
+                session.data(channel, before)?;
+                drip_lines(channel, session, vec![rest], Duration::from_millis(millis));
+                return Ok(());
+            }
             Some("pause") if device => {
                 let millis: u64 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
                 state.waiting = Waiting::Nothing;
@@ -1582,7 +1638,16 @@ impl ScriptedShell {
                 state.waiting = Waiting::Line;
                 session.data(channel, prompt_for(&self.device, state.privileged))?;
             }
-            Waiting::Secret { typed, .. } => typed.push(byte),
+            Waiting::Secret { typed, .. } => {
+                typed.push(byte);
+                if self
+                    .device
+                    .as_ref()
+                    .is_some_and(|d| d.echo_secret.load(Ordering::SeqCst))
+                {
+                    session.data(channel, vec![byte])?;
+                }
+            }
             Waiting::Login { typed } if byte == b'\r' => {
                 let answer = String::from_utf8_lossy(typed).into_owned();
                 typed.clear();

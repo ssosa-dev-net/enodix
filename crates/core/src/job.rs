@@ -70,9 +70,10 @@ pub use kept::{KeptPlan, KeptPlans, PlanId, PlanRefused, MAX_KEPT_PLANS};
 pub use live::{LiveJob, LiveJobs, NewLiveJob};
 pub use login::{LoginBackup, LoginBackupOutcome, SessionLogin};
 pub use run::{
-    check, start, HostResult, HostState, Job, JobCanceller, JobEvent, JobOptions, JobReport,
-    SentFile, StartError, DEFAULT_COMMAND_LIMIT, DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL,
-    JOB_TERMINAL_SIZE, MAX_PARALLEL, PROGRESS_EVERY, PROMPT_SETTLE,
+    check, output_cut, start, HostResult, HostState, Job, JobCanceller, JobEvent, JobOptions,
+    JobReport, SentFile, StartError, DEFAULT_COMMAND_LIMIT, DEFAULT_COMMAND_TIMEOUT,
+    DEFAULT_OUTPUT_LIMIT, DEFAULT_PARALLEL, HIDDEN_SECRET, JOB_TERMINAL_SIZE, MAX_PARALLEL,
+    PROGRESS_EVERY, PROMPT_SETTLE,
 };
 /// The reasons an unattended file connection gives for a refused question.
 pub(crate) use run::{host_key_refused, login_question_refused};
