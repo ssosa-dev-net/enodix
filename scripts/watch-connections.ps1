@@ -298,6 +298,14 @@ public static class ConnectionWatcher
                         long created = CreationTime(p.Pid);
                         // A parent id reused by a later process is no parent.
                         if (childOfWatched && created != 0 && parent.Created != 0 && created < parent.Created) continue;
+                        // Nor is it one of a process this user cannot even
+                        // ask its start time (a system process, such as
+                        // wininit.exe, whose own parent ended at boot and
+                        // whose parent id a process of the app got later):
+                        // everything the app starts runs as this user and
+                        // can be asked. Taking such a process in would take
+                        // in every Windows service below it.
+                        if (childOfWatched && created == 0) continue;
                         p.Created = created;
                         watched[p.Pid] = p;
                         grew = true;
