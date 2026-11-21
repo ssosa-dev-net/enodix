@@ -3,7 +3,7 @@
 //!
 //! A [`ConfigStore`] lives under the app's data area, never in a workspace,
 //! and keeps each workspace's hosts apart by the workspace id:
-//! `<root>/<workspace id>/<tree path>/<host file stem>/<version>.txt`, a
+//! `<root>/<workspace id>/<tree path>/<host folder>/<version>.txt`, a
 //! version being named by its local save time (`YYYY-MM-DD_HH-MM-SS`,
 //! `_2`... when several are saved in one second). [`ConfigStore::save`]
 //! keeps a new version only when the configuration changed since the latest
@@ -11,6 +11,16 @@
 //! definition's ignored-lines pattern (such as a timestamp); the file kept
 //! holds every line. Nothing is pruned and nothing is encrypted: a backup is
 //! as sensitive as the configuration it holds.
+//!
+//! A host's folder is named after its file: the file's stem for a file
+//! ending in `.yaml` (`r1.yaml` → `r1`, as every host had before #127),
+//! the whole file name for any other (`r1.yml` → `r1.yml`), and for a
+//! `.yaml` file whose stem itself ends like a host file (`r1.yml.yaml`).
+//! So no two host files of one folder share a folder: before #127 every
+//! host had its stem, and `r1.yaml` and `r1.yml` kept one history between
+//! them. A host whose folder changed name finds the history kept under its
+//! stem once [`ConfigStore::claim_history`] has run for its workspace;
+//! history two hosts already shared is never split or copied (see there).
 
 use std::fs;
 use std::io;
@@ -21,7 +31,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::diff::{diff_lines, lines, DiffLine};
-use crate::workspace::HostId;
+use crate::workspace::{Host, HostId, Workspace};
 
 /// The extension of a version's file.
 pub const VERSION_EXTENSION: &str = "txt";
@@ -141,14 +151,25 @@ impl ConfigStore {
     /// The folder holding the versions of `host` in `workspace` (it may not
     /// exist yet).
     pub fn host_folder(&self, workspace: &str, host: &HostId) -> Result<PathBuf, ConfigError> {
+        let (parent, file) = self.parent_folder(workspace, host)?;
+        let name = folder_name(file);
+        if !is_plain_name(&name) {
+            return Err(ConfigError::BadHostId(host.clone()));
+        }
+        Ok(parent.join(name))
+    }
+
+    /// The folder of `host`'s tree path in `workspace`, and its file name.
+    fn parent_folder<'a>(
+        &self,
+        workspace: &str,
+        host: &'a HostId,
+    ) -> Result<(PathBuf, &'a str), ConfigError> {
         if !is_plain_name(workspace) {
             return Err(ConfigError::BadWorkspaceId(workspace.to_string()));
         }
         let path = host.as_str();
         let (parents, file) = path.rsplit_once('/').unwrap_or(("", path));
-        let stem = Path::new(file)
-            .file_stem()
-            .map_or_else(|| file.to_string(), |s| s.to_string_lossy().into_owned());
         let mut folder = self.root.join(workspace);
         for part in parents.split('/').filter(|part| !part.is_empty()) {
             if !is_plain_name(part) {
@@ -156,11 +177,153 @@ impl ConfigStore {
             }
             folder.push(part);
         }
-        if !is_plain_name(&stem) {
-            return Err(ConfigError::BadHostId(host.clone()));
+        Ok((folder, file))
+    }
+
+    /// Where versions of `host` were kept before #127 (its file's stem),
+    /// when that is not its folder now.
+    fn older_folder(&self, workspace: &str, host: &HostId) -> Option<PathBuf> {
+        let (parent, file) = self.parent_folder(workspace, host).ok()?;
+        let stem = stem(file);
+        (stem != folder_name(file) && is_plain_name(&stem)).then(|| parent.join(stem))
+    }
+
+    /// Gives the hosts of `workspace` whose folder changed name with #127
+    /// (any file not ending in `.yaml`) the versions kept for them under
+    /// their file's stem, moving them file by file into their own folder.
+    /// Run when a workspace is opened, before anything else reads its
+    /// history; running it again does nothing more.
+    ///
+    /// Versions under a stem are a host's only when no other host of its
+    /// folder is kept there or would have been: `r1.yml` takes `r1/` when
+    /// there is no `r1.yaml` (or `R1.YML` where names differ by case).
+    /// When there is, that folder was **shared** by both hosts before #127:
+    /// its versions cannot be told apart, so none is moved, copied or
+    /// deleted. If one of the hosts still has its folder there (`r1.yaml`),
+    /// they stay its history, as they always were; the others start their
+    /// own. If none does, they stay where they are, under neither host.
+    /// Either way the folder is reported ([`SharedHistory`]), every time.
+    ///
+    /// A move cut short (the app closed half way) goes on the next time; a
+    /// version already in the host's folder under the same name is never
+    /// written over, and stays where it was, reported.
+    pub fn claim_history(&self, workspace: &Workspace) -> Claimed {
+        let mut claimed = Claimed::default();
+        let Some(id) = workspace.id() else {
+            return claimed;
+        };
+        let _saving = self.saving.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut folders = vec![workspace.tree()];
+        while let Some(folder) = folders.pop() {
+            folders.extend(folder.folders.iter());
+            for host in &folder.hosts {
+                self.claim_host(id, host, &folder.hosts, &mut claimed);
+            }
         }
-        folder.push(stem);
-        Ok(folder)
+        claimed.shared.sort_by(|a, b| a.folder.cmp(&b.folder));
+        claimed.shared.dedup_by(|a, b| a.folder == b.folder);
+        claimed
+    }
+
+    fn claim_host(&self, workspace: &str, host: &Host, siblings: &[Host], claimed: &mut Claimed) {
+        let Some(older) = self.older_folder(workspace, &host.id) else {
+            return;
+        };
+        let Ok(own) = self.host_folder(workspace, &host.id) else {
+            return;
+        };
+        let versions = match files_in(&older) {
+            Ok(files) if !files.is_empty() => files,
+            Ok(_) => return,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(error) => {
+                claimed.left.push((
+                    host.id.clone(),
+                    format!(
+                        "the configurations kept for it under {} could not be read: {error}",
+                        older.display()
+                    ),
+                ));
+                return;
+            }
+        };
+        // Every other host of the folder kept there now, or before #127.
+        let name = stem(file_of(&host.id)).to_lowercase();
+        let mut keeper = None;
+        let mut sharing = Vec::new();
+        for other in siblings.iter().filter(|other| other.id != host.id) {
+            // Only a name equal but for case can be the same folder.
+            let file = file_of(&other.id);
+            if folder_name(file).to_lowercase() != name && stem(file).to_lowercase() != name {
+                continue;
+            }
+            let now = self.host_folder(workspace, &other.id).ok();
+            let before = self.older_folder(workspace, &other.id);
+            if now.as_deref().is_some_and(|now| same_place(now, &older)) {
+                keeper = Some(other.id.clone());
+                sharing.push(other.id.clone());
+            } else if before
+                .as_deref()
+                .is_some_and(|before| same_place(before, &older))
+            {
+                sharing.push(other.id.clone());
+            }
+        }
+        if !sharing.is_empty() {
+            sharing.push(host.id.clone());
+            sharing.sort();
+            claimed.shared.push(SharedHistory {
+                folder: older,
+                hosts: sharing,
+                kept_by: keeper,
+                versions: versions.iter().filter(|file| is_version_file(file)).count(),
+            });
+            return;
+        }
+        if let Err(error) = fs::create_dir_all(&own) {
+            claimed.left.push((
+                host.id.clone(),
+                format!(
+                    "its configurations stay in {}: {} could not be created: {error}",
+                    older.display(),
+                    own.display()
+                ),
+            ));
+            return;
+        }
+        let mut stayed = Vec::new();
+        for file in versions {
+            let to = own.join(&file);
+            if fs::symlink_metadata(&to).is_ok() {
+                if !is_version_file(&file) {
+                    // A note or a temporary file: the host's own is newer.
+                    let _ = fs::remove_file(older.join(&file));
+                    continue;
+                }
+                stayed.push(format!(
+                    "{} (a file of that name is in {} already)",
+                    file.to_string_lossy(),
+                    own.display()
+                ));
+                continue;
+            }
+            if let Err(error) = fs::rename(older.join(&file), &to) {
+                stayed.push(format!("{} ({error})", file.to_string_lossy()));
+            }
+        }
+        if stayed.is_empty() {
+            // Only if empty: it may also be a tree folder of the same name.
+            let _ = fs::remove_dir(&older);
+        } else {
+            claimed.left.push((
+                host.id.clone(),
+                format!(
+                    "these of its configurations stay in {}: {}",
+                    older.display(),
+                    stayed.join(", ")
+                ),
+            ));
+        }
     }
 
     /// Holds saves back while `work` runs (moving a host's versions), so
@@ -322,12 +485,7 @@ impl ConfigStore {
         if !to.is_dir() {
             return Err(ConfigError::NotAFolder(to.to_path_buf()));
         }
-        let stem = self
-            .host_folder(workspace, host)?
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let base = format!("{stem}_{version}");
+        let base = format!("{}_{version}", stem(file_of(host)));
         for attempt in 1.. {
             let name = match attempt {
                 1 => format!("{base}.{VERSION_EXTENSION}"),
@@ -367,6 +525,113 @@ impl ConfigStore {
         }
         Ok(path)
     }
+}
+
+/// What [`ConfigStore::claim_history`] could not do.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Claimed {
+    /// Folders two hosts or more kept versions in before #127.
+    pub shared: Vec<SharedHistory>,
+    /// Hosts some of whose versions stayed under their stem, and why
+    /// (words to show as they are).
+    pub left: Vec<(HostId, String)>,
+}
+
+/// A folder of versions that several hosts kept between them before #127
+/// (their files differ only in the extension, or in case), left as it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedHistory {
+    pub folder: PathBuf,
+    /// The hosts that kept versions there, in order.
+    pub hosts: Vec<HostId>,
+    /// The host whose folder it still is (a `.yaml` file's), which lists
+    /// them; none when it is no host's folder now.
+    pub kept_by: Option<HostId>,
+    /// How many versions are there.
+    pub versions: usize,
+}
+
+impl std::fmt::Display for SharedHistory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hosts: Vec<&str> = self.hosts.iter().map(HostId::as_str).collect();
+        write!(
+            f,
+            "{} holds {} configuration version(s) that {} kept between them before each host had \
+             a history of its own, which cannot be told apart: ",
+            self.folder.display(),
+            self.versions,
+            hosts.join(" and ")
+        )?;
+        match &self.kept_by {
+            Some(keeper) => write!(
+                f,
+                "they stay in {keeper}'s history, the others keep their own from now on"
+            ),
+            None => write!(
+                f,
+                "they stay there, in neither host's history, and each keeps its own from now on"
+            ),
+        }
+    }
+}
+
+/// The name of a host file's folder in the store (module documentation).
+fn folder_name(file: &str) -> String {
+    match file.strip_suffix(".yaml") {
+        Some(stem) if !stem.is_empty() && !ends_like_a_host_file(stem) => stem.to_string(),
+        _ => file.to_string(),
+    }
+}
+
+/// Whether `name` ends in `.yaml` or `.yml`, in any case.
+fn ends_like_a_host_file(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, extension)| {
+        extension.eq_ignore_ascii_case("yaml") || extension.eq_ignore_ascii_case("yml")
+    })
+}
+
+/// A file name without its extension, as every host's folder was named
+/// before #127.
+fn stem(file: &str) -> String {
+    Path::new(file)
+        .file_stem()
+        .map_or_else(|| file.to_string(), |s| s.to_string_lossy().into_owned())
+}
+
+/// The file name of `host`.
+fn file_of(host: &HostId) -> &str {
+    let path = host.as_str();
+    path.rsplit_once('/').map_or(path, |(_, file)| file)
+}
+
+/// The names of the files (not folders) in `folder`.
+fn files_in(folder: &Path) -> io::Result<Vec<std::ffi::OsString>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(folder)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            files.push(entry.file_name());
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Whether `name` is a version's file (not a note or a temporary file).
+fn is_version_file(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    !name.starts_with('.') && name.ends_with(&format!(".{VERSION_EXTENSION}"))
+}
+
+/// Whether the paths name one folder: the same path, or two that exist and
+/// are one (names differing in case, where the system ignores it).
+fn same_place(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (fs::canonicalize(a), fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
 }
 
 /// The local time now, as a version is named.

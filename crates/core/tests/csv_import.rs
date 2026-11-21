@@ -243,6 +243,50 @@ fn each_kind_of_mapping_lands_in_the_host_file() {
     assert_eq!(host.vendor.as_deref(), Some("Juniper"));
 }
 
+/// A platform column (#127: untested until then) is suggested under its
+/// usual headers, lands in the host file as its `platform` setting, and the
+/// definition it names then applies to the host (jobs and backups use it).
+#[test]
+fn a_platform_column_is_suggested_and_gives_the_host_its_platform() {
+    for header in ["Platform", "OS", "Network OS"] {
+        let headers: Vec<String> = ["Hostname", "IP", header].map(String::from).into();
+        assert_eq!(
+            suggest_mapping(&headers),
+            [
+                field(HostField::Name),
+                field(HostField::Address),
+                field(HostField::Platform)
+            ],
+            "{header}"
+        );
+    }
+    let (_temp, root, mut workspace) = workspace();
+    let job = import(
+        "hostname,ip,network os\nedge-2,192.0.2.2,eos\nedge-3,192.0.2.3,\n",
+        vec![
+            field(HostField::Name),
+            field(HostField::Address),
+            field(HostField::Platform),
+        ],
+        "Empty",
+    );
+    let report = job.run(&mut workspace, &[]).unwrap();
+    assert_eq!(created(&report), ["Empty/edge-2.yaml", "Empty/edge-3.yaml"]);
+    assert_eq!(
+        read(&root, "Empty/edge-2.yaml"),
+        "address: 192.0.2.2\nplatform: eos\n"
+    );
+    // An empty cell sets no platform.
+    assert_eq!(read(&root, "Empty/edge-3.yaml"), "address: 192.0.2.3\n");
+    let definition = workspace
+        .host_platform(&HostId::new("Empty/edge-2.yaml"))
+        .expect("the eos definition applies");
+    assert_eq!(definition.name, "eos");
+    assert!(workspace
+        .host_platform(&HostId::new("Empty/edge-3.yaml"))
+        .is_none());
+}
+
 #[test]
 fn without_a_name_column_the_address_names_the_host() {
     let (_temp, root, mut workspace) = workspace();
