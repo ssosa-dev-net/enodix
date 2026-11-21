@@ -290,55 +290,137 @@ async fn a_local_file_gone_before_the_run_fails_every_host() {
     assert!(!served.path().join("images/image.bin").exists());
 }
 
-/// The local file changed after pre-flight, between two hosts: every host
-/// gets the file pre-flight showed (its size, its hashes), or fails saying
-/// it changed. Today the second host gets the new file, the run's size is
-/// the planned one and its hashes are of whichever content was read last.
+/// Bytes of `size` unlike [`bytes`]'s.
+fn other_bytes(size: usize) -> Vec<u8> {
+    (0..size).map(|n| (n * 13 % 241) as u8 + 1).collect()
+}
+
+/// The MD5 and SHA-256 of `bytes`, as the run gives them.
+fn hashes_of(bytes: &[u8]) -> (String, String) {
+    use sha2::Digest;
+    let hex = |digest: &[u8]| {
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    (
+        hex(&md5::compute(bytes).0),
+        hex(&sha2::Sha256::digest(bytes)),
+    )
+}
+
+/// The local file changed after pre-flight, between two hosts (to another
+/// size, and to other bytes of the same size): the first host has the
+/// file pre-flight showed, the second fails saying the file changed and is
+/// sent nothing; the run's size and hashes are those of the planned file
+/// (#137; it used to send the second host the new file).
 #[tokio::test]
-#[ignore = "#119 finding: a local file changed during a file job is sent as it is then (ticket to be written)"]
 async fn a_local_file_changed_during_the_run_is_not_sent_as_the_planned_one() {
-    let (a, a_folder) = sftp_server().await;
-    let (b, b_folder) = sftp_server().await;
+    for changed_size in [150 * 1024, 100 * 1024] {
+        let (a, a_folder) = sftp_server().await;
+        let (b, b_folder) = sftp_server().await;
+        let lab = Lab::new(&[
+            ("_platforms.yaml", PLATFORMS.into()),
+            ("a.yaml", host(&a, "imaging", "")),
+            ("b.yaml", host(&b, "imaging", "")),
+        ]);
+        let local = lab.folder("local").join("image.bin");
+        let planned = bytes(100 * 1024);
+        fs::write(&local, &planned).unwrap();
+        let plan = lab.plan(&folder(""), &send(&local, ""));
+        let job = job::start(
+            &support::manager(),
+            plan,
+            JobOptions {
+                parallel: 1,
+                ..JobOptions::default()
+            },
+        )
+        .unwrap();
+        let changing = local.clone();
+        let ran = follow(job, WAIT * 3, move |_, event| {
+            if let JobEvent::State { host, state } = event {
+                if host.as_str() == "a.yaml" && *state == HostState::Done {
+                    fs::write(&changing, other_bytes(changed_size)).unwrap();
+                }
+            }
+        })
+        .await;
+        assert_eq!(*ran.state("a.yaml"), HostState::Done);
+        assert_eq!(
+            fs::read(a_folder.path().join("images/image.bin")).unwrap(),
+            planned
+        );
+        let reason = ran.failure("b.yaml");
+        assert!(
+            reason.starts_with("the file changed since pre-flight (")
+                && reason.ends_with(
+                    "): nothing was sent; plan the job again to send the file as it is now"
+                ),
+            "{changed_size}: {reason}"
+        );
+        if changed_size != planned.len() {
+            assert!(
+                reason.contains("it was 102400 bytes at pre-flight and is 153600 bytes now"),
+                "{reason}"
+            );
+        }
+        assert!(!b_folder.path().join("images/image.bin").exists());
+        let file = ran.report.file.as_ref().unwrap();
+        assert_eq!(file.size, planned.len() as u64);
+        let hashes = file.hashes.as_ref().expect("the planned file's hashes");
+        assert_eq!(
+            (hashes.md5.clone(), hashes.sha256.clone()),
+            hashes_of(&planned)
+        );
+    }
+}
+
+/// The local file changed while a host is sent it (the same size, other
+/// bytes, written while the device held all but the first piece): the host fails
+/// saying the file changed while it was sent, what was sent is left on the
+/// device and nothing claims it is the planned file (#137).
+#[tokio::test]
+async fn a_local_file_changed_while_it_is_sent_fails_the_host() {
+    let (server, served) = sftp_server().await;
+    // Larger than the SSH window, so most of it is read after the change.
+    let size = 8 * 1024 * 1024;
+    server.sftp_quirks().hold_from(256 * 1024);
     let lab = Lab::new(&[
         ("_platforms.yaml", PLATFORMS.into()),
-        ("a.yaml", host(&a, "imaging", "")),
-        ("b.yaml", host(&b, "imaging", "")),
+        ("r1.yaml", host(&server, "imaging", "")),
     ]);
     let local = lab.folder("local").join("image.bin");
-    fs::write(&local, bytes(100 * 1024)).unwrap();
+    let planned = bytes(size);
+    fs::write(&local, &planned).unwrap();
     let plan = lab.plan(&folder(""), &send(&local, ""));
-    let job = job::start(
-        &support::manager(),
-        plan,
-        JobOptions {
-            parallel: 1,
-            ..JobOptions::default()
-        },
-    )
-    .unwrap();
+    let job = job::start(&support::manager(), plan, JobOptions::default()).unwrap();
     let changing = local.clone();
-    let ran = follow(job, WAIT * 3, move |_, event| {
-        if let JobEvent::State { host, state } = event {
-            if host.as_str() == "a.yaml" && *state == HostState::Done {
-                fs::write(&changing, bytes(150 * 1024)).unwrap();
+    let mut changed = false;
+    let ran = follow(job, WAIT * 3, |_, event| {
+        if let JobEvent::Progress { done, .. } = event {
+            if *done > 0 && !changed {
+                changed = true;
+                fs::write(&changing, other_bytes(size)).unwrap();
+                server.sftp_quirks().release();
             }
         }
     })
     .await;
-    let size = ran.report.file.as_ref().unwrap().size;
-    for (id, served) in [("a.yaml", &a_folder), ("b.yaml", &b_folder)] {
-        match ran.state(id) {
-            HostState::Done => assert_eq!(
-                fs::metadata(served.path().join("images/image.bin"))
-                    .unwrap()
-                    .len(),
-                size,
-                "{id} got another file than the one planned"
-            ),
-            HostState::Failed { reason } => assert!(reason.contains("changed"), "{reason}"),
-            other => panic!("{id}: {other:?}"),
-        }
+    assert!(changed, "the file was being sent");
+    let reason = ran.failure("r1.yaml");
+    assert!(reason.starts_with("the file changed "), "{reason}");
+    assert!(reason.ends_with("left on the device"), "{reason}");
+    let sent = fs::read(served.path().join("images/image.bin")).unwrap();
+    assert_ne!(sent, planned);
+    assert_eq!(ran.result("r1.yaml").bytes, None);
+    let hashes = ran.report.file.as_ref().unwrap().hashes.clone();
+    if let Some(hashes) = hashes {
+        // Read before the change: the planned file's.
+        assert_eq!((hashes.md5, hashes.sha256), hashes_of(&planned));
     }
+    println!("{reason}");
 }
 
 /// The app closing while a file is being sent: the host ends cancelled
@@ -407,6 +489,76 @@ async fn closing_the_app_while_a_file_is_sent_ends_it_and_says_what_was_left() {
         assert_eq!(kept.cancel_reason.as_deref(), Some(APP_CLOSED));
         assert_eq!(kept.hosts[0].state, HostState::Cancelled);
         println!("answering {answering}: {output}");
+    }
+}
+
+/// A file job sending to a device that stopped answering, with the
+/// default connect timeout (15 s, so a stall limit of 45 s): the user's
+/// Cancel, and the app closing, end it within the time the app waits for
+/// its jobs, the host saying the partial file may remain on the device
+/// (#137; both waited for the stall limit, as the remove went
+/// unanswered).
+#[tokio::test]
+async fn cancelling_a_file_sent_to_a_device_that_stopped_answering_ends_it_at_once() {
+    for closing in [false, true] {
+        let (server, served) = sftp_server().await;
+        server.sftp_quirks().hold_from(32 * 1024);
+        let lab = Lab::new(&[
+            ("_platforms.yaml", PLATFORMS.into()),
+            ("r1.yaml", host(&server, "imaging", "")),
+        ]);
+        let ws = lab.id();
+        let local = lab.folder("local").join("image.bin");
+        fs::write(&local, bytes(256 * 1024)).unwrap();
+        let plan = lab.plan(&folder(""), &send(&local, ""));
+        let runs = RunStore::new(lab.folder("data/jobs"));
+        let recorder = runs.begin(&ws, &folder(""), &plan).unwrap();
+        let run_id = recorder.id().to_string();
+        let jobs = RunningJobs::new();
+        let job = job::start(&support::manager(), plan, JobOptions::default()).unwrap();
+        let mut followed = jobs.follow(job.canceller(), recorder);
+        let id = followed.id();
+        let ending = jobs.clone();
+        let mut cancelled_at = None;
+        let mut closing_thread = None;
+        let ran = follow(job, WAIT * 2, |_, event| {
+            followed.record(event).unwrap();
+            if let JobEvent::Progress { done, .. } = event {
+                if *done > 0 && cancelled_at.is_none() {
+                    cancelled_at = Some(std::time::Instant::now());
+                    if closing {
+                        let ending = ending.clone();
+                        closing_thread = Some(std::thread::spawn(move || {
+                            ending.end_all(APP_CLOSED, APP_CLOSE_WAIT)
+                        }));
+                    } else {
+                        assert!(ending.cancel(id));
+                    }
+                }
+            }
+        })
+        .await;
+        let took = cancelled_at.expect("the file was being sent").elapsed();
+        drop(followed);
+        assert!(took < APP_CLOSE_WAIT, "closing {closing}: {took:?}");
+        if let Some(thread) = closing_thread {
+            assert_eq!(thread.join().unwrap(), 0, "the job ended within the wait");
+        }
+        assert_eq!(*ran.state("r1.yaml"), HostState::Cancelled);
+        let output = ran.result("r1.yaml").output.clone();
+        assert!(
+            output.contains(&format!(
+                "Cancelled: a partial file may remain on the device: it did not answer the request to remove it within {} s.",
+                netterm_core::files::CANCEL_REMOVE_WAIT.as_secs()
+            )),
+            "{output}"
+        );
+        server.sftp_quirks().release();
+        let kept = runs.run(&ws, &run_id).unwrap();
+        assert!(kept.ended());
+        assert_eq!(kept.cancel_reason.as_deref(), closing.then_some(APP_CLOSED));
+        let _ = served;
+        println!("closing {closing}: ended {took:?} after the cancel");
     }
 }
 

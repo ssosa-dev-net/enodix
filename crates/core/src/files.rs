@@ -37,4 +37,5 @@ pub(crate) use transfer::hash_file;
 pub use transfer::{
     Connect, ConnectFailure, Connecting, Direction, Done, Hashes, Link, Outcome, Partial, Presence,
     SizeCheck, Status, Transfer, TransferError, TransferId, TransferWatch, Transfers,
+    CANCEL_REMOVE_WAIT,
 };

@@ -186,6 +186,11 @@ pub struct PlannedFile {
     /// The whole path, to read it from.
     #[serde(skip)]
     path: PathBuf,
+    /// Its modification time as pre-flight read it (`None` where the
+    /// system gives none): with the size, how the run tells that the file
+    /// is still the one planned (#137).
+    #[serde(skip)]
+    modified: Option<std::time::SystemTime>,
 }
 
 /// How many hosts a file job sends to at once when the run says nothing
@@ -978,6 +983,7 @@ fn local_file(path: &str) -> Result<PlannedFile, PlanError> {
         name,
         size: metadata.len(),
         path: full,
+        modified: metadata.modified().ok(),
     })
 }
 

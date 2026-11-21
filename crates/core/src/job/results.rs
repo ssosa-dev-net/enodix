@@ -18,12 +18,12 @@
 //! `output/script.txt`, its exit status), and its `targets` the hosts it
 //! ran for.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -207,10 +207,32 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> ResultsError + '_ {
 pub struct RunStore {
     root: PathBuf,
     active: Active,
+    listed: Listed,
 }
 
 /// The runs being recorded: (workspace id, run id).
 type Active = Arc<Mutex<BTreeSet<(String, String)>>>;
+
+/// What [`RunStore::list`] last read of each run's description, by its
+/// file, with the file's size and time then (#137): a later list reads
+/// again only the descriptions whose file changed. Shared by clones.
+type Listed = Arc<Mutex<HashMap<PathBuf, (Stamp, StoredRun)>>>;
+
+/// A description file's size and modification time, as listing saw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl Stamp {
+    fn of(metadata: &fs::Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        }
+    }
+}
 
 fn held(active: &Active) -> MutexGuard<'_, BTreeSet<(String, String)>> {
     active.lock().unwrap_or_else(PoisonError::into_inner)
@@ -222,6 +244,7 @@ impl RunStore {
         Self {
             root: root.into(),
             active: Active::default(),
+            listed: Listed::default(),
         }
     }
 
@@ -359,14 +382,32 @@ impl RunStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(list),
             Err(error) => return Err(io_error(&parent)(error)),
         };
+        let mut folders = Vec::new();
         for entry in entries {
             let entry = entry.map_err(io_error(&parent))?;
             let id = entry.file_name().to_string_lossy().into_owned();
-            if id.starts_with('.') || !entry.path().is_dir() {
-                continue;
+            let folder = entry.path();
+            // The kind comes with the folder's listing (a symbolic link
+            // is followed).
+            let is_dir = match entry.file_type() {
+                Ok(kind) if !kind.is_symlink() => kind.is_dir(),
+                _ => folder.is_dir(),
+            };
+            if !id.starts_with('.') && is_dir {
+                folders.push((id, folder));
             }
-            match read_run(&entry.path(), &id) {
-                Ok(run) => list.runs.push(run),
+        }
+        // Each run's description is read again only if its file changed
+        // since the last list (#137), on several threads when there are
+        // many.
+        let mut known = held_listed(&self.listed);
+        let mut seen = HashMap::new();
+        for (id, file, read) in look_at_runs(folders, &known) {
+            match read {
+                Ok((stamp, run)) => {
+                    list.runs.push(run.clone());
+                    seen.insert(file, (stamp, run));
+                }
                 Err(error) => list.damaged.push(DamagedRun {
                     reason: match error {
                         ResultsError::Damaged { reason, .. } => reason,
@@ -376,6 +417,11 @@ impl RunStore {
                 }),
             }
         }
+        // This workspace's runs gone since are forgotten; other
+        // workspaces' are kept.
+        known.retain(|file, _| !file.starts_with(&parent));
+        known.extend(seen);
+        drop(known);
         list.runs.sort_by(|a, b| {
             let started = |run: &StoredRun| chrono::DateTime::parse_from_rfc3339(&run.started).ok();
             started(b)
@@ -773,19 +819,85 @@ impl RunRecorder {
     }
 }
 
+fn held_listed(listed: &Listed) -> MutexGuard<'_, HashMap<PathBuf, (Stamp, StoredRun)>> {
+    listed.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// How many run folders one listing thread looks at at least.
+const RUNS_PER_THREAD: usize = 64;
+
+/// What a listing found of one run: its id, its description file, and the
+/// run with the file's stamp, or why it cannot be read.
+type Looked = (String, PathBuf, Result<(Stamp, StoredRun), ResultsError>);
+
+/// The runs in `folders` (id, folder): each description file looked at,
+/// and read only if it is not in `known` with the same stamp; on several
+/// threads when there are many. In no particular order.
+fn look_at_runs(
+    folders: Vec<(String, PathBuf)>,
+    known: &HashMap<PathBuf, (Stamp, StoredRun)>,
+) -> Vec<Looked> {
+    let look = |(id, folder): (String, PathBuf)| -> Looked {
+        let file = folder.join(RUN_FILE);
+        let found = match fs::metadata(&file) {
+            Err(error) => Err(description_error(&file, &id, error)),
+            Ok(metadata) => {
+                let stamp = Stamp::of(&metadata);
+                match known.get(&file) {
+                    Some((was, run)) if *was == stamp => Ok((stamp, run.clone())),
+                    // Stamped before it is read: a change in between is
+                    // read again next time.
+                    _ => read_run(&folder, &id).map(|run| (stamp, run)),
+                }
+            }
+        };
+        (id, file, found)
+    };
+    let threads = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(folders.len() / RUNS_PER_THREAD)
+        .max(1);
+    if threads == 1 {
+        return folders.into_iter().map(look).collect();
+    }
+    let per_thread = folders.len().div_ceil(threads);
+    let mut folders = folders.into_iter();
+    let chunks: Vec<Vec<_>> = (0..threads)
+        .map(|_| folders.by_ref().take(per_thread).collect())
+        .collect();
+    let look = &look;
+    std::thread::scope(|scope| {
+        let looking: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| scope.spawn(move || chunk.into_iter().map(look).collect::<Vec<_>>()))
+            .collect();
+        looking
+            .into_iter()
+            .flat_map(|thread| {
+                thread
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
+}
+
+/// Why the description `path` of the run `id` cannot be read.
+fn description_error(path: &Path, id: &str, error: io::Error) -> ResultsError {
+    if error.kind() == io::ErrorKind::NotFound {
+        ResultsError::Damaged {
+            run: id.to_string(),
+            reason: format!("it has no {RUN_FILE}"),
+        }
+    } else {
+        io_error(path)(error)
+    }
+}
+
 /// The run described in `folder`, called `id`.
 fn read_run(folder: &Path, id: &str) -> Result<StoredRun, ResultsError> {
     let path = folder.join(RUN_FILE);
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(ResultsError::Damaged {
-                run: id.to_string(),
-                reason: format!("it has no {RUN_FILE}"),
-            })
-        }
-        Err(error) => return Err(io_error(&path)(error)),
-    };
+    let text = fs::read_to_string(&path).map_err(|error| description_error(&path, id, error))?;
     let mut run: StoredRun =
         serde_norway::from_str(&text).map_err(|error| ResultsError::Damaged {
             run: id.to_string(),
