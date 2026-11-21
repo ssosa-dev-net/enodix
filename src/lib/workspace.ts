@@ -6,7 +6,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ListedSavedJob, SavedJob } from "./jobs";
+import type { JobStep, ListedSavedJob, SavedJob } from "./jobs";
 
 export interface CustomField {
   key: string;
@@ -919,6 +919,14 @@ export function saveJob(previous: string | null, job: SavedJob) {
 
 export function deleteJob(name: string) {
   return invoke<Edited<null>>("saved_job_delete", { name });
+}
+
+/**
+ * The variables of `step`'s answers a saved job does not keep, as their
+ * names look like secrets (#126): they are asked at each run.
+ */
+export function secretAnswers(step: JobStep) {
+  return invoke<string[]>("saved_job_secret_answers", { step });
 }
 
 /**

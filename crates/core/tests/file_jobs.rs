@@ -830,6 +830,7 @@ async fn the_kept_run_holds_the_file_its_hashes_and_each_host_and_cannot_be_save
             name: "Stage image".into(),
             step,
             target: folder("Site"),
+            ignored_answers: Vec::new(),
         },
     );
     let message = refused.unwrap_err().to_string();

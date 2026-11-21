@@ -4,6 +4,7 @@
 
   import { unsaveable, type JobStep, type JobTarget } from "./jobs";
   import { saveJobAs } from "./inventory.svelte";
+  import { secretAnswers } from "./workspace";
 
   interface Props {
     step: JobStep;
@@ -22,15 +23,27 @@
   let input = $state<HTMLInputElement>();
 
   const refused = $derived(unsaveable(step, target));
+  /**
+   * The variables whose answers are not saved, their names looking like
+   * secrets (#126, the core's rule): asked at each run.
+   */
+  let asked = $state<string[]>([]);
   /** Whether answers to snippet variables go into the shared file too. */
   const keepsAnswers = $derived(
-    step.kind === "snippet" && Object.keys(step.answers).length > 0,
+    step.kind === "snippet" &&
+      Object.keys(step.answers).some((variable) => !asked.includes(variable)),
   );
 
-  function begin() {
+  async function begin() {
     name = suggested;
     error = null;
     saved = null;
+    try {
+      asked = await secretAnswers(step);
+    } catch (reason) {
+      error = String(reason);
+      return;
+    }
     open = true;
     queueMicrotask(() => input?.select());
   }
@@ -91,6 +104,13 @@
         team shares.</span
       >
     {/if}
+    {#if asked.length > 0}
+      <span class="note" data-save-job-asked={asked.join(",")}
+        >Not saved, asked at each run (the names look like secrets): {asked
+          .map((variable) => `{{${variable}}}`)
+          .join(", ")}.</span
+      >
+    {/if}
   </form>
 {:else}
   <button
@@ -99,7 +119,7 @@
     disabled={refused !== null}
     title={refused ??
       "Save this job under a name in the workspace, to run it again in one click"}
-    onclick={begin}>Save as job…</button
+    onclick={() => void begin()}>Save as job…</button
   >
 {/if}
 {#if saved}

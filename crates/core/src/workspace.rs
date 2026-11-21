@@ -70,7 +70,7 @@ use crate::paste::PasteSafety;
 pub use filters::{Condition, SavedFilter, FILTERS_FILE};
 pub use highlights::HIGHLIGHTS_FILE;
 pub use identity::WORKSPACE_FILE;
-pub use jobs::{SavedJob, JOBS_FILE};
+pub use jobs::{secret_answers, SavedJob, JOBS_FILE};
 pub use jumps::JumpChainError;
 pub use kind::{folder_kind, FolderKind};
 pub use moves::{HostMove, Moved};

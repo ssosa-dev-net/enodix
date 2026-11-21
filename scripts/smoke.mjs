@@ -9524,7 +9524,7 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
   if (existsSync(jobsFile)) fail("the workspace already has a jobs file");
   writeFileSync(
     snippetsFile,
-    `${savedSnippets ?? ""}Saved check: show hostname\n`,
+    `${savedSnippets ?? ""}Saved check: show hostname\nSaved secret: "echo vlan {{vlan}} {{enable_password}}"\n`,
   );
   try {
     // The saved jobs are in the Jobs side view, the snippets in theirs.
@@ -9578,6 +9578,91 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     await clickOn(`${dialog} [data-job=dismiss]`);
     await until("the job tab closed", async () => !(await exists(dialog)));
     step("a job was saved from its pre-flight list into the workspace");
+
+    // A variable whose name looks like a secret (#126): the save form says
+    // it is asked at each run, the file keeps only the other answer, and
+    // the saved job asks it again.
+    await clickOn('nav button[data-item=folder][data-path="Jobs"]');
+    await showDetails(evaluate);
+    await until("the Jobs folder's side panel", () =>
+      exists(".side [data-folder-run-snippet]"),
+    );
+    await clickOn(".side [data-folder-run-snippet]");
+    await until("the run-snippet tab", () => atStep("snippet"));
+    await evaluate(`(() => {
+      const select = document.querySelector("${dialog} [name=job-snippet]");
+      select.value = "Saved secret";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await until("the secret snippet's text shown", async () =>
+      (await text(`${dialog} [data-job-snippet-text]`)).includes(
+        "{{enable_password}}",
+      ),
+    );
+    await clickOn(`${dialog} [data-job=plan]`);
+    await until("the variables step", () => atStep("variables"));
+    const variables = await evaluate(
+      `[...document.querySelectorAll("${dialog} [data-variable]")].map((i) => [i.name, i.dataset.variable])`,
+    );
+    const typed = { vlan: "42", enable_password: "smoke-never-kept" };
+    if (
+      json(variables.map(([, v]) => v).sort()) !==
+      json(["enable_password", "vlan"])
+    ) {
+      fail(`the secret snippet asked ${json(variables)}`);
+    }
+    await fillForm(
+      Object.fromEntries(variables.map(([input, v]) => [input, typed[v]])),
+      `${dialog} form`,
+    );
+    await until("the pre-flight list", () => atStep("preflight"));
+    await clickOn(`${dialog} [data-save-job=open]`);
+    await until("the save-as-job form", () =>
+      exists(`${dialog} [data-save-job-form]`),
+    );
+    const asked = await evaluate(
+      `document.querySelector("${dialog} [data-save-job-asked]")?.dataset.saveJobAsked ?? null`,
+    );
+    if (asked !== "enable_password") {
+      fail(
+        `the save form does not say enable_password is asked: ${json(asked)}`,
+      );
+    }
+    await fillForm(
+      { "save-job-name": "Secret check" },
+      `${dialog} [data-save-job-form]`,
+    );
+    await until("the secret job saved", () =>
+      exists(`${dialog} [data-save-job-saved="Secret check"]`),
+    );
+    if (
+      !jobsText().includes(
+        "Secret check:\n  snippet: Saved secret\n  answers:\n    vlan: '42'\n  folder: Jobs\n",
+      ) ||
+      jobsText().includes("enable_password") ||
+      jobsText().includes(typed.enable_password)
+    ) {
+      fail(`the jobs file holds ${json(jobsText())}`);
+    }
+    await clickOn(`${dialog} [data-job=dismiss]`);
+    await until("the job tab closed", async () => !(await exists(dialog)));
+    await showSideView(evaluate, "jobs");
+    await until("the secret job listed", () =>
+      exists(savedJob("Secret check")),
+    );
+    await clickOn(savedJob("Secret check"));
+    await until("the secret job asks its variable", () => atStep("variables"));
+    const askedAgain = await evaluate(
+      `[...document.querySelectorAll("${dialog} [data-variable]")].map((i) => i.dataset.variable)`,
+    );
+    if (json(askedAgain) !== json(["enable_password"])) {
+      fail(`the saved secret job asks ${json(askedAgain)}`);
+    }
+    await closeTabOf(evaluate, dialog);
+    await showSideView(evaluate, "hosts");
+    step(
+      "a secret-looking variable's answer was not saved: the form said so and the saved job asks it at each run",
+    );
 
     // One click in the panel: pre-flight first, then it runs.
     await showSideView(evaluate, "jobs");
@@ -9676,10 +9761,32 @@ async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
     // entry is a problem.
     writeFileSync(
       jobsFile,
-      `${jobsText()}Gone filter:\n  snippet: Saved check\n  filter: Nowhere\nBroken job: {}\n`,
+      `${jobsText()}Gone filter:\n  snippet: Saved check\n  filter: Nowhere\nBroken job: {}\nOld secret:\n  snippet: Saved secret\n  answers:\n    vlan: '7'\n    enable_password: smoke-old-answer\n  folder: Jobs\n`,
     );
     await until("the edited jobs file picked up", () =>
       exists('[data-saved-job-problem="Gone filter"]'),
+    );
+    // An answer that looks like a secret, already in the file (#126): the
+    // job says it is no longer used, never shows it, and the file is left
+    // as it was.
+    await until("the ignored answer named", () =>
+      exists('[data-saved-job-ignored="enable_password"]'),
+    );
+    const ignored = await text('[data-saved-job-ignored="enable_password"]');
+    if (
+      !ignored.includes("no longer used") ||
+      !ignored.includes("cannot remove it from the git history")
+    ) {
+      fail(`the ignored answer's notice reads ${json(ignored)}`);
+    }
+    if ((await text("[data-saved-jobs]")).includes("smoke-old-answer")) {
+      fail("the ignored answer is shown");
+    }
+    if (!jobsText().includes("enable_password: smoke-old-answer")) {
+      fail("the jobs file was rewritten");
+    }
+    step(
+      "an answer that looks like a secret in the jobs file is named as no longer used, and left in the file",
     );
     if (
       !(await text('[data-saved-job-problem="Gone filter"]')).includes(

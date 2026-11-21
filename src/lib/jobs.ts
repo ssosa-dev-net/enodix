@@ -400,6 +400,11 @@ export interface SavedJob {
   name: string;
   step: JobStep;
   target: JobTarget;
+  /**
+   * Variables whose answers the jobs file holds but are never used, their
+   * names looking like secrets (#126): asked at each run. Names only.
+   */
+  ignored_answers?: string[];
 }
 
 /** A saved job as the workspace lists it. */

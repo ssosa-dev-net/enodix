@@ -238,6 +238,7 @@ fn edit(workspace: &mut Workspace, kind: &Kind) -> Option<Result<(), EditError>>
                 target: JobTarget::Folder {
                     path: String::new(),
                 },
+                ignored_answers: Vec::new(),
             },
         ),
         "_snippets.yaml" => workspace.save_snippet(
