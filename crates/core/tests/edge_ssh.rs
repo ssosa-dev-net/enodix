@@ -537,8 +537,9 @@ async fn twenty_sessions_with_output_on_all_of_them_each_get_theirs_whole() {
 // Odd banners, prompts and output.
 
 /// The banner a device sends before the login (its legal warning), long
-/// and full of control sequences: the login goes on. The session does not
-/// show it (russh's client drops it).
+/// and full of control sequences: the login goes on. This session is
+/// opened as jobs open theirs, without the banner (a terminal's shows it:
+/// `login_banner.rs`).
 #[tokio::test]
 async fn a_long_login_banner_with_control_sequences_does_not_stop_the_login() {
     let server = TestSshServer::start().await;

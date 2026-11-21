@@ -2105,10 +2105,12 @@ enum Made {
     Host(HostSession),
 }
 
-/// A quick connection is always logged, and backs nothing up.
+/// A quick connection is always logged, and backs nothing up. Its
+/// terminal shows the login banner (#134).
 fn quick_options(log: Option<SessionLog>) -> OpenOptions {
     OpenOptions {
         log,
+        login_banner: true,
         ..OpenOptions::default()
     }
 }
@@ -2158,6 +2160,9 @@ fn host_options(
     OpenOptions {
         log: shell.logs.host_log(workspace, host),
         when_connected,
+        // A terminal shows the login banner (#134); the backup's channel
+        // or connection does not.
+        login_banner: true,
     }
 }
 

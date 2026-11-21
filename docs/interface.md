@@ -221,6 +221,15 @@ everything 0.2.0 could do, the app still does, reached differently.
   folder, and a create over a folder that has files each say what to
   do instead (#116). With a workspace open, the empty pane says that a
   double-click on a host in the Hosts view connects it.
+- **Login banner** (#134): the notice a device sends before the login
+  (its `banner login`, usually a legal warning) is the first thing in the
+  terminal, as the device sent it, on every connection and reconnect,
+  also when the login then fails, and it is in the session log. A jump
+  host's comes first, under a grey line naming the jump host. When the
+  login asks something (a password, a one-time code), the question's card
+  sits at the bottom of the terminal, so the banner stays readable (and
+  scrollable) above it. Jobs, config backups, the backup on login and the
+  Files tab never show or keep it.
 - **A connection that fails** (#116) says what happened and what to
   check next, in the bar under the terminal (or the SSH agent's card):
   the address for a name that does not resolve, the Port setting for a

@@ -121,6 +121,8 @@ impl FileConnection {
             answers,
             jump_host: None,
             user: user.clone(),
+            // A file connection has no terminal to show a banner in.
+            banners: None,
         };
         let asker = HostKeyAsker {
             events: asked_tx,

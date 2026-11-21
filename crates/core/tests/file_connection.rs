@@ -182,6 +182,34 @@ async fn attended_a_keyboard_interactive_question_reaches_the_caller_and_its_ans
     assert_eq!(server.logins(), 1);
 }
 
+/// A file connection has no terminal: a device's login banner (#134)
+/// reaches nobody, and the login goes on as without one, attended (the
+/// question is the first thing the caller learns) or not.
+#[tokio::test]
+async fn a_login_banner_reaches_no_one_and_does_not_stop_the_login() {
+    let server = TestSshServer::start().await;
+    server
+        .quirks()
+        .auth_banner("AUTHORIZED ACCESS ONLY\nPassword: ");
+    let mut target = server.target();
+    target.username = OTP_USERNAME.into();
+
+    let mut opening = FileConnection::open(target, known_hosts());
+    let prompt = match opening.next().await {
+        Some(OpeningEvent::Prompt(prompt)) => prompt,
+        other => panic!("expected the login question, got {other:?}"),
+    };
+    assert_eq!(prompt.questions[0].text, CODE_QUESTION);
+    opening.answer(vec![ONE_TIME_CODE.into()]);
+    match opening.next().await {
+        Some(OpeningEvent::Opened(_)) => {}
+        other => panic!("expected the connection, got {other:?}"),
+    }
+
+    connected(server.target()).await;
+    assert_eq!(server.logins(), 2);
+}
+
 #[tokio::test]
 async fn attended_a_wrong_answer_fails_the_login() {
     let server = TestSshServer::start().await;

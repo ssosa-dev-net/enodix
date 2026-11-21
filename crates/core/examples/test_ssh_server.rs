@@ -2,7 +2,7 @@
 //! tried by hand without a real device:
 //!
 //! ```text
-//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>] [--scp-only <port> <folder>]
+//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>] [--scp-only <port> <folder>] [--banner <port>]
 //! ```
 //!
 //! Port 0 (for any of them) takes a free one; the lines printed name it.
@@ -38,20 +38,28 @@
 //! the given port,
 //! has no SFTP the way IOS-XE has none (it accepts the subsystem, closes
 //! the channel and then the whole connection) and serves the folder
-//! (created if missing) over SCP, as `/` (`tests/support/scp.rs`). The
-//! shells behind them are
+//! (created if missing) over SCP, as `/` (`tests/support/scp.rs`). With
+//! `--banner`, a server with the same logins that sends [`LOGIN_BANNER`]
+//! before the login (an SSH login banner, #134) listens on the given port.
+//! The shells behind them are
 //! scripted; see `tests/support/mod.rs` and `tests/support/telnet.rs` for
 //! their commands.
 
 #[path = "../tests/support/mod.rs"]
 mod support;
 
+/// What the `--banner` server sends before the login, with bare line ends
+/// as devices send it.
+const LOGIN_BANNER: &str = "AUTHORIZED ACCESS ONLY
+This is the test server's login banner.
+";
+
 /// The hostname of the `--device` server's shell.
 const DEVICE_HOSTNAME: &str = "lab-r1";
 
 fn usage() -> ! {
     eprintln!(
-        "usage: test_ssh_server [port] [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>] [--scp-only <port> <folder>]"
+        "usage: test_ssh_server [port] [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>] [--scp-only <port> <folder>] [--banner <port>]"
     );
     std::process::exit(2);
 }
@@ -66,6 +74,7 @@ async fn main() {
     let mut credential_agent = None;
     let mut sftp_folder = None;
     let mut scp_only = None;
+    let mut banner_port = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--agent" {
@@ -90,6 +99,9 @@ async fn main() {
                 .unwrap_or_else(|| usage());
             let folder = args.next().unwrap_or_else(|| usage());
             scp_only = Some((port, std::path::PathBuf::from(folder)));
+        } else if arg == "--banner" {
+            let port = args.next().unwrap_or_else(|| usage());
+            banner_port = Some(port.parse().unwrap_or_else(|_| usage()));
         } else if arg == "--telnet" {
             let port = args.next().unwrap_or_else(|| usage());
             telnet_port = Some(port.parse().unwrap_or_else(|_| usage()));
@@ -129,6 +141,14 @@ async fn main() {
             // with it.
             scp.close_sftp_and_hang_up();
             Some(scp)
+        }
+        None => None,
+    };
+    let banner = match banner_port {
+        Some(port) => {
+            let banner = support::TestSshServer::start_on(port).await;
+            banner.quirks().auth_banner(LOGIN_BANNER);
+            Some(banner)
         }
         None => None,
     };
@@ -190,6 +210,12 @@ async fn main() {
     }
     if let Some(scp) = &scp_only {
         println!("SCP-only device listening on 127.0.0.1:{}", scp.port());
+    }
+    if let Some(banner) = &banner {
+        println!(
+            "device with a login banner listening on 127.0.0.1:{}",
+            banner.port()
+        );
     }
     if let Some(telnet) = &telnet {
         println!("telnet device listening on 127.0.0.1:{}", telnet.port());

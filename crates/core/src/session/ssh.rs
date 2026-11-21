@@ -4,6 +4,7 @@ use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,7 +26,7 @@ use super::tcp;
 use super::{
     agent, AgentError, CloseReason, Command, HostKeyAsker, HostKeyDecision, HostKeyQuestion,
     JumpHost, Link, LoginPrompt, LoginQuestion, NegotiatedAlgorithms, OpenError, Prompter,
-    SessionState, SshAuth, SshTarget, TerminalSize, TERM,
+    SessionEvent, SessionState, SshAuth, SshTarget, TerminalSize, TERM,
 };
 use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
 
@@ -48,6 +49,8 @@ struct Client {
     /// Why the connection ended, once it has: what a login cut short
     /// reports (#118).
     ended: EndedWhy,
+    /// Where its login banner goes; `None` drops it.
+    banners: Option<HopBanners>,
 }
 
 /// What a file connection follows of its device's connection, told by the
@@ -94,6 +97,84 @@ impl Client {
     }
 }
 
+/// Where a terminal session's login banners go (#134): its opening's
+/// events, as output, in order with its questions (see [`run`]). Shared by
+/// the handlers of every hop of the session.
+#[derive(Clone)]
+pub(super) struct Banners {
+    events: mpsc::UnboundedSender<SessionEvent>,
+    /// Whether a jump host's banner was shown on this opening: the
+    /// device's is then named too.
+    jump_host_shown: Arc<AtomicBool>,
+}
+
+impl Banners {
+    fn new(events: mpsc::UnboundedSender<SessionEvent>) -> Self {
+        Self {
+            events,
+            jump_host_shown: Arc::default(),
+        }
+    }
+}
+
+/// The banners of one hop: the device's (`jump_host` `None`), or a jump
+/// host's.
+struct HopBanners {
+    banners: Banners,
+    jump_host: Option<String>,
+}
+
+impl HopBanners {
+    /// Shows `banner` as the device sent it, its bare line ends made
+    /// `\r\n` for the terminal and its last line ended, after a dim line
+    /// saying whose it is when it is a jump host's (or the device's after
+    /// one). The host key of the hop was accepted before it could be sent
+    /// (the key exchange comes first), but it is still device output: its
+    /// control sequences reach the terminal as they are. It never becomes
+    /// a login question: those come only from the protocol.
+    fn show(&self, banner: &str) {
+        if banner.is_empty() {
+            return;
+        }
+        let mut shown = Vec::with_capacity(banner.len() + 64);
+        let whose = match &self.jump_host {
+            Some(name) => {
+                self.banners.jump_host_shown.store(true, Ordering::Relaxed);
+                Some(format!("the jump host {name}"))
+            }
+            None if self.banners.jump_host_shown.load(Ordering::Relaxed) => {
+                Some("the device".to_owned())
+            }
+            None => None,
+        };
+        if let Some(whose) = whose {
+            shown.extend_from_slice(
+                format!("\x1b[2m--- login banner of {whose} ---\x1b[0m\r\n").as_bytes(),
+            );
+        }
+        shown.extend_from_slice(&terminal_line_ends(banner.as_bytes()));
+        if !shown.ends_with(b"\n") {
+            shown.extend_from_slice(b"\r\n");
+        }
+        let _ = self.banners.events.send(SessionEvent::Output(shown));
+    }
+}
+
+/// `text` with every line feed not already after a carriage return
+/// preceded by one.
+fn terminal_line_ends(text: &[u8]) -> Vec<u8> {
+    let mut ended = Vec::with_capacity(text.len() + text.len() / 16);
+    let mut previous = None;
+    for &byte in text {
+        if byte == b'\n' && previous != Some(b'\r') {
+            ended.push(b'\r');
+        }
+        ended.push(byte);
+        previous = Some(byte);
+    }
+    ended
+}
+
 /// Asks about the host keys of every hop of a session, one at a time.
 type SharedAsker = Arc<Mutex<HostKeyAsker>>;
 
@@ -113,6 +194,18 @@ impl From<russh::Error> for ClientError {
 
 impl client::Handler for Client {
     type Error = ClientError;
+
+    /// Shows the login banner, for a terminal session (#134).
+    async fn auth_banner(
+        &mut self,
+        banner: &str,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(banners) = &self.banners {
+            banners.show(banner);
+        }
+        Ok(())
+    }
 
     /// Trusts a known key; asks the user about an unknown or changed one.
     /// Certificates are never asked for (no certificate algorithm is
@@ -274,11 +367,33 @@ pub(super) async fn run(
     link: &mut Link,
 ) -> CloseReason {
     let requested_size = link.size;
-    let (mut prompter, asker, replies) = link.askers();
-    let opened = tokio::select! {
-        opened = open_shell(&target, known_hosts, asker, requested_size, &mut prompter) => opened,
-        () = link.close_requested(&replies) => return CloseReason::ClosedLocally,
+    // The questions, and the login banners a terminal shows (#134), come
+    // through one channel, so they reach the owner in the order the hops
+    // sent them: a banner arrives before the answer to the login request
+    // that a question follows.
+    let (opening_tx, mut opening) = mpsc::unbounded_channel();
+    let (mut prompter, asker, replies) = link.askers_into(&opening_tx);
+    if link.login_banner {
+        prompter.banners = Some(Banners::new(opening_tx));
+    } else {
+        drop(opening_tx);
+    }
+    let opened = {
+        let opening_shell = open_shell(&target, known_hosts, asker, requested_size, &mut prompter);
+        tokio::pin!(opening_shell);
+        loop {
+            tokio::select! {
+                biased;
+                Some(event) = opening.recv() => link.opening(event),
+                opened = &mut opening_shell => break opened,
+                () = link.close_requested(&replies) => return CloseReason::ClosedLocally,
+            }
+        }
     };
+    // Shown before the session connects, or before it says why it failed.
+    while let Ok(event) = opening.try_recv() {
+        link.opening(event);
+    }
     let Shell {
         connection,
         jumps,
@@ -576,6 +691,15 @@ async fn authenticate(
             remaining_methods, ..
         } => remaining_methods,
     };
+    // Asked now, after the device's login banner (#134).
+    let asked;
+    let login = match login {
+        Login::Ask => {
+            asked = ask_login(username, prompter).await?;
+            Login::Password(asked.1.as_str())
+        }
+        login => login,
+    };
 
     let mut password_for_prompt = None;
     let mut agent_error = None;
@@ -594,8 +718,8 @@ async fn authenticate(
                 partial_success: false,
             }
         }
-        // `connect` asks before authenticating; if anything else still
-        // gets here, keyboard-interactive asks the user instead.
+        // Asked for above; were it not, keyboard-interactive would ask the
+        // user instead.
         Login::Ask => {
             ask_after_refusal = true;
             AuthResult::Failure {
@@ -1185,6 +1309,10 @@ async fn connect_and_log_in(
         negotiated: Arc::clone(&negotiated),
         followed: hop.followed,
         ended: Arc::clone(&ended),
+        banners: prompter.banners.clone().map(|banners| HopBanners {
+            banners,
+            jump_host: hop.jump_host.map(str::to_owned),
+        }),
     };
     // What the server sends first, for reporting a failed negotiation.
     let first_bytes = FirstBytes::new();
@@ -1237,9 +1365,13 @@ async fn connect_and_log_in(
         .as_ref()
         .map(|names| NegotiatedAlgorithms::from_names(hop.jump_host.map(str::to_owned), names))
         .ok_or_else(|| OpenError::Protocol("the key exchange did not finish".into()))?;
+    // With no username, it is asked for with the password, before the
+    // device is asked for a login: the username cannot change after that.
+    // With one, `authenticate` asks for the password once the device has
+    // answered a first login request, which is when it sends its banner.
     let asked;
     let (username, login) = match login {
-        Login::Ask => {
+        Login::Ask if hop.username.is_empty() => {
             asked = ask_login(hop.username, prompter).await?;
             (asked.0.as_str(), Login::Password(&asked.1))
         }
