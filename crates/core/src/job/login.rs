@@ -125,6 +125,8 @@ impl LoginBackup {
                 ignored_lines: given(&definition.ignored_lines),
             }),
             napalm_driver: None,
+            remote: None,
+            definition: None,
         };
         Some(Self {
             host: PlannedHost {
@@ -133,6 +135,7 @@ impl LoginBackup {
                 address: host.host.address.clone(),
                 environment: host.settings.environment.as_ref().map(|e| e.value),
                 platform: definition.name.clone(),
+                destination: None,
                 work,
             },
             store,

@@ -117,10 +117,11 @@ fn record_finished(recorder: &mut RunRecorder, plan: &JobPlan, outputs: &[&str])
             backup: None,
             exit_status: None,
             facts: None,
+            bytes: None,
         });
     }
     recorder
-        .record(&JobEvent::Finished(JobReport { hosts }))
+        .record(&JobEvent::Finished(JobReport { hosts, file: None }))
         .unwrap();
 }
 

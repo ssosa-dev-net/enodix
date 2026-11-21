@@ -608,6 +608,13 @@ impl SessionManager {
         }
     }
 
+    /// The known-hosts store its SSH sessions check host keys against
+    /// (shared: the same store, not a copy), for file connections made
+    /// beside its sessions.
+    pub fn known_hosts(&self) -> KnownHosts {
+        self.inner.known_hosts.clone()
+    }
+
     /// The serial ports there are now, with their adapters' descriptions,
     /// in port order (`COM3` before `COM10`). Call again to refresh.
     pub fn serial_ports(&self) -> io::Result<Vec<SerialPortInfo>> {

@@ -224,7 +224,9 @@ impl Runner {
                 backup: None,
                 exit_status,
                 facts,
+                bytes: None,
             }],
+            file: None,
         };
         let _ = self.events.send(JobEvent::Finished(report));
     }

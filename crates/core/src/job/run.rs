@@ -10,9 +10,10 @@ use tokio::sync::{mpsc, watch, Semaphore};
 use tokio::time::Instant;
 
 use super::script::{self, ScriptOptions};
-use super::{BackupWork, JobPlan, JobStep, PlannedHost};
+use super::{file, BackupWork, JobPlan, JobStep, PlannedHost};
 use crate::configs::{ConfigStore, SaveOutcome};
 use crate::enrich::CollectedFacts;
+use crate::files::Hashes;
 use crate::logging::PlainText;
 use crate::session::{
     CloseReason, HostKeyDecision, HostKeyQuestion, LoginPrompt, OpenError, SessionEvent,
@@ -76,8 +77,12 @@ pub enum HostState {
     Connecting,
     /// Logged in; the snippet is being sent.
     Running,
-    /// Every line was sent and answered with the prompt.
+    /// Every line was sent and answered with the prompt (for a file job:
+    /// the file was sent).
     Done,
+    /// A file job without overwrite, and the host already has a file of
+    /// that name and size: nothing was sent.
+    AlreadyThere,
     /// It could not be reached, logged in to, or driven: `reason` says why.
     Failed { reason: String },
     /// The job was cancelled before the host finished.
@@ -87,7 +92,10 @@ pub enum HostState {
 impl HostState {
     /// Whether the host has finished, one way or another.
     pub fn is_final(&self) -> bool {
-        matches!(self, Self::Done | Self::Failed { .. } | Self::Cancelled)
+        matches!(
+            self,
+            Self::Done | Self::AlreadyThere | Self::Failed { .. } | Self::Cancelled
+        )
     }
 }
 
@@ -103,16 +111,42 @@ pub enum JobEvent {
     /// A config backup kept (or found unchanged) the host's configuration;
     /// the host's [`HostState::Done`] follows.
     Backup { host: HostId, outcome: SaveOutcome },
+    /// A file job's host has sent `done` bytes of `total` (`None` while
+    /// not known). Sent at most every [`PROGRESS_EVERY`], and not kept
+    /// with the run.
+    Progress {
+        host: HostId,
+        done: u64,
+        total: Option<u64>,
+    },
     /// The job has ended: every host's final state and output. The last
     /// event.
     Finished(JobReport),
 }
+
+/// How often a file job reports a host's progress at most.
+pub const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 
 /// What a job did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct JobReport {
     /// Every host that ran, in plan order.
     pub hosts: Vec<HostResult>,
+    /// For a file job: the file sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<SentFile>,
+}
+
+/// The file a file job sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SentFile {
+    pub name: String,
+    /// Its size in bytes.
+    pub size: u64,
+    /// Its MD5 and SHA-256, once the job has read it (`None` if it could
+    /// not be read).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashes: Option<Hashes>,
 }
 
 /// What a job did on one host.
@@ -132,6 +166,9 @@ pub struct HostResult {
     /// For filling in from devices: what the script reported for each of
     /// the job's hosts.
     pub facts: Option<CollectedFacts>,
+    /// For a file job: the bytes sent to the host (`None` when nothing
+    /// went through).
+    pub bytes: Option<u64>,
 }
 
 /// Why a plan cannot start.
@@ -242,6 +279,20 @@ pub fn start(
             cancel: JobCanceller(Arc::new(cancel_tx)),
         });
     }
+    if let JobStep::SendFile { overwrite, .. } = plan.step {
+        file::spawn(
+            plan,
+            overwrite,
+            options.parallel,
+            manager.known_hosts(),
+            events_tx,
+            cancel,
+        );
+        return Ok(Job {
+            events,
+            cancel: JobCanceller(Arc::new(cancel_tx)),
+        });
+    }
     let room = Arc::new(Semaphore::new(options.parallel));
     let configs = match (&options.configs, &plan.workspace) {
         (Some(store), Some(workspace)) => Some((store.clone(), workspace.clone())),
@@ -290,11 +341,12 @@ pub fn start(
                     backup: None,
                     exit_status: None,
                     facts: None,
+                    bytes: None,
                 }
             });
             hosts.push(result);
         }
-        let _ = events_tx.send(JobEvent::Finished(JobReport { hosts }));
+        let _ = events_tx.send(JobEvent::Finished(JobReport { hosts, file: None }));
     });
     Ok(Job {
         events,
@@ -454,6 +506,7 @@ impl HostRunner {
             backup: self.backup,
             exit_status: None,
             facts: None,
+            bytes: None,
         }
     }
 

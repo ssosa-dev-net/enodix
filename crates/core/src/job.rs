@@ -42,6 +42,7 @@
 //! listed newest first, searched, compared line by line, exported, deleted,
 //! and planned again on the same target with [`plan_again`].
 
+mod file;
 mod live;
 mod login;
 pub mod results;
@@ -54,8 +55,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::credentials::{HostLogin, ProfileError, Profiles};
+use crate::platform::PlatformDefinition;
 use crate::session::{SshAuth, SshTarget};
-use crate::template::Variables;
+use crate::template::{Template, Variables};
 use crate::workspace::{
     Environment, ExpandError, Folder, HostId, Protocol, ResolvedHost, SavedJob, ScriptError,
     Workspace,
@@ -65,8 +67,8 @@ pub use live::{LiveJob, LiveJobs, NewLiveJob};
 pub use login::{LoginBackup, LoginBackupOutcome, SessionLogin};
 pub use run::{
     check, start, HostResult, HostState, Job, JobCanceller, JobEvent, JobOptions, JobReport,
-    StartError, DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL, JOB_TERMINAL_SIZE, MAX_PARALLEL,
-    PROMPT_SETTLE,
+    SentFile, StartError, DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL, JOB_TERMINAL_SIZE,
+    MAX_PARALLEL, PROGRESS_EVERY, PROMPT_SETTLE,
 };
 /// The reasons an unattended file connection gives for a refused question.
 pub(crate) use run::{host_key_refused, login_question_refused};
@@ -111,6 +113,19 @@ pub enum JobStep {
     /// [`crate::enrich`]); the facts are kept with the run, to preview and
     /// apply.
     Enrich,
+    /// Sends the local file `file` to each host, through the transfer
+    /// engine over an unattended file connection of its own, into
+    /// `destination` (a folder; empty: the host's platform file folder),
+    /// which may use the host variables snippets use. The file keeps its
+    /// name. Without `overwrite`, a host that already has a file of that
+    /// name and size is "already there", and one of another size fails.
+    SendFile {
+        file: String,
+        #[serde(default)]
+        destination: String,
+        #[serde(default)]
+        overwrite: bool,
+    },
 }
 
 impl JobStep {
@@ -144,7 +159,31 @@ pub struct JobPlan {
     /// For a script step: the script's file and the workspace folder.
     #[serde(skip)]
     script: Option<PlannedScript>,
+    /// For sending a file: the file's name and size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<PlannedFile>,
+    /// How many hosts run at once unless the run says otherwise:
+    /// [`DEFAULT_PARALLEL`], or [`DEFAULT_FILE_PARALLEL`] for sending a
+    /// file.
+    pub default_parallel: usize,
 }
+
+/// The local file a file job sends, as planned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedFile {
+    /// Its name: the name it gets on every host.
+    pub name: String,
+    /// Its size in bytes.
+    pub size: u64,
+    /// The whole path, to read it from.
+    #[serde(skip)]
+    path: PathBuf,
+}
+
+/// How many hosts a file job sends to at once when the run says nothing
+/// else.
+pub const DEFAULT_FILE_PARALLEL: usize = 3;
 
 /// The script a script step runs, as planned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +226,9 @@ pub struct PlannedHost {
     pub environment: Option<Environment>,
     /// The name of the platform definition that drives it.
     pub platform: String,
+    /// For sending a file: the path it gets on the host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
     /// What the job sends and how it connects: not shown.
     #[serde(skip)]
     work: HostWork,
@@ -219,6 +261,11 @@ struct HostWork {
     backup: Option<BackupWork>,
     /// For filling in from devices: the NAPALM driver.
     napalm_driver: Option<&'static str>,
+    /// For sending a file: the path the file gets on the host.
+    remote: Option<String>,
+    /// For sending a file: the host's platform definition, if one applies
+    /// (for the SCP hint after a fall back).
+    definition: Option<PlatformDefinition>,
 }
 
 /// How a config backup fetches a host's configuration.
@@ -309,9 +356,35 @@ pub enum SkipReason {
     /// typed login.
     #[error("its jump host {jump_host} has no stored credential profile, and a job cannot ask for its login")]
     JumpHostNeedsLogin { jump_host: String },
+    /// Sending a file with no destination typed, and its platform gives
+    /// no file folder.
+    #[error("{}", no_destination(.platform))]
+    NoDestination { platform: Option<String> },
+    /// Sending a file, and the destination uses host variables the host
+    /// has no value for.
+    #[error("the destination uses {}, which it has no value for", braced(.names))]
+    DestinationVariables { names: Vec<String> },
     /// The credential store could not be read (a locked vault, say).
     #[error("{error}")]
     Credentials { error: String },
+}
+
+fn no_destination(platform: &Option<String>) -> String {
+    match platform {
+        None => "it has no platform to give a file folder, and no destination was typed".into(),
+        Some(platform) => {
+            format!("its platform {platform} has no file folder, and no destination was typed")
+        }
+    }
+}
+
+/// `names` as written in a template: `{{site}}, {{rack}}`.
+fn braced(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("{{{{{name}}}}}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn no_platform(platform: &Option<String>) -> String {
@@ -344,6 +417,9 @@ pub enum PlanError {
     /// A script step whose script the workspace does not have.
     #[error("{0}")]
     NoSuchScript(#[from] ScriptError),
+    /// Sending a file that cannot be read here.
+    #[error("the file {path} cannot be sent: {reason}")]
+    LocalFile { path: String, reason: String },
 }
 
 /// Works out the pre-flight list of running `step` on `target`, connecting
@@ -383,6 +459,10 @@ pub fn plan(
         }),
         _ => None,
     };
+    let file = match step {
+        JobStep::SendFile { file, .. } => Some(local_file(file)?),
+        _ => None,
+    };
 
     let mut plan = JobPlan {
         step: step.clone(),
@@ -392,6 +472,12 @@ pub fn plan(
         missing_variables: Vec::new(),
         workspace: workspace.id().map(str::to_string),
         script,
+        default_parallel: if file.is_some() {
+            DEFAULT_FILE_PARALLEL
+        } else {
+            DEFAULT_PARALLEL
+        },
+        file,
     };
     for id in target_hosts(workspace, target)? {
         let Some(host) = workspace.resolve_host(&id) else {
@@ -406,6 +492,10 @@ pub fn plan(
         let runs = match step {
             JobStep::Script { .. } => script_runnable(workspace, profiles, &host),
             JobStep::Enrich => enrich_runnable(workspace, profiles, &host),
+            JobStep::SendFile { destination, .. } => {
+                let name = plan.file.as_ref().map_or("", |file| file.name.as_str());
+                file_runnable(workspace, profiles, &host, destination, name)
+            }
             _ => runnable(workspace, profiles, &host, step),
         };
         match runs {
@@ -420,6 +510,7 @@ pub fn plan(
                     address: host.host.address.clone(),
                     environment,
                     platform,
+                    destination: work.remote.clone(),
                     work,
                 });
             }
@@ -569,7 +660,10 @@ fn runnable(
             platform: host.settings.platform.as_ref().map(|p| p.value.clone()),
         })?;
     let backup = match step {
-        JobStep::Snippet { .. } | JobStep::Script { .. } | JobStep::Enrich => None,
+        JobStep::Snippet { .. }
+        | JobStep::Script { .. }
+        | JobStep::Enrich
+        | JobStep::SendFile { .. } => None,
         JobStep::ConfigBackup => Some(BackupWork {
             command: given(&definition.show_config).ok_or_else(|| SkipReason::NoShowConfig {
                 platform: definition.name.clone(),
@@ -607,6 +701,8 @@ fn runnable(
         lines: Vec::new(),
         backup,
         napalm_driver: None,
+        remote: None,
+        definition: None,
     };
     Ok((work, definition.name.clone()))
 }
@@ -643,6 +739,8 @@ fn script_runnable(
         lines: Vec::new(),
         backup: None,
         napalm_driver: None,
+        remote: None,
+        definition: None,
     };
     let platform = host
         .settings
@@ -695,8 +793,101 @@ fn enrich_runnable(
         lines: Vec::new(),
         backup: None,
         napalm_driver: Some(driver),
+        remote: None,
+        definition: None,
     };
     Ok((work, definition.name.clone()))
+}
+
+/// The local file `path` of a file job: its name and size, or why it
+/// cannot be sent.
+fn local_file(path: &str) -> Result<PlannedFile, PlanError> {
+    let refused = |reason: String| PlanError::LocalFile {
+        path: path.to_string(),
+        reason,
+    };
+    let full = PathBuf::from(path);
+    let metadata = std::fs::metadata(&full).map_err(|error| refused(error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(refused("it is not a file".into()));
+    }
+    let name = full
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| refused("it has no file name".into()))?;
+    Ok(PlannedFile {
+        name,
+        size: metadata.len(),
+        path: full,
+    })
+}
+
+/// How `host` takes part in sending the file `name` (its target and the
+/// path the file gets) and its platform as written (`""` if none), or why
+/// it cannot: it is not reached over SSH, has no stored profile, sits
+/// behind a jump host that would ask for a login, or has no destination
+/// (none typed and no file folder, or a typed one using a variable it has
+/// no value for).
+fn file_runnable(
+    workspace: &Workspace,
+    profiles: &Profiles<'_>,
+    host: &ResolvedHost,
+    destination: &str,
+    name: &str,
+) -> Result<(HostWork, String), SkipReason> {
+    let id = &host.host.id;
+    let protocol = host.settings.protocol.value;
+    if protocol != Protocol::Ssh {
+        return Err(SkipReason::NotSsh { protocol });
+    }
+    let profile = match profiles.login_with(id, Protocol::Ssh).map_err(skip)? {
+        HostLogin::Profile { profile, .. } => profile,
+        HostLogin::NotSetUp { profile } => return Err(SkipReason::ProfileNotSetUp { profile }),
+        HostLogin::Prompt | HostLogin::Telnet | HostLogin::Serial => {
+            return Err(SkipReason::NoProfile)
+        }
+    };
+    let jump_hosts = profiles.jump_hosts(id).map_err(skip)?;
+    if let Some(jump) = jump_hosts.iter().find(|j| j.auth == SshAuth::Prompt) {
+        return Err(SkipReason::JumpHostNeedsLogin {
+            jump_host: jump.name.clone(),
+        });
+    }
+    let definition = workspace.host_platform(id).cloned();
+    let platform = host.settings.platform.as_ref().map(|p| p.value.clone());
+    let folder = if destination.trim().is_empty() {
+        definition
+            .as_ref()
+            .and_then(|definition| given(&definition.file_folder))
+            .map(|folder| folder.trim().to_string())
+            .ok_or_else(|| SkipReason::NoDestination {
+                platform: definition
+                    .as_ref()
+                    .map(|definition| definition.name.clone())
+                    .or_else(|| platform.clone()),
+            })?
+    } else {
+        Template::parse(destination.trim())
+            .fill(&host.variables())
+            .map_err(|missing| SkipReason::DestinationVariables {
+                names: missing.names,
+            })?
+    };
+    let work = HostWork {
+        target: Some(profiles.profile_target(id).map_err(skip)?),
+        profile: Some(profile),
+        enable_secret: None,
+        prompt: String::new(),
+        privilege_command: None,
+        privilege_prompt: None,
+        disable_paging: None,
+        lines: Vec::new(),
+        backup: None,
+        napalm_driver: None,
+        remote: Some(crate::files::join_path(&folder, name)),
+        definition,
+    };
+    Ok((work, platform.unwrap_or_default()))
 }
 
 /// Why a script cannot reach `host` if it is behind jump hosts: the

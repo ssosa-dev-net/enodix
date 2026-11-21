@@ -234,6 +234,11 @@ pub(super) fn clean(job: &SavedJob) -> Result<SavedJob, String> {
         JobStep::Enrich => {
             return Err("filling in from devices cannot be saved as a job".into());
         }
+        JobStep::SendFile { .. } => {
+            return Err(
+                "sending a file cannot be saved as a job (it names a file on this computer)".into(),
+            );
+        }
     };
     let target =
         match &job.target {
@@ -285,7 +290,7 @@ fn to_value(job: &SavedJob) -> Value {
             definition.insert(SCRIPT.into(), path.as_str().into());
         }
         // Refused by `clean`.
-        JobStep::ConfigBackup | JobStep::Enrich => {}
+        JobStep::ConfigBackup | JobStep::Enrich | JobStep::SendFile { .. } => {}
     }
     match &job.target {
         JobTarget::Folder { path } => definition.insert(FOLDER.into(), path.as_str().into()),

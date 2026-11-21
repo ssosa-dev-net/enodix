@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use super::{HostState, JobEvent, JobPlan, JobStep, JobTarget, SCRIPT_OUTPUT};
+use super::{HostState, JobEvent, JobPlan, JobStep, JobTarget, SentFile, SCRIPT_OUTPUT};
 use crate::configs::SaveOutcome;
 use crate::diff::{diff_lines, DiffLine};
 use crate::enrich::{CollectedFacts, ENRICH_TITLE};
@@ -67,6 +67,10 @@ pub struct StoredRun {
     /// reported for each target (see [`crate::enrich`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facts: Option<CollectedFacts>,
+    /// For sending a file: its name and size, and its hashes once the run
+    /// ended (the destination and the overwrite choice are the step's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<SentFile>,
 }
 
 /// A host a script run ran for.
@@ -106,6 +110,12 @@ pub struct RunHost {
     /// For a script: its exit status, once it exited with one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_status: Option<i32>,
+    /// For sending a file: the path the file gets on the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    /// For sending a file: the bytes sent, once it went through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
 }
 
 /// A host pre-flight skipped, and why.
@@ -251,6 +261,8 @@ impl RunStore {
             file: output_file(id),
             backup: None,
             exit_status: None,
+            destination: None,
+            bytes: None,
         };
         let (hosts, targets) = match &plan.step {
             step @ (JobStep::Script { .. } | JobStep::Enrich) => (
@@ -274,7 +286,10 @@ impl RunStore {
             _ => (
                 plan.hosts
                     .iter()
-                    .map(|host| run_host(&host.id, &host.name, &host.address))
+                    .map(|host| RunHost {
+                        destination: host.destination.clone(),
+                        ..run_host(&host.id, &host.name, &host.address)
+                    })
                     .collect(),
                 Vec::new(),
             ),
@@ -298,6 +313,11 @@ impl RunStore {
                 .collect(),
             targets,
             facts: None,
+            file: plan.file.as_ref().map(|file| SentFile {
+                name: file.name.clone(),
+                size: file.size,
+                hashes: None,
+            }),
         };
         let recorder = RunRecorder {
             folder,
@@ -526,6 +546,8 @@ impl RunRecorder {
                 }
                 self.save()
             }
+            // Progress is live only.
+            JobEvent::Progress { .. } => Ok(()),
             JobEvent::Output { host, text } => {
                 let Some(entry) = self.run.host(host) else {
                     return Ok(());
@@ -547,6 +569,7 @@ impl RunRecorder {
                     entry.state = result.state.clone();
                     entry.backup.clone_from(&result.backup);
                     entry.exit_status = result.exit_status;
+                    entry.bytes = result.bytes;
                     if result.facts.is_some() {
                         self.run.facts.clone_from(&result.facts);
                     }
@@ -555,6 +578,9 @@ impl RunRecorder {
                     if let Err(error) = fs::write(&path, &result.output) {
                         first_error.get_or_insert(io_error(&path)(error));
                     }
+                }
+                if report.file.is_some() {
+                    self.run.file.clone_from(&report.file);
                 }
                 self.run.ended = Some(now());
                 let saved = self.save();

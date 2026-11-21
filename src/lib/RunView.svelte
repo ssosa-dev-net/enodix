@@ -8,6 +8,7 @@
     compareOutputs,
     deleteRun,
     exportRun,
+    isFinal,
     listRuns,
     planAgain,
     runOutput,
@@ -24,6 +25,7 @@
   import { runTitles } from "./jobTabs.svelte";
   import { inventory, openJob } from "./inventory.svelte";
   import SaveJobForm from "./SaveJobForm.svelte";
+  import { sizeText } from "./files";
   import { pickWorkspaceFolder } from "./workspace";
   import { openView } from "./views";
   import { detachRun, dockBack } from "./windows";
@@ -151,7 +153,11 @@
   function counts(entry: StoredRun) {
     const count = { done: 0, failed: 0, cancelled: 0 };
     for (const h of entry.hosts) {
-      const kind = stateOf(entry, h.id).kind;
+      // Already there is done too: nothing needed sending.
+      const kind =
+        stateOf(entry, h.id).kind === "alreadyThere"
+          ? "done"
+          : stateOf(entry, h.id).kind;
       if (kind in count) count[kind as keyof typeof count] += 1;
     }
     return count;
@@ -192,9 +198,33 @@
     connecting: "Connecting",
     running: "Running",
     done: "Done",
+    alreadyThere: "Already there",
     failed: "Failed",
     cancelled: "Cancelled",
   };
+
+  /** A state's label in `entry`: a file job says "Sending" and "Sent". */
+  function stateLabel(entry: StoredRun, state: HostState): string {
+    if (entry.step.kind === "sendFile") {
+      if (state.kind === "running") return "Sending";
+      if (state.kind === "done") return "Sent";
+    }
+    return STATE_LABELS[state.kind];
+  }
+
+  /** What a file run did to the file a device had of that name. */
+  function overwriteText(entry: StoredRun): string {
+    if (entry.step.kind !== "sendFile") return "";
+    return entry.step.overwrite
+      ? "overwritten if there"
+      : "kept if there (not overwritten)";
+  }
+
+  /** A file run's destination, for the user. */
+  function destinationText(entry: StoredRun): string {
+    if (entry.step.kind !== "sendFile") return "";
+    return entry.step.destination || "each host's platform file folder";
+  }
 
   function search() {
     const id = selected;
@@ -369,7 +399,9 @@
             disabled={busy}
             title={run.step.kind === "script"
               ? "Plan the same script for the same target, as the workspace is now"
-              : "Plan the same snippet on the same target, as the workspace is now"}
+              : run.step.kind === "sendFile"
+                ? "Plan sending the same file to the same target, as the workspace is now"
+                : "Plan the same snippet on the same target, as the workspace is now"}
             onclick={again}>Run again…</button
           >
           {#key run.id}
@@ -405,6 +437,30 @@
         {/if}
       </div>
 
+      {#if run.step.kind === "sendFile"}
+        {@const file = live?.file ?? run.file}
+        <dl class="file" data-run-file={file?.name ?? ""}>
+          <dt>File</dt>
+          <dd data-run-file-name>
+            {file?.name ?? run.step.file}{file
+              ? ` · ${sizeText(file.size)} (${file.size} bytes)`
+              : ""}
+          </dd>
+          <dt>Destination</dt>
+          <dd data-run-file-destination>{destinationText(run)}</dd>
+          <dt>Overwrite</dt>
+          <dd data-run-file-overwrite={run.step.overwrite ? "yes" : "no"}>
+            {overwriteText(run)}
+          </dd>
+          {#if file?.hashes}
+            <dt>MD5</dt>
+            <dd class="hash" data-run-file-md5>{file.hashes.md5}</dd>
+            <dt>SHA-256</dt>
+            <dd class="hash" data-run-file-sha256>{file.hashes.sha256}</dd>
+          {/if}
+        </dl>
+      {/if}
+
       <div class="hosts">
         {#each run.hosts as entry (entry.id)}
           {@const state = stateOf(run, entry.id)}
@@ -416,14 +472,24 @@
             onclick={() => (host = entry.id)}
           >
             <span class="state {state.kind}"
-              >{runState(run) === "interrupted" &&
-              !["done", "failed", "cancelled"].includes(state.kind)
+              >{runState(run) === "interrupted" && !isFinal(state)
                 ? "Not finished"
-                : STATE_LABELS[state.kind]}</span
+                : stateLabel(run, state)}</span
             >
             <span>{entry.name}</span>
             {#if state.kind === "failed"}
               <span class="reason" data-run-reason>{state.reason}</span>
+            {/if}
+            {#if entry.destination}
+              <span class="backup" data-run-destination={entry.destination}
+                >{entry.destination}</span
+              >
+            {/if}
+            {#if (live?.bytes[entry.id] ?? entry.bytes) !== undefined}
+              {@const bytes = (live?.bytes[entry.id] ?? entry.bytes)!}
+              <span class="backup" data-run-bytes={bytes}
+                >{sizeText(bytes)} sent</span
+              >
             {/if}
             {#if (live?.exits[entry.id] ?? entry.exit_status) !== undefined}
               <span
@@ -690,7 +756,29 @@
     font-weight: var(--weight-semibold);
   }
 
-  .state.done {
+  .file {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: var(--space-0-5) var(--space-2);
+    margin: 0;
+  }
+
+  .file dt {
+    color: var(--muted);
+  }
+
+  .file dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .file .hash {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+
+  .state.done,
+  .state.alreadyThere {
     color: var(--ok);
   }
 

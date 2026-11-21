@@ -33,6 +33,7 @@ pub use scp::{Files, Protocol, Scp, ScpError};
 pub use sftp::{
     EntryKind, FileError, NoSftp, RemoteEntry, RemoteReader, RemoteWriter, Sftp, StartError,
 };
+pub(crate) use transfer::hash_file;
 pub use transfer::{
     Connect, Connecting, Direction, Done, Hashes, Link, Outcome, Partial, Presence, SizeCheck,
     Status, Transfer, TransferError, TransferId, TransferWatch, Transfers,

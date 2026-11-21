@@ -33,7 +33,14 @@ export type JobStep =
    * version with NAPALM (the app's own script); kept with the run to
    * review and apply.
    */
-  | { kind: "enrich" };
+  | { kind: "enrich" }
+  /**
+   * Sends the local file `file` to each host into `destination` (a
+   * folder; empty: each host's platform file folder; host variables
+   * allowed), keeping its name. Without `overwrite`, a file of that name
+   * and size is "already there" and another size fails.
+   */
+  | { kind: "sendFile"; file: string; destination: string; overwrite: boolean };
 
 /**
  * The host id a script job's one output (and state) goes under: no host
@@ -53,7 +60,13 @@ export function stepTitle(step: JobStep): string {
   if (step.kind === "snippet") return step.name;
   if (step.kind === "script") return `Script ${step.path}`;
   if (step.kind === "enrich") return "Fill in from devices";
+  if (step.kind === "sendFile") return `Send ${fileName(step.file)}`;
   return "Config backup";
+}
+
+/** The last part of a local path (either separator). */
+export function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
 }
 
 /** The open workspace's Python scripts, by path relative to its folder. */
@@ -89,6 +102,8 @@ export interface PlannedHost {
    * written, "" if none).
    */
   platform: string;
+  /** For sending a file: the path it gets on the host. */
+  destination?: string;
 }
 
 export interface SkippedHost {
@@ -108,6 +123,10 @@ export interface JobPlan {
   production: string[];
   /** Variables to ask for once before the job can start. */
   missingVariables: string[];
+  /** For sending a file: its name and size. */
+  file?: { name: string; size: number };
+  /** How many hosts run at once unless the run says otherwise. */
+  defaultParallel: number;
 }
 
 export type HostState =
@@ -115,8 +134,22 @@ export type HostState =
   | { kind: "connecting" }
   | { kind: "running" }
   | { kind: "done" }
+  /** A file job: the host already had a file of that name and size. */
+  | { kind: "alreadyThere" }
   | { kind: "failed"; reason: string }
   | { kind: "cancelled" };
+
+/** Whether a host has finished, one way or another. */
+export function isFinal(state: HostState): boolean {
+  return ["done", "alreadyThere", "failed", "cancelled"].includes(state.kind);
+}
+
+/** The file a file job sent: its hashes once the run ended. */
+export interface SentFile {
+  name: string;
+  size: number;
+  hashes?: { md5: string; sha256: string };
+}
 
 export interface HostResult {
   id: string;
@@ -127,20 +160,24 @@ export interface HostResult {
   backup: SaveOutcome | null;
   /** For a script: its exit status, if it exited with one. */
   exit_status: number | null;
+  /** For a file job: the bytes sent, once the file went through. */
+  bytes: number | null;
 }
 
 export type JobEvent =
   | { kind: "state"; host: string; state: HostState }
   | { kind: "output"; host: string; text: string }
   | { kind: "backup"; host: string; outcome: SaveOutcome }
-  | { kind: "finished"; hosts: HostResult[] };
+  | { kind: "progress"; host: string; done: number; total: number | null }
+  | { kind: "finished"; hosts: HostResult[]; file?: SentFile };
 
 /** Works out the pre-flight list (connects to nothing). */
 export function planJob(target: JobTarget, step: JobStep) {
   return invoke<JobPlan>("job_plan", { target, step });
 }
 
-/** How many hosts a job runs at once unless the user says otherwise. */
+/** How many hosts a job runs at once unless the user says otherwise (a
+ * file job: its plan's `defaultParallel`, 3). */
 export const DEFAULT_PARALLEL = 10;
 /** The most hosts a job may run at once. */
 export const MAX_PARALLEL = 50;
@@ -172,6 +209,10 @@ export interface RunHost {
   backup?: SaveOutcome;
   /** For a script: its exit status, once it exited with one. */
   exit_status?: number;
+  /** For a file job: the path the file gets on the host. */
+  destination?: string;
+  /** For a file job: the bytes sent, once the file went through. */
+  bytes?: number;
 }
 
 /** A kept run, as its description says. */
@@ -188,6 +229,8 @@ export interface StoredRun {
   skipped: { id: string; name: string; reason: string }[];
   /** For a script run: the hosts it ran for (`hosts` holds the script). */
   targets?: { id: string; name: string; address: string }[];
+  /** For a file job: the file, with its hashes once the run ended. */
+  file?: SentFile;
 }
 
 export interface RunList {
@@ -332,6 +375,9 @@ export function unsaveable(step: JobStep, target: JobTarget): string | null {
   }
   if (step.kind === "enrich") {
     return "Filling in from devices cannot be saved as a job.";
+  }
+  if (step.kind === "sendFile") {
+    return "Sending a file cannot be saved as a job: it names a file on this computer.";
   }
   if (target.kind === "hosts" && target.ids.length !== 1) {
     return "Only a job on a folder, a saved filter or one host can be saved.";

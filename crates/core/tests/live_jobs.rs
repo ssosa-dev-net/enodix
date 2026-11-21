@@ -76,6 +76,7 @@ fn result(id: &str, state: HostState, output: &str) -> HostResult {
         backup: None,
         exit_status: None,
         facts: None,
+        bytes: None,
     }
 }
 
@@ -166,6 +167,7 @@ fn finishing_takes_the_report_as_it_is() {
                 backed_up,
                 script,
             ],
+            file: None,
         }),
     );
     let job = &jobs.jobs()[0];
@@ -200,7 +202,13 @@ fn forgetting_finished_jobs_keeps_running_ones_and_the_one_asked_for() {
         started(&mut jobs, id, run);
     }
     for id in [1, 2] {
-        jobs.record(id, &JobEvent::Finished(JobReport { hosts: Vec::new() }));
+        jobs.record(
+            id,
+            &JobEvent::Finished(JobReport {
+                hosts: Vec::new(),
+                file: None,
+            }),
+        );
     }
     jobs.forget_finished(Some("run-b"));
     let runs: Vec<_> = jobs.jobs().iter().map(|job| job.run.as_str()).collect();
