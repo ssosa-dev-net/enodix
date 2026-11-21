@@ -38,7 +38,9 @@ mod vault;
 pub use agent::{AgentEndpoint, AgentError, AgentServer, AgentStore, HostCredentials, NamedSecret};
 pub use keychain::{KeychainStore, RemovedEntries};
 pub use secrets::{SecretError, SecretValue, Secrets, MAX_SECRET_NAME};
-pub use vault::{vault_file, ActiveStore, KdfParams, Vault, VaultError, VaultStatus, VAULT_FILE};
+pub use vault::{
+    vault_file, ActiveStore, KdfParams, Vault, VaultError, VaultStatus, VAULT_FILE, VAULT_LOCK_FILE,
+};
 
 /// The longest profile name accepted, in characters.
 pub const MAX_PROFILE_NAME: usize = 100;
@@ -168,6 +170,77 @@ pub trait CredentialStore: Send + Sync {
     fn vault_status(&self) -> VaultStatus {
         VaultStatus::Off
     }
+
+    /// Whether every entry of `contents` could be put into this store,
+    /// checked before any is: the first that could not, named. Stores with
+    /// no limit of their own hold anything.
+    fn check_fits(&self, contents: &StoreContents) -> Result<(), StoreError> {
+        let _ = contents;
+        Ok(())
+    }
+
+    /// Removes everything kept, of every scope, and checks that nothing is
+    /// left: an error if something is.
+    fn remove_everything(&self) -> Result<(), StoreError> {
+        let everything = self.contents()?;
+        for entry in &everything.profiles {
+            self.delete(&entry.scope, &entry.profile.name)?;
+        }
+        for entry in &everything.secrets {
+            self.delete_secret(&entry.scope, &entry.name)?;
+        }
+        left_over(&self.contents()?)
+    }
+}
+
+/// `value` as JSON in a buffer of exactly its length, wiped when dropped:
+/// a growing buffer would leave the parts it outgrew, secrets in the clear,
+/// in freed memory.
+pub(crate) fn encoded_exactly(
+    value: &impl Serialize,
+) -> serde_json::Result<zeroize::Zeroizing<Vec<u8>>> {
+    struct Length(usize);
+    impl std::io::Write for Length {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut length = Length(0);
+    serde_json::to_writer(&mut length, value)?;
+    let mut buffer = zeroize::Zeroizing::new(Vec::with_capacity(length.0));
+    serde_json::to_writer(&mut *buffer, value)?;
+    Ok(buffer)
+}
+
+/// An error naming what `contents` still holds, if anything.
+fn left_over(contents: &StoreContents) -> Result<(), StoreError> {
+    if contents.is_empty() {
+        return Ok(());
+    }
+    Err(StoreError(format!(
+        "{} are still there after being removed",
+        counted(contents.profiles.len(), contents.secrets.len())
+    )))
+}
+
+/// "3 profiles and 1 secret".
+fn counted(profiles: usize, secrets: usize) -> String {
+    let plural = |count: usize, one: &str| {
+        if count == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{count} {one}s")
+        }
+    };
+    format!(
+        "{} and {}",
+        plural(profiles, "profile"),
+        plural(secrets, "secret")
+    )
 }
 
 /// Everything a store keeps, across scopes, in no particular order.

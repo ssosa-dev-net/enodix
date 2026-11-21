@@ -222,8 +222,10 @@ pub(crate) fn open_store() -> Result<Box<dyn CredentialStore>, Failure> {
 }
 
 /// Opens the vault with the master password, asked on the terminal (up to
-/// [`PASSWORD_ATTEMPTS`] times). Refused without a terminal.
+/// [`PASSWORD_ATTEMPTS`] times). Refused without a terminal. A file that
+/// cannot be the vault is said to be damaged first: no password would help.
 fn unlock(vault: &Path, app_locked: bool) -> Result<Vault, Failure> {
+    Vault::check(vault).map_err(|error| Failure::Error(error.to_string()))?;
     if !has_terminal() {
         return Err(no_terminal(app_locked, NO_TERMINAL));
     }
