@@ -8,7 +8,13 @@
 //!
 //! The multi-send group belongs to the app (#35, #83): typing in a member
 //! reaches every member's session, whichever window each is in
-//! ([`Windows::input_targets`]). View tabs never join, new and duplicated
+//! ([`Windows::input_targets`]). Nothing else fans out (#123): a paste
+//! reaches the group only as a group paste, planned for the members at the
+//! group's revision ([`Windows::group_paste_members`]), sent only if the
+//! group is still as it was ([`Windows::group_paste_targets`]), each line
+//! going to one member while it is one; a paste begun outside the group
+//! stays with its tab. A production session joins only when the join says
+//! the user confirmed it ([`Windows::join_group_confirmed`]). View tabs never join, new and duplicated
 //! tabs start outside, a tab can join before its session is known (it
 //! receives once [`Windows::attach_session`] names it), and closing a tab
 //! (or its window) drops it; moving it to another window keeps it, in its
@@ -24,7 +30,49 @@ use std::ops::{Deref, DerefMut};
 use serde::{Deserialize, Serialize};
 
 use super::{Layout, LayoutError, PaneId, TabId};
+use crate::paste::PasteSafety;
 use crate::session::SessionId;
+
+/// Where input in a terminal came from (#34), which decides which sessions
+/// it reaches (#123); as the interface names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputOrigin {
+    /// Keys the user typed: in a member, every member's.
+    Typed,
+    /// A paste (or snippet) into this session alone: never shared, even if
+    /// its tab joined the group after the paste began.
+    Pasted,
+    /// One line of a group paste for this member: its own session, and only
+    /// while it is a member.
+    GroupPaste,
+    /// The terminal's replies to the device: its own session only.
+    Reply,
+    /// Mouse reports: its own session only.
+    Mouse,
+}
+
+/// Why a group paste was called off (#123): nothing of it was sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum GroupPasteRefused {
+    #[error(
+        "the tab pasted in is no longer in the multi-send group (it left, or the group was ended), so nothing was pasted"
+    )]
+    NotAMember,
+    #[error(
+        "the multi-send group changed before the paste was sent, so nothing was pasted; paste again to send it to the group as it is now"
+    )]
+    Changed,
+}
+
+/// Who a paste in a member goes to (#123): every member whose session is
+/// known, the one pasted in first, and the group's revision they were
+/// read at, which the paste must still find when it is sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupPasteMembers {
+    pub revision: u64,
+    pub members: Vec<(Member, SessionId)>,
+}
 
 /// A window of the app that has a layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -113,6 +161,10 @@ pub struct WindowView {
     pub group: Vec<TabId>,
     #[serde(rename = "groupSize")]
     pub group_size: usize,
+    /// The group's revision ([`Windows::group_revision`]): a group paste's
+    /// question asked at an older one is out of date (#123).
+    #[serde(rename = "groupRevision")]
+    pub group_revision: u64,
 }
 
 /// A window's layout, open for editing. Once it is dropped, the
@@ -235,6 +287,7 @@ impl Windows {
             layout: self.layout(window)?.clone(),
             group: self.window_group(window),
             group_size: self.group.members.len(),
+            group_revision: self.group_revision,
         })
     }
 
@@ -274,6 +327,54 @@ impl Windows {
             .iter()
             .copied()
             .find(|member| self.group.sessions.get(member) == Some(&session))
+    }
+
+    /// Who a paste in `window`'s tab `tab` goes to (#123): as
+    /// [`Windows::paste_members`], with the group's revision now, which the
+    /// paste must still find when it is sent. Refused when the tab is not a
+    /// member (it left, or the group ended): the paste is called off.
+    pub fn group_paste_members(
+        &self,
+        window: WindowId,
+        tab: TabId,
+    ) -> Result<GroupPasteMembers, GroupPasteRefused> {
+        if !self.in_group(window, tab) {
+            return Err(GroupPasteRefused::NotAMember);
+        }
+        Ok(GroupPasteMembers {
+            revision: self.group_revision,
+            members: self.paste_members(window, tab),
+        })
+    }
+
+    /// Where each of `sessions` gets its lines of a group paste from
+    /// `window`'s tab `tab`, planned (and asked about) at the group's
+    /// `revision` (#123): the member showing it now, in the same order. The
+    /// paste goes to the members as they are when it is sent, which are the
+    /// ones its question showed: refused whole, so that nothing is sent,
+    /// if the tab is no longer a member or the group changed since (a tab
+    /// joined or left, a member closed, the group ended). A member that
+    /// moved to another window meanwhile is still one.
+    pub fn group_paste_targets(
+        &self,
+        window: WindowId,
+        tab: TabId,
+        revision: u64,
+        sessions: &[SessionId],
+    ) -> Result<Vec<Member>, GroupPasteRefused> {
+        if !self.in_group(window, tab) {
+            return Err(GroupPasteRefused::NotAMember);
+        }
+        if revision != self.group_revision {
+            return Err(GroupPasteRefused::Changed);
+        }
+        sessions
+            .iter()
+            .map(|&session| {
+                self.member_showing(session)
+                    .ok_or(GroupPasteRefused::Changed)
+            })
+            .collect()
     }
 
     /// The members that are tabs of `window`, in the order they joined.
@@ -324,6 +425,76 @@ impl Windows {
         Ok(joining)
     }
 
+    /// Adds `window`'s tab `tab` to the group as [`Windows::join_group`]
+    /// does, if the join may be made (#123): a production session (by
+    /// `safety`, its session's paste safety now) joins only when the join
+    /// says the user `confirmed` it, and so does a tab whose session is not
+    /// known yet (its safety cannot be told). Refused, changing nothing,
+    /// otherwise. The shell joins only this way.
+    pub fn join_group_confirmed(
+        &mut self,
+        window: WindowId,
+        tab: TabId,
+        confirmed: bool,
+        safety: impl Fn(SessionId) -> PasteSafety,
+    ) -> Result<(), LayoutError> {
+        self.existing(window)?.find_session_tab(tab)?;
+        if !self.in_group(window, tab) && !confirmed {
+            self.refuse_unconfirmed(window, &[tab], &safety)?;
+        }
+        self.join_group(window, tab)
+    }
+
+    /// Adds every session tab of `window`'s `pane` that is not a member yet
+    /// to the group as [`Windows::join_pane`] does, if the join may be
+    /// made: as for [`Windows::join_group_confirmed`], one tab that needs
+    /// the user's yes refuses the whole join when it was not given.
+    pub fn join_pane_confirmed(
+        &mut self,
+        window: WindowId,
+        pane: PaneId,
+        confirmed: bool,
+        safety: impl Fn(SessionId) -> PasteSafety,
+    ) -> Result<Vec<TabId>, LayoutError> {
+        let layout = self.existing(window)?;
+        let joining: Vec<TabId> = layout
+            .pane(pane)
+            .ok_or(LayoutError::NoSuchPane(pane))?
+            .tabs
+            .iter()
+            .copied()
+            .filter(|&tab| !layout.is_view(tab) && !self.in_group(window, tab))
+            .collect();
+        if !confirmed {
+            self.refuse_unconfirmed(window, &joining, &safety)?;
+        }
+        self.join_pane(window, pane)
+    }
+
+    /// Refuses a join of `tabs` that was not confirmed if one of them needs
+    /// it: a session not known yet, or a production one.
+    fn refuse_unconfirmed(
+        &self,
+        window: WindowId,
+        tabs: &[TabId],
+        safety: &impl Fn(SessionId) -> PasteSafety,
+    ) -> Result<(), LayoutError> {
+        let mut production = Vec::new();
+        for &tab in tabs {
+            let session = self
+                .session_of(window, tab)
+                .ok_or(LayoutError::JoinBeforeSession(tab))?;
+            if safety(session).confirms_joining() {
+                production.push(tab);
+            }
+        }
+        if production.is_empty() {
+            Ok(())
+        } else {
+            Err(LayoutError::JoinNotConfirmed(production))
+        }
+    }
+
     /// Takes `window`'s tab `tab` out of the group (nothing changes if it
     /// is not in it).
     pub fn leave_group(&mut self, window: WindowId, tab: TabId) -> Result<(), LayoutError> {
@@ -359,19 +530,26 @@ impl Windows {
         Ok(())
     }
 
-    /// The sessions that input typed or pasted in `session` goes to: every
-    /// member's session (in the order they joined), whichever window it is
-    /// in, if `session`'s tab is a member, else only `session` itself.
-    /// Members whose session is not known yet are left out.
-    pub fn input_targets(&self, session: SessionId) -> Vec<SessionId> {
+    /// The sessions that input from `origin` in `session` goes to (#123).
+    /// Typed: every member's session (in the order they joined), whichever
+    /// window it is in, if `session`'s tab is a member, else only `session`
+    /// itself; members whose session is not known yet are left out. A
+    /// group paste's line: `session` itself while a member shows it, else
+    /// none (it left, closed, or the group ended mid-paste). Anything else
+    /// (a paste of its own, the terminal's replies, mouse reports): only
+    /// `session`, whatever the group.
+    pub fn input_targets(&self, session: SessionId, origin: InputOrigin) -> Vec<SessionId> {
         let sessions = &self.group.sessions;
         let member = self
             .group
             .members
             .iter()
             .any(|member| sessions.get(member) == Some(&session));
-        if !member {
-            return vec![session];
+        match origin {
+            InputOrigin::Typed if member => {}
+            InputOrigin::GroupPaste if member => return vec![session],
+            InputOrigin::GroupPaste => return Vec::new(),
+            _ => return vec![session],
         }
         self.group
             .members

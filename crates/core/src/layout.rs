@@ -34,7 +34,10 @@ pub use dead::take_over_dead_window;
 pub use placement::{
     place_session_window, Frame, PhysicalRect, Placement, SESSION_WINDOW_MIN_SIZE,
 };
-pub use windows::{LayoutMut, Member, Taken, Used, WindowId, WindowView, Windows};
+pub use windows::{
+    GroupPasteMembers, GroupPasteRefused, InputOrigin, LayoutMut, Member, Taken, Used, WindowId,
+    WindowView, Windows,
+};
 
 /// A tab, unique for the life of its [`Layout`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -141,6 +144,16 @@ pub enum LayoutError {
     MainWindow,
     #[error("the tab is already in that window")]
     SameWindow,
+    /// A join that did not say the user confirmed it, with these
+    /// production tabs (#123).
+    #[error(
+        "a production session joins the multi-send group only once its question is answered, so nothing joined"
+    )]
+    JoinNotConfirmed(Vec<TabId>),
+    /// A join that did not say the user confirmed it, of a tab whose
+    /// session (and so its safety) is not known yet (#123).
+    #[error("the tab {0} cannot join the multi-send group before its session has opened")]
+    JoinBeforeSession(TabId),
 }
 
 /// The tabs and panes of a window.

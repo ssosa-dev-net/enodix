@@ -163,7 +163,15 @@ everything 0.2.0 could do, the app still does, reached differently.
   window (the production question asked there). A group paste or group
   snippet is asked once, over the pane pasted in, naming the members
   wherever they are; each then gets its lines through its own terminal,
-  with its own line delay. If a session window goes away without
+  with its own line delay. A paste goes to the group as it is when you
+  press Send (#123): if the group changes while you are asked (a tab
+  joins or leaves, a member closes, the group ends, in any window), the
+  question closes and nothing is pasted, and the window says so; paste
+  again. A member that leaves the group, or closes, while a group paste's
+  lines are going gets no more of them. A paste (or snippet) you began
+  in a tab outside the group stays that tab's, even if the tab joins
+  while it is asked about. A production session joins only through its
+  question, whichever way you add it. If a session window goes away without
   docking back, or its page crashes while the window stays open (#89),
   the main window takes its sessions, still connected, saying their
   earlier output was lost, and the crashed window closes. A window that

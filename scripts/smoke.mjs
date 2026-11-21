@@ -13332,6 +13332,36 @@ async function multiSend({
     evaluate(
       `document.querySelector(${json(`${slot(tab)} [data-multi-send-bar]`)})?.dataset.groupSize ?? null`,
     );
+  const focusTerminal = (tab) =>
+    evaluate(
+      `document.querySelector(${json(`${slot(tab)} .terminal textarea`)}).focus()`,
+    );
+  // A shell command's answer or its refusal, as this page gets it.
+  const invokeResult = async (command, args) => {
+    await evaluate(`(() => {
+      window.__smokeResult = null;
+      window.__TAURI_INTERNALS__
+        .invoke(${json(command)}, ${json(args)})
+        .then((value) => (window.__smokeResult = { value: value ?? null }), (error) => (window.__smokeResult = { error: String(error) }));
+    })()`);
+    return until(`the answer to ${command}`, () =>
+      evaluate(`window.__smokeResult`),
+    );
+  };
+  // The message the window shows in its Hosts view, if any.
+  const editError = () =>
+    evaluate(`document.querySelector(".edit-error span")?.textContent ?? null`);
+  // Shows each of `tabs` (held output is written once shown) and fails if
+  // `word` reached it.
+  const reachedNone = async (tabs, word, what) => {
+    for (const tab of tabs) {
+      await show(tab);
+      await sleep(300);
+      if ((await screenOfTab(tab)).includes(word)) {
+        fail(`${what}: it reached tab ${tab}`);
+      }
+    }
+  };
 
   const [a, b, c] = (await tabs()).map((tab) => tab.id);
   if (c === undefined) fail("multiSend needs three open sessions");
@@ -13463,6 +13493,27 @@ async function multiSend({
     const pane = await evaluate(
       `document.querySelector(${json(slot(d))}).dataset.pane`,
     );
+
+    // The shell itself refuses a production session's join that does not
+    // say its question was answered (#123), by the tab or by its pane.
+    for (const edit of [
+      { kind: "joinGroup", tab: d, confirmed: false },
+      { kind: "joinPane", pane: Number(pane), confirmed: false },
+    ]) {
+      const refused = await invokeResult("layout_edit", { edit });
+      if (!refused.error?.includes("production session")) {
+        fail(
+          `an unconfirmed ${edit.kind} of a production session gave ${json(refused)}`,
+        );
+      }
+    }
+    if ((await tabOf(d)).member !== null || (await groupSize()) !== 2) {
+      fail("a refused join changed the group");
+    }
+    step(
+      "the shell refused a production session's join (tab and pane) that did not say its question was answered",
+    );
+
     await paneTool(
       evaluate,
       `document.querySelector('.pane[data-pane="${pane}"] [data-tab-bar]')`,
@@ -13512,6 +13563,83 @@ async function multiSend({
     );
     step(
       "a production session (and its pane) asked before joining, Cancel focused; Cancel kept it out, Add joined it",
+    );
+
+    // A member's own shortcuts stay its own: Ctrl+C with a selection
+    // copies (no ^C reaches any member), Ctrl+Shift+F searches it alone.
+    await show(b);
+    await focusTerminal(b);
+    await evaluate(
+      `document.querySelector(${json(`${slot(b)} .terminal`)}).xterm.selectAll()`,
+    );
+    writeClipboard("nothing copied yet");
+    await press("c", "KeyC", 67, CTRL);
+    await until("the selection copied", () =>
+      readClipboard().includes("multisend"),
+    );
+    await press("F", "KeyF", 70, CTRL | SHIFT);
+    await until("the member's search bar", () =>
+      exists(`${slot(b)} [data-terminal-search]`),
+    );
+    if (
+      (await exists(`${slot(a)} [data-terminal-search]`)) ||
+      (await exists(`${slot(d)} [data-terminal-search]`))
+    ) {
+      fail("the search opened in another member too");
+    }
+    await press("Escape", "Escape", 27, 0);
+    await until(
+      "the search bar closed",
+      async () => !(await exists(`${slot(b)} [data-terminal-search]`)),
+    );
+    await focusTerminal(b);
+    await type("mslocal\r");
+    const interrupted = /\^C[^\n]*\n[^\n]*\$ mslocal/;
+    for (const tab of [b, a, d]) {
+      await show(tab);
+      await until(`the typing in tab ${tab}`, () => ran(tab, "mslocal"));
+      if (interrupted.test(await screenOfTab(tab))) {
+        fail(`the copy's Ctrl+C reached tab ${tab}`);
+      }
+    }
+    step(
+      "in a member, Ctrl+C with a selection copied and reached no device, and the search opened in that member only",
+    );
+
+    // A paste begun in a tab outside the group stays that tab's when the
+    // tab joins while the paste is asked about (#123): Send then pastes
+    // into it alone, and no member gets a line.
+    await show(c);
+    await focusTerminal(c);
+    writeClipboard("ms-alone-one\nms-alone-two\n");
+    await pasteKeys();
+    const alone = `${slot(c)} [data-paste-confirm]`;
+    await until("the paste question in the tab outside", () => exists(alone));
+    if (await exists(`${alone}[data-paste-members]`)) {
+      fail("a paste outside the group was asked about as the group's");
+    }
+    await toggleShortcut();
+    await until(
+      "the tab joined while its paste is asked about",
+      async () => (await tabOf(c)).member === "receiving",
+    );
+    await clickOn(`${slot(c)} [data-paste=send]`);
+    await until("the paste in its own tab", async () => {
+      const shown = await screenOfTab(c);
+      return (
+        shown.includes("$ ms-alone-one") && shown.includes("$ ms-alone-two")
+      );
+    });
+    await reachedNone([a, b, d], "ms-alone", "a paste begun outside the group");
+    await show(c);
+    await focusTerminal(c);
+    await toggleShortcut();
+    await until(
+      "the tab out of the group again",
+      async () => (await tabOf(c)).member === null,
+    );
+    step(
+      "a paste begun outside the group, its tab joining while it was asked about, reached that tab alone",
     );
 
     // A multi-line paste in one member asks once for the whole group, as
@@ -13576,6 +13704,46 @@ async function multiSend({
     }
     step(
       "a multi-line paste in one member asked once (production, every member listed), then reached every member",
+    );
+
+    // The group changing while a group paste is asked about (a member
+    // leaving, here from outside this page's own edits, as another window
+    // would) closes the question and calls the paste off, saying so
+    // (#123): nobody gets it.
+    await show(b);
+    await focusTerminal(b);
+    writeClipboard("ms-off-one\nms-off-two\n");
+    await pasteKeys();
+    const offered = await until("the group's paste question", pasteQuestion);
+    if (offered.members !== "3") {
+      fail(`the group's paste question shows ${json(offered)}`);
+    }
+    const left = await invokeResult("layout_edit", {
+      edit: { kind: "leaveGroup", tab: a },
+    });
+    if (left.error !== undefined)
+      fail(`a member could not leave: ${left.error}`);
+    await until("the question closed", async () => !(await pasteQuestion()));
+    const calledOff = await until("the paste called off, said", editError);
+    if (
+      !calledOff.startsWith("Cannot paste to the multi-send group:") ||
+      !calledOff.includes("changed") ||
+      !calledOff.includes("nothing was pasted")
+    ) {
+      fail(`the called-off paste said ${json(calledOff)}`);
+    }
+    await screenshot("multi-send-paste-called-off");
+    await reachedNone([b, a, d, c], "ms-off", "a called-off group paste");
+    await clickOn(".edit-error .dismiss");
+    await show(a);
+    await sessionAction(evaluate, "multi-send", slot(a));
+    await until(
+      "the member back in the group",
+      async () =>
+        (await tabOf(a)).member === "receiving" && (await groupSize()) === 3,
+    );
+    step(
+      "the group changing while a group paste was asked about closed the question and called the paste off, saying so; nobody got it",
     );
 
     // A snippet is filled per member: the production host gives its own

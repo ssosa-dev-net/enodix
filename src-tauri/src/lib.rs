@@ -30,7 +30,7 @@ use netterm_core::job::{
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{
-    LayoutError, PaneId, Split, TabId, View, WindowId, WindowView, Windows,
+    InputOrigin, LayoutError, PaneId, Split, TabId, View, WindowId, WindowView, Windows,
 };
 use netterm_core::logging::{LogFolder, SessionLog};
 use netterm_core::paste::{
@@ -2396,11 +2396,15 @@ enum LayoutEdit {
     ClosePane {
         pane: PaneId,
     },
+    /// `confirmed`: the user answered the join question (#123); a
+    /// production session joins only then.
     JoinGroup {
         tab: TabId,
+        confirmed: bool,
     },
     JoinPane {
         pane: PaneId,
+        confirmed: bool,
     },
     LeaveGroup {
         tab: TabId,
@@ -2448,20 +2452,26 @@ fn layout_reset(
 
 /// Edits the calling window's layout, or the app's multi-send group, from
 /// any window (#87). A session window's edit may change the session it is
-/// named by: every window is told (#85); so is a change to the group.
+/// named by: every window is told (#85); so is a change to the group. A
+/// join of a production session (by the app's record of it, as a group
+/// paste sees it) is refused unless it says it was confirmed (#123).
 #[tauri::command]
 fn layout_edit(
     app: AppHandle,
     window: tauri::WebviewWindow,
+    shell: State<'_, Shell>,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
     edit: LayoutEdit,
 ) -> Result<LayoutChanged, String> {
     let window = calling_window(&window)?;
     let changed = {
+        // The workspace first, then the windows (as everywhere else).
+        let workspace = shell.workspace();
+        let safety = |session| records.paste_safety(session, workspace.as_ref());
         let mut windows = tabs.lock();
-        let created =
-            apply_layout_edit(&mut windows, window, edit).map_err(|error| error.to_string())?;
+        let created = apply_layout_edit(&mut windows, window, edit, safety)
+            .map_err(|error| error.to_string())?;
         LayoutChanged {
             layout: window_view(&windows, window)?,
             created,
@@ -2481,14 +2491,24 @@ fn window_view(windows: &Windows, window: WindowId) -> Result<WindowView, String
         .ok_or_else(|| LayoutError::NoSuchWindow(window).to_string())
 }
 
+/// `safety`: a session's paste safety now, for the joins (#123).
 fn apply_layout_edit(
     windows: &mut Windows,
     window: WindowId,
     edit: LayoutEdit,
+    safety: impl Fn(SessionId) -> PasteSafety,
 ) -> Result<Option<u64>, LayoutError> {
     match edit {
-        LayoutEdit::JoinGroup { tab } => return windows.join_group(window, tab).map(|()| None),
-        LayoutEdit::JoinPane { pane } => return windows.join_pane(window, pane).map(|_| None),
+        LayoutEdit::JoinGroup { tab, confirmed } => {
+            return windows
+                .join_group_confirmed(window, tab, confirmed, safety)
+                .map(|()| None)
+        }
+        LayoutEdit::JoinPane { pane, confirmed } => {
+            return windows
+                .join_pane_confirmed(window, pane, confirmed, safety)
+                .map(|_| None)
+        }
         LayoutEdit::LeaveGroup { tab } => return windows.leave_group(window, tab).map(|()| None),
         LayoutEdit::EndGroup => {
             windows.end_group();
@@ -2572,17 +2592,21 @@ fn session_decide_host_key(
         .map_err(|error| error.to_string())
 }
 
-/// What the user typed or pasted in the session `id`: if its tab is in the
-/// multi-send group, it goes to every connected member, whichever window
-/// it is in, otherwise to `id` only (`Windows::input_targets`).
+/// Input in the session `id`'s terminal, from `origin` (#123): typed, it
+/// goes to every connected member if its tab is in the multi-send group,
+/// whichever window it is in, otherwise to `id` only; a group paste's line
+/// to `id` while it is a member's; anything else (a paste of its own, the
+/// terminal's replies, mouse reports) to `id` only
+/// (`Windows::input_targets`).
 #[tauri::command]
 fn session_input(
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
     id: u64,
     data: Vec<u8>,
+    origin: InputOrigin,
 ) {
-    let targets = tabs.lock().input_targets(SessionId(id));
+    let targets = tabs.lock().input_targets(SessionId(id), origin);
     manager.write_to_each(&targets, &data);
 }
 
@@ -3314,6 +3338,7 @@ pub fn run() {
             group_join_check,
             group::group_members,
             group::group_paste_send,
+            group::group_paste_check,
             group::session_safety,
             update_build,
             update_check_automatic,
