@@ -106,6 +106,16 @@ folder, and what stalled it was fixed [116].
   the Credential profile setting, the Credentials view and the reports of
   the CSV and Nornir imports say how a host gets a credential profile.
 
+### SSH login banners
+
+- The notice a device sends before the login (`banner login` on IOS,
+  `/etc/issue.net` on Linux) is shown: it is the first thing in the
+  terminal, before any password or code question, on every connection,
+  also when the login fails, and the session log keeps it [134]. Before,
+  it was dropped. A jump host's banner comes first, under a grey line
+  naming the jump host. Jobs, config backups and the Files tab leave it
+  out.
+
 ### What the app connects to
 
 - New: [docs/trust.md](docs/trust.md) says where passwords, key
@@ -236,6 +246,19 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
 - On Linux, a copy installed from the .deb or the .rpm is told to update
   with the package manager, not to unpack the new version over itself.
   The packages' menu entry has a category [114].
+- The Hosts view says when the workspace folder cannot be reached (a
+  network drive that disconnected, a folder moved or removed). Nothing can
+  be saved meanwhile, and the workspace loads again by itself once the
+  folder is back [132]. Before, live reload stopped for good after the
+  folder was removed and made again, and nothing said so. A folder that
+  comes back as another workspace is not taken for the one that was open.
+- A host or folder name written in its other Unicode form (`café` with a
+  combining accent, as macOS writes it) is the same name. Two such files
+  side by side both load and are shown as a problem [132].
+- A workspace file nested deeper than 32 levels is refused at once. Before,
+  a file made that way took seconds or minutes to refuse [132].
+- A live reload of a very large workspace no longer holds up the window:
+  with 20 000 hosts it held the workspace for 2.1 s, now for 27 ms [132].
 - Saving a host in the app no longer writes over a change made to its file
   outside the app (a pull, an editor) that the app had not loaded yet, and
   no longer brings back a host deleted outside. The edit is refused with
