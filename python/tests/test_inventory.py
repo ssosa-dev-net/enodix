@@ -4,6 +4,7 @@ logins from each kind of profile, jump hosts, and named secrets."""
 
 from __future__ import annotations
 
+import os
 import unittest
 from unittest import mock
 
@@ -228,6 +229,40 @@ class Logins(BridgeTest):
 
     def test_the_agent_serves_this_workspace_s_scope(self) -> None:
         self.assertEqual(self.server.agent["scope"], SCOPE)
+
+
+class DashedNames(BridgeTest):
+    """Names that start with ``-`` reach the binary as names (after ``--``
+    or as ``--option=<value>``), never as options."""
+
+    def test_a_folder_a_host_and_a_workspace_named_with_a_dash(self) -> None:
+        self.workspace.write("-old/r9.yaml", "address: 192.0.2.9\n")
+        self.workspace.write("-spare.yaml", "address: 127.0.0.1\ncredential_profile: lab\n")
+        root = self.workspace.root
+        self.assertEqual(
+            [host["id"] for host in netterm.inventory(root, folder="-old")["hosts"]], ["-old/r9.yaml"]
+        )
+        self.assertEqual(
+            [host["id"] for host in netterm.inventory(root, hosts=["-spare.yaml"])["hosts"]], ["-spare.yaml"]
+        )
+        login = netterm.credentials(root, "-spare.yaml")
+        self.assertEqual(login["username"], self.server.profile("lab")["username"])
+        inventory = NettermInventory(str(root), hosts=["-spare.yaml"]).load()
+        self.assertEqual(inventory.hosts["-spare.yaml"].username, login["username"])
+        # A workspace folder given by a relative name that starts with -.
+        previous = os.getcwd()
+        os.chdir(root.parent)
+        self.addCleanup(os.chdir, previous)
+        os.rename(root, root.parent / "-lab")
+        self.addCleanup(os.rename, root.parent / "-lab", root)
+        self.assertIn("-spare.yaml", [host["id"] for host in netterm.inventory("-lab")["hosts"]])
+
+    def test_a_secret_named_with_a_dash_is_looked_for_by_that_name(self) -> None:
+        with self.assertRaises(netterm.CliFailed) as raised:
+            netterm.secret(self.workspace.root, "-ro")
+        # Looked for (status 1), not refused as an option (status 2).
+        self.assertEqual(raised.exception.status, 1, raised.exception.reason)
+        self.assertIn("there is no secret called -ro", str(raised.exception))
 
 
 class Secrets(BridgeTest):

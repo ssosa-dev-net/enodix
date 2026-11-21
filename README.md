@@ -52,9 +52,11 @@ each release added, and [ROADMAP.md](ROADMAP.md) says what is built, what
 is not yet verified and what comes next.
 
 Windows 10 and 11 (64-bit). The app needs Microsoft Edge WebView2,
-which Windows 11 includes; the installer fetches it on older systems if it
-is missing. The portable copy cannot install it: on a computer without
-WebView2 it does not start.
+which Windows 11 includes; the installer downloads it when it is missing.
+On a computer with neither WebView2 nor internet access (a Windows Server
+jump box, say), install Microsoft's Evergreen Standalone WebView2 runtime
+first. The portable copy needs it too: it cannot install WebView2, and
+without it the app does not start.
 
 Linux packages (.deb, .rpm, AppImage) are built too, but the app has not
 been checked on a real Linux desktop yet, so Linux is not claimed as
@@ -154,7 +156,7 @@ you chose, files you downloaded from devices, and a Python bridge you
 installed with `pip`. To remove the data by hand after an uninstall without
 the box, delete the two folders above and the Credential Manager entries
 (**Control Panel, Credential Manager, Windows Credentials**), or run
-`netterm-cli clear-keychain` before uninstalling.
+`netterm-cli clear-keychain --yes` before uninstalling.
 
 ### Installing and uninstalling silently
 
@@ -191,7 +193,10 @@ netterm-cli inventory C:\Work\inventory --host core-r1.yaml --host Lab/sw1.yaml
 Problems with workspace files are printed as warnings and do not stop the
 export. It exits with 1 (and says why) for a missing workspace or an
 unknown folder, filter or host, and with 2 for a command line it does not
-understand. `netterm-cli --help` lists the options.
+understand. `netterm-cli --help` lists the options. A value that starts
+with `-` goes after `--`, which ends the options
+(`netterm-cli secret -- C:\Work\inventory -ro`), or after `=` for an option
+(`--folder=-old`, `--host=-spare.yaml`).
 
 It also hands out logins and opens tunnels, for scripts:
 
@@ -220,10 +225,11 @@ netterm-cli tunnel C:\Work\inventory --folder Europe/Madrid --port 830 --port 44
   reason on standard error. The app does not check a device's TLS
   certificate through a tunnel; the script decides how to.
 
-`netterm-cli clear-keychain` removes every saved login (credential profiles
-and named secrets, of every workspace) netterm keeps in Windows Credential
-Manager, and says how many. The vault is not touched. The uninstaller runs
-it when you tick the data box (see "Uninstalling").
+`netterm-cli clear-keychain --yes` removes every saved login (credential
+profiles and named secrets, of every workspace) netterm keeps in Windows
+Credential Manager, and says how many. Without `--yes` it only says how many
+it would remove, and removes nothing. The vault is not touched. The
+uninstaller runs it when you tick the data box (see "Uninstalling").
 
 ## Python and Nornir
 

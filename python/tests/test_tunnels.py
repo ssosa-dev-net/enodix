@@ -206,6 +206,36 @@ class Tunnels(JumpHostsTest):
         self.assertIn("refused/broken.yaml", warning)
         self.assertNotIn("behind/r1.yaml", warning)
 
+    def test_a_telnet_host_behind_a_jump_host_is_marked_and_says_why(self) -> None:
+        self.workspace.write(
+            "telnet/t1.yaml", "address: 192.0.2.5\nprotocol: telnet\njump_host: jumps/bastion.yaml\n"
+        )
+        for hosts in (
+            # No SSH host behind a jump host: no tunnel is opened at all.
+            ["telnet/t1.yaml", "devices/r-pass.yaml"],
+            # With one: the binary refuses the telnet host itself.
+            ["telnet/t1.yaml", "behind/r1.yaml"],
+        ):
+            with self.subTest(hosts=hosts):
+                self.records.lines.clear()
+                loader = NettermInventory(str(self.workspace.root), hosts=hosts, credentials=False, tunnels=True)
+                inventory = loader.load()
+                if loader.opened is not None:
+                    self.addCleanup(loader.opened.close)
+                host = inventory.hosts["telnet/t1.yaml"]
+                data = host["netterm"]
+                self.assertTrue(data["behind_jump_host"])
+                self.assertIsNone(data["tunnel"])
+                self.assertIn("only SSH is tunnelled", data["tunnel_error"])
+                self.assertEqual(host.hostname, "192.0.2.5")
+                warning = self.records.wait_for("could not be tunnelled")
+                self.assertIn("telnet/t1.yaml", warning)
+                self.assertIsNone(inventory.hosts[hosts[1]]["netterm"]["tunnel_error"])
+        exported = {host["id"]: host for host in netterm.inventory(self.workspace.root)["hosts"]}
+        with self.assertRaises(netterm.Unreachable) as refused:
+            netterm.endpoint(exported["telnet/t1.yaml"], 23)
+        self.assertIn("only SSH is tunnelled", str(refused.exception))
+
     def test_without_tunnels_hosts_behind_jump_hosts_say_so(self) -> None:
         inventory = NettermInventory(str(self.workspace.root), hosts=BEHIND, tunnels=False).load()
         host = inventory.hosts["behind/r1.yaml"]

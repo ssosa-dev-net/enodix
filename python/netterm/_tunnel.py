@@ -26,7 +26,15 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
-from ._cli import CLI_NAME, FORMAT, CliFailed, NettermError, find_cli
+from ._cli import (
+    CLI_NAME,
+    END_OF_OPTIONS,
+    FORMAT,
+    CliFailed,
+    NettermError,
+    compare_version,
+    find_cli,
+)
 
 LOG = logging.getLogger("netterm")
 
@@ -72,10 +80,14 @@ class Tunnels:
     def __init__(self, args: Sequence[str], ports: Sequence[int] = ()) -> None:
         self.ports: Tuple[int, ...] = tuple(ports)
         named = [part for port in self.ports for part in ("--port", str(port))]
+        args = list(args)
+        # Options go before the end of the options, if the values need one.
+        end = args.index(END_OF_OPTIONS) if END_OF_OPTIONS in args else len(args)
         cli = find_cli()
+        compare_version(cli)
         try:
             self._process = subprocess.Popen(
-                [str(cli), "tunnel", *args, *named],
+                [str(cli), "tunnel", *args[:end], *named, *args[end:]],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -205,6 +217,10 @@ def _close_all() -> None:
         tunnels.close()
 
 
+#: Why a telnet host with a jump host is not tunnelled (the binary's words).
+TELNET_REASON = "it is reached over telnet through a jump host, and only SSH is tunnelled"
+
+
 def behind(host: Mapping[str, Any]) -> bool:
     """Whether the exported host is reached through jump hosts (a broken
     chain included)."""
@@ -234,7 +250,8 @@ def answer(
             raise Unreachable(f"{name} is a serial host: it has no network address")
         return Endpoint(host["address"], port)
     if tunnel is None:
-        raise Unreachable(f"{name} is behind jump hosts and not tunnelled: {missing}")
+        why = missing if behind(host) else TELNET_REASON
+        raise Unreachable(f"{name} is behind jump hosts and not tunnelled: {why}")
     if "error" in tunnel:
         raise Unreachable(f"{name} is behind jump hosts and not tunnelled: {tunnel['error']}")
     if port == settings.get("port"):

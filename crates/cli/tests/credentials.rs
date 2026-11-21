@@ -330,6 +330,48 @@ fn it_says_what_is_missing() {
     }
 }
 
+/// A named secret or a host id that starts with `-` is read after `--`.
+#[test]
+fn a_name_that_starts_with_a_dash_comes_after_a_double_dash() {
+    let setup = Setup::new();
+    fs::write(
+        setup.workspace.join("-spare.yaml"),
+        "address: 192.0.2.8\ncredential_profile: lab\n",
+    )
+    .unwrap();
+    let store = memory_store();
+    store
+        .put_secret(SCOPE, "-ro", &SecretValue::new("r34d-only"))
+        .unwrap();
+    let _app = setup.serve(store);
+    let ws = setup.ws();
+    assert_eq!(
+        answered(&setup.run(&["secret", "--", ws, "-ro"])),
+        json!({ "format": 1, "name": "-ro", "value": "r34d-only" })
+    );
+    assert_eq!(
+        answered(&setup.run(&["secret", ws, "--", "-ro"])),
+        json!({ "format": 1, "name": "-ro", "value": "r34d-only" })
+    );
+    let spare = answered(&setup.run(&["credentials", ws, "--", "-spare.yaml"]));
+    assert_eq!(spare["host"], "-spare.yaml");
+    assert_eq!(spare["username"], "admin");
+    // Without `--`, as before: an unknown option.
+    let output = setup.run(&["secret", ws, "-ro"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("unknown option \"-ro\""),
+        "{}",
+        stderr(&output)
+    );
+    assert!(stderr(&output).contains("--"), "{}", stderr(&output));
+    // `--` counts once: a second one is a value.
+    assert_eq!(
+        setup.run(&["secret", "--", ws, "--", "-ro"]).status.code(),
+        Some(2)
+    );
+}
+
 #[test]
 fn a_host_id_may_use_backslashes() {
     let setup = Setup::new();
@@ -438,7 +480,21 @@ fn clear_keychain_removes_every_saved_login_and_only_those() {
     // The app running does not change what is removed.
     let _app = setup.serve(memory_store());
 
-    let output = setup.run(&["clear-keychain"]);
+    // Without --yes it says what it would remove, and removes nothing.
+    let asked = setup.run(&["clear-keychain"]);
+    refused(
+        &asked,
+        "this would remove 4 credential profiles and 1 named secret from the keychain",
+    );
+    assert!(
+        stderr(&asked).contains("nothing was removed: run it with --yes"),
+        "{}",
+        stderr(&asked)
+    );
+    assert_eq!(keychain.0.contents().unwrap().profiles.len(), 4);
+    assert_eq!(keychain.0.contents().unwrap().secrets.len(), 1);
+
+    let output = setup.run(&["clear-keychain", "--yes"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
@@ -447,7 +503,7 @@ fn clear_keychain_removes_every_saved_login_and_only_those() {
     assert!(keychain.0.contents().unwrap().is_empty());
     assert_eq!(other.0.contents().unwrap().sorted(), contents().sorted());
 
-    let again = setup.run(&["clear-keychain"]);
+    let again = setup.run(&["clear-keychain", "--yes"]);
     assert_eq!(
         String::from_utf8_lossy(&again.stdout),
         "removed 0 credential profiles and 0 named secrets from the keychain\n"
@@ -459,19 +515,26 @@ fn clear_keychain_removes_every_saved_login_and_only_those() {
 #[test]
 fn clear_keychain_has_nothing_to_remove_without_a_keychain() {
     let setup = Setup::new();
-    let output = setup.run(&["clear-keychain"]);
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("nothing removed"));
+    for args in [&["clear-keychain"][..], &["clear-keychain", "--yes"][..]] {
+        let output = setup.run(args);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("nothing removed"));
+    }
 }
 
 #[test]
-fn clear_keychain_takes_no_arguments_and_is_refused_to_a_script_job() {
+fn clear_keychain_takes_only_yes_and_is_refused_to_a_script_job() {
     let setup = Setup::new();
-    assert_eq!(
-        setup.run(&["clear-keychain", setup.ws()]).status.code(),
-        Some(2)
-    );
-    let mut command = setup.command(&["clear-keychain"]);
+    for args in [
+        &["clear-keychain", setup.ws()][..],
+        &["clear-keychain", "--yes", "--yes"][..],
+        &["clear-keychain", "--yes", setup.ws()][..],
+        &["clear-keychain", "-y"][..],
+        &["clear-keychain", "--force"][..],
+    ] {
+        assert_eq!(setup.run(args).status.code(), Some(2), "{args:?}");
+    }
+    let mut command = setup.command(&["clear-keychain", "--yes"]);
     command.env("NETTERM_JOB_TARGETS", setup.data.join("targets.json"));
     without_terminal(&mut command);
     refused(

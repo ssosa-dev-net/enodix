@@ -74,9 +74,19 @@ impl KeychainStore {
         }
         Ok(removed)
     }
+
+    /// How many entries [`remove_all`](Self::remove_all) would remove now,
+    /// removing nothing (`netterm-cli clear-keychain` without `--yes`).
+    pub fn count_all(&self) -> Result<RemovedEntries, StoreError> {
+        Ok(RemovedEntries {
+            profiles: os::targets(&format!("{}:*", self.prefix))?.len(),
+            secrets: os::targets(&format!("{}.secret:*", self.prefix))?.len(),
+        })
+    }
 }
 
-/// How many entries [`KeychainStore::remove_all`] removed.
+/// How many entries [`KeychainStore::remove_all`] removed (or, from
+/// [`KeychainStore::count_all`], would remove).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RemovedEntries {
     /// Credential profiles.

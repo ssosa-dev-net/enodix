@@ -38,6 +38,15 @@ outside the app, install a package instead, or unpack the image
 (`--appimage-extract`) and use `squashfs-root/usr/bin/netterm-cli` and the
 wheel in `squashfs-root/usr/lib/netterm/python/`.
 
+The package and the binary should be the same version. When they are not
+(the app was upgraded and the package in your own environment was not, say),
+the package warns once, when it first runs the binary, with a
+`netterm.VersionWarning` naming both versions: install the wheel of the
+app's version. It goes on all the same; only a change of the binary's JSON
+format stops it. Names that start with `-` (a secret called `-ro`, a folder
+`-old`) are handed to the binary as names; a binary older than this package
+refuses them.
+
 ## The Nornir inventory
 
 ```python
@@ -107,8 +116,10 @@ What you get:
 
 Credentials come from the running app (unlocked) like from an SSH agent;
 with the app closed, from the keychain, or from the vault after asking for
-its master password in your terminal. Without a terminal and without the
-running app, a vault is refused: unattended runs against a vault are
+its master password in your terminal. Without a terminal (or with a console
+nobody sees, as a scheduled task run while nobody is logged on has) and
+without the running app unlocked, a vault is refused at once, saying so:
+unattended runs against a vault that is not unlocked in the running app are
 deliberately impossible.
 
 ### Hosts behind jump hosts
@@ -137,7 +148,10 @@ tunnelled, keeps its own address and carries the reason in
 - the app has not trusted the **device's** host key yet: connect to it once
   in the app (Trust and remember);
 - it is reached over telnet: only SSH is tunnelled, so telnet hosts behind
-  jump hosts stay out of reach of scripts.
+  jump hosts stay out of reach of scripts. They are marked
+  `netterm.behind_jump_host` all the same (`jump_hosts` stays empty: the
+  app works out a chain only for SSH; `netterm.settings.jump_host` names
+  the jump host).
 
 Leave such hosts out with `nr.filter(F(netterm__tunnel_error=None))`.
 
@@ -361,4 +375,7 @@ with netterm.tunnels(ws, filter="Arista", ports=[443]) as opened:
 ```
 
 Errors are `netterm.NettermError` (`CliNotFound`, `CliFailed` with the
-binary's `status` and `reason`, or `Unreachable`).
+binary's `status` and `reason`, or `Unreachable`). A binary of another
+version than the package is a `netterm.VersionWarning` (a `UserWarning`),
+given once; silence it with `warnings.filterwarnings("ignore",
+category=netterm.VersionWarning)`.

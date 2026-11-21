@@ -212,6 +212,78 @@ fn a_command_line_it_does_not_understand_gives_status_2() {
     }
 }
 
+/// A folder, a host id or a workspace folder whose name starts with `-`:
+/// a value after `--` is never an option, and `--option=<value>` takes any
+/// value.
+#[test]
+fn values_that_start_with_a_dash_come_after_a_double_dash_or_an_equals_sign() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("-lab");
+    std::fs::create_dir_all(root.join("-old")).unwrap();
+    std::fs::write(root.join("-old/-spare.yaml"), "address: 192.0.2.7\n").unwrap();
+    std::fs::write(root.join("r1.yaml"), "address: 192.0.2.1\n").unwrap();
+    let in_temp = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_netterm-cli"))
+            .args(args)
+            .current_dir(temp.path())
+            .output()
+            .unwrap()
+    };
+    let shown = |args: &[&str]| {
+        let output = in_temp(args);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let mut found: Vec<String> = ids(&json).into_iter().map(str::to_owned).collect();
+        found.sort();
+        found
+    };
+
+    assert_eq!(
+        shown(&["inventory", "--", "-lab"]),
+        ["-old/-spare.yaml", "r1.yaml"]
+    );
+    assert_eq!(
+        shown(&["inventory", "--folder=-old", "--", "-lab"]),
+        ["-old/-spare.yaml"]
+    );
+    assert_eq!(
+        shown(&["inventory", "--host=-old/-spare.yaml", "--", "-lab"]),
+        ["-old/-spare.yaml"]
+    );
+    // `=` works for any value, with the workspace before or after.
+    let lab = root.to_str().unwrap();
+    assert_eq!(
+        shown(&["inventory", lab, "--folder=-old"]),
+        ["-old/-spare.yaml"]
+    );
+    assert_eq!(shown(&["inventory", "--host=r1.yaml", lab]), ["r1.yaml"]);
+
+    for args in [
+        // After `--` nothing is an option.
+        &["inventory", "--", "-lab", "--folder", "-old"][..],
+        // A value of its own still cannot start with `-`: it says how.
+        &["inventory", lab, "--folder", "-old"][..],
+        &["inventory", lab, "--folder="][..],
+        &["inventory", "-lab"][..],
+    ] {
+        let output = in_temp(args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+    let said = stderr(&in_temp(&["inventory", lab, "--folder", "-old"]));
+    assert!(said.contains("--folder=<value>"), "{said}");
+}
+
 #[test]
 fn help_and_version_print_and_succeed() {
     let help = run(&["--help"]);

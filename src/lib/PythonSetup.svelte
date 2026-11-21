@@ -1,8 +1,9 @@
 <script lang="ts">
   // Setting up the app's own Python environment: the Python found and where
   // the environment goes, the libraries to tick, then a confirmation listing
-  // everything that will be installed; nothing is installed before
-  // "Install". The setup's output streams in while it runs. A tab of its
+  // the packages asked for (and saying that what they need comes with them
+  // from the package index, unlisted and unpinned, and pip with the
+  // environment); nothing is installed before "Install". The setup's output streams in while it runs. A tab of its
   // own (#73; one at a time); closing the tab while the setup runs cancels
   // it.
   import { onDestroy } from "svelte";
@@ -170,10 +171,18 @@
             <code>{planned.name}</code>
             {planned.source.kind === "wheel"
               ? "— the app's package, from the file shipped with the app"
-              : "— from the package index (with what it needs)"}
+              : "— from the package index"}
           </li>
         {/each}
       </ul>
+      <p class="hint" data-python-install-note>
+        {#if plan.installs.some((planned) => planned.source.kind === "index")}
+          These are the packages asked for. pip also installs, from the package
+          index, the packages each of them needs (for NAPALM, dozens), which are
+          not listed here, all at their newest versions: nothing is pinned.
+        {/if}
+        The environment also gets pip itself, as every new Python environment does.
+      </p>
       <p class="hint">
         Python features will then use <code>{plan.interpreter}</code>.
       </p>

@@ -31,7 +31,7 @@ Usage:
   {NAME} secret <workspace folder> <name>
   {NAME} tunnel <workspace folder> [--folder <path> | --filter <name> | --host <id>...]
                 [--port <number>...]
-  {NAME} clear-keychain
+  {NAME} clear-keychain --yes
   {NAME} --help | --version
 
 inventory   prints the workspace's hosts as JSON, each with the settings that
@@ -61,8 +61,13 @@ tunnel      opens a loopback tunnel to each host behind jump hosts (in the
 clear-keychain
             removes every credential profile and named secret {PRODUCT}
             keeps in the system keychain, of every workspace, and says how
-            many it removed. The vault is not touched. Uninstalling
-            {PRODUCT} with its data deleted runs it.
+            many it removed. Without --yes it only says how many it would
+            remove, and removes nothing. The vault is not touched.
+            Uninstalling {PRODUCT} with its data deleted runs it.
+
+A value that starts with - goes after --, which ends the options
+(`{NAME} secret -- <workspace folder> -ro`); an option's value can always be
+given as --folder=<value> (likewise --filter=, --host= and --port=).
 
 Credentials come from {PRODUCT} while it runs and its vault, if it has
 one, is unlocked. Otherwise they are read here: from the keychain, or from
@@ -149,23 +154,26 @@ pub(crate) fn workspace_and_limit(args: &[String]) -> Result<(&str, Limit), Fail
     let mut folder: Option<&str> = None;
     let mut filter: Option<&str> = None;
     let mut hosts: Vec<String> = Vec::new();
+    let mut options_ended = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        let mut value = |option: &str| {
-            args.next()
-                .map(String::as_str)
-                .filter(|value| !value.starts_with('-'))
-                .ok_or_else(|| Failure::Usage(format!("{option} needs a value")))
-        };
-        match arg.as_str() {
-            "--folder" => set_once(&mut folder, "--folder", value("--folder")?)?,
-            "--filter" => set_once(&mut filter, "--filter", value("--filter")?)?,
-            "--host" => hosts.push(value("--host")?.to_owned()),
-            option if option.starts_with('-') => {
-                return Err(Failure::Usage(format!("unknown option {option:?}")))
+        if options_ended || !arg.starts_with('-') {
+            if root.replace(arg.as_str()).is_some() {
+                return Err(Failure::Usage(format!("unexpected argument {arg:?}")));
             }
-            path if root.is_none() => root = Some(path),
-            extra => return Err(Failure::Usage(format!("unexpected argument {extra:?}"))),
+            continue;
+        }
+        if arg == END_OF_OPTIONS {
+            options_ended = true;
+            continue;
+        }
+        let (option, attached) = option_and_value(arg);
+        let mut value = || option_value(option, attached, &mut args);
+        match option {
+            "--folder" => set_once(&mut folder, "--folder", value()?)?,
+            "--filter" => set_once(&mut filter, "--filter", value()?)?,
+            "--host" => hosts.push(value()?.to_owned()),
+            _ => return Err(unknown_option(arg)),
         }
     }
     let root = root.ok_or_else(|| Failure::Usage("no workspace folder given".into()))?;
@@ -199,6 +207,47 @@ pub(crate) fn job_scope(workspace: &Workspace) -> Result<Option<ScriptTargets>, 
         )));
     }
     Ok(Some(targets))
+}
+
+/// Ends the options: every argument after it is a value, even one that
+/// starts with `-` (a secret called `-ro`, a workspace folder `-lab`).
+pub(crate) const END_OF_OPTIONS: &str = "--";
+
+/// `--name=value` as the option and its value; any other argument as
+/// itself, with no value.
+pub(crate) fn option_and_value(arg: &str) -> (&str, Option<&str>) {
+    match arg.split_once('=') {
+        Some((option, value)) if option.starts_with("--") => (option, Some(value)),
+        _ => (arg, None),
+    }
+}
+
+/// The value of `option`: `attached` (from `--option=<value>`, any value
+/// but an empty one), else the next argument, which must not start with
+/// `-` (it would be an option given by mistake).
+pub(crate) fn option_value<'a>(
+    option: &str,
+    attached: Option<&'a str>,
+    rest: &mut std::slice::Iter<'a, String>,
+) -> Result<&'a str, Failure> {
+    if let Some(value) = attached {
+        return Some(value)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| Failure::Usage(format!("{option} needs a value")));
+    }
+    match rest.next() {
+        Some(value) if !value.starts_with('-') => Ok(value),
+        Some(_) => Err(Failure::Usage(format!(
+            "{option} needs a value (one that starts with - is given as {option}=<value>)"
+        ))),
+        None => Err(Failure::Usage(format!("{option} needs a value"))),
+    }
+}
+
+pub(crate) fn unknown_option(arg: &str) -> Failure {
+    Failure::Usage(format!(
+        "unknown option {arg:?} (a value that starts with - goes after {END_OF_OPTIONS})"
+    ))
 }
 
 fn set_once<'a>(slot: &mut Option<&'a str>, option: &str, value: &'a str) -> Result<(), Failure> {

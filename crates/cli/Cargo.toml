@@ -19,9 +19,10 @@ serde_json = "1"
 tokio = { workspace = true }
 zeroize = "1"
 
-# Whether there is a console to ask for the master password on.
+# Whether there is a console to ask for the master password on, on a
+# window station someone sees.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_StationsAndDesktops", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 portable-pty = "0.9.0"
@@ -33,6 +34,10 @@ tokio = { workspace = true }
 # A process without a controlling terminal, for the "no terminal" checks.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+
+# A process on a window station nobody sees (tests/no_desktop.rs).
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_StationsAndDesktops", "Win32_System_Threading"] }
 
 [build-dependencies]
 serde_json = "1"
