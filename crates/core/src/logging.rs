@@ -30,6 +30,10 @@ const QUICK_CONNECT: &str = "quick connect";
 /// bounds how far device output can move the cursor (`ESC [ 999999999 C`).
 const MAX_COLUMNS: usize = 4096;
 
+/// The most parameter characters kept of a control sequence; the rest are
+/// dropped (real sequences hold a few dozen at most).
+const MAX_PARAMETERS: usize = 256;
+
 /// The per-user folder all session logs go to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogFolder {
@@ -361,7 +365,11 @@ impl PlainText {
             }
             Escape::Csi(mut params) => match c {
                 '\u{20}'..='\u{3f}' => {
-                    params.push(c);
+                    // Device output decides how long a sequence is: one
+                    // that never ends must not grow without bound (#118).
+                    if params.len() < MAX_PARAMETERS {
+                        params.push(c);
+                    }
                     self.escape = Escape::Csi(params);
                 }
                 '\u{40}'..='\u{7e}' => self.control(c, &params),

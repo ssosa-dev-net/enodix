@@ -45,6 +45,9 @@ struct Client {
     negotiated: Arc<std::sync::Mutex<Option<russh::Names>>>,
     /// What a file connection follows of its device's connection.
     followed: Option<Followed>,
+    /// Why the connection ended, once it has: what a login cut short
+    /// reports (#118).
+    ended: EndedWhy,
 }
 
 /// What a file connection follows of its device's connection, told by the
@@ -193,6 +196,27 @@ impl client::Handler for Client {
                 (lost, Err(error))
             }
         };
+        // For a login cut short: the socket closing under it is the device
+        // hanging up.
+        let hung_up = matches!(
+            &result,
+            Err(ClientError::Ssh(russh::Error::IO(error))) if matches!(
+                error.kind(),
+                io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+            )
+        );
+        *self
+            .ended
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(if hung_up {
+            Lost::Closed {
+                message: String::new(),
+            }
+        } else {
+            lost.clone()
+        });
         if let Some(followed) = &self.followed {
             followed.ended.send_replace(Some(lost));
         }
@@ -539,6 +563,7 @@ async fn authenticate(
     username: &str,
     login: Login<'_>,
     prompter: &mut Prompter,
+    ended: &EndedWhy,
 ) -> Result<(), OpenError> {
     // Learn which methods the server takes (some let anyone in).
     let offered = match connection
@@ -600,6 +625,11 @@ async fn authenticate(
         } => (remaining_methods, partial_success),
     };
 
+    // russh answers a connection that ended as a refusal listing no
+    // methods: a device that refuses lists those it takes (#118).
+    if remaining.is_empty() && connection.is_closed() {
+        return Err(ended_during_login(ended));
+    }
     if (partial_success || ask_after_refusal)
         && remaining.contains(&MethodKind::KeyboardInteractive)
     {
@@ -805,9 +835,27 @@ async fn connect_device(
         followed,
     };
     let through = last_via(&target.jump_hosts, &jumps);
-    let (connection, agreed) = connect(hop, through, &known_hosts, &asker, prompter).await?;
+    let (connection, agreed) = connect(hop, through, &known_hosts, &asker, prompter)
+        .await
+        .map_err(|error| lost_jump_host(&target.jump_hosts, &jumps).unwrap_or(error))?;
     algorithms.push(agreed);
     Ok((connection, jumps, algorithms))
+}
+
+/// When reaching the device failed because a jump host's connection ended
+/// on the way (the device's runs through it): that jump host's failure,
+/// the first in connect order whose connection has ended (#118).
+fn lost_jump_host(jump_hosts: &[JumpHost], jumps: &[Handle<Client>]) -> Option<OpenError> {
+    let (jump, _) = jump_hosts
+        .iter()
+        .zip(jumps)
+        .find(|(_, connection)| connection.is_closed())?;
+    Some(OpenError::JumpHost {
+        name: jump.name.clone(),
+        error: Box::new(OpenError::Connect(
+            "its connection ended while the session logged in to the device".into(),
+        )),
+    })
 }
 
 /// [`connect_device`], then starts the shell there.
@@ -937,7 +985,14 @@ async fn start_shell(
     connection: &Handle<Client>,
     size: TerminalSize,
 ) -> Result<(Channel<client::Msg>, Vec<u8>), OpenError> {
-    let channel = connection.channel_open_session().await.map_err(protocol)?;
+    let channel = connection
+        .channel_open_session()
+        .await
+        .map_err(|error| match error {
+            // Not a refusal: the connection ended (#118).
+            _ if connection.is_closed() => OpenError::Protocol(CLOSED_BEFORE_SHELL.into()),
+            error => protocol(error),
+        })?;
     shell_on(channel, size)
         .await
         .map_err(|refusal| match refusal {
@@ -971,6 +1026,9 @@ async fn start_second_shell(
         Err(ShellRefusal::Failed(error)) => Err(error),
     }
 }
+
+/// What a device that hung up between the login and the shell reports.
+const CLOSED_BEFORE_SHELL: &str = "the server closed the connection before starting a shell";
 
 /// Why a shell did not start on a channel.
 enum ShellRefusal {
@@ -1012,7 +1070,7 @@ async fn shell_on(
             Some(_) => {}
             None => {
                 return Err(ShellRefusal::Failed(OpenError::Protocol(
-                    "the server closed the connection before starting a shell".into(),
+                    CLOSED_BEFORE_SHELL.into(),
                 )));
             }
         }
@@ -1065,6 +1123,7 @@ async fn connect_and_log_in(
         ..client::Config::default()
     });
     let negotiated = Arc::default();
+    let ended = EndedWhy::default();
     let client = Client {
         host: hop.host.to_owned(),
         port: hop.port,
@@ -1072,6 +1131,7 @@ async fn connect_and_log_in(
         asker: asker.clone(),
         negotiated: Arc::clone(&negotiated),
         followed: hop.followed,
+        ended: Arc::clone(&ended),
     };
     // What the server sends first, for reporting a failed negotiation.
     let first_bytes = FirstBytes::new();
@@ -1132,8 +1192,35 @@ async fn connect_and_log_in(
         }
         login => (hop.username, login),
     };
-    authenticate(&mut connection, username, login, prompter).await?;
+    authenticate(&mut connection, username, login, prompter, &ended)
+        .await
+        .map_err(|error| match error {
+            // A request that could not be sent or answered (#118).
+            OpenError::Protocol(_) if connection.is_closed() => ended_during_login(&ended),
+            error => error,
+        })?;
     Ok((connection, agreed))
+}
+
+/// Why a connection ended, once it has (told by its handler).
+type EndedWhy = Arc<std::sync::Mutex<Option<Lost>>>;
+
+/// What a connection that ended while the session logged in reports, by
+/// why it ended (if russh said).
+fn ended_during_login(ended: &EndedWhy) -> OpenError {
+    let ended = ended
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    OpenError::Connect(match ended {
+        Some(Lost::Broken(reason)) => format!("the connection broke during the login ({reason})"),
+        Some(Lost::NotAnswering) => "the device stopped answering during the login".into(),
+        Some(Lost::Closed { message }) if !message.trim().is_empty() => format!(
+            "the device closed the connection during the login ({})",
+            message.trim()
+        ),
+        _ => "the device closed the connection during the login".into(),
+    })
 }
 
 /// What a failed negotiation reports: `russh`'s failure for the first kind

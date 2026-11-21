@@ -10,15 +10,11 @@ mod support;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
 
 use netterm_core::files::{FileConnection, Link, Outcome, Transfer, Transfers};
+use support::memory::{resident, Peak, MIB};
 use support::{known_hosts, TestSshServer};
 use tempfile::TempDir;
-
-const MIB: u64 = 1024 * 1024;
 
 /// The file's size.
 const SIZE: u64 = 40 * MIB;
@@ -29,34 +25,6 @@ const SIZE: u64 = 40 * MIB;
 /// MiB (glibc's allocator keeps an arena per thread of the runtime), so
 /// 16 MiB failed there (#114).
 const GROWTH: u64 = 24 * MIB;
-
-/// The process's resident memory, in bytes, where the platform tells.
-#[cfg(windows)]
-fn resident() -> Option<u64> {
-    use windows_sys::Win32::System::ProcessStatus::{
-        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
-    };
-    use windows_sys::Win32::System::Threading::GetCurrentProcess;
-    let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-    // SAFETY: the counters are ours and sized as the call is told.
-    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) };
-    (ok != 0).then_some(counters.WorkingSetSize as u64)
-}
-
-#[cfg(target_os = "linux")]
-fn resident() -> Option<u64> {
-    let statm = fs::read_to_string("/proc/self/statm").ok()?;
-    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-    // SAFETY: sysconf has no preconditions.
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    Some(pages * page as u64)
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-fn resident() -> Option<u64> {
-    None
-}
 
 /// Writes a file of [`SIZE`] bytes a piece at a time.
 fn write_large(path: &Path) {
@@ -93,42 +61,6 @@ fn same(one: &Path, two: &Path) -> bool {
         if a[..n] != b[..n] {
             return false;
         }
-    }
-}
-
-/// Samples the resident memory until stopped; the highest seen.
-struct Peak {
-    highest: Arc<AtomicU64>,
-    stop: Arc<AtomicBool>,
-    thread: std::thread::JoinHandle<()>,
-}
-
-impl Peak {
-    fn start() -> Self {
-        let highest = Arc::new(AtomicU64::new(resident().unwrap_or(0)));
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread = {
-            let (highest, stop) = (highest.clone(), stop.clone());
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
-                    if let Some(now) = resident() {
-                        highest.fetch_max(now, Ordering::SeqCst);
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            })
-        };
-        Self {
-            highest,
-            stop,
-            thread,
-        }
-    }
-
-    fn stop(self) -> u64 {
-        self.stop.store(true, Ordering::SeqCst);
-        self.thread.join().unwrap();
-        self.highest.load(Ordering::SeqCst)
     }
 }
 

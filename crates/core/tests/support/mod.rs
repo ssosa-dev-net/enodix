@@ -20,6 +20,15 @@
 //! | `exit [n]`   | ends the shell with exit status `n` (default 0)   |
 //! | `drop`       | drops the connection without ending the shell     |
 //! | `freeze`     | the connection stops answering anything (silent)  |
+//! | `raw <hex>...` | sends each argument's bytes (hex) as a data message of its own, then the prompt |
+//! | `slowly <ms> <text>` | sends `<text>` a byte at a time, `<ms>` apart, then the prompt |
+//! | `burst <n>`  | prints `line 1` to `line <n>` and ends the shell (exit status 0) in the same breath |
+//!
+//! [`TestSshServer::quirks`] makes a server misbehave on purpose (#118):
+//! close or go silent at a stage of the login ([`ServerQuirks::misbehave_at`]),
+//! send a login banner or output before confirming the shell, read input
+//! slowly. [`TestSshServer::start_tuned`] changes its russh configuration
+//! (rekeying limits, say).
 //!
 //! A server started with [`TestSshServer::start_device`] runs the shell in
 //! device mode, like a network device's CLI: its prompt is `<hostname># `
@@ -82,8 +91,11 @@ pub mod agent;
 pub mod algorithms;
 pub mod credentials;
 pub mod http;
+pub mod memory;
 pub mod processes;
+pub mod proxy;
 pub mod python;
+pub mod raw;
 pub mod scp;
 pub mod serial;
 pub mod sftp;
@@ -122,6 +134,11 @@ pub const OTP_USERNAME: &str = "engineer-otp";
 /// A user whose login the server never answers, like a device whose
 /// authentication backend hangs.
 pub const STALLING_USERNAME: &str = "engineer-stalled";
+/// A user whose keyboard-interactive login asks [`THREE_QUESTIONS`], one
+/// round each, in a row; the answers are [`THREE_ANSWERS`].
+pub const THREE_QUESTIONS_USERNAME: &str = "engineer-3q";
+pub const THREE_QUESTIONS: [&str; 3] = ["Site: ", "Password: ", "Token: "];
+pub const THREE_ANSWERS: [&str; 3] = ["madrid", PASSWORD, ONE_TIME_CODE];
 pub const ONE_TIME_CODE: &str = "424242";
 pub const PASSWORD_QUESTION: &str = "Password: ";
 pub const CODE_QUESTION: &str = "Verification code: ";
@@ -305,7 +322,95 @@ pub struct TestSshServer {
     shells: Arc<AtomicUsize>,
     /// How many connections it has now, logged in or not.
     alive: Arc<AtomicUsize>,
+    /// How it misbehaves on purpose.
+    quirks: Arc<ServerQuirks>,
 }
+
+/// A stage of a connection at which a server can misbehave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Stage {
+    /// When the client tries to log in (password, key or keyboard-interactive).
+    Login,
+    /// When the logged-in client opens its session channel.
+    ChannelOpen,
+    /// When the client asks for the shell.
+    ShellRequest,
+}
+
+/// What a server does at a [`Stage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Misbehaviour {
+    /// Drops the connection there.
+    Close,
+    /// Stops answering anything on that connection, keeping it open.
+    Stall,
+    /// Takes this long to answer, then goes on (a slow device).
+    Pause(Duration),
+}
+
+/// How a test server misbehaves on purpose; see [`TestSshServer::quirks`].
+#[derive(Default)]
+pub struct ServerQuirks {
+    misbehave: Mutex<HashMap<Stage, Misbehaviour>>,
+    auth_banner: Mutex<Option<String>>,
+    shell_banner: Mutex<Option<Vec<u8>>>,
+    input_delay: Mutex<Option<Duration>>,
+    refuse_forwarding: AtomicBool,
+}
+
+impl ServerQuirks {
+    /// From now on, the server refuses to forward connections, as a jump
+    /// host whose administrator does not allow it (`AllowTcpForwarding
+    /// no`).
+    pub fn refuse_forwarding(&self) {
+        self.refuse_forwarding.store(true, Ordering::SeqCst);
+    }
+
+    /// From now on, every connection misbehaves as `how` at `stage`.
+    pub fn misbehave_at(&self, stage: Stage, how: Misbehaviour) {
+        self.misbehave.lock().unwrap().insert(stage, how);
+    }
+
+    /// From now on, every connection takes `pause` to answer at `stage`.
+    pub fn pause_at(&self, stage: Stage, pause: Duration) {
+        self.misbehave_at(stage, Misbehaviour::Pause(pause));
+    }
+
+    /// From now on, the server sends `banner` before the login (the SSH
+    /// authentication banner, a legal warning on most devices).
+    pub fn auth_banner(&self, banner: &str) {
+        *self.auth_banner.lock().unwrap() = Some(banner.to_owned());
+    }
+
+    /// From now on, a shell prints `output` before the server confirms it
+    /// (as some devices print their banner).
+    pub fn output_before_shell(&self, output: &[u8]) {
+        *self.shell_banner.lock().unwrap() = Some(output.to_vec());
+    }
+
+    /// From now on, the server takes `delay` over every piece of input it
+    /// reads, its whole connection waiting meanwhile: a slow device.
+    pub fn read_input_slowly(&self, delay: Duration) {
+        *self.input_delay.lock().unwrap() = Some(delay);
+    }
+
+    /// What to do at `stage`, if anything.
+    async fn at(&self, stage: Stage) -> Result<(), russh::Error> {
+        let misbehaviour = self.misbehave.lock().unwrap().get(&stage).copied();
+        match misbehaviour {
+            Some(Misbehaviour::Close) => Err(russh::Error::Disconnect),
+            Some(Misbehaviour::Stall) => std::future::pending().await,
+            Some(Misbehaviour::Pause(pause)) => {
+                tokio::time::sleep(pause).await;
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+/// Changes a test server's russh configuration before it starts.
+pub type Tune = Box<dyn FnOnce(&mut russh::server::Config) + Send>;
 
 /// How a device-mode shell starts.
 #[derive(Debug, Clone)]
@@ -454,11 +559,34 @@ impl TestSshServer {
         Self::start_with(port, None, Preferred::default(), None).await
     }
 
+    /// Starts a server on a free loopback port whose russh configuration
+    /// `tune` changes (its rekeying limits, its inactivity timeout, ...).
+    pub async fn start_tuned(
+        tune: impl FnOnce(&mut russh::server::Config) + Send + 'static,
+    ) -> Self {
+        Self::start_configured(0, None, Preferred::default(), None, Some(Box::new(tune))).await
+    }
+
+    /// How the server misbehaves on purpose (it behaves until told).
+    pub fn quirks(&self) -> &ServerQuirks {
+        &self.quirks
+    }
+
     async fn start_with(
         port: u16,
         methods: Option<MethodSet>,
         preferred: Preferred,
         device: Option<Device>,
+    ) -> Self {
+        Self::start_configured(port, methods, preferred, device, None).await
+    }
+
+    async fn start_configured(
+        port: u16,
+        methods: Option<MethodSet>,
+        preferred: Preferred,
+        device: Option<Device>,
+        tune: Option<Tune>,
     ) -> Self {
         let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let rsa_key = russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap();
@@ -474,7 +602,7 @@ impl TestSshServer {
             _ => PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap(),
         };
         let defaults = russh::server::Config::default();
-        let config = Arc::new(russh::server::Config {
+        let mut config = russh::server::Config {
             methods: methods.unwrap_or(defaults.methods.clone()),
             auth_rejection_time: Duration::ZERO,
             // A small receive window, as on network devices: input larger
@@ -483,7 +611,12 @@ impl TestSshServer {
             keys: vec![host_key.clone()],
             preferred,
             ..defaults
-        });
+        };
+        if let Some(tune) = tune {
+            tune(&mut config);
+        }
+        let config = Arc::new(config);
+        let quirks = Arc::<ServerQuirks>::default();
         let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         known_hosts()
@@ -520,6 +653,7 @@ impl TestSshServer {
             scp_running: scp_running.clone(),
             shells: shells.clone(),
             alive: alive.clone(),
+            quirks: quirks.clone(),
         };
         let task = tokio::spawn(async move {
             // `run_on_socket`, but keeping what each client sends first.
@@ -575,6 +709,7 @@ impl TestSshServer {
             scp_running,
             shells,
             alive,
+            quirks,
         }
     }
 
@@ -866,6 +1001,7 @@ struct ScriptedServer {
     scp_running: scp::Running,
     shells: Arc<AtomicUsize>,
     alive: Arc<AtomicUsize>,
+    quirks: Arc<ServerQuirks>,
 }
 
 /// The connections serving SFTP now, by connection number: the scripted
@@ -901,6 +1037,8 @@ impl Server for ScriptedServer {
             },
             shells: self.shells.clone(),
             alive: self.alive.clone(),
+            quirks: self.quirks.clone(),
+            three_asked: 0,
         }
     }
 }
@@ -974,6 +1112,9 @@ struct ScriptedShell {
     scp_running: scp::Running,
     shells: Arc<AtomicUsize>,
     alive: Arc<AtomicUsize>,
+    quirks: Arc<ServerQuirks>,
+    /// How many of [`THREE_QUESTIONS`] this login has asked.
+    three_asked: usize,
 }
 
 impl Drop for ScriptedShell {
@@ -1073,6 +1214,35 @@ fn start_flood(channel: ChannelId, session: &Session, prompt: Vec<u8>) -> Arc<At
 }
 
 impl ScriptedShell {
+    /// [`THREE_QUESTIONS_USERNAME`]'s login: the next question, the
+    /// acceptance after the right third answer, or a refusal.
+    fn three_questions(&mut self, response: Option<Response<'_>>) -> Auth {
+        let answer = response
+            .and_then(|mut answers| answers.next())
+            .map(|answer| String::from_utf8_lossy(&answer).into_owned());
+        let asked = self.three_asked;
+        match (asked, answer) {
+            (0, None) => {}
+            (n @ 1..=3, Some(answer)) if answer == THREE_ANSWERS[n - 1] => {
+                if n == 3 {
+                    self.three_asked = 0;
+                    return Auth::Accept;
+                }
+            }
+            _ => {
+                self.three_asked = 0;
+                return Auth::reject();
+            }
+        }
+        let question = THREE_QUESTIONS[asked];
+        self.three_asked += 1;
+        Auth::Partial {
+            name: String::new().into(),
+            instructions: String::new().into(),
+            prompts: vec![(question.into(), asked == 0)].into(),
+        }
+    }
+
     /// What the shell prints on `channel` when it waits for a line.
     fn prompt(&self, channel: ChannelId) -> Vec<u8> {
         let privileged = self.channels.get(&channel).is_none_or(|s| s.privileged);
@@ -1154,6 +1324,43 @@ impl ScriptedShell {
                 });
             }
             Some("drop") => return Err(russh::Error::Disconnect),
+            // Each argument a data message of its own: a character split
+            // across reads, bytes that are not UTF-8.
+            Some("raw") => {
+                for word in words {
+                    session.data(channel, decode_hex(word))?;
+                }
+            }
+            // A console that answers a byte at a time.
+            Some("slowly") => {
+                let millis: u64 = words.next().and_then(|n| n.parse().ok()).unwrap_or(10);
+                let text = words.collect::<Vec<_>>().join(" ").into_bytes();
+                let prompt = self.prompt(channel);
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    for byte in text {
+                        tokio::time::sleep(Duration::from_millis(millis)).await;
+                        if handle.data(channel, vec![byte]).await.is_err() {
+                            return;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(millis)).await;
+                    let _ = handle
+                        .data(channel, [b"\r\n".as_slice(), &prompt].concat())
+                        .await;
+                });
+                return Ok(());
+            }
+            // Output and the end of the shell in one breath: the device
+            // closes with data still in flight.
+            Some("burst") => {
+                let count: u32 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                session.data(channel, numbered_lines(count))?;
+                session.exit_status_request(channel, 0)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+                return Ok(());
+            }
             // Holds SFTP transfers from a byte offset on (the smoke test's
             // transfer that stays running), and lets them go again.
             Some("hold") if line.split_whitespace().nth(1) == Some("sftp") => {
@@ -1438,6 +1645,20 @@ fn prompt_for(device: &Option<Device>, privileged: bool) -> Vec<u8> {
     }
 }
 
+/// The bytes a word of hex digits stands for (`c3a9`); bad digits are
+/// dropped.
+fn decode_hex(word: &str) -> Vec<u8> {
+    word.as_bytes()
+        .chunks(2)
+        .filter_map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+        .collect()
+}
+
+/// `bytes` as the words of hex digits the scripted shell's `raw` takes.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// What a device-mode shell prints for a line it does not know.
 fn unknown(line: &str) -> Vec<u8> {
     format!("{UNKNOWN_COMMAND}{}\r\n", line.trim()).into_bytes()
@@ -1451,7 +1672,12 @@ impl Handler for ScriptedShell {
         Ok(())
     }
 
+    async fn authentication_banner(&mut self) -> Result<Option<String>, Self::Error> {
+        Ok(self.quirks.auth_banner.lock().unwrap().clone())
+    }
+
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+        self.quirks.at(Stage::Login).await?;
         if user == STALLING_USERNAME {
             return std::future::pending().await;
         }
@@ -1474,6 +1700,10 @@ impl Handler for ScriptedShell {
         _submethods: &str,
         response: Option<Response<'a>>,
     ) -> Result<Auth, Self::Error> {
+        self.quirks.at(Stage::Login).await?;
+        if user == THREE_QUESTIONS_USERNAME {
+            return Ok(self.three_questions(response));
+        }
         if user != OTP_USERNAME {
             return Ok(Auth::reject());
         }
@@ -1499,6 +1729,7 @@ impl Handler for ScriptedShell {
         user: &str,
         key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
+        self.quirks.at(Stage::Login).await?;
         let known = self
             .authorized_keys
             .iter()
@@ -1516,6 +1747,7 @@ impl Handler for ScriptedShell {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.quirks.at(Stage::ChannelOpen).await?;
         self.session_channels += 1;
         if self.session_channels > 1 && self.one_channel.load(Ordering::SeqCst) {
             reply
@@ -1552,6 +1784,12 @@ impl Handler for ScriptedShell {
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if self.quirks.refuse_forwarding.load(Ordering::SeqCst) {
+            reply
+                .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
         let Ok(port) = u16::try_from(port_to_connect) else {
             reply.reject(ChannelOpenFailure::ConnectFailed).await;
             return Ok(());
@@ -1608,8 +1846,13 @@ impl Handler for ScriptedShell {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.quirks.at(Stage::ShellRequest).await?;
         self.unclaimed.remove(&channel);
         self.shells.fetch_add(1, Ordering::SeqCst);
+        let early = self.quirks.shell_banner.lock().unwrap().clone();
+        if let Some(early) = early {
+            session.data(channel, early)?;
+        }
         session.channel_success(channel)?;
         if self
             .device
@@ -1710,6 +1953,10 @@ impl Handler for ScriptedShell {
         // shell's (russh passes it to both).
         if !self.channels.contains_key(&channel) {
             return Ok(());
+        }
+        let delay = *self.quirks.input_delay.lock().unwrap();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
         }
         for &byte in data {
             // Enter is CR, LF or CR LF, as a tty's line discipline takes
@@ -1873,6 +2120,58 @@ pub async fn output_batches_ending_with(
         );
     }
     batches
+}
+
+/// Collects (and acknowledges) output until at least `bytes` bytes have
+/// come, and returns them.
+pub async fn output_of_at_least(events: &mut SessionEvents, bytes: usize) -> Vec<u8> {
+    let mut received = Vec::new();
+    tokio::time::timeout(WAIT, async {
+        while received.len() < bytes {
+            match events.next().await {
+                Some(SessionEvent::Output(batch)) => {
+                    events.acknowledge(batch.len());
+                    received.extend_from_slice(&batch);
+                }
+                other => panic!("expected output, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("only {} of {bytes} bytes came", received.len()));
+    received
+}
+
+/// Collects (and acknowledges) the output until the session closes, within
+/// `bound`: what arrived, and why it closed. Panics on anything else, or if
+/// the session is still open after `bound`.
+pub async fn output_until_closed(
+    events: &mut SessionEvents,
+    bound: Duration,
+) -> (Vec<u8>, netterm_core::session::CloseReason) {
+    let mut received = Vec::new();
+    let closed = tokio::time::timeout(bound, async {
+        loop {
+            match events.next().await {
+                Some(SessionEvent::Output(bytes)) => {
+                    events.acknowledge(bytes.len());
+                    received.extend_from_slice(&bytes);
+                }
+                Some(SessionEvent::State(SessionState::Closed(reason))) => return reason,
+                Some(SessionEvent::State(_) | SessionEvent::Algorithms(_)) => {}
+                other => panic!("expected output or the end, got {other:?}"),
+            }
+        }
+    })
+    .await;
+    match closed {
+        Ok(reason) => (received, reason),
+        Err(_) => panic!(
+            "still open after {bound:?}; received {} bytes ending {:?}",
+            received.len(),
+            String::from_utf8_lossy(&received[received.len().saturating_sub(200)..])
+        ),
+    }
 }
 
 /// Collects output without acknowledging it until none arrives for `quiet`.
