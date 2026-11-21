@@ -106,6 +106,49 @@ folder, and what stalled it was fixed [116].
   the Credential profile setting, the Credentials view and the reports of
   the CSV and Nornir imports say how a host gets a credential profile.
 
+### Fixes
+
+Found by deliberately hostile use of the inventory and the stored logins
+[117], and by a review of the 0.2.0 work against its specs [112].
+
+- Saving a host in the app no longer writes over a change made to its file
+  outside the app (a pull, an editor) that the app had not loaded yet, and
+  no longer brings back a host deleted outside. The edit is refused with
+  the reason, and can be made again once the workspace has reloaded [117].
+- Planning a job on thousands of hosts in one folder, and exporting them,
+  no longer slows down with the square of their number: 20 000 hosts plan
+  in under half a second, not more than four [117].
+- A second copy of netterm notices when the first turns the vault on or
+  off or changes its master password, and says so. Before, it went on
+  saving to a keychain nobody read, or called the vault damaged [117].
+- Two copies writing the vault at once no longer share one temporary file,
+  and a temporary file left by a write that was cut is removed at the
+  next start [117]. Still open: two copies saving at the same moment can
+  lose one of the changes.
+- A host or settings file that starts with a byte order mark, as some
+  Windows editors write it, loads [117].
+- More names Windows reserves are refused for hosts and folders: `COM0`,
+  `LPT0`, `COM¹` to `COM³`, `LPT¹` to `LPT³`, `CONIN$`, `CONOUT$` [117].
+- `netterm-cli` accepts `--` before values that start with `-` (a named
+  secret called `-ro`, a folder `-old`), and `--option=<value>` [127].
+- `netterm-cli clear-keychain` removes only with `--yes`; without it, it
+  says what it would remove and removes nothing. The uninstaller passes it
+  [127].
+- Where nobody can type the vault's master password (a scheduled task
+  while nobody is logged on), `netterm-cli` says so at once. Before, it
+  waited for ever [127].
+- Python: a telnet host behind a jump host is marked `behind_jump_host`
+  and gets a `tunnel_error`, as the README said. The package warns once
+  (`netterm.VersionWarning`) when the binary is another version [127].
+- On Linux, a script asks the credential agent only through a socket that
+  is this user's and closed to others [127]. The .deb, the .rpm and the
+  AppImage carry the licence [127].
+- The Python setup's confirmation says that pip also installs what each
+  package needs, unlisted and unpinned. The README says how to install on
+  a computer with neither WebView2 nor internet. The note on back up on
+  login mentions the second login a device that refuses a second channel
+  gets [127].
+
 ## 0.4.1
 
 A pre-release: not code-signed, and without automatic updates (install it
