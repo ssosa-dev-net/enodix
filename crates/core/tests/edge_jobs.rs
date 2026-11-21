@@ -786,6 +786,49 @@ async fn the_enable_secret_and_the_password_are_never_shown() {
     }
 }
 
+/// Only the answer to the enable question is hidden. Text the device shows
+/// afterwards that happens to equal the secret (a word of a configuration,
+/// with a secret such as `cisco`) is the user's output and is kept as it
+/// is: a config backup must never have part of its text replaced.
+#[tokio::test]
+async fn text_equal_to_the_enable_secret_shown_later_is_kept_as_it_is() {
+    let device = TestSshServer::start_unprivileged_device("r1").await;
+    device.echo_enable_secret();
+    let lab = Lab::new(&[
+        (
+            "_snippets.yaml",
+            format!("Say: echo description {ENABLE_SECRET} uplink\n"),
+        ),
+        (
+            "r1.yaml",
+            host(&device, "eos", "credential_profile: enable\n"),
+        ),
+    ]);
+    lab.put(CredentialProfile {
+        enable_secret: Some(ENABLE_SECRET.into()),
+        ..profile("enable", USERNAME)
+    });
+    let plan = lab.plan(&folder(""), &snippet("Say"));
+    let job = job::start(&support::manager(), plan, JobOptions::default()).unwrap();
+    let ran = follow(job, WAIT * 3, |_, _| {}).await;
+    let r1 = ran.result("r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    // The echo of the answer is hidden...
+    assert!(
+        r1.output
+            .starts_with(&format!("r1> enable\nPassword: {HIDDEN_SECRET}\nr1# ")),
+        "{}",
+        r1.output
+    );
+    // ...and the same words in what the device showed later are not.
+    assert!(
+        r1.output
+            .contains(&format!("\ndescription {ENABLE_SECRET} uplink\n")),
+        "{}",
+        r1.output
+    );
+}
+
 /// Planning connects to nothing and returns at once, so there is nothing
 /// to cancel while it runs; a plan for a target that is gone is refused
 /// rather than run (the hosts of a removed folder).
