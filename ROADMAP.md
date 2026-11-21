@@ -54,6 +54,7 @@ The pass that follows the features of 0.5.0 started on 2026-11-21, and every par
 - Someone who has never seen the app installs it, brings in their hosts (CSV or Nornir import, or by hand) and is connected to a device, without reading documentation.
 - Walk that path from a clean Windows profile and fix every place it stalls: the empty first window, creating or opening a workspace, the first credential profile, the first host-key question, the first failed login.
 - Error messages on that path say what to do next.
+- Walked on 2026-11-21 (#116), in the built app with an empty data folder and a picture of every screen: the welcome view, workspaces, hosts by hand, by CSV and by Nornir, the first credential profile, the first connection and its failures. Fixed there: a failed connection says what to check next; missing folders and files are said in plain words; New host refuses an address with a port after it; a jump host named by its host name; a CSV with no row of column names; the next step after an import, on the login prompt and in the Credentials view. Left as tickets: reconnecting uses the settings and login of the first attempt, so a corrected password or address only takes effect from the tree (#130); any folder opened becomes a workspace without a question (#131). Not walked: telnet and serial failures, the vault on first run, a narrow window. The same walk from a clean Windows profile with the real installer belongs to the install-and-run check of 0.5.0.
 
 **Redesign** (built)
 
