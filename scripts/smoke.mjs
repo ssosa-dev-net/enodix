@@ -5697,11 +5697,13 @@ async function moveToNewWindow(evaluate, name) {
     (await sessionWindowLabels()).find((each) => !before.has(each)),
   );
   const window = await connectWindow(label);
-  await until(`${name} connected in its window`, async () =>
-    (await tabsIn(window.evaluate)).some(
-      (each) => each.name === name && each.state === "connected",
-    ),
-  );
+  await until(`${name} connected in its window`, async () => {
+    const tabs = await tabsIn(window.evaluate);
+    if (tabs.some((each) => each.name === name && each.state === "connected"))
+      return true;
+    // What the window shows instead, for the time-out's message.
+    throw new Error(JSON.stringify(tabs));
+  });
   return { label, ...window };
 }
 
