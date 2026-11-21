@@ -164,8 +164,15 @@ async fn a_hop_going_silent_or_dropping_during_the_login_to_the_device_fails_the
             );
             match (stall, hop) {
                 // Silence ends the login's wait first (one timeout, where
-                // noticing a silent hop takes three): which hop went
-                // silent cannot be told yet.
+                // noticing a silent hop takes three); the jump hosts are
+                // then asked, and the first that does not answer is named
+                // (#133).
+                (true, 0 | 1) => assert!(
+                    matches!(&error, OpenError::JumpHost { name, error }
+                        if name == HOPS[hop] && error.to_string().contains("stopped answering")),
+                    "{error:?}"
+                ),
+                // Every jump host answers: the device is the one silent.
                 (true, _) => assert_eq!(error, OpenError::TimedOut { after: SHORT }),
                 // A jump host that dropped is named.
                 (false, 0 | 1) => assert!(
@@ -182,6 +189,43 @@ async fn a_hop_going_silent_or_dropping_during_the_login_to_the_device_fails_the
         })
         .await;
     }
+}
+
+/// While the session logs in to the second jump host (site), the first
+/// (core) goes silent: the failure names core, not site, which only timed
+/// out because the link through core did.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_jump_host_going_silent_while_the_next_one_logs_in_is_named() {
+    let chain = Chain::start().await;
+    chain.servers[1]
+        .quirks()
+        .misbehave_at(Stage::Login, Misbehaviour::Pause(Duration::from_secs(30)));
+    let manager = support::manager();
+    let (_id, mut events) = manager.open(SessionTarget::Ssh(chain.target()), SIZE);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    wait_until(
+        || chain.servers[1].connections_alive() == 1,
+        "the site's login",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    chain.links[0].stall();
+    let started = Instant::now();
+    let (_, reason) = output_until_closed(&mut events, NOTICED).await;
+
+    let CloseReason::Failed(error) = reason else {
+        panic!("expected a failure, got {reason:?}");
+    };
+    eprintln!(
+        "core silent during the site's login, after {:?}: {error}",
+        started.elapsed()
+    );
+    assert!(
+        matches!(&error, OpenError::JumpHost { name, error }
+            if name == "core" && error.to_string().contains("stopped answering")),
+        "{error:?}"
+    );
 }
 
 /// Each jump host of the chain refusing to forward: the failure names the

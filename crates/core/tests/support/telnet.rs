@@ -18,6 +18,9 @@
 //! | other       | prints [`UNKNOWN_COMMAND`] and the line as received      |
 //!
 //! Ctrl+C prints [`INTERRUPTED`] and a new prompt, stopping a flood.
+//! `DO TIMING-MARK` (the session's probe of a quiet link, #133) is answered
+//! with `WILL TIMING-MARK` once everything before it has been taken, as
+//! BSD telnetd and IOS do, and counted ([`TestTelnetServer::probes`]).
 //! Output goes through a small bounded queue, so a client that stops
 //! reading stops a flood once the TCP buffers fill, as on a real device.
 //!
@@ -25,6 +28,9 @@
 //! [`LOGIN_INCORRECT`] and asks again. The password is never echoed.
 
 use netterm_core::session::{TelnetTarget, DEFAULT_CONNECT_TIMEOUT};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
@@ -50,6 +56,7 @@ const ECHO: u8 = 1;
 const SGA: u8 = 3;
 const TTYPE: u8 = 24;
 const NAWS: u8 = 31;
+const TIMING_MARK: u8 = 6;
 const TTYPE_IS: u8 = 0;
 const TTYPE_SEND: u8 = 1;
 
@@ -68,6 +75,7 @@ pub enum EchoMode {
 pub struct TestTelnetServer {
     port: u16,
     task: tokio::task::JoinHandle<()>,
+    probes: Arc<AtomicUsize>,
 }
 
 impl TestTelnetServer {
@@ -97,13 +105,21 @@ impl TestTelnetServer {
     async fn start_listening(port: u16, mode: EchoMode, asks: bool) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let probes = Arc::<AtomicUsize>::default();
+        let counted = probes.clone();
         let task = tokio::spawn(async move {
             while let Ok((socket, _)) = listener.accept().await {
                 let _ = socket.set_nodelay(true);
-                tokio::spawn(serve(socket, mode, asks));
+                tokio::spawn(serve(socket, mode, asks, counted.clone()));
             }
         });
-        Self { port, task }
+        Self { port, task, probes }
+    }
+
+    /// How many timing marks (`DO TIMING-MARK`) it has answered, on every
+    /// connection.
+    pub fn probes(&self) -> usize {
+        self.probes.load(Ordering::SeqCst)
     }
 
     pub fn port(&self) -> u16 {
@@ -164,9 +180,11 @@ struct Device {
     /// The device asked for the window size and terminal type itself;
     /// otherwise it accepts the client's offers.
     asks: bool,
+    /// Timing marks answered.
+    probes: Arc<AtomicUsize>,
 }
 
-async fn serve(socket: TcpStream, mode: EchoMode, asks: bool) {
+async fn serve(socket: TcpStream, mode: EchoMode, asks: bool, probes: Arc<AtomicUsize>) {
     let (mut reader, writer) = socket.into_split();
     // Bounded, so that a flood waits for the client like a real device.
     let (output, queued) = mpsc::channel(4);
@@ -185,6 +203,7 @@ async fn serve(socket: TcpStream, mode: EchoMode, asks: bool) {
         flood: None,
         mode,
         asks,
+        probes,
     };
     let mut greeting = if asks {
         vec![IAC, DO, TTYPE, IAC, DO, NAWS]
@@ -322,6 +341,11 @@ impl Device {
                 self.send(ask).await?;
             }
             (WILL, NAWS) if !self.asks => self.send(vec![IAC, DO, NAWS]).await?,
+            // A timing mark: answered in order, after what came before.
+            (DO, TIMING_MARK) => {
+                self.send(vec![IAC, WILL, TIMING_MARK]).await?;
+                self.probes.fetch_add(1, Ordering::SeqCst);
+            }
             // The client refuses to let the device echo: it echoes itself.
             (DONT, ECHO) if self.echoing => {
                 self.echoing = false;
