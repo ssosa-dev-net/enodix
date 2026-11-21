@@ -11799,9 +11799,14 @@ async function agentAndKeyboardInteractive({
   await sessionAction(evaluate, "disconnect");
 
   // The device's login banner (#134) is in the terminal before the
-  // question, which leaves it readable above.
-  await click("New connection").catch(() => {});
-  await until("the quick-connect form", () => exists("input[name=host]"));
+  // question, which leaves it readable above. The ended bar's "New
+  // connection" is drawn a moment after the disconnect: clicked until the
+  // form is there.
+  await until("the quick-connect form", async () => {
+    if (await exists("input[name=host]")) return true;
+    await click("New connection").catch(() => {});
+    return false;
+  });
   await fillForm(
     {
       host: "127.0.0.1",
@@ -11811,6 +11816,13 @@ async function agentAndKeyboardInteractive({
     },
     "main form",
   );
+  // A port of its own, so its host key is asked about first (the key
+  // exchange comes before any banner): trusted for this connection.
+  const trustOnce = "[data-host-key=first-use] [data-decision=trustOnce]";
+  await until("the banner server's host-key question", () =>
+    exists(`${trustOnce}:not(:disabled)`),
+  );
+  await mouseClick(evaluate, trustOnce);
   await until("the question after the banner", async () =>
     (await text(loginPrompt)).includes("Verification code:"),
   );
