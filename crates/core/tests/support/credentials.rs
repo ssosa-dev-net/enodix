@@ -1,7 +1,7 @@
 //! A credential store that stands in for a keychain that fails: an
 //! in-memory store whose listing, or whose deletes after a number of them,
 //! fail as a real keychain can, or whose puts fail after a number of them
-//! (or just one of them).
+//! (or just one of them), or whose every read is refused.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -22,7 +22,13 @@ pub struct Failures {
     pub puts_after: Option<usize>,
     /// Only this put (counting from 0, profiles and secrets alike) fails.
     pub failing_put: Option<usize>,
+    /// Every read (list, get, secret names, a secret, everything) fails
+    /// with [`READ_REFUSED`], as a keychain that denies access does.
+    pub reads: bool,
 }
+
+/// What a [`FailingStore`] with [`Failures::reads`] says to every read.
+pub const READ_REFUSED: &str = "access to the keychain was denied";
 
 /// Clones share one store, so a test keeps a handle to look inside after
 /// giving one away.
@@ -53,6 +59,13 @@ impl FailingStore {
         counted(&self.deletes, self.failures.deletes_after).map(drop)
     }
 
+    fn reading(&self) -> Result<(), StoreError> {
+        if self.failures.reads {
+            return Err(StoreError(READ_REFUSED.into()));
+        }
+        Ok(())
+    }
+
     fn putting(&self) -> Result<(), StoreError> {
         let done = counted(&self.puts, self.failures.puts_after)?;
         if self.failures.failing_put == Some(done) {
@@ -74,10 +87,12 @@ fn counted(calls: &AtomicUsize, limit: Option<usize>) -> Result<usize, StoreErro
 
 impl CredentialStore for FailingStore {
     fn list(&self, scope: &str) -> Result<Vec<CredentialProfile>, StoreError> {
+        self.reading()?;
         self.inner.list(scope)
     }
 
     fn get(&self, scope: &str, name: &str) -> Result<Option<CredentialProfile>, StoreError> {
+        self.reading()?;
         self.inner.get(scope, name)
     }
 
@@ -92,10 +107,12 @@ impl CredentialStore for FailingStore {
     }
 
     fn secret_names(&self, scope: &str) -> Result<Vec<String>, StoreError> {
+        self.reading()?;
         self.inner.secret_names(scope)
     }
 
     fn get_secret(&self, scope: &str, name: &str) -> Result<Option<SecretValue>, StoreError> {
+        self.reading()?;
         self.inner.get_secret(scope, name)
     }
 
@@ -110,6 +127,7 @@ impl CredentialStore for FailingStore {
     }
 
     fn contents(&self) -> Result<StoreContents, StoreError> {
+        self.reading()?;
         if self.failures.contents {
             return Err(StoreError("the keychain cannot be listed".into()));
         }

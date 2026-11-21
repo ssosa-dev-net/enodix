@@ -28,7 +28,7 @@
 //! ([`WorkspaceWatcher`]) and calling [`Workspace::refresh`].
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -186,9 +186,48 @@ pub struct Workspace {
     /// The saved jobs, in file order.
     jobs: Vec<SavedJob>,
     index: SearchIndex,
+    /// Where each folder and host of `tree` is.
+    places: Places,
     problems: Vec<Problem>,
     /// See [`Workspace::revision`].
     revision: u64,
+}
+
+/// Where each folder and host sits in the tree, so that finding one by its
+/// path does not walk its siblings: a folder of 20 000 hosts would make
+/// every piece of work on all of them quadratic.
+#[derive(Debug, Clone, Default)]
+struct Places {
+    /// A folder's path → the index of each folder on the way down to it.
+    folders: HashMap<String, Vec<usize>>,
+    /// A host → its index among its folder's hosts.
+    hosts: HashMap<HostId, usize>,
+    /// A host id in lower case → the first host (in tree order: a folder's
+    /// hosts, then its folders') whose id it is ignoring case.
+    lower: HashMap<String, HostId>,
+}
+
+impl Places {
+    fn of(tree: &Folder) -> Self {
+        fn walk(folder: &Folder, way: &mut Vec<usize>, places: &mut Places) {
+            places.folders.insert(folder.path.clone(), way.clone());
+            for (index, host) in folder.hosts.iter().enumerate() {
+                places.hosts.insert(host.id.clone(), index);
+                places
+                    .lower
+                    .entry(host.id.as_str().to_lowercase())
+                    .or_insert_with(|| host.id.clone());
+            }
+            for (index, child) in folder.folders.iter().enumerate() {
+                way.push(index);
+                walk(child, way, places);
+                way.pop();
+            }
+        }
+        let mut places = Self::default();
+        walk(tree, &mut Vec::new(), &mut places);
+        places
+    }
 }
 
 /// A directory of the workspace.
@@ -478,6 +517,11 @@ pub enum EditError {
     /// The edit makes no sense (an empty address, a folder into itself, ...).
     #[error("{0}")]
     Invalid(String),
+    /// The file was changed, broken or removed outside the app since the
+    /// workspace was loaded: writing would undo that change, so nothing is
+    /// written. Once the workspace is reloaded the edit can be made again.
+    #[error("{file} {how} outside the app since it was loaded, so the edit was not saved over it; it shows as it is now once reloaded")]
+    ChangedOutside { file: String, how: &'static str },
     /// Deleting the folder would delete hosts, and that was not confirmed.
     #[error("{folder} contains {hosts} {}", if *.hosts == 1 { "host" } else { "hosts" })]
     FolderHasHosts { folder: String, hosts: usize },
@@ -547,6 +591,7 @@ impl Workspace {
         let snippets = load_snippets(&root, &mut problems);
         let jobs = load_jobs(&root, &mut problems);
         let index = SearchIndex::build(&tree, |id| roles::find(&roles, id).map(|r| r.name.clone()));
+        let places = Places::of(&tree);
         problems.sort_by(|a, b| a.file.cmp(&b.file));
         Ok(Self {
             root,
@@ -560,6 +605,7 @@ impl Workspace {
             snippets,
             jobs,
             index,
+            places,
             problems,
             revision: 0,
         })
@@ -1129,20 +1175,21 @@ impl Workspace {
     /// The host with this id, if the workspace has it.
     pub fn host(&self, id: &HostId) -> Option<&Host> {
         let (folder, _) = id.split();
-        self.folder(folder)?
-            .hosts
-            .iter()
-            .find(|host| &host.id == id)
+        let index = *self.places.hosts.get(id)?;
+        self.folder(folder)?.hosts.get(index)
     }
 
     /// The folder at this path (empty for the root), if the workspace has it.
     pub fn folder(&self, path: &str) -> Option<&Folder> {
-        if path.is_empty() {
-            return Some(&self.tree);
-        }
-        path.split('/').try_fold(&self.tree, |folder, name| {
-            folder.folders.iter().find(|child| child.name == name)
-        })
+        let way = self.places.folders.get(path)?;
+        way.iter()
+            .try_fold(&self.tree, |folder, &index| folder.folders.get(index))
+    }
+
+    /// The id of the first host (in tree order) whose id is `lower`
+    /// ignoring case; `lower` is in lower case.
+    pub(crate) fn host_id_ignoring_case(&self, lower: &str) -> Option<HostId> {
+        self.places.lower.get(lower).cloned()
     }
 
     /// The host `id` with the settings that apply to it: its own, else its
@@ -1384,12 +1431,17 @@ impl Workspace {
             .rsplit_once('.')
             .map_or(HOST_EXTENSION, |(_, e)| e);
         let new_id = HostId::new(join(folder, &format!("{name}.{extension}")));
+        let rewrites_name = host.document.contains_key(NAME) && host.name != name;
+        if rewrites_name {
+            // The file is written from what was loaded.
+            self.unchanged_on_disk(&host)?;
+        }
         if new_id != *id {
             self.ensure_free(folder, Entry::Host(name), Some(file_name))?;
             fs::rename(self.root.join(id.as_str()), self.root.join(new_id.as_str()))
                 .map_err(io_error(id.as_str()))?;
         }
-        if host.document.contains_key(NAME) && host.name != name {
+        if rewrites_name {
             let mut document = host.document;
             document.insert(NAME.into(), name.into());
             write_mapping(&self.root, new_id.as_str(), &document)?;
@@ -1444,14 +1496,35 @@ impl Workspace {
     /// host does not model are kept, in their original order, and unchanged
     /// fields keep their exact value; comments are not kept. If nothing
     /// changed, the file is not touched at all.
+    ///
+    /// A file changed, broken or removed outside the app since it was loaded
+    /// is not written over ([`EditError::ChangedOutside`]).
     pub fn write_host(&mut self, host: &Host) -> Result<(), EditError> {
         let current = self.existing_host(&host.id)?;
         let document = updated_document(current, host)?;
         if document == current.document {
             return Ok(());
         }
+        self.unchanged_on_disk(current)?;
         write_mapping(&self.root, host.id.as_str(), &document)?;
         self.reload()
+    }
+
+    /// Fails if `host`'s file no longer holds what was loaded from it.
+    fn unchanged_on_disk(&self, host: &Host) -> Result<(), EditError> {
+        let path = self.root.join(host.id.as_str());
+        let changed = |how| EditError::ChangedOutside {
+            file: host.id.to_string(),
+            how,
+        };
+        if !path.is_file() {
+            return Err(changed("was removed or moved"));
+        }
+        match read_mapping(&path) {
+            Ok(document) if document == host.document => Ok(()),
+            Ok(_) => Err(changed("was changed")),
+            Err(_) => Err(changed("was changed and cannot be read now")),
+        }
     }
 
     /// Loads the workspace again from its files, after changes made outside
@@ -1600,16 +1673,29 @@ pub(crate) fn forbidden_in_file_names(c: char) -> bool {
 }
 
 /// Whether Windows takes the file name `name` (with any extension) for a
-/// device.
+/// device: the names Microsoft's "Naming Files" lists (with `COM0`,
+/// `LPT0` and the superscript digits), and the console's `CONIN$` and
+/// `CONOUT$`.
 pub(crate) fn is_device_name(name: &str) -> bool {
-    const RESERVED: [&str; 22] = [
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    ];
+    const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    const CONSOLE: [&str; 2] = ["CONIN$", "CONOUT$"];
     let stem = name.split('.').next().unwrap_or(name).trim_end();
-    RESERVED
+    if RESERVED
         .iter()
-        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+        .chain(&CONSOLE)
+        .any(|r| stem.eq_ignore_ascii_case(r))
+    {
+        return true;
+    }
+    let numbered = |prefix: &str| {
+        stem.get(..3)
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+            && matches!(
+                stem.get(3..),
+                Some("0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+            )
+    };
+    numbered("COM") || numbered("LPT")
 }
 
 /// A folder or host name, trimmed, if it is a file name that works on every
@@ -2106,10 +2192,12 @@ fn yaml_stem(file_name: &str) -> Option<&str> {
 /// empty mapping.
 fn read_mapping(path: &Path) -> Result<Mapping, String> {
     let text = fs::read_to_string(path).map_err(|error| format!("cannot read file: {error}"))?;
+    // A byte order mark (some Windows editors write one) is not content.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     if text.trim().is_empty() {
         return Ok(Mapping::new());
     }
-    match serde_norway::from_str::<Value>(&text) {
+    match serde_norway::from_str::<Value>(text) {
         Ok(Value::Mapping(mapping)) => Ok(mapping),
         Ok(Value::Null) => Ok(Mapping::new()),
         Ok(_) => Err("expected a mapping of keys to values at the top level".into()),

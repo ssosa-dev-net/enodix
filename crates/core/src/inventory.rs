@@ -14,6 +14,8 @@
 //! out and named in `withheld`; web links (URL templates, which may carry a
 //! login) are not exported.
 
+use std::collections::HashSet;
+
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
@@ -216,6 +218,7 @@ pub fn export_within(
 ) -> Result<InventoryExport, ExportError> {
     let mut ids = selected(workspace, limit)?;
     if let Some(scope) = scope {
+        let scope: HashSet<&HostId> = scope.iter().collect();
         if let Limit::Hosts(references) = limit {
             let outside: Vec<String> = references
                 .iter()
@@ -234,7 +237,6 @@ pub fn export_within(
                 return Err(ExportError::OutsideJob(outside));
             }
         }
-        let scope: std::collections::HashSet<&HostId> = scope.iter().collect();
         ids.retain(|id| scope.contains(id));
     }
     let hosts: Vec<ExportedHost> = ids
@@ -295,10 +297,11 @@ fn selected(workspace: &Workspace, limit: &Limit) -> Result<Vec<HostId>, ExportE
         }
         Limit::Hosts(references) => {
             let mut ids: Vec<HostId> = Vec::new();
+            let mut seen: HashSet<HostId> = HashSet::new();
             let mut unknown: Vec<String> = Vec::new();
             for reference in references {
                 match workspace.find_host_id(reference.trim()) {
-                    Some(id) if !ids.contains(&id) => ids.push(id),
+                    Some(id) if seen.insert(id.clone()) => ids.push(id),
                     Some(_) => {}
                     None if !unknown.contains(reference) => unknown.push(reference.clone()),
                     None => {}

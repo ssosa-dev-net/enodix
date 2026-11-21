@@ -89,15 +89,7 @@ impl Workspace {
         if self.host(&exact).is_some() {
             return Some(exact);
         }
-        fn find(folder: &Folder, lower: &str) -> Option<HostId> {
-            folder
-                .hosts
-                .iter()
-                .find(|host| host.id.as_str().to_lowercase() == lower)
-                .map(|host| host.id.clone())
-                .or_else(|| folder.folders.iter().find_map(|child| find(child, lower)))
-        }
-        find(&self.tree, &reference.to_lowercase())
+        self.host_id_ignoring_case(&reference.to_lowercase())
     }
 
     /// The id of the one host whose name is `name` (ignoring case); `None`
