@@ -604,8 +604,14 @@ fn workspace_restore(
         return Ok(None);
     };
     // A folder that is no longer a workspace is not made one again unasked.
-    refuse_other_folder(&path)
-        .map_err(|error| format!("{error}; open it from the workspaces to make it one again"))?;
+    // A folder that cannot be read fails below, in opening's own words.
+    if folder_kind(&path).is_ok_and(|kind| kind == FolderKind::Other) {
+        return Err(format!(
+            "{} holds no host files and is not a workspace any more; nothing was written into \
+             it; open it from the workspaces to make it one again",
+            path.display()
+        ));
+    }
     let workspace = Workspace::open(&path).map_err(|error| error.to_string())?;
     Ok(Some(shell.open(&app, workspace)))
 }
