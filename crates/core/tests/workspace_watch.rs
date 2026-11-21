@@ -221,6 +221,7 @@ fn a_change_that_never_stops_is_still_reported_in_time() {
     let w = watched_with(WatchOptions {
         quiet: Duration::from_millis(300),
         max_delay: Duration::from_millis(800),
+        ..WatchOptions::default()
     });
 
     // A change every 100 ms never leaves the 300 ms of quiet; the notification

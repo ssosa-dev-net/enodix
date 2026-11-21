@@ -43,6 +43,14 @@ everything 0.2.0 could do, the app still does, reached differently.
   click, a drag, a right-click on another row or another workspace ends
   the selection; a host removed from the workspace leaves it. Folders are
   not part of it: Ctrl or Shift on a folder is a plain click.
+- **Workspace folder out of reach** (#132): when the workspace folder
+  goes away (a network drive that disconnects, a folder moved or
+  removed), a notice at the top of the Hosts view says it cannot be
+  reached; the hosts loaded stay shown and nothing can be saved. The app
+  looks for the folder every few seconds and loads it again by itself
+  once it is back. A folder that comes back as another workspace (its
+  `_workspace.yaml` names another one) is not taken for the one that was
+  open: the notice says so, and Workspaces… opens it as what it is now.
 - **Terminal area**: tabs and split panes. A tab holds a session or a view.
   Each session has one header line (role, name, address, jump host,
   protocol, markers, status) and a menu with its actions; the same menu is
@@ -289,6 +297,7 @@ else. Each of its features, and where it is now:
 | Web links                                        | Details sheet's ways in                                                            |
 | Open log folder                                  | Details sheet; tree context menu                                                   |
 | Workspace problems                               | Foot of the Hosts view; rail marker while folded                                   |
+| Workspace folder cannot be reached (new)         | Notice at the top of the Hosts view                                                |
 | Workspaces (open, create, switch, forget)        | Welcome view; workspace name in the Hosts view; Ctrl+Shift+O; palette              |
 | Role icons, environment colours                  | Tree rows, tabs, session header and edge                                           |
 | Quick connect (SSH, serial)                      | Empty pane; welcome view                                                           |

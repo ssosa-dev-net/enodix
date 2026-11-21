@@ -4,6 +4,7 @@
 //! its own.
 
 use super::{Folder, HostId, Origin, Protocol, ResolvedHost, Workspace};
+use crate::names;
 
 /// Why a host's jump hosts cannot be worked out.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -83,32 +84,33 @@ impl Workspace {
         Ok(chain)
     }
 
-    /// The id of the host `reference` names: exactly, else ignoring case.
+    /// The id of the host `reference` names: exactly, else ignoring case
+    /// and Unicode form.
     pub(crate) fn find_host_id(&self, reference: &str) -> Option<HostId> {
         let exact = HostId::new(reference);
         if self.host(&exact).is_some() {
             return Some(exact);
         }
-        self.host_id_ignoring_case(&reference.to_lowercase())
+        self.host_id_ignoring_case(reference)
     }
 
-    /// The id of the one host whose name is `name` (ignoring case); `None`
-    /// when no host or several have it.
+    /// The id of the one host whose name is `name` (ignoring case and
+    /// Unicode form); `None` when no host or several have it.
     fn host_named(&self, name: &str) -> Option<HostId> {
-        fn collect(folder: &Folder, lower: &str, found: &mut Vec<HostId>) {
+        fn collect(folder: &Folder, folded: &str, found: &mut Vec<HostId>) {
             found.extend(
                 folder
                     .hosts
                     .iter()
-                    .filter(|host| host.name.to_lowercase() == lower)
+                    .filter(|host| names::folded(&host.name) == folded)
                     .map(|host| host.id.clone()),
             );
             for child in &folder.folders {
-                collect(child, lower, found);
+                collect(child, folded, found);
             }
         }
         let mut found = Vec::new();
-        collect(&self.tree, &name.to_lowercase(), &mut found);
+        collect(&self.tree, &names::folded(name), &mut found);
         if found.len() == 1 {
             found.pop()
         } else {

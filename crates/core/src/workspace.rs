@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_norway::{Mapping, Value};
 
 use crate::highlight::{HighlightRule, HighlightSource, Highlighter, ListedRule};
+use crate::names;
 use crate::platform::{ListedPlatform, PlatformDefinition, PlatformName, PlatformSource};
 use crate::session::{
     SerialParameters, SerialTarget, SshAuth, SshTarget, TelnetTarget, DEFAULT_SSH_PORT,
@@ -46,6 +47,7 @@ use crate::session::{
 };
 use crate::template::{MissingVariables, Variables};
 
+mod depth;
 mod filters;
 mod highlights;
 mod identity;
@@ -54,6 +56,7 @@ mod jobs;
 mod jumps;
 mod moves;
 mod platforms;
+mod reach;
 mod roles;
 mod scripts;
 mod search;
@@ -70,6 +73,7 @@ pub use jobs::{SavedJob, JOBS_FILE};
 pub use jumps::JumpChainError;
 pub use moves::{HostMove, Moved};
 pub use platforms::PLATFORMS_FILE;
+pub use reach::Unavailable;
 pub use roles::{Role, RoleIcon, RoleSource, NEUTRAL_ROLE_COLOR, ROLES_FILE};
 pub use scripts::{ScriptError, SCRIPT_EXTENSION};
 use search::SearchIndex;
@@ -191,6 +195,8 @@ pub struct Workspace {
     problems: Vec<Problem>,
     /// See [`Workspace::revision`].
     revision: u64,
+    /// See [`Workspace::unavailable`].
+    unavailable: Option<Unavailable>,
 }
 
 /// Where each folder and host sits in the tree, so that finding one by its
@@ -202,8 +208,9 @@ struct Places {
     folders: HashMap<String, Vec<usize>>,
     /// A host → its index among its folder's hosts.
     hosts: HashMap<HostId, usize>,
-    /// A host id in lower case → the first host (in tree order: a folder's
-    /// hosts, then its folders') whose id it is ignoring case.
+    /// A host id as names are compared ([`names::folded`]) → the first host
+    /// (in tree order: a folder's hosts, then its folders') whose id it is
+    /// ignoring case and Unicode form.
     lower: HashMap<String, HostId>,
 }
 
@@ -215,7 +222,7 @@ impl Places {
                 places.hosts.insert(host.id.clone(), index);
                 places
                     .lower
-                    .entry(host.id.as_str().to_lowercase())
+                    .entry(names::folded(host.id.as_str()))
                     .or_insert_with(|| host.id.clone());
             }
             for (index, child) in folder.folders.iter().enumerate() {
@@ -507,8 +514,12 @@ pub enum EditError {
     /// The folder or host is not in this workspace.
     #[error("{0} is not in this workspace")]
     NotFound(String),
+    /// The workspace folder cannot be reached, or is now another workspace
+    /// (see [`Workspace::unavailable`]): nothing is written.
+    #[error("{0}, so nothing was saved")]
+    Unavailable(Unavailable),
     /// The target folder already has an entry with this name (ignoring
-    /// case, and for hosts the file extension).
+    /// case and Unicode form, and for hosts the file extension).
     #[error("{0} already exists")]
     AlreadyExists(String),
     /// The name cannot be a file or folder name on every system.
@@ -608,6 +619,7 @@ impl Workspace {
             places,
             problems,
             revision: 0,
+            unavailable: None,
         })
     }
 
@@ -727,10 +739,10 @@ impl Workspace {
     /// The saved filter called `name` (ignoring case and surrounding
     /// blanks).
     pub fn filter(&self, name: &str) -> Option<&SavedFilter> {
-        let name = name.trim().to_lowercase();
+        let name = names::folded(name.trim());
         self.filters
             .iter()
-            .find(|filter| filter.name.trim().to_lowercase() == name)
+            .find(|filter| names::folded(filter.name.trim()) == name)
     }
 
     /// The hosts `filter` matches and the folders holding them.
@@ -989,7 +1001,7 @@ impl Workspace {
     /// text (ignoring case): those with all of them in the name first, each
     /// part in file order. An empty query gives them all.
     pub fn find_snippets(&self, query: &str) -> Vec<&Snippet> {
-        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let words: Vec<String> = query.split_whitespace().map(names::folded).collect();
         let mut found: Vec<(bool, &Snippet)> = self
             .snippets
             .iter()
@@ -1186,10 +1198,10 @@ impl Workspace {
             .try_fold(&self.tree, |folder, &index| folder.folders.get(index))
     }
 
-    /// The id of the first host (in tree order) whose id is `lower`
-    /// ignoring case; `lower` is in lower case.
-    pub(crate) fn host_id_ignoring_case(&self, lower: &str) -> Option<HostId> {
-        self.places.lower.get(lower).cloned()
+    /// The id of the first host (in tree order) whose id is `reference`
+    /// ignoring case and Unicode form.
+    pub(crate) fn host_id_ignoring_case(&self, reference: &str) -> Option<HostId> {
+        self.places.lower.get(&names::folded(reference)).cloned()
     }
 
     /// The host `id` with the settings that apply to it: its own, else its
@@ -1376,6 +1388,7 @@ impl Workspace {
         file: String,
         change: impl FnOnce(&mut Mapping) -> Result<(), EditError>,
     ) -> Result<(), EditError> {
+        self.available()?;
         let full = self.root.join(&file);
         let original = if full.exists() {
             read_mapping(&full).map_err(|message| {
@@ -1531,11 +1544,52 @@ impl Workspace {
     /// the app (see [`WorkspaceWatcher`]). Returns whether anything differs
     /// from what was loaded before: the tree, a host file's content, the
     /// roles, the filters or the problems. After the app's own edits it
-    /// finds nothing, as each edit already reloaded. If the folder can no
-    /// longer be opened, the workspace is left as it was.
+    /// finds nothing, as each edit already reloaded.
+    ///
+    /// If the folder can no longer be opened, or now holds another
+    /// workspace (its [`WORKSPACE_FILE`] names another id, or none, where
+    /// the open one had one), the workspace is left as it was, it says why
+    /// ([`Self::unavailable`], a new revision when that changes) and every
+    /// edit is refused with that reason until a refresh loads it again.
     pub fn refresh(&mut self) -> Result<bool, OpenError> {
-        let fresh = Self::open(&self.root)?;
-        let changed = fresh.tree != self.tree
+        let fresh = Self::open(&self.root);
+        self.refresh_with(fresh)
+    }
+
+    /// [`Self::refresh`] with `fresh`, the workspace loaded again from this
+    /// one's root ([`Self::open`] of [`Self::root`]), so that the owner can
+    /// load it without holding this one (loading 20 000 hosts takes
+    /// seconds). `fresh` must have been loaded after the last edit of this
+    /// one (compare [`Self::revision`]).
+    pub fn refresh_with(&mut self, fresh: Result<Self, OpenError>) -> Result<bool, OpenError> {
+        let fresh = match fresh {
+            Ok(fresh) => fresh,
+            Err(error) => {
+                let unavailable = match fs::read_dir(&self.root) {
+                    Err(io) => Unavailable::unreachable(&self.root, &io),
+                    Ok(_) => Unavailable::Unreachable {
+                        reason: error.reason.clone(),
+                    },
+                };
+                self.set_unavailable(Some(unavailable));
+                return Err(error);
+            }
+        };
+        if let Some(id) = &self.id {
+            if fresh.id.as_ref() != Some(id) {
+                let unavailable = Unavailable::OtherWorkspace {
+                    id: fresh.id.clone(),
+                };
+                let error = OpenError {
+                    path: self.root.clone(),
+                    reason: unavailable.to_string(),
+                };
+                self.set_unavailable(Some(unavailable));
+                return Err(error);
+            }
+        }
+        let changed = self.unavailable.is_some()
+            || fresh.tree != self.tree
             || fresh.id != self.id
             || fresh.roles != self.roles
             || fresh.filters != self.filters
@@ -1566,6 +1620,7 @@ impl Workspace {
     }
 
     fn existing_folder(&self, path: &str) -> Result<&Folder, EditError> {
+        self.available()?;
         self.folder(path)
             .ok_or_else(|| EditError::NotFound(path.to_string()))
     }
@@ -1581,13 +1636,15 @@ impl Workspace {
     }
 
     fn existing_host(&self, id: &HostId) -> Result<&Host, EditError> {
+        self.available()?;
         self.host(id)
             .ok_or_else(|| EditError::NotFound(id.to_string()))
     }
 
     /// Fails if the folder at `folder` already has an entry that `entry`
     /// would clash with, other than `except` (the entry being renamed).
-    /// Names are compared ignoring case, as on Windows and macOS.
+    /// Names are compared ignoring case, as on Windows and macOS, and
+    /// Unicode form ([`names`]).
     fn ensure_free(
         &self,
         folder: &str,
@@ -1600,7 +1657,7 @@ impl Workspace {
             Entry::Folder(name) => (name, None),
             Entry::Host(name) => (name, Some(format!("{name}.{HOST_EXTENSION}"))),
         };
-        let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+        let same = names::same_name;
         for existing in entries {
             let existing = existing.map_err(io_error(folder))?;
             let existing_name = existing.file_name().to_string_lossy().into_owned();
@@ -2171,7 +2228,47 @@ fn load_folder(dir: &Path, name: String, path: String, problems: &mut Vec<Proble
     folder
         .hosts
         .sort_by(|a, b| by_name(&a.name, &b.name).then_with(|| a.id.cmp(&b.id)));
+    two_forms_of_one_name(&folder, problems);
     folder
+}
+
+/// Adds a problem for each host file and folder of `folder` whose name is
+/// another's in another Unicode form (#132): both load, but they look the
+/// same in the tree. Names differing only in case are not (on Linux they
+/// are two hosts that can be told apart).
+fn two_forms_of_one_name(folder: &Folder, problems: &mut Vec<Problem>) {
+    let mut seen: HashMap<String, (&str, &str)> = HashMap::new();
+    let hosts = folder.hosts.iter().map(|host| {
+        let (_, file_name) = host.id.split();
+        (yaml_stem(file_name).unwrap_or(file_name), host.id.as_str())
+    });
+    let folders = folder
+        .folders
+        .iter()
+        .map(|child| (child.name.as_str(), child.path.as_str()));
+    for (kind, entries) in [
+        ("host", hosts.collect::<Vec<_>>()),
+        ("folder", folders.collect()),
+    ] {
+        seen.clear();
+        for (name, path) in entries {
+            match seen.get(&names::composed(name)) {
+                // The same name with another extension is not this.
+                Some(&(first_name, _)) if first_name == name => {}
+                Some(&(_, first)) => problems.push(Problem {
+                    file: path.to_string(),
+                    message: format!(
+                        "this {kind} has the name of {first} written in two Unicode forms (an \
+                         accent as a character of its own, or with its letter): both are \
+                         loaded, but they look the same; rename or remove one"
+                    ),
+                }),
+                None => {
+                    seen.insert(names::composed(name), (name, path));
+                }
+            }
+        }
+    }
 }
 
 /// Case-insensitive, with exact order as the tie-break.
@@ -2196,6 +2293,14 @@ fn read_mapping(path: &Path) -> Result<Mapping, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     if text.trim().is_empty() {
         return Ok(Mapping::new());
+    }
+    // Refused before the parser, which is slow on deep nesting (#132).
+    if depth::nested_deeper_than(text, depth::MAX_NESTING) {
+        return Err(format!(
+            "it is nested deeper than {} levels, more than any workspace file needs, so it is \
+             not read",
+            depth::MAX_NESTING
+        ));
     }
     match serde_norway::from_str::<Value>(text) {
         Ok(Value::Mapping(mapping)) => Ok(mapping),

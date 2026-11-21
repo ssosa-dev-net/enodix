@@ -11,6 +11,7 @@ use super::{
     check_name, io_error, join, updated_document, write_mapping, yaml_stem, CustomField, EditError,
     Host, HostId, Settings, Workspace, HOST_EXTENSION,
 };
+use crate::names;
 
 /// The values an import sets on a host. `None` leaves a field as it is;
 /// `Some` of blank text clears it.
@@ -80,10 +81,10 @@ impl Entries {
                     let name = entry.file_name().to_string_lossy().into_owned();
                     if entry.path().is_file() {
                         if let Some(stem) = yaml_stem(&name) {
-                            entries.hosts.insert(stem.to_lowercase(), name.clone());
+                            entries.hosts.insert(names::folded(stem), name.clone());
                         }
                     }
-                    entries.names.insert(name.to_lowercase(), name);
+                    entries.names.insert(names::folded(&name), name);
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -94,7 +95,7 @@ impl Entries {
 
     /// The existing file a host called `name` would clash with.
     fn clash(&self, name: &str) -> Option<String> {
-        let lower = name.to_lowercase();
+        let lower = names::folded(name);
         if let Some(file) = self.hosts.get(&lower) {
             return Some(file.clone());
         }
@@ -199,8 +200,8 @@ impl Workspace {
         let entries = listings.get_mut(folder).expect("listed above");
         entries
             .names
-            .insert(file_name.to_lowercase(), file_name.clone());
-        entries.hosts.insert(name.to_lowercase(), file_name);
+            .insert(names::folded(&file_name), file_name.clone());
+        entries.hosts.insert(names::folded(name), file_name);
         WriteOutcome::Created(id)
     }
 
@@ -225,7 +226,7 @@ impl Workspace {
                 created_folders.push(next.clone());
                 listings.insert(next.clone(), Entries::default());
                 if let Some(parent) = listings.get_mut(&current) {
-                    parent.names.insert(name.to_lowercase(), name.to_string());
+                    parent.names.insert(names::folded(name), name.to_string());
                 }
             }
             current = next;

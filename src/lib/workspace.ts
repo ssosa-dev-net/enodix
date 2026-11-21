@@ -357,7 +357,24 @@ export interface WorkspaceView {
   /** The saved jobs, in file order. */
   saved_jobs: ListedSavedJob[];
   problems: Problem[];
+  /**
+   * Why what is shown is not what the folder holds now: it cannot be
+   * reached, or came back as another workspace. Edits are refused
+   * meanwhile; null when the workspace is loaded from its folder.
+   */
+  unavailable: Unavailable | null;
 }
+
+/** Why the workspace shown is not what its folder holds now. */
+export type Unavailable = (
+  | { kind: "unreachable"; reason: string }
+  | { kind: "otherWorkspace"; id: string | null }
+) & {
+  /** What it is, as one line. */
+  message: string;
+  /** What happens meanwhile and what to do. */
+  explanation: string;
+};
 
 /** The workspace after an edit, and what the edit returned. */
 export interface Edited<T> {

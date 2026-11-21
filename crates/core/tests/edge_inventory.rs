@@ -560,35 +560,114 @@ fn hostile_yaml_is_a_problem_at_once_not_a_hang_or_a_crash() {
         laughs.push_str(&format!("{name}: &{name} [{list}]\n"));
     }
     laughs.push_str("address: 10.0.0.1\ncustom:\n  x: *i\n");
-    // Nesting deeper than any parser's stack.
+    // Nesting deeper than any parser's stack: 100 000 levels took 35 s to
+    // refuse before #132 (the scanner is quadratic in depth); it is now
+    // refused before it is parsed.
     let depth: usize = std::env::var("EDGE_NESTING")
         .ok()
         .and_then(|depth| depth.parse().ok())
-        .unwrap_or(10_000);
-    let deep = format!(
+        .unwrap_or(100_000);
+    let flow = format!(
         "address: 10.0.0.1\ncustom: {}{}\n",
         "[".repeat(depth),
         "]".repeat(depth)
     );
-    for (what, text) in [("aliases", laughs), ("nesting", deep)] {
+    let braces = format!(
+        "address: 10.0.0.1\ncustom: {}{}\n",
+        "{a: ".repeat(depth),
+        "}".repeat(depth)
+    );
+    // Block sequences in one line, and in lines indented deeper each time.
+    let dashes = format!(
+        "address: 10.0.0.1\ncustom:\n  x:\n    {}y\n",
+        "- ".repeat(depth)
+    );
+    let mut indented = String::from("address: 10.0.0.1\ncustom:\n");
+    for level in 0..200 {
+        indented.push_str(&format!("{}k{level}:\n", " ".repeat(level + 1)));
+    }
+    let named = [false, true, true, true, true];
+    for ((what, text), named) in [
+        ("aliases", laughs),
+        ("nesting in brackets", flow),
+        ("nesting in braces", braces),
+        ("nesting in dashes", dashes),
+        ("nesting by indentation", indented),
+    ]
+    .into_iter()
+    .zip(named)
+    {
         for kind in &KINDS {
             let started = Instant::now();
             check_variant(
                 &temp,
                 kind,
                 text.as_bytes(),
-                false,
+                named,
                 &format!("{} {what}", kind.file),
             );
             println!("{} {what}: {:?}", kind.file, started.elapsed());
+            // Loading the workspace and the edit's own reload, in a debug
+            // build on a busy machine.
             assert!(
-                started.elapsed() < Duration::from_secs(10),
+                started.elapsed() < Duration::from_secs(3),
                 "{} {what} took {:?}",
                 kind.file,
                 started.elapsed()
             );
+            if named {
+                // Said as what it is, not as the parser's error.
+                fs::write(temp.path().join(kind.file), &text).unwrap();
+                let workspace = open(temp.path());
+                let problems = problems_on(&workspace, kind.file);
+                assert!(
+                    problems
+                        .iter()
+                        .any(|problem| problem.contains("nested deeper")),
+                    "{} {what}: {problems:?}",
+                    kind.file
+                );
+                fs::write(temp.path().join(kind.file), kind.good).unwrap();
+            }
         }
     }
+}
+
+/// What a real file holds is never taken for deep nesting: brackets and
+/// braces inside quoted text, plain text, comments and block text (a
+/// snippet's `{{variable}}`s, a config with brackets), and flow lists a few
+/// levels deep.
+#[test]
+fn brackets_in_text_are_not_nesting() {
+    let temp = workspace();
+    let root = temp.path();
+    let many = "[".repeat(200);
+    let host = format!(
+        "address: 10.0.0.1\n\
+         description: \"{many} quoted\"\n\
+         model: '{many} it''s single-quoted'\n\
+         site: plain {many} text\n\
+         # a comment {many}\n\
+         monitoring:\n  matrix: [[[1, 2], [3, 4]], [[5, 6], {{a: [7, {{b: 8}}]}}]]\n  note: |\n    {many}\n    {}\n"
+    , "{{".repeat(200));
+    fs::write(root.join("Madrid/core-r1.yaml"), &host).unwrap();
+    let snippets = format!(
+        "Deep template: show {}x{}\nBlock: >\n  {many}\n  more {many}\n",
+        "{{".repeat(100),
+        "}}".repeat(100)
+    );
+    fs::write(root.join("_snippets.yaml"), &snippets).unwrap();
+    let workspace = open(root);
+    assert!(
+        workspace.problems().is_empty(),
+        "{:?}",
+        workspace.problems()
+    );
+    let host = workspace.host(&HostId::new("Madrid/core-r1.yaml")).unwrap();
+    assert_eq!(
+        host.site.as_deref(),
+        Some(format!("plain {many} text").as_str())
+    );
 }
 
 // Edits over files that changed since the app read them.

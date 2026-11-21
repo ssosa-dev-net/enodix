@@ -32,6 +32,7 @@ use super::{
     existing_hosts, is_secret_name, write_planned, FieldValue, ImportReport, ImportedHost, Planned,
     PreviewOutcome, ReportEntry, PASSWORDS_SKIPPED,
 };
+use crate::names;
 use crate::workspace::import::check_import_name;
 use crate::workspace::{join, CustomField, HostId, Workspace, HOST_EXTENSION};
 
@@ -384,7 +385,7 @@ impl<'a> Resolver<'a> {
                     continue;
                 }
             };
-            let key = host.name.to_lowercase();
+            let key = names::folded(&host.name);
             if let Some((first, line)) = planned.get(&key) {
                 let first = match line {
                     Some(line) => format!("{first} (line {line})"),

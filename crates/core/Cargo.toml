@@ -45,6 +45,10 @@ socket2 = { version = "0.6.5", features = ["all"] }
 thiserror = "2"
 # `fs`: the transfer engine reads and writes local files.
 tokio = { workspace = true, features = ["fs"] }
+# Host, folder and profile names compared in one Unicode form (NFC): `café`
+# written with one character for the é and with a combining accent is one
+# name (#132).
+unicode-normalization = "0.1"
 # Checking web links before they are opened (http and https only).
 url = "2"
 # Workspace identifiers (random, so that two workspaces never share one).

@@ -25,6 +25,7 @@ use super::{
     scalar_text, ADDRESS, BUILDING, CUSTOM, DESCRIPTION, MODEL, NAME, PLATFORM, RACK, RACK_UNIT,
     ROLE, ROOM, SERIAL_NUMBER, SITE, TAGS, VENDOR,
 };
+use crate::names;
 
 /// The file at the workspace root holding the saved filters.
 pub const FILTERS_FILE: &str = "_filters.yaml";
@@ -241,5 +242,5 @@ fn to_value(filter: &SavedFilter) -> Value {
 
 /// Whether the filters file key `key` names the filter `name`, ignoring case.
 fn same_name(key: &Value, name: &str) -> bool {
-    scalar_text(key).is_some_and(|key| key.trim().to_lowercase() == name.trim().to_lowercase())
+    scalar_text(key).is_some_and(|key| names::same_trimmed_name(&key, name))
 }

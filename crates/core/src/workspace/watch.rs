@@ -12,23 +12,40 @@
 //! then calls [`super::Workspace::refresh`], which tells whether the tree
 //! actually differs. The app's own edits are reported too (they are file
 //! changes like any other), but refreshing after them finds nothing new.
+//!
+//! The folder itself can go and come back: a network drive that
+//! disconnects and reconnects, a folder deleted and restored, or replaced by
+//! another one at the same path. The system's watch does not survive that
+//! (it watches the folder that was there), so every
+//! [`WatchOptions::check_every`] the watcher looks at the folder: when it is
+//! gone, it says so once (an empty [`Changes`]: the owner's refresh then
+//! fails, and the workspace says it cannot be reached); when it is back, or
+//! another folder stands at the path, it watches it anew and says so (an
+//! empty [`Changes`] again: the refresh loads what is there now). A system
+//! watch can also end without a word (a network share's connection drops):
+//! [`WorkspaceWatcher::check_again`] lets the owner, whose refresh found the
+//! folder unreachable, have it watched anew at the next check.
 
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecursiveMode, Watcher};
 
-/// How changes are batched.
+/// How changes are batched, and how often the folder itself is checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WatchOptions {
     /// A batch is reported once no change has come for this long.
     pub quiet: Duration,
     /// ... or at the latest this long after its first change.
     pub max_delay: Duration,
+    /// How often the watcher checks that the folder is still the one it
+    /// watches, and looks for it while it is gone.
+    pub check_every: Duration,
 }
 
 impl Default for WatchOptions {
@@ -36,6 +53,7 @@ impl Default for WatchOptions {
         Self {
             quiet: Duration::from_millis(300),
             max_delay: Duration::from_millis(1500),
+            check_every: Duration::from_secs(2),
         }
     }
 }
@@ -45,7 +63,8 @@ impl Default for WatchOptions {
 pub struct Changes {
     /// The changed files and folders relative to the workspace root,
     /// `/`-separated, sorted, each once. It can be empty when the system
-    /// lost track of what changed (an overflow): reload all the same.
+    /// lost track of what changed (an overflow), or when the folder itself
+    /// went or came back: reload all the same.
     pub files: Vec<String>,
 }
 
@@ -57,9 +76,23 @@ pub struct WatchError {
     pub reason: String,
 }
 
+/// What the watcher's thread is sent: changed files from the system's
+/// watch, or a word from the owner.
+enum Message {
+    Files(Vec<String>),
+    CheckAgain,
+    Stop,
+}
+
+/// The system's watch, shared between the owner (who drops it at once when
+/// dropping the watcher) and the thread (which replaces it when the folder
+/// comes back).
+type SystemWatch = Arc<Mutex<Option<notify::RecommendedWatcher>>>;
+
 /// Watches a workspace folder and everything below it until dropped.
 pub struct WorkspaceWatcher {
-    _watcher: notify::RecommendedWatcher,
+    system: SystemWatch,
+    control: mpsc::Sender<Message>,
     stopped: Arc<AtomicBool>,
 }
 
@@ -83,87 +116,247 @@ impl WorkspaceWatcher {
             path: root.clone(),
             reason,
         };
-        // Some systems report paths through the canonical form of the root
-        // (macOS reports `/private/var` for `/var`).
-        let prefixes: Vec<PathBuf> = [Some(root.clone()), root.canonicalize().ok()]
-            .into_iter()
-            .flatten()
-            .collect();
-
         let (sender, receiver) = mpsc::channel();
-        let mut watcher =
-            notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-                let files = match result {
-                    Ok(event) => match relevant_files(&event, &prefixes) {
-                        Some(files) => files,
-                        None => return,
-                    },
-                    // Something changed, but not known which files.
-                    Err(_) => Vec::new(),
-                };
-                // The batching thread is gone only once the watcher is.
-                let _ = sender.send(files);
-            })
-            .map_err(|e| error(e.to_string()))?;
-        watcher
-            .watch(&root, RecursiveMode::Recursive)
-            .map_err(|e| error(e.to_string()))?;
-
+        let identity = folder_identity(&root).ok();
+        let watch = system_watch(&root, &sender).map_err(error)?;
+        let system: SystemWatch = Arc::new(Mutex::new(Some(watch)));
         let stopped = Arc::new(AtomicBool::new(false));
-        let stop = Arc::clone(&stopped);
+        let mut thread = WatchThread {
+            root: root.clone(),
+            options,
+            system: Arc::clone(&system),
+            sender: sender.clone(),
+            stopped: Arc::clone(&stopped),
+            identity,
+            check_again: false,
+        };
         thread::Builder::new()
             .name("workspace-watcher".into())
-            .spawn(move || report_in_batches(&receiver, options, &stop, on_change))
+            .spawn(move || thread.run(&receiver, on_change))
             .map_err(|e| error(e.to_string()))?;
         Ok(Self {
-            _watcher: watcher,
+            system,
+            control: sender,
             stopped,
         })
+    }
+
+    /// The owner could not reload the folder (it could not be reached):
+    /// at the next check, once the folder is there, it is watched anew and
+    /// a notification follows. A system watch that ended without a word
+    /// (a network share whose connection dropped) is so replaced.
+    pub fn check_again(&self) {
+        let _ = self.control.send(Message::CheckAgain);
     }
 }
 
 impl Drop for WorkspaceWatcher {
     fn drop(&mut self) {
-        // Dropping the notify watcher closes the channel, which ends the
-        // batching thread; this stops a batch already being gathered.
+        // This stops a batch already being gathered; the system's watch
+        // ends here, the thread at its next message.
         self.stopped.store(true, Ordering::SeqCst);
+        let watch = self
+            .system
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(watch);
+        let _ = self.control.send(Message::Stop);
     }
 }
 
-/// Gathers the changed files the watcher sends into batches and reports
-/// each, until the watcher is dropped.
-fn report_in_batches(
-    receiver: &mpsc::Receiver<Vec<String>>,
+/// Starts the system's watch on `root`, sending what it sees to `sender`.
+fn system_watch(
+    root: &Path,
+    sender: &mpsc::Sender<Message>,
+) -> Result<notify::RecommendedWatcher, String> {
+    // Some systems report paths through the canonical form of the root
+    // (macOS reports `/private/var` for `/var`).
+    let prefixes: Vec<PathBuf> = [Some(root.to_path_buf()), root.canonicalize().ok()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let sender = sender.clone();
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        let files = match result {
+            Ok(event) => match relevant_files(&event, &prefixes) {
+                Some(files) => files,
+                None => return,
+            },
+            // Something changed, but not known which files.
+            Err(_) => Vec::new(),
+        };
+        // The thread is gone only once the watcher is.
+        let _ = sender.send(Message::Files(files));
+    })
+    .map_err(|e| e.to_string())?;
+    watcher
+        .watch(root, RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+    Ok(watcher)
+}
+
+/// The watcher's own thread: batches what the system's watch reports, and
+/// checks the folder itself.
+struct WatchThread {
+    root: PathBuf,
     options: WatchOptions,
-    stopped: &AtomicBool,
-    mut on_change: impl FnMut(Changes),
-) {
-    while let Ok(mut files) = receiver.recv() {
-        let deadline = Instant::now() + options.max_delay;
-        let mut watcher_alive = true;
+    system: SystemWatch,
+    sender: mpsc::Sender<Message>,
+    stopped: Arc<AtomicBool>,
+    /// The folder watched (see [`folder_identity`]); `None` while it is
+    /// gone.
+    identity: Option<FolderIdentity>,
+    /// The owner asked for the folder to be watched anew.
+    check_again: bool,
+}
+
+impl WatchThread {
+    fn run(&mut self, receiver: &mpsc::Receiver<Message>, mut on_change: impl FnMut(Changes)) {
+        let mut next_check = Instant::now() + self.options.check_every;
+        loop {
+            let wait = next_check.saturating_duration_since(Instant::now());
+            match receiver.recv_timeout(wait) {
+                Ok(Message::Files(files)) => {
+                    let Some(files) = self.gather(receiver, files) else {
+                        return;
+                    };
+                    if self.stopped.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    on_change(Changes { files });
+                }
+                Ok(Message::CheckAgain) => self.check_again = true,
+                Ok(Message::Stop) | Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            if Instant::now() >= next_check {
+                next_check = Instant::now() + self.options.check_every;
+                if self.folder_changed() {
+                    if self.stopped.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    on_change(Changes::default());
+                }
+            }
+        }
+    }
+
+    /// Gathers the batch `files` begins, until the folder is quiet or the
+    /// batch is due; `None` once the watcher is stopped.
+    fn gather(
+        &mut self,
+        receiver: &mpsc::Receiver<Message>,
+        mut files: Vec<String>,
+    ) -> Option<Vec<String>> {
+        let deadline = Instant::now() + self.options.max_delay;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
             }
-            match receiver.recv_timeout(options.quiet.min(left)) {
-                Ok(more) => files.extend(more),
+            match receiver.recv_timeout(self.options.quiet.min(left)) {
+                Ok(Message::Files(more)) => files.extend(more),
+                Ok(Message::CheckAgain) => self.check_again = true,
+                Ok(Message::Stop) | Err(RecvTimeoutError::Disconnected) => return None,
                 Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => {
-                    watcher_alive = false;
-                    break;
-                }
             }
-        }
-        if stopped.load(Ordering::SeqCst) {
-            return;
         }
         files.sort();
         files.dedup();
-        on_change(Changes { files });
-        if !watcher_alive {
-            return;
+        Some(files)
+    }
+
+    /// Checks the folder: whether it went, or came back (or another stands
+    /// at its path, or the owner asked) and is now watched anew. Either is
+    /// worth a notification.
+    fn folder_changed(&mut self) -> bool {
+        let Ok(identity) = folder_identity(&self.root) else {
+            // Gone (or unreadable): the system's watch is of no use now.
+            let was_watched = self.identity.take().is_some();
+            self.system
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            return was_watched;
+        };
+        let watched = self
+            .system
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some();
+        if watched && self.identity == Some(identity) && !self.check_again {
+            return false;
         }
+        // The old watch first, so its events cannot mix with the new one's.
+        self.system
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let Ok(watch) = system_watch(&self.root, &self.sender) else {
+            // Tried again at the next check.
+            self.identity = None;
+            return false;
+        };
+        let mut system = self.system.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.stopped.load(Ordering::SeqCst) {
+            return false;
+        }
+        *system = Some(watch);
+        self.identity = Some(identity);
+        self.check_again = false;
+        true
+    }
+}
+
+/// What tells one folder from another made at the same path: the device and
+/// the file's number on it.
+type FolderIdentity = (u64, u64);
+
+#[cfg(unix)]
+fn folder_identity(path: &Path) -> io::Result<FolderIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::other("not a folder"));
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn folder_identity(path: &Path) -> io::Result<FolderIdentity> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_FLAG_BACKUP_SEMANTICS,
+    };
+    // A folder opens only with backup semantics; the default sharing lets
+    // it be renamed and deleted meanwhile.
+    let folder = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    // SAFETY: the structure is plain data, filled in by the call; the
+    // handle is open for as long as `folder` lives.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(folder.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(io::Error::other("not a folder"));
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok((u64::from(info.dwVolumeSerialNumber), index))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn folder_identity(path: &Path) -> io::Result<FolderIdentity> {
+    // No file numbers: only whether the folder is there.
+    if std::fs::metadata(path)?.is_dir() {
+        Ok((0, 0))
+    } else {
+        Err(io::Error::other("not a folder"))
     }
 }
 

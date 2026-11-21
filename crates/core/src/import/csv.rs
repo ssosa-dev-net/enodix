@@ -28,6 +28,7 @@ use super::{
     PASSWORDS_SKIPPED,
 };
 pub use super::{FieldValue, ImportedHost, PreviewOutcome};
+use crate::names;
 use crate::workspace::import::check_import_name;
 use crate::workspace::{join, HOST_EXTENSION};
 use crate::workspace::{CustomField, HostId, Workspace};
@@ -700,7 +701,7 @@ impl<'a> Planner<'a> {
             Ok(folder) => folder,
             Err(reason) => return fail(name, format!("folder path {folder_path}: {reason}")),
         };
-        let key = format!("{}/{}", folder.to_lowercase(), host_name.to_lowercase());
+        let key = format!("{}/{}", names::folded(&folder), names::folded(&host_name));
         if let Some(first) = self.planned.get(&key) {
             return fail(
                 name,
@@ -746,14 +747,14 @@ impl<'a> Planner<'a> {
                 folder
                     .folders
                     .iter()
-                    .find(|child| child.name.to_lowercase() == name.to_lowercase())
+                    .find(|child| names::same_name(&child.name, name))
             });
             current = match child {
                 Some(child) => child.path.clone(),
                 None => {
                     let path = join(&current, name);
                     self.new_folders
-                        .get(&path.to_lowercase())
+                        .get(&names::folded(&path))
                         .cloned()
                         .unwrap_or(path)
                 }
@@ -769,10 +770,10 @@ impl<'a> Planner<'a> {
         for name in folder.split('/').filter(|n| !n.is_empty()) {
             current = join(&current, name);
             if self.workspace.folder(&current).is_none()
-                && !self.new_folders.contains_key(&current.to_lowercase())
+                && !self.new_folders.contains_key(&names::folded(&current))
             {
                 self.new_folders
-                    .insert(current.to_lowercase(), current.clone());
+                    .insert(names::folded(&current), current.clone());
                 self.new_folder_order.push(current.clone());
             }
         }
@@ -786,6 +787,6 @@ impl<'a> Planner<'a> {
             .existing
             .entry(folder.to_string())
             .or_insert_with(|| existing_hosts(workspace, folder));
-        hosts.get(&name.to_lowercase()).cloned()
+        hosts.get(&names::folded(name)).cloned()
     }
 }

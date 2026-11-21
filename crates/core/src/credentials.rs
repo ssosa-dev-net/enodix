@@ -20,6 +20,7 @@
 //!
 //! No `Debug` output here shows a secret.
 
+use crate::names;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
@@ -545,9 +546,19 @@ impl<'a> Profiles<'a> {
         Ok(profiles.iter().map(ProfileSummary::from).collect())
     }
 
-    /// The profile called `name` (ignoring case), secrets included.
+    /// The profile called `name` (ignoring case, and Unicode form: a host
+    /// file written on a Mac names `Café` with a combining accent, #132),
+    /// secrets included.
     pub fn profile(&self, name: &str) -> Result<Option<CredentialProfile>, ProfileError> {
-        Ok(self.store.get(&self.scope, name.trim())?)
+        let name = name.trim();
+        if let Some(profile) = self.store.get(&self.scope, name)? {
+            return Ok(Some(profile));
+        }
+        let composed = names::composed(name);
+        if composed == name {
+            return Ok(None);
+        }
+        Ok(self.store.get(&self.scope, &composed)?)
     }
 
     /// The profile names the workspace uses (on any folder or host) that
@@ -557,7 +568,7 @@ impl<'a> Profiles<'a> {
             .store
             .list(&self.scope)?
             .into_iter()
-            .map(|profile| profile.name.to_lowercase())
+            .map(|profile| names::folded(&profile.name))
             .collect();
         let mut named = BTreeMap::new();
         collect_profile_names(self.workspace.tree(), &mut named);
@@ -576,7 +587,9 @@ impl<'a> Profiles<'a> {
         previous: Option<&str>,
         draft: &ProfileDraft,
     ) -> Result<ProfileSummary, ProfileError> {
-        let name = draft.name.trim();
+        // Stored in one Unicode form, the one hosts are looked up in.
+        let name = names::composed(draft.name.trim());
+        let name = name.as_str();
         validate_name(name)?;
         let username = draft.username.trim();
         if username.is_empty() {
@@ -591,7 +604,7 @@ impl<'a> Profiles<'a> {
             };
         let renamed = current
             .as_ref()
-            .is_none_or(|current| current.name.to_lowercase() != name.to_lowercase());
+            .is_none_or(|current| !names::same_name(&current.name, name));
         if renamed && self.store.get(&self.scope, name)?.is_some() {
             return Err(ProfileError::AlreadyExists(name.into()));
         }
@@ -881,7 +894,7 @@ fn collect_profile_names(folder: &Folder, names: &mut BTreeMap<String, String>) 
     );
     for name in own {
         names
-            .entry(name.to_lowercase())
+            .entry(names::folded(name))
             .or_insert_with(|| name.clone());
     }
     for child in &folder.folders {

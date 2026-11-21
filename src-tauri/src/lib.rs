@@ -51,7 +51,8 @@ use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatu
 use netterm_core::workspace::{
     EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion, Host, HostId,
     HostMove, HostWebLink, Moved, Problem, Protocol, ResolvedHost, Role, SavedFilter, SavedJob,
-    SearchResults, Settings, Snippet, WatchOptions, Workspace, WorkspaceWatcher, WORKSPACE_FILE,
+    SearchResults, Settings, Snippet, Unavailable, WatchOptions, Workspace, WorkspaceWatcher,
+    WORKSPACE_FILE,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -249,24 +250,57 @@ impl Shell {
     }
 
     /// Reloads the workspace at `root`, if it is still the open one, and
-    /// sends it to the interface if anything differs. The app's own edits
-    /// are already loaded, so they send nothing.
+    /// sends it to the interface if anything differs (or it can no longer
+    /// be reached, or is another workspace now). The app's own edits are
+    /// already loaded, so they send nothing.
+    ///
+    /// The folder is loaded without holding the workspace (20 000 hosts
+    /// take seconds, during which every workspace command would wait);
+    /// only taking it is done holding it, and a load that an edit's own
+    /// reload overtook meanwhile is dropped.
     fn reload_from_disk(&self, app: &AppHandle, root: &std::path::Path) {
-        let mut guard = self.workspace();
-        let Some(workspace) = guard.as_mut().filter(|w| w.root() == root) else {
+        let Some(revision) = self
+            .workspace()
+            .as_ref()
+            .filter(|w| w.root() == root)
+            .map(Workspace::revision)
+        else {
             return;
         };
-        match workspace.refresh() {
-            Ok(true) => {
-                let view = WorkspaceView::from(&*workspace);
-                if let Err(error) = app.emit(WORKSPACE_CHANGED_EVENT, view) {
-                    eprintln!("cannot send the reloaded workspace: {error}");
-                }
+        let fresh = Workspace::open(root);
+        let mut guard = self.workspace();
+        let Some(workspace) = guard
+            .as_mut()
+            .filter(|w| w.root() == root && w.revision() == revision)
+        else {
+            return;
+        };
+        let result = workspace.refresh_with(fresh);
+        let view = (workspace.revision() != revision).then(|| WorkspaceView::from(&*workspace));
+        let unreachable = matches!(
+            workspace.unavailable(),
+            Some(Unavailable::Unreachable { .. })
+        );
+        drop(guard);
+        if let Some(view) = view {
+            if let Err(error) = app.emit(WORKSPACE_CHANGED_EVENT, view) {
+                eprintln!("cannot send the reloaded workspace: {error}");
             }
-            Ok(false) => {}
-            // Gone or unreadable for now (mid-checkout, say): keep showing
-            // what was loaded; the next change tries again.
-            Err(error) => eprintln!("cannot reload the workspace: {error}"),
+        }
+        if let Err(error) = result {
+            eprintln!("cannot reload the workspace: {error}");
+        }
+        // Its system watch may have ended unseen (a network share's
+        // connection dropped): watched anew once it is back.
+        if unreachable {
+            if let Some(watcher) = self
+                .watcher
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                watcher.check_again();
+            }
         }
     }
 }
@@ -336,6 +370,21 @@ struct WorkspaceView {
     /// The saved jobs, in file order, each with why it cannot run (if so).
     saved_jobs: Vec<ListedSavedJob>,
     problems: Vec<Problem>,
+    /// `Workspace::unavailable`: why what is shown is not what the folder
+    /// holds now (it cannot be reached, or is another workspace), if so.
+    unavailable: Option<UnavailableView>,
+}
+
+/// Why the workspace shown is not what its folder holds now, in the user's
+/// words.
+#[derive(Serialize, Clone)]
+struct UnavailableView {
+    #[serde(flatten)]
+    unavailable: Unavailable,
+    /// What it is, as one line.
+    message: String,
+    /// What happens meanwhile and what to do.
+    explanation: &'static str,
 }
 
 /// A saved job as the interface lists it.
@@ -371,6 +420,11 @@ impl From<&Workspace> for WorkspaceView {
                 })
                 .collect(),
             problems: workspace.problems().to_vec(),
+            unavailable: workspace.unavailable().map(|unavailable| UnavailableView {
+                message: unavailable.to_string(),
+                explanation: unavailable.explanation(),
+                unavailable: unavailable.clone(),
+            }),
         }
     }
 }

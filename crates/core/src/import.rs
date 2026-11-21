@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+use crate::names;
 use crate::workspace::import::{HostWrite, ImportedValues, WriteOutcome};
 use crate::workspace::{CustomField, HostId, Workspace};
 
@@ -161,8 +162,8 @@ pub(crate) fn existing_hosts(workspace: &Workspace, folder: &str) -> HashMap<Str
                     let file = host.id.as_str().rsplit('/').next().unwrap_or_default();
                     let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
                     [
-                        (host.name.to_lowercase(), host.id.clone()),
-                        (stem.to_lowercase(), host.id.clone()),
+                        (names::folded(&host.name), host.id.clone()),
+                        (names::folded(stem), host.id.clone()),
                     ]
                 })
                 .collect()
