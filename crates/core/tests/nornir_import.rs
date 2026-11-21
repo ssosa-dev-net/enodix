@@ -570,6 +570,71 @@ not-a-mapping: [1, 2]
     assert_eq!(reason(4), "the host's entry is not a mapping");
 }
 
+/// The check New host makes (#116, #131). A Nornir inventory has a `port`,
+/// so a `hostname` with a port after it gives the host that port, unless
+/// its `port` (own, a group's or the defaults') says another; a hostname
+/// with a space in it fails the host. IPv6 addresses are kept.
+#[test]
+fn a_hostname_with_a_port_takes_it_as_the_port_and_one_with_a_space_fails() {
+    let (_temp, root, mut ws) = workspace();
+    let hosts = "\
+r1:
+  hostname: 10.1.0.1:2222
+r2:
+  hostname: 10.1.0.2:22
+  port: 22
+r3:
+  hostname: 10.1.0.3:2222
+  port: 22
+r4:
+  hostname: 10.1.0.4 10.1.0.5
+r5:
+  hostname: 2001:db8::5
+";
+    let job = import(hosts, None, None, "Empty");
+    let preview = job.preview(&ws).unwrap();
+    let r1 = preview.hosts[0].host.as_ref().unwrap();
+    assert_eq!((r1.address.as_str(), r1.port), ("10.1.0.1", Some(2222)));
+
+    let report = job.run(&mut ws, &[]).unwrap();
+    assert_eq!(
+        created(&report),
+        ["Empty/r1.yaml", "Empty/r2.yaml", "Empty/r5.yaml"]
+    );
+    assert_eq!(
+        read(&root, "Empty/r1.yaml"),
+        "address: 10.1.0.1\nport: 2222\n"
+    );
+    assert_eq!(
+        read(&root, "Empty/r2.yaml"),
+        "address: 10.1.0.2\nport: 22\n"
+    );
+    assert_eq!(read(&root, "Empty/r5.yaml"), "address: 2001:db8::5\n");
+    assert_eq!(
+        entries(&report.failed),
+        [
+            (
+                Some(6),
+                "r3".to_string(),
+                Some(
+                    "hostname 10.1.0.3:2222 has port 2222 after it, but port is 22: write the \
+                     hostname without the port, or make them the same"
+                        .to_string()
+                )
+            ),
+            (
+                Some(9),
+                "r4".to_string(),
+                Some(
+                    "the address has a space in it (10.1.0.4 10.1.0.5): write one host name or \
+                     IP address"
+                        .to_string()
+                )
+            ),
+        ]
+    );
+}
+
 #[test]
 fn files_that_are_not_an_inventory_are_refused_naming_the_file() {
     let error = NornirInventory::parse("r1: [unclosed\n", None, None).unwrap_err();

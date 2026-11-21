@@ -54,6 +54,7 @@ mod identity;
 pub(crate) mod import;
 mod jobs;
 mod jumps;
+mod kind;
 mod moves;
 mod platforms;
 mod reach;
@@ -71,6 +72,7 @@ pub use highlights::HIGHLIGHTS_FILE;
 pub use identity::WORKSPACE_FILE;
 pub use jobs::{SavedJob, JOBS_FILE};
 pub use jumps::JumpChainError;
+pub use kind::{folder_kind, FolderKind};
 pub use moves::{HostMove, Moved};
 pub use platforms::PLATFORMS_FILE;
 pub use reach::Unavailable;
@@ -564,28 +566,35 @@ pub enum FolderDeletion {
     IncludingHosts,
 }
 
+/// Refuses a workspace root that is not there, is a file or cannot be
+/// listed, in the user's words (#116).
+fn check_root(root: &Path) -> Result<(), OpenError> {
+    let open_error = |reason: String| OpenError {
+        path: root.to_path_buf(),
+        reason,
+    };
+    let metadata = fs::metadata(root).map_err(|error| {
+        open_error(if error.kind() == io::ErrorKind::NotFound {
+            "there is no such folder; check the path, or create a new workspace there".into()
+        } else {
+            error.to_string()
+        })
+    })?;
+    if !metadata.is_dir() {
+        return Err(open_error(
+            "it is a file, not a folder; choose the folder that holds the host files".into(),
+        ));
+    }
+    fs::read_dir(root).map_err(|error| open_error(error.to_string()))?;
+    Ok(())
+}
+
 impl Workspace {
     /// Loads the workspace folder at `root`. Only a missing or unreadable
     /// root fails; bad files inside it are reported by [`Self::problems`].
     pub fn open(root: impl AsRef<Path>) -> Result<Self, OpenError> {
         let root = root.as_ref().to_path_buf();
-        let open_error = |reason: String| OpenError {
-            path: root.clone(),
-            reason,
-        };
-        let metadata = fs::metadata(&root).map_err(|error| {
-            open_error(if error.kind() == io::ErrorKind::NotFound {
-                "there is no such folder; check the path, or create a new workspace there".into()
-            } else {
-                error.to_string()
-            })
-        })?;
-        if !metadata.is_dir() {
-            return Err(open_error(
-                "it is a file, not a folder; choose the folder that holds the host files".into(),
-            ));
-        }
-        fs::read_dir(&root).map_err(|error| open_error(error.to_string()))?;
+        check_root(&root)?;
 
         let name = root
             .file_name()
@@ -1423,7 +1432,7 @@ impl Workspace {
         self.existing_folder(folder)?;
         let name = check_name(name)?;
         let address = required_address(address)?;
-        no_port_in(address)?;
+        one_address(address)?;
         self.ensure_free(folder, Entry::Host(name), None)?;
         let file = join(folder, &format!("{name}.{HOST_EXTENSION}"));
         let mut document = Mapping::new();
@@ -1791,20 +1800,55 @@ fn required_address(address: &str) -> Result<&str, EditError> {
     Ok(address)
 }
 
-/// Refuses a new address with a port after it, `10.0.0.1:2222` or
-/// `router1:2222` as other tools write it: the port would be taken as part
-/// of the name (#116). One colon only, so an IPv6 address is never taken
-/// for one.
-fn no_port_in(address: &str) -> Result<(), EditError> {
-    let Some((host, port)) = address.split_once(':') else {
-        return Ok(());
-    };
-    if host.is_empty() || port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
-        return Ok(());
+/// What is wrong with a (trimmed) management address, as New host and the
+/// imports check it (#116, #131).
+pub(crate) enum BadAddress<'a> {
+    /// A space inside it: two addresses, or a name with a note after it.
+    Space,
+    /// A port after it, `10.0.0.1:2222` or `router1:2222` as other tools
+    /// write it: the port would be taken as part of the name. One colon
+    /// only, so an IPv6 address is never taken for one.
+    Port { host: &'a str, port: &'a str },
+}
+
+impl BadAddress<'_> {
+    /// Why `address` is refused; `port_goes` says where its port goes.
+    pub(crate) fn reason(&self, address: &str, port_goes: impl FnOnce(&str) -> String) -> String {
+        match self {
+            Self::Space => format!(
+                "the address has a space in it ({address}): write one host name or IP address"
+            ),
+            Self::Port { host, port } => {
+                format!(
+                    "write the address without the port ({host}){}",
+                    port_goes(port)
+                )
+            }
+        }
     }
-    Err(EditError::Invalid(format!(
-        "write the address without the port ({host}), then set Port to {port} in the host's details"
-    )))
+}
+
+/// What is wrong with `address` (trimmed), if anything.
+pub(crate) fn bad_address(address: &str) -> Option<BadAddress<'_>> {
+    if address.chars().any(char::is_whitespace) {
+        return Some(BadAddress::Space);
+    }
+    let (host, port) = address.split_once(':')?;
+    if host.is_empty() || port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(BadAddress::Port { host, port })
+}
+
+/// Refuses a new address with a space in it or a port after it (see
+/// [`bad_address`]).
+fn one_address(address: &str) -> Result<(), EditError> {
+    match bad_address(address) {
+        None => Ok(()),
+        Some(bad) => Err(EditError::Invalid(bad.reason(address, |port| {
+            format!(", then set Port to {port} in the host's details")
+        }))),
+    }
 }
 
 /// Trimmed text; blank is none.
@@ -1830,7 +1874,7 @@ fn updated_document(current: &Host, edit: &Host) -> Result<Mapping, EditError> {
 
     let address = required_address(&edit.address)?;
     if address != current.address {
-        no_port_in(address)?;
+        one_address(address)?;
         set_key(&mut document, ADDRESS, address.into());
     }
 

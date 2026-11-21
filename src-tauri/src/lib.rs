@@ -3,7 +3,7 @@
 //! interface's messages and the core's workspace and session interfaces.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -49,10 +49,10 @@ use netterm_core::session::{
 use netterm_core::template::Variables;
 use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
 use netterm_core::workspace::{
-    EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion, Host, HostId,
-    HostMove, HostWebLink, Moved, Problem, Protocol, ResolvedHost, Role, SavedFilter, SavedJob,
-    SearchResults, Settings, Snippet, Unavailable, WatchOptions, Workspace, WorkspaceWatcher,
-    WORKSPACE_FILE,
+    folder_kind, EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion,
+    FolderKind, Host, HostId, HostMove, HostWebLink, Moved, Problem, Protocol, ResolvedHost, Role,
+    SavedFilter, SavedJob, SearchResults, Settings, Snippet, Unavailable, WatchOptions, Workspace,
+    WorkspaceWatcher, WORKSPACE_FILE,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -519,18 +519,44 @@ fn app_name(app: AppHandle) -> String {
     product_name(&app)
 }
 
+/// What kind of folder `path` is (#131): the interface asks before opening
+/// a folder of other things, which would become a workspace.
+#[tauri::command]
+fn workspace_folder_kind(path: PathBuf) -> Result<FolderKind, String> {
+    folder_kind(resolved_path(&path)).map_err(|error| error.to_string())
+}
+
 /// Opens the workspace folder at `path` (an existing folder, which becomes
-/// a known workspace) and remembers it for the next launch.
+/// a known workspace) and remembers it for the next launch. A folder of
+/// other things ([`FolderKind::Other`]) is opened, and so written into,
+/// only once the user said yes (`confirmed`).
 #[tauri::command]
 fn workspace_open(
     app: AppHandle,
     shell: State<'_, Shell>,
     path: PathBuf,
+    confirmed: Option<bool>,
 ) -> Result<WorkspaceView, String> {
     shell.refuse_if_locked()?;
     // One root for the interface however the path was typed.
-    let workspace = Workspace::open(resolved_path(&path)).map_err(|error| error.to_string())?;
+    let root = resolved_path(&path);
+    if !confirmed.unwrap_or(false) {
+        refuse_other_folder(&root)?;
+    }
+    let workspace = Workspace::open(root).map_err(|error| error.to_string())?;
     shell.open_and_remember(&app, workspace)
+}
+
+/// Refuses, before anything is written, to make a folder of other things a
+/// workspace without the user's yes.
+fn refuse_other_folder(root: &Path) -> Result<(), String> {
+    if folder_kind(root).map_err(|error| error.to_string())? == FolderKind::Other {
+        return Err(format!(
+            "{} holds no host files and is not a workspace; nothing was written into it",
+            root.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Creates a new, empty workspace in the folder at `path` and opens it.
@@ -577,6 +603,9 @@ fn workspace_restore(
     let Some(path) = AppState::load(&shell.data_folder).last_workspace else {
         return Ok(None);
     };
+    // A folder that is no longer a workspace is not made one again unasked.
+    refuse_other_folder(&path)
+        .map_err(|error| format!("{error}; open it from the workspaces to make it one again"))?;
     let workspace = Workspace::open(&path).map_err(|error| error.to_string())?;
     Ok(Some(shell.open(&app, workspace)))
 }
@@ -3399,6 +3428,7 @@ pub fn run() {
             vault_turn_off,
             vault_start_over,
             workspace_open,
+            workspace_folder_kind,
             workspace_create,
             workspaces_list,
             workspace_forget,

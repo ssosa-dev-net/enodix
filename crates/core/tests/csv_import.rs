@@ -252,6 +252,92 @@ fn without_a_name_column_the_address_names_the_host() {
     assert_eq!(read(&root, "192.0.2.7.yaml"), "address: 192.0.2.7\n");
 }
 
+/// The check New host makes (#116, #131): an address with a space in it or
+/// a port after it fails its row, reported like any row left out, and the
+/// other rows import. A CSV import has no port column, so the port is not
+/// taken: the reason says where it goes. IPv6 addresses are kept.
+#[test]
+fn an_address_with_a_space_or_a_port_fails_its_row_as_new_host_refuses_it() {
+    let (_temp, root, mut workspace) = workspace();
+    let before = files(&root);
+    let job = import(
+        "name,address\n\
+         r1,10.0.0.1:2222\n\
+         r2,10.0.0.2 10.0.0.3\n\
+         r3,10.0.0.4\n\
+         r4,2001:db8::4\n\
+         ,edge1.example.net:22\n",
+        vec![field(HostField::Name), field(HostField::Address)],
+        "",
+    );
+
+    let preview = job.preview(&workspace).unwrap();
+    assert_eq!(files(&root), before, "the preview wrote something");
+    let outcomes: Vec<_> = preview
+        .rows
+        .iter()
+        .map(|row| (row.line, row.name.as_str(), &row.outcome))
+        .collect();
+    assert!(
+        matches!(outcomes[0], (2, "r1", PreviewOutcome::Fail { .. })),
+        "{outcomes:?}"
+    );
+    assert!(
+        matches!(outcomes[1], (3, "r2", PreviewOutcome::Fail { .. })),
+        "{outcomes:?}"
+    );
+    assert!(
+        matches!(outcomes[2], (4, "r3", PreviewOutcome::Create { .. })),
+        "{outcomes:?}"
+    );
+    assert!(
+        matches!(outcomes[3], (5, "r4", PreviewOutcome::Create { .. })),
+        "{outcomes:?}"
+    );
+    // With no name column value the host would be named by the address.
+    assert!(
+        matches!(outcomes[4], (6, _, PreviewOutcome::Fail { .. })),
+        "{outcomes:?}"
+    );
+
+    let report = job.run(&mut workspace, &[]).unwrap();
+    assert_eq!(created(&report), ["r3.yaml", "r4.yaml"]);
+    assert_eq!(
+        entries(&report.failed),
+        [
+            (
+                Some(2),
+                "r1".to_string(),
+                Some(
+                    "write the address without the port (10.0.0.1); a CSV import has no port \
+                     column, so set Port to 2222 in the host's details or on its folder"
+                        .to_string()
+                )
+            ),
+            (
+                Some(3),
+                "r2".to_string(),
+                Some(
+                    "the address has a space in it (10.0.0.2 10.0.0.3): write one host name or \
+                     IP address"
+                        .to_string()
+                )
+            ),
+            (
+                Some(6),
+                "edge1.example.net:22".to_string(),
+                Some(
+                    "write the address without the port (edge1.example.net); a CSV import has \
+                     no port column, so set Port to 22 in the host's details or on its folder"
+                        .to_string()
+                )
+            ),
+        ]
+    );
+    assert_eq!(read(&root, "r4.yaml"), "address: 2001:db8::4\n");
+    assert!(!root.join("r1.yaml").exists());
+}
+
 #[test]
 fn values_are_trimmed_and_empty_cells_set_nothing() {
     let (_temp, root, mut workspace) = workspace();

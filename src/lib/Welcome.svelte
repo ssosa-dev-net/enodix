@@ -13,7 +13,6 @@
     createWorkspace,
     forgetWorkspace,
     listWorkspaces,
-    openWorkspace,
     pickWorkspaceFolder,
     type KnownWorkspace,
     type WorkspaceView,
@@ -24,11 +23,14 @@
     name: string;
     /** Opens the workspace `open` gives; resolves to why it failed, or null. */
     onswitch: (open: () => Promise<WorkspaceView>) => Promise<string | null>;
+    /** Opens the folder at `path`, asking first about a folder of other
+     * things (#131); resolves to why it failed, or null. */
+    onopen: (path: string) => Promise<string | null>;
     onconnect: (target: QuickConnectTarget) => void;
     onserial: (port: string, parameters: SerialParameters) => void;
   }
 
-  let { name, onswitch, onconnect, onserial }: Props = $props();
+  let { name, onswitch, onopen, onconnect, onserial }: Props = $props();
 
   /** null until the list came. */
   let known = $state<KnownWorkspace[] | null>(null);
@@ -45,12 +47,12 @@
     },
   );
 
-  async function run(open: () => Promise<WorkspaceView>) {
+  async function run(go: () => Promise<string | null>) {
     if (busy) return;
     busy = true;
     error = null;
     try {
-      error = await onswitch(open);
+      error = await go();
     } finally {
       busy = false;
     }
@@ -121,7 +123,7 @@
                 title={workspace.available
                   ? `Open ${workspace.path}`
                   : `${workspace.path} is not there (a disconnected drive, or moved)`}
-                onclick={() => void run(() => openWorkspace(workspace.path))}
+                onclick={() => void run(() => onopen(workspace.path))}
               >
                 <Folder size={16} aria-hidden="true" />
                 <span class="name">{workspace.name}</span>
@@ -151,7 +153,7 @@
         onsubmit={(event) => {
           event.preventDefault();
           const folder = openFolder.trim();
-          if (folder) void run(() => openWorkspace(folder));
+          if (folder) void run(() => onopen(folder));
         }}
       >
         <label for="welcome-open">
@@ -180,7 +182,7 @@
         onsubmit={(event) => {
           event.preventDefault();
           const folder = createFolder.trim();
-          if (folder) void run(() => createWorkspace(folder));
+          if (folder) void run(() => onswitch(() => createWorkspace(folder)));
         }}
       >
         <label for="welcome-create">

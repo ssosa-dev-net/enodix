@@ -29,6 +29,7 @@ use super::{
 };
 pub use super::{FieldValue, ImportedHost, PreviewOutcome};
 use crate::names;
+use crate::workspace::bad_address;
 use crate::workspace::import::check_import_name;
 use crate::workspace::{join, HOST_EXTENSION};
 use crate::workspace::{CustomField, HostId, Workspace};
@@ -692,6 +693,17 @@ impl<'a> Planner<'a> {
         }
         if address.is_empty() {
             return fail(name, "the row has no management address".into());
+        }
+        // As New host checks it (#131). There is no port column to take a
+        // port into.
+        if let Some(bad) = bad_address(&address) {
+            let reason = bad.reason(&address, |port| {
+                format!(
+                    "; a CSV import has no port column, so set Port to {port} in the host's \
+                     details or on its folder"
+                )
+            });
+            return fail(name, reason);
         }
         let host_name = match check_import_name(&name) {
             Ok(checked) => checked.to_string(),

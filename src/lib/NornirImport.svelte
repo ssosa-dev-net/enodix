@@ -301,7 +301,10 @@
           type="button"
           class="primary"
           data-nornir="import"
-          disabled={busy}
+          disabled={busy || counts.create + confirmed.length === 0}
+          title={counts.create + confirmed.length === 0
+            ? "Nothing to import: no new host, and no existing one ticked"
+            : undefined}
           onclick={run}
           >Import {counts.create + confirmed.length}
           {counts.create + confirmed.length === 1 ? "host" : "hosts"}</button

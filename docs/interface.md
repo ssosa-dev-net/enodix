@@ -209,7 +209,8 @@ everything 0.2.0 could do, the app still does, reached differently.
   So do a Files tab's (its login, host key, names, production, upload
   and download questions, and closing it while transfers run).
   Those about the whole app stay window-modal: delete, rename, new host or
-  folder, switching workspace (and keeping or closing its sessions), the
+  folder, switching workspace (and keeping or closing its sessions),
+  making a folder of other things a workspace, the
   workspace switcher, the vault's forms, the unlock and start-over screen,
   closing the main window, and closing a session window with live
   sessions (over that window).
@@ -219,8 +220,20 @@ everything 0.2.0 could do, the app still does, reached differently.
   workspace switcher (Ctrl+Shift+O) says the same: "Open an existing
   folder", never "add". A folder that is not there, a file chosen as a
   folder, and a create over a folder that has files each say what to
-  do instead (#116). With a workspace open, the empty pane says that a
+  do instead (#116). A folder that holds other things and no host file
+  (a Documents folder chosen by mistake) is asked about first, from the
+  welcome view, the switcher or a recent workspace whose folder changed:
+  "Make this folder a workspace?" with its path, saying no host files are
+  there and that opening writes one small file, `_workspace.yaml`, into
+  it; Cancel (focused) writes nothing (#131). An empty folder, or one with
+  host files, opens at once. With a workspace open, the empty pane says that a
   double-click on a host in the Hosts view connects it.
+- **Imports and addresses** (#131): the CSV and Nornir imports refuse an
+  address with a space in it, as New host does, and report the row with
+  the others left out; a CSV address with its port (`10.0.0.1:2222`) is
+  refused the same way, saying where the port goes, while a Nornir
+  `hostname` with its port gives the host that port. "Import 0 hosts" is
+  off until a new host is found or an existing one ticked.
 - **Login banner** (#134): the notice a device sends before the login
   (its `banner login`, usually a legal warning) is the first thing in the
   terminal, as the device sent it, on every connection and reconnect,

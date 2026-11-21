@@ -4,7 +4,6 @@
     createWorkspace,
     forgetWorkspace,
     listWorkspaces,
-    openWorkspace,
     pickWorkspaceFolder,
     type KnownWorkspace,
     type WorkspaceView,
@@ -16,10 +15,13 @@
      * sessions, if any); resolves to why it failed, or null.
      */
     onswitch: (open: () => Promise<WorkspaceView>) => Promise<string | null>;
+    /** Opens the folder at `path`, asking first about a folder of other
+     * things (#131), then as `onswitch`. */
+    onopen: (path: string) => Promise<string | null>;
     onclose: () => void;
   }
 
-  let { onswitch, onclose }: Props = $props();
+  let { onswitch, onopen, onclose }: Props = $props();
 
   let known = $state<KnownWorkspace[]>([]);
   let query = $state("");
@@ -65,12 +67,12 @@
     input?.focus();
   });
 
-  async function run(open: () => Promise<WorkspaceView>) {
+  async function run(go: () => Promise<string | null>) {
     if (busy) return;
     busy = true;
     error = null;
     try {
-      error = await onswitch(open);
+      error = await go();
     } finally {
       busy = false;
     }
@@ -81,7 +83,7 @@
       onclose();
       return;
     }
-    void run(() => openWorkspace(workspace.path));
+    void run(() => onopen(workspace.path));
   }
 
   async function forget(workspace: KnownWorkspace) {
@@ -219,7 +221,7 @@
       onsubmit={(event) => {
         event.preventDefault();
         const folder = createFolder.trim();
-        if (folder) void run(() => createWorkspace(folder));
+        if (folder) void run(() => onswitch(() => createWorkspace(folder)));
       }}
     >
       <label for="workspace-create-folder">New empty workspace in</label>
@@ -244,7 +246,7 @@
       onsubmit={(event) => {
         event.preventDefault();
         const folder = addFolder.trim();
-        if (folder) void run(() => openWorkspace(folder));
+        if (folder) void run(() => onopen(folder));
       }}
     >
       <label for="workspace-add-folder">Open an existing folder</label>

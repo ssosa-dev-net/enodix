@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use netterm_core::app_state::{resolved_path, same_folder};
 use netterm_core::inventory::{export_within, InventoryExport, Limit};
 use netterm_core::job::script::{ScriptTargets, TARGETS_VARIABLE};
-use netterm_core::workspace::Workspace;
+use netterm_core::workspace::{folder_kind, FolderKind, Workspace};
 
 mod credentials;
 mod tunnel;
@@ -121,7 +121,15 @@ fn run(args: &[String]) -> Result<(), Failure> {
 
 /// `inventory <workspace> [limit]`.
 fn inventory(args: &[String]) -> Result<(), Failure> {
-    let (_, exported) = scoped_export(args)?;
+    let (workspace, exported) = scoped_export(args)?;
+    // Only read, never made a workspace (#131): say why it lists nothing.
+    if folder_kind(workspace.root()).is_ok_and(|kind| kind == FolderKind::Other) {
+        eprintln!(
+            "{NAME}: warning: {} is not a workspace: no host files and no _workspace.yaml there \
+             (nothing was written into it)",
+            workspace.root().display()
+        );
+    }
     for problem in &exported.problems {
         eprintln!("{NAME}: warning: {problem}");
     }
