@@ -26,7 +26,7 @@ use netterm_core::import::ImportReport;
 use netterm_core::job::results::{OutputRef, RunList, RunStore, SearchHit, StoredRun};
 use netterm_core::job::{
     self, JobEvent, JobOptions, JobPlan, JobStep, JobTarget, KeptPlan, KeptPlans, LiveJob,
-    LiveJobs, LoginBackup, LoginBackupOutcome, NewLiveJob, PlanId, RunningJobs, SessionLogin,
+    LiveJobs, LoginBackup, LoginBackupOutcome, NewLiveJob, PlanId, RunningJobs,
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{
@@ -40,10 +40,11 @@ use netterm_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use netterm_core::preferences::{FontZoom, Preferences, Theme};
 use netterm_core::session::{
     AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, HostKeyDecision,
-    HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, OpenOptions, SerialParameters,
-    SerialPortInfo, SerialTarget, SessionEvent, SessionId, SessionManager, SessionRecord,
-    SessionRecords, SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
-    Transport, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
+    HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms, OpenOptions,
+    Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent, SessionId,
+    SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState, SessionTarget,
+    SshAuth, SshTarget, TerminalSize, Transport, TypedLogin, WhenConnected,
+    DEFAULT_CONNECT_TIMEOUT,
 };
 use netterm_core::template::Variables;
 use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
@@ -1961,76 +1962,60 @@ async fn session_open(
     on_backup: Channel<LoginBackupOutcome>,
 ) -> Result<Opened, String> {
     let window = calling_window(&window)?;
-    let log = session_log(&shell, &target)?;
-    let when_connected = login_backup(&shell, &configs, &target)
-        .map(|backup| Arc::new(backup) as Arc<dyn WhenConnected>);
-    let host = match &target {
-        ConnectTarget::Host { id, .. }
-        | ConnectTarget::Telnet { id }
-        | ConnectTarget::Serial { id } => Some(id.clone()),
-        ConnectTarget::Quick { .. } | ConnectTarget::QuickSerial { .. } => None,
-    };
-    let target = match target {
-        ConnectTarget::Serial { id } => {
-            SessionTarget::Serial(with_open_profiles(&shell, |profiles| {
-                profiles.serial_target(&id)
-            })?)
-        }
-        ConnectTarget::QuickSerial { port, parameters } => {
-            SessionTarget::Serial(SerialTarget { port, parameters })
-        }
-        ConnectTarget::Telnet { id } => {
-            SessionTarget::Telnet(with_open_profiles(&shell, |profiles| {
-                profiles.telnet_target(&id)
-            })?)
-        }
+    let (made, options, record) = match target {
         ConnectTarget::Quick {
             host,
             port,
             username,
             password,
-        } => SessionTarget::Ssh(SshTarget {
-            host,
-            port,
-            username,
-            auth: SshAuth::Password(password),
-            jump_hosts: Vec::new(),
-            // Quick connections have no settings to switch it on.
-            legacy_crypto: false,
-            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
-        }),
-        ConnectTarget::Host {
-            id,
-            credentials: Some(Prompted { username, password }),
-        } => SessionTarget::Ssh(with_open_profiles(&shell, |profiles| {
-            profiles.prompted_target(&id, username, password)
-        })?),
-        ConnectTarget::Host {
-            id,
-            credentials: None,
-        } => SessionTarget::Ssh(with_open_profiles(&shell, |profiles| {
-            profiles.profile_target(&id)
-        })?),
+        } => {
+            let log = Some(shell.logs.quick_log(&host));
+            let target = SessionTarget::Ssh(SshTarget {
+                host,
+                port,
+                username,
+                auth: SshAuth::Password(password),
+                jump_hosts: Vec::new(),
+                // Quick connections have no settings to switch it on.
+                legacy_crypto: false,
+                connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            });
+            (
+                Made::Quick(target),
+                quick_options(log),
+                SessionRecord::new(&name, &title),
+            )
+        }
+        ConnectTarget::QuickSerial { port, parameters } => {
+            let log = Some(shell.logs.quick_log(&port));
+            let target = SessionTarget::Serial(SerialTarget { port, parameters });
+            (
+                Made::Quick(target),
+                quick_options(log),
+                SessionRecord::new(&name, &title),
+            )
+        }
+        ConnectTarget::Host { id, credentials } => {
+            let typed = credentials
+                .map(|Prompted { username, password }| TypedLogin { username, password });
+            host_made(&shell, &configs, id, HostWay::Ssh { typed }, &name, &title)?
+        }
+        ConnectTarget::Telnet { id } => {
+            host_made(&shell, &configs, id, HostWay::Telnet, &name, &title)?
+        }
+        ConnectTarget::Serial { id } => {
+            host_made(&shell, &configs, id, HostWay::Serial, &name, &title)?
+        }
     };
-    let encrypted = target.encrypted();
-    let transport = target.transport();
-    let record = host
-        .and_then(|host| {
-            read(&shell, |workspace| {
-                SessionRecord::for_host(workspace, &host, transport, &name, &title)
-            })
-            .ok()
-            .flatten()
-        })
-        .unwrap_or_else(|| SessionRecord::new(&name, &title));
-    let (id, events) = manager.open_with(
-        target,
-        size.into(),
-        OpenOptions {
-            log,
-            when_connected,
-        },
-    );
+    let (encrypted, transport) = match &made {
+        Made::Quick(target) | Made::Host(HostSession { target, .. }) => {
+            (target.encrypted(), target.transport())
+        }
+    };
+    let (id, events) = match made {
+        Made::Quick(target) => manager.open_with(target, size.into(), options),
+        Made::Host(session) => manager.open_host(session, size.into(), options),
+    };
     records.record(id, record.clone());
     tabs.attach(window, tab, id);
     let consumer = relays.start(
@@ -2057,34 +2042,69 @@ async fn session_open(
     })
 }
 
-/// The backup an SSH session to a workspace host makes once connected, as
-/// its `backup_on_login` setting says (the core decides when it applies).
-fn login_backup(shell: &Shell, configs: &Configs, target: &ConnectTarget) -> Option<LoginBackup> {
-    let ConnectTarget::Host { id, credentials } = target else {
-        return None;
-    };
-    let login = match credentials {
-        Some(_) => SessionLogin::Typed,
-        None => SessionLogin::Profile,
-    };
-    let guard = shell.workspace();
-    let workspace = guard.as_ref()?;
-    let profiles = Profiles::new(&*shell.credentials, workspace);
-    LoginBackup::plan(workspace, &profiles, id, login, configs.0.clone())
+/// What a session is opened to.
+enum Made {
+    /// A quick connection: reconnects as made.
+    Quick(SessionTarget),
+    /// A workspace host, as the core worked it out (#130: reconnecting
+    /// works it out again).
+    Host(HostSession),
 }
 
-/// Where a session to `target` is logged: a workspace host as its
-/// `logging` setting says, a quick connection always.
-fn session_log(shell: &Shell, target: &ConnectTarget) -> Result<Option<SessionLog>, String> {
-    Ok(match target {
-        ConnectTarget::Host { id, .. }
-        | ConnectTarget::Telnet { id }
-        | ConnectTarget::Serial { id } => {
-            read(shell, |workspace| shell.logs.host_log(workspace, id))?
+/// A quick connection is always logged, and backs nothing up.
+fn quick_options(log: Option<SessionLog>) -> OpenOptions {
+    OpenOptions {
+        log,
+        ..OpenOptions::default()
+    }
+}
+
+/// A session to the open workspace's host `id`, reached `way`, with its
+/// options and record, as the host is now.
+fn host_made(
+    shell: &Shell,
+    configs: &Configs,
+    id: HostId,
+    way: HostWay,
+    name: &str,
+    title: &str,
+) -> Result<(Made, OpenOptions, SessionRecord), String> {
+    let guard = shell.workspace();
+    let workspace = guard.as_ref().ok_or("no workspace is open")?;
+    let profiles = Profiles::new(&*shell.credentials, workspace);
+    let session = profiles
+        .host_session(&id, way)
+        .map_err(|error| error.to_string())?;
+    let options = host_options(shell, configs, &profiles, &session);
+    let transport = session.target.transport();
+    let record = SessionRecord::for_host(workspace, &id, transport, name, title)
+        .unwrap_or_else(|| SessionRecord::new(name, title));
+    Ok((Made::Host(session), options, record))
+}
+
+/// What a session to a workspace host does beside connecting, as the
+/// host's settings say now: where it is logged (`logging`), and, over SSH,
+/// the backup it makes once connected (`backup_on_login`; the core decides
+/// when it applies).
+fn host_options(
+    shell: &Shell,
+    configs: &Configs,
+    profiles: &Profiles<'_>,
+    session: &HostSession,
+) -> OpenOptions {
+    let workspace = profiles.workspace();
+    let host = session.origin.host();
+    let when_connected = match session.target.transport() {
+        Transport::Ssh => {
+            LoginBackup::plan(workspace, profiles, host, session.login, configs.0.clone())
+                .map(|backup| Arc::new(backup) as Arc<dyn WhenConnected>)
         }
-        ConnectTarget::Quick { host, .. } => Some(shell.logs.quick_log(host)),
-        ConnectTarget::QuickSerial { port, .. } => Some(shell.logs.quick_log(port)),
-    })
+        Transport::Telnet | Transport::Serial => None,
+    };
+    OpenOptions {
+        log: shell.logs.host_log(workspace, host),
+        when_connected,
+    }
 }
 
 /// Shows the folder of the host `id`'s session logs in the system's file
@@ -2212,16 +2232,49 @@ fn calling_window(window: &tauri::WebviewWindow) -> Result<WindowId, String> {
     session_windows::window_of(label).ok_or_else(|| format!("the window {label} shows no sessions"))
 }
 
-/// Opens a session that has closed again, in place: the same target,
-/// settings and login, the same id. Its events arrive on new channels,
-/// through a new relay, as for `session_open`; returns the new consumer
-/// key.
+/// A reconnect that has started, as the interface receives it.
+#[derive(Serialize)]
+struct Reconnected {
+    /// The key that acknowledges its output (`session_acknowledge`).
+    consumer: u64,
+    /// When it logs in otherwise than the session did, or reconnects as
+    /// made: what the terminal tells the user (#130).
+    note: Option<String>,
+}
+
+/// Why a reconnect did not start, as the interface shows it: the reason,
+/// and what to do about it.
+#[derive(Serialize)]
+struct ReconnectFailure {
+    reason: String,
+    advice: Option<String>,
+}
+
+impl From<String> for ReconnectFailure {
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            advice: None,
+        }
+    }
+}
+
+/// Opens a session that has closed again, in place, the same id. A
+/// session to a workspace host works its target out again from the host's
+/// settings and credential profile as they are now (#130, the core's
+/// `Reconnection::work_out`): a host gone, or no longer reached that way,
+/// is refused with the reason; a session of a workspace not open, or a
+/// quick connection, reconnects as it was made. Its events arrive on new
+/// channels, through a new relay, as for `session_open`; returns the new
+/// consumer key and any note for the terminal.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn session_reconnect(
     app: AppHandle,
     window: tauri::WebviewWindow,
     manager: State<'_, SessionManager>,
+    shell: State<'_, Shell>,
+    configs: State<'_, Configs>,
     relays: State<'_, SessionRelays>,
     id: u64,
     size: Size,
@@ -2232,11 +2285,47 @@ async fn session_reconnect(
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
-) -> Result<u64, String> {
+) -> Result<Reconnected, ReconnectFailure> {
     let window = calling_window(&window)?;
-    let events = manager
-        .reconnect(SessionId(id), size.into())
-        .map_err(|error| error.to_string())?;
+    let session = SessionId(id);
+    let failed = |error: netterm_core::session::SessionError| error.to_string();
+    // A quick connection has no origin: it reconnects as made.
+    let worked_out = match manager.origin(session).map_err(failed)? {
+        None => None,
+        Some(origin) => {
+            let guard = shell.workspace();
+            let open = guard
+                .as_ref()
+                .map(|workspace| Profiles::new(&*shell.credentials, workspace));
+            match Reconnection::work_out(&origin, open.as_ref()) {
+                Err(refused) => {
+                    return Err(ReconnectFailure {
+                        reason: refused.to_string(),
+                        advice: refused.advice(),
+                    })
+                }
+                Ok(Reconnection::AsMade { note }) => Some((None, note)),
+                Ok(Reconnection::Again(host)) => {
+                    let options = open
+                        .as_ref()
+                        .map(|profiles| host_options(&shell, &configs, profiles, &host))
+                        .unwrap_or_default();
+                    let note = host.note.clone();
+                    Some((Some((host, options)), note.unwrap_or_default()))
+                }
+            }
+        }
+    };
+    let (events, note) = match worked_out {
+        Some((Some((host, options)), note)) => (
+            manager.reconnect_host(session, host, size.into(), options),
+            Some(note),
+        ),
+        Some((None, note)) => (manager.reconnect(session, size.into()), Some(note)),
+        None => (manager.reconnect(session, size.into()), None),
+    };
+    let events = events.map_err(failed)?;
+    let note = note.filter(|note| !note.is_empty());
     let consumer = relays.start(
         SessionId(id),
         window,
@@ -2252,7 +2341,10 @@ async fn session_reconnect(
             app,
         },
     );
-    Ok(consumer.get())
+    Ok(Reconnected {
+        consumer: consumer.get(),
+        note,
+    })
 }
 
 /// Opens a new session to the same target as the session `id`, with the

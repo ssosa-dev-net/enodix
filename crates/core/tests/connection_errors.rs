@@ -288,7 +288,7 @@ async fn a_failure_says_what_to_check_next() {
             ),
             Some(
                 "Check the username and password (or key). For a host with a credential \
-                 profile, change them in the Credentials view, then connect to the host again."
+                 profile, change them in the Credentials view, then reconnect."
                     .into()
             ),
             Some(

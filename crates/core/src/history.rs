@@ -66,8 +66,8 @@ pub struct Carried {
 /// Moves the session logs and config history of each of `moves` from the
 /// host's old path to its new one, in `workspace` (as it is after the
 /// move: its folder name and id place the history). The `sessions`
-/// logging to an old folder log to the new one, and their records name
-/// the new ids.
+/// logging to an old folder log to the new one, and their records and
+/// origins (what they reconnect to) name the new ids.
 pub fn carry(
     workspace: &Workspace,
     moves: &[HostMove],
@@ -118,6 +118,8 @@ pub fn carry(
         }
     }
     let sessions = sessions.map_or_else(Vec::new, |sessions| {
+        // They reconnect to the new ids too (#130).
+        sessions.manager.move_hosts(workspace.root(), moves);
         sessions.records.move_hosts(workspace.root(), moves)
     });
     Carried { left, sessions }

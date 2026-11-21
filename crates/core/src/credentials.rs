@@ -533,6 +533,11 @@ impl<'a> Profiles<'a> {
         }
     }
 
+    /// The workspace whose profiles these are.
+    pub fn workspace(&self) -> &'a Workspace {
+        self.workspace
+    }
+
     /// The stored profiles, by name ignoring case.
     pub fn list(&self) -> Result<Vec<ProfileSummary>, ProfileError> {
         let mut profiles = self.store.list(&self.scope)?;
