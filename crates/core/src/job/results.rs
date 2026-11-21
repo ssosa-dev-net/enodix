@@ -71,6 +71,10 @@ pub struct StoredRun {
     /// ended (the destination and the overwrite choice are the step's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<SentFile>,
+    /// Why it was cancelled, when the user did not cancel it: the app was
+    /// closed while it ran ([`super::APP_CLOSED`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_reason: Option<String>,
 }
 
 /// A host a script run ran for.
@@ -318,11 +322,13 @@ impl RunStore {
                 size: file.size,
                 hashes: None,
             }),
+            cancel_reason: None,
         };
         let recorder = RunRecorder {
             folder,
             run,
             active: Some(self.active.clone()),
+            reason: None,
         };
         for host in &recorder.run.hosts {
             let path = recorder.folder.join(&host.file);
@@ -510,6 +516,8 @@ pub struct RunRecorder {
     run: StoredRun,
     /// The store's running runs, until this one has ended.
     active: Option<Active>,
+    /// Why it is being cancelled, if not by the user.
+    reason: Option<String>,
 }
 
 impl Drop for RunRecorder {
@@ -527,6 +535,13 @@ impl RunRecorder {
     /// The run as kept so far.
     pub fn run(&self) -> &StoredRun {
         &self.run
+    }
+
+    /// Keeps `reason` as why the run was cancelled, if it ends with a host
+    /// cancelled (a job that finished meanwhile keeps none). Written with
+    /// the end.
+    pub(super) fn cancelled_because(&mut self, reason: &str) {
+        self.reason = Some(reason.to_string());
     }
 
     /// Keeps what `event` says: a host's state in the description, its
@@ -581,6 +596,13 @@ impl RunRecorder {
                 }
                 if report.file.is_some() {
                     self.run.file.clone_from(&report.file);
+                }
+                if report
+                    .hosts
+                    .iter()
+                    .any(|host| host.state == HostState::Cancelled)
+                {
+                    self.run.cancel_reason = self.reason.take();
                 }
                 self.run.ended = Some(now());
                 let saved = self.save();

@@ -209,11 +209,18 @@ impl Drop for Running<'_> {
     }
 }
 
+impl PythonSetup {
+    /// Cancels the setup under way, if one is: its canceller, to wait on.
+    pub fn cancel_running(&self) -> Option<SetupCanceller> {
+        let running = lock(&self.running).clone()?;
+        running.cancel();
+        Some(running)
+    }
+}
+
 #[tauri::command]
 pub fn python_setup_cancel(setup: State<'_, Arc<PythonSetup>>) {
-    if let Some(canceller) = lock(&setup.running).as_ref() {
-        canceller.cancel();
-    }
+    setup.cancel_running();
 }
 
 /// Stores the user's own interpreter (installs nothing) and checks it.

@@ -1,7 +1,7 @@
 <script lang="ts">
   // Closing the main window while sessions are live, in it or in session
-  // windows (#88), or Files tabs' transfers run or wait (#106): asked once,
-  // then every window closes.
+  // windows (#88), Files tabs' transfers run or wait (#106), or jobs run
+  // (#124): asked once, then every window closes.
   import { onMount } from "svelte";
   import { transfersText } from "./fileTransfers.svelte";
   import { inSessionWindows } from "./windows";
@@ -15,6 +15,8 @@
     elsewhere: number;
     /** How many transfers the Files tabs have running or waiting. */
     transfers?: number;
+    /** How many jobs run, in every workspace: closing cancels them. */
+    jobs?: number;
     onquit: () => void;
     oncancel: () => void;
   }
@@ -24,6 +26,7 @@
     live,
     elsewhere,
     transfers = 0,
+    jobs = 0,
     onquit,
     oncancel,
   }: Props = $props();
@@ -53,15 +56,25 @@
       ? ""
       : `${transfersText(transfers)} ${transfers === 1 ? "is" : "are"} running or waiting in Files tabs`,
   );
+  const running = $derived(
+    jobs === 0
+      ? ""
+      : `${jobs === 1 ? "1 job is" : `${jobs} jobs are`} still running`,
+  );
+  /** What closing cancels. */
+  const cancelled = $derived(
+    [
+      transfers === 0 ? "" : transfers === 1 ? "the transfer" : "the transfers",
+      jobs === 0 ? "" : jobs === 1 ? "the job" : "the jobs",
+    ]
+      .filter(Boolean)
+      .join(" and "),
+  );
   /** What closing ends. */
   const ends = $derived(
     [
-      live === 0 ? "" : live === 1 ? "the session" : "the sessions",
-      transfers === 0
-        ? ""
-        : transfers === 1
-          ? "cancels the transfer"
-          : "cancels the transfers",
+      live === 0 ? "" : live === 1 ? "ends the session" : "ends the sessions",
+      cancelled ? `cancels ${cancelled}` : "",
     ]
       .filter(Boolean)
       .join(", "),
@@ -84,9 +97,12 @@
     }}
   >
     <h2 id="confirm-quit-title">Close {product || "the app"}?</h2>
-    <p data-quit-transfers={transfers || undefined}>
-      {[open, moving].filter(Boolean).join("; ")}. Closing
-      {live > 0 ? `ends ${ends}` : ends} and closes every window.
+    <p
+      data-quit-transfers={transfers || undefined}
+      data-quit-jobs={jobs || undefined}
+    >
+      {[open, moving, running].filter(Boolean).join("; ")}. Closing
+      {ends} and closes every window.
     </p>
     <div class="actions">
       <button type="submit" data-quit="cancel" bind:this={cancel}>Cancel</button

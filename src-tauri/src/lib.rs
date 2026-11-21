@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
@@ -25,8 +25,8 @@ use netterm_core::import::nornir::{NornirImport, NornirInventory, NornirPreview}
 use netterm_core::import::ImportReport;
 use netterm_core::job::results::{OutputRef, RunList, RunStore, SearchHit, StoredRun};
 use netterm_core::job::{
-    self, JobCanceller, JobEvent, JobOptions, JobPlan, JobStep, JobTarget, KeptPlan, KeptPlans,
-    LiveJob, LiveJobs, LoginBackup, LoginBackupOutcome, NewLiveJob, PlanId, SessionLogin,
+    self, JobEvent, JobOptions, JobPlan, JobStep, JobTarget, KeptPlan, KeptPlans, LiveJob,
+    LiveJobs, LoginBackup, LoginBackupOutcome, NewLiveJob, PlanId, RunningJobs, SessionLogin,
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{
@@ -1345,21 +1345,6 @@ struct Runs(RunStore);
 /// Where config backups are kept: per user, outside every workspace.
 struct Configs(ConfigStore);
 
-/// Running jobs, by the id `job_start` gave them, until they finish.
-#[derive(Default)]
-struct RunningJobs {
-    next: AtomicU64,
-    cancellers: Mutex<BTreeMap<u64, JobCanceller>>,
-}
-
-impl RunningJobs {
-    fn cancellers(&self) -> MutexGuard<'_, BTreeMap<u64, JobCanceller>> {
-        self.cancellers
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
 /// Why a workspace without an id cannot keep job runs or config backups.
 fn no_workspace_id() -> String {
     format!(
@@ -1556,7 +1541,7 @@ async fn job_start(
     plans: State<'_, JobPlans>,
     runs: State<'_, Runs>,
     configs: State<'_, Configs>,
-    jobs: State<'_, Arc<RunningJobs>>,
+    jobs: State<'_, RunningJobs>,
     live: State<'_, Arc<Live>>,
     python: State<'_, Arc<python::PythonSetup>>,
     plan: PlanId,
@@ -1604,7 +1589,7 @@ async fn job_start(
     };
     // A start that would be refused keeps no run.
     job::check(&planned.plan, &options).map_err(|error| error.to_string())?;
-    let mut recorder = runs
+    let recorder = runs
         .0
         .begin(&workspace, &planned.target, &planned.plan)
         .map_err(|error| format!("the run cannot be kept, so the job did not start: {error}"))?;
@@ -1614,9 +1599,10 @@ async fn job_start(
     plans.forget(plan);
     drop(plans);
     let plan = started;
-    let id = jobs.next.fetch_add(1, Ordering::Relaxed);
-    let run = recorder.id().to_string();
-    jobs.cancellers().insert(id, job.canceller());
+    // Running until its end is kept; closing the app ends it (#124).
+    let mut recorder = jobs.follow(job.canceller(), recorder);
+    let id = recorder.id();
+    let run = recorder.run().to_string();
     let record = live
         .lock()
         .start(NewLiveJob {
@@ -1629,7 +1615,6 @@ async fn job_start(
         })
         .clone();
     let _ = app.emit(JOB_STARTED_EVENT, &record);
-    let jobs = Arc::clone(&jobs);
     let live = Arc::clone(&live);
     tauri::async_runtime::spawn(async move {
         let mut unkept = false;
@@ -1637,7 +1622,7 @@ async fn job_start(
         while let Some(event) = job.next().await {
             if let Err(error) = recorder.record(&event) {
                 if !unkept {
-                    eprintln!("the job run {} is not kept whole: {error}", recorder.id());
+                    eprintln!("the job run {} is not kept whole: {error}", recorder.run());
                     unkept = true;
                 }
             }
@@ -1646,7 +1631,6 @@ async fn job_start(
                 let _ = app.emit(JOB_EVENT, JobBroadcast { id, number, event });
             }
         }
-        jobs.cancellers().remove(&id);
     });
     Ok(StartedJob { id, run })
 }
@@ -1654,10 +1638,8 @@ async fn job_start(
 /// Cancels the running job `id`: its sessions close, unfinished hosts end
 /// cancelled with the output they had. Nothing happens if it has ended.
 #[tauri::command]
-fn job_cancel(jobs: State<'_, Arc<RunningJobs>>, id: u64) {
-    if let Some(canceller) = jobs.cancellers().get(&id) {
-        canceller.cancel();
-    }
+fn job_cancel(jobs: State<'_, RunningJobs>, id: u64) {
+    jobs.cancel(id);
 }
 
 /// The open workspace's kept runs, and which of them still run.
@@ -3094,7 +3076,7 @@ pub fn run() {
             app.manage(Runs(RunStore::new(data_folder.join("jobs"))));
             // Config backups likewise.
             app.manage(Configs(ConfigStore::new(data_folder.join("configs"))));
-            app.manage(Arc::new(RunningJobs::default()));
+            app.manage(RunningJobs::new());
             app.manage(Arc::new(Live::default()));
             let preferences = Preferences::load(&data_folder);
             let theme = window_theme(preferences.theme);
@@ -3327,6 +3309,32 @@ pub fn run() {
             python::python_use_interpreter,
             python::python_turn_off
         ])
-        .run(context)
-        .expect("failed to start the app");
+        .build(context)
+        .expect("failed to start the app")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                end_with_the_app(app);
+            }
+        });
+}
+
+/// The app is closing (#124): every running job is cancelled as Cancel
+/// does and a Python setup under way is stopped, waiting a bounded time
+/// for them to end and their runs to be kept. (A crash or a kill runs
+/// nothing: a script's processes end with the app all the same, see
+/// `netterm_core::job`.)
+fn end_with_the_app(app: &AppHandle) {
+    let until = std::time::Instant::now() + job::APP_CLOSE_WAIT;
+    let setup = app.state::<Arc<python::PythonSetup>>().cancel_running();
+    let left = app
+        .state::<RunningJobs>()
+        .end_all(job::APP_CLOSED, job::APP_CLOSE_WAIT);
+    if left > 0 {
+        eprintln!("{left} job(s) had not ended when the app closed");
+    }
+    if let Some(setup) = setup {
+        if !setup.wait(until.saturating_duration_since(std::time::Instant::now())) {
+            eprintln!("the Python setup had not stopped when the app closed");
+        }
+    }
 }

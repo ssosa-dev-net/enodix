@@ -47,9 +47,10 @@ url = "2"
 # Workspace identifiers (random, so that two workspaces never share one).
 uuid = { version = "1", features = ["v4"] }
 
-# The Windows keychain (Credential Manager) for credential profiles.
+# The Windows keychain (Credential Manager) for credential profiles; the
+# job object that holds a Python process with the processes it starts.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 # Ending a Python process with the processes it started (its process group).
 [target.'cfg(unix)'.dependencies]

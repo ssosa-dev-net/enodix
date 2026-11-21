@@ -2638,7 +2638,12 @@ async function main() {
 
   await sidePanels({ evaluate, mouse, centreOf, devtools, screenshot, step });
 
-  await quittingWithLiveSessions({ app, evaluate, devtools, step });
+  const cutByClosing = await quittingWithLiveSessions({
+    app,
+    evaluate,
+    devtools,
+    step,
+  });
 
   devtools.close();
 
@@ -2748,6 +2753,8 @@ async function main() {
         `!!document.querySelector("[data-dialog=workspaces]")`,
       )),
   );
+
+  await jobCutByClosing({ evaluate: evaluateAgain, run: cutByClosing, step });
 
   await pythonAfterRestart({
     evaluate: evaluateAgain,
@@ -5897,6 +5904,33 @@ async function quittingWithLiveSessions({ app, evaluate, devtools, step }) {
   );
   const window = await moveToNewWindow(evaluate, "win-telnet");
   window.devtools.close();
+  // #124: a job that runs when the app closes (the jobs step's hang
+  // snippet on its device, started over the shell's commands as the job
+  // tab does): the question names it, and closing cancels it.
+  const json = (value) => JSON.stringify(value);
+  const snippetsFile = join(workspace, "_snippets.yaml");
+  const savedSnippets = existsSync(snippetsFile)
+    ? readFileSync(snippetsFile, "utf8")
+    : null;
+  writeFileSync(snippetsFile, `${savedSnippets ?? ""}Close check: hang\n`);
+  // Planned once the app has read the snippet (a refusal is tried again).
+  await until("the job to close on planned", async () => {
+    const plan = await invokeIn(evaluate, "job_plan", {
+      target: { kind: "hosts", ids: ["Jobs/jobs-r1.yaml"] },
+      step: { kind: "snippet", name: "Close check", answers: {} },
+    });
+    return plan.hosts.length === 1;
+  });
+  const started = await invokeIn(evaluate, "job_start", { label: "jobs-r1" });
+  const hangRunning = async () => {
+    const live = (await invokeIn(evaluate, "jobs_live")).find(
+      (job) => job.run === started.run,
+    );
+    if (live?.states?.["Jobs/jobs-r1.yaml"]?.kind === "running") return true;
+    // Not running (yet): what it is, for the time-out's message.
+    throw new Error(json(live));
+  };
+  await until("the job closing will cancel, running", hangRunning);
   const question = () =>
     evaluate(
       `document.querySelector("[data-confirm-quit]")?.textContent ?? null`,
@@ -5905,6 +5939,12 @@ async function quittingWithLiveSessions({ app, evaluate, devtools, step }) {
   const asked = await until("the quit question", question);
   if (!/session window/.test(asked))
     fail(`the quit question does not count the session window's: ${asked}`);
+  if (
+    !/1 job is still running/.test(asked) ||
+    !/cancels the job/.test(asked) ||
+    !(await evaluate(`!!document.querySelector("[data-quit-jobs='1']")`))
+  )
+    fail(`the quit question does not name the running job: ${asked}`);
   await mouseClick(evaluate, `[data-quit=cancel]`);
   await until(
     "the quit question gone",
@@ -5914,8 +5954,11 @@ async function quittingWithLiveSessions({ app, evaluate, devtools, step }) {
   if (app.exitCode !== null) fail("Cancel ended the app");
   if (!(await windowOpen(window.label)))
     fail("Cancel closed the session window");
+  await hangRunning().catch((error) =>
+    fail(`Cancel on the quit question ended the job: ${error.message}`),
+  );
   step(
-    "closing the main window with a live session in a session window asked once; Cancel kept every window",
+    "closing the main window with a live session in a session window and a running job asked once, naming both; Cancel kept every window and the job",
   );
 
   await closeWithButton(evaluate);
@@ -5927,6 +5970,47 @@ async function quittingWithLiveSessions({ app, evaluate, devtools, step }) {
     15_000,
   );
   step("Close all ended the app, the session window with it");
+  if (savedSnippets === null) rmSync(snippetsFile, { force: true });
+  else writeFileSync(snippetsFile, savedSnippets);
+  return started.run;
+}
+
+/**
+ * After the restart (#124): the run of the job the app was closed on
+ * (`quittingWithLiveSessions`) is kept as ended, its host cancelled, and
+ * its tab says the app was closed while it ran.
+ */
+async function jobCutByClosing({ evaluate, run, step }) {
+  const json = (value) => JSON.stringify(value);
+  await showSideView(evaluate, "jobs");
+  const row = `${JOBS_SIDE} [data-run="${run}"]`;
+  await until("the run cut by closing, listed", () =>
+    evaluate(`!!document.querySelector(${json(row)})`),
+  );
+  const state = await evaluate(
+    `document.querySelector(${json(row)}).dataset.runState`,
+  );
+  if (state !== "ended") fail(`the run cut by closing is ${state}`);
+  await mouseClick(evaluate, row);
+  const reason = await until("its reason shown", () =>
+    evaluate(
+      `document.querySelector(${json(`${RUN_TAB} [data-run-details="${run}"] [data-run-cancel-reason]`)})?.textContent.trim() ?? null`,
+    ),
+  );
+  if (reason !== "Cancelled: the app was closed while the job ran.")
+    fail(`the run cut by closing says: ${reason}`);
+  if (
+    !(await evaluate(
+      `!!document.querySelector(${json(`${RUN_TAB} [data-run-host="Jobs/jobs-r1.yaml"][data-host-state=cancelled]`)})`,
+    ))
+  )
+    fail("the run cut by closing does not show its host cancelled");
+  step(
+    "after the restart, the job the app was closed on is kept as cancelled because the app was closed",
+  );
+  // Left as the steps after it expect: no run tab, the Hosts view.
+  await closeTabOf(evaluate, `${RUN_TAB} [data-run-details="${run}"]`);
+  await showSideView(evaluate, "hosts");
 }
 
 /**

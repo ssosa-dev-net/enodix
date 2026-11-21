@@ -82,6 +82,7 @@ pub mod agent;
 pub mod algorithms;
 pub mod credentials;
 pub mod http;
+pub mod processes;
 pub mod python;
 pub mod scp;
 pub mod serial;

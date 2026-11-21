@@ -22,6 +22,7 @@ pub mod logging;
 pub mod paste;
 pub mod platform;
 pub mod preferences;
+mod process;
 pub mod python;
 pub mod session;
 pub mod template;

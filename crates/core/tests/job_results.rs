@@ -15,7 +15,7 @@ use netterm_core::job::results::{
 };
 use netterm_core::job::{
     self, HostResult, HostState, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget,
-    SkipReason,
+    RunningJobs, SkipReason, APP_CLOSED, APP_CLOSE_WAIT,
 };
 use netterm_core::workspace::{HostId, Workspace};
 use support::workspaces::files;
@@ -302,6 +302,85 @@ fn a_run_the_app_did_not_finish_is_listed_without_an_end() {
             .unwrap(),
         ""
     );
+}
+
+/// Closing the app (#124) cancels a snippet job as Cancel does: its kept
+/// run ends, each host cancelled with its output so far, and says the app
+/// was closed. A job that had finished keeps no such reason. (A crash or a
+/// kill leaves the run without an end, listed as above.)
+#[tokio::test]
+async fn closing_the_app_ends_a_snippet_job_and_its_run_says_why() {
+    let r1 = TestSshServer::start_device("r1").await;
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(
+        &temp,
+        &[
+            ("Site/_folder.yaml", "credential_profile: lab\n".into()),
+            ("Site/r1.yaml", host(r1.port())),
+            ("_snippets.yaml", "wait: hang\nquick: echo quick\n".into()),
+        ],
+    );
+    let store = store(&workspace);
+    let runs = RunStore::new(temp.path().join("jobs"));
+    let jobs = RunningJobs::new();
+    let manager = support::manager();
+    let follow = |name: &str| {
+        let planned = plan(&workspace, &store, &folder("Site"), &snippet(name));
+        let recorder = runs
+            .begin(id(&workspace), &folder("Site"), &planned)
+            .unwrap();
+        let mut job = job::start(&manager, planned, JobOptions::default()).unwrap();
+        let mut run = jobs.follow(job.canceller(), recorder);
+        let run_id = run.run().to_string();
+        let (states, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let recording = tokio::spawn(async move {
+            while let Some(event) = job.next().await {
+                run.record(&event).unwrap();
+                if let JobEvent::State { state, .. } = event {
+                    let _ = states.send(state);
+                }
+            }
+        });
+        (run_id, recording, async move {
+            while let Some(state) = heard.recv().await {
+                if state == HostState::Running {
+                    return;
+                }
+            }
+        })
+    };
+
+    // A job that finished before the app closed.
+    let (quick, recording, _) = follow("quick");
+    tokio::time::timeout(WAIT * 3, recording)
+        .await
+        .expect("the quick job finished")
+        .unwrap();
+
+    let (waiting, recording, running) = follow("wait");
+    tokio::time::timeout(WAIT * 3, running)
+        .await
+        .expect("the host runs the snippet");
+    let closing = jobs.clone();
+    let left = tokio::task::spawn_blocking(move || closing.end_all(APP_CLOSED, APP_CLOSE_WAIT))
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+    recording.await.unwrap();
+
+    let list = RunStore::new(runs.root()).list(id(&workspace)).unwrap();
+    let kept = list.runs.iter().find(|run| run.id == waiting).unwrap();
+    assert!(kept.ended());
+    assert_eq!(kept.cancel_reason.as_deref(), Some(APP_CLOSED));
+    assert_eq!(kept.hosts[0].state, HostState::Cancelled);
+    let shown = runs
+        .output(id(&workspace), &output(&waiting, "Site/r1.yaml"))
+        .unwrap();
+    // The output so far (at least the prompt it logged in to).
+    assert!(shown.contains("r1#"), "{shown}");
+    let finished = list.runs.iter().find(|run| run.id == quick).unwrap();
+    assert_eq!(finished.hosts[0].state, HostState::Done);
+    assert_eq!(finished.cancel_reason, None);
 }
 
 #[test]

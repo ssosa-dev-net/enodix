@@ -258,6 +258,9 @@ export interface StoredRun {
   targets?: { id: string; name: string; address: string }[];
   /** For a file job: the file, with its hashes once the run ended. */
   file?: SentFile;
+  /** Why it was cancelled when the user did not cancel it ("the app was
+   * closed while the job ran"). */
+  cancel_reason?: string;
 }
 
 export interface RunList {

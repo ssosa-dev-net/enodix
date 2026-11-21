@@ -118,9 +118,15 @@ everything 0.2.0 could do, the app still does, reached differently.
   window of their own ("Open in window") and dock back. Closing the main
   window closes them; closing a run's window leaves its job running.
 - **Closing the main window** closes every window, session windows
-  included, and ends every session (#88). If a session is connecting or
-  connected in any window, you are asked once first ("Close all" or
-  Cancel, which has the focus); otherwise it closes at once.
+  included, and ends every session (#88). It also cancels every running
+  job, as Cancel does (a script's processes and the tunnels it holds end
+  with it), and stops a Python setup under way (#124); the run then says
+  "Cancelled: the app was closed while the job ran." If a session is
+  connecting or connected in any window, a Files transfer runs or waits,
+  or a job runs, you are asked once first ("1 job is still running.
+  Closing cancels the job and closes every window.", "Close all" or
+  Cancel, which has the focus); otherwise it closes at once. A script's
+  processes end with the app even when it crashes or is killed.
 - **Session windows** (#84, #85): a session can move to a window of its
   own, live, with its scrollback and screen: "Open in new window" in its
   menu or its tab's context menu (or Ctrl+Shift+N), or "Open in the

@@ -14,7 +14,10 @@
 //! [`SCRIPT_OUTPUT`]; the exit status decides how it ends: 0 is
 //! [`HostState::Done`], anything else [`HostState::Failed`]. Cancelling
 //! ends the process and the processes it started, keeping the output so
-//! far. The targets file is removed when the script has ended.
+//! far. What a script that exits leaves running ends with it, and the
+//! whole tree ends with this process however it ends, a crash or a kill
+//! included (`crate::process`). The targets file is removed when the
+//! script has ended.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -33,7 +36,8 @@ use super::run::{HostResult, HostState, JobEvent, JobReport};
 use super::{JobPlan, JobStep, PlannedScript, ScriptRun};
 use crate::enrich::{CollectedFacts, ENRICH_TITLE, FACTS_VARIABLE};
 use crate::logging::PlainText;
-use crate::python::{quiet_command, spawn as start_process, stop};
+use crate::process;
+use crate::python::quiet_command;
 use crate::workspace::HostId;
 
 /// The host id a script job reports its output and state under (in
@@ -282,12 +286,15 @@ impl Runner {
         command
             .stdout(writer.try_clone().map_err(not_started)?)
             .stderr(writer);
-        let started = start_process(&mut command);
+        // The script and what it starts end when it is cancelled, when it
+        // has ended (what it left behind), and when this process ends,
+        // however it ends (`crate::process`).
+        let started = process::start(&mut command);
         // The command holds this process's copies of the pipe's writing
         // end: gone, the pipe ends once the script (and what it started)
         // closed theirs.
         drop(command);
-        let mut child = started.map_err(not_started)?;
+        let mut tree = started.map_err(not_started)?;
         self.state(HostState::Running);
 
         let (sender, pieces) = std_mpsc::channel();
@@ -303,11 +310,11 @@ impl Runner {
                 }
             }
             if *cancel.borrow() {
-                stop(&mut child);
+                tree.stop();
                 self.drain(&pieces, Duration::from_millis(200));
                 return Ok(Ended::Cancelled);
             }
-            match child.try_wait() {
+            match tree.child.try_wait() {
                 Ok(Some(status)) => {
                     // What is still in the pipes, for a moment (a process
                     // it left behind may hold them open).
@@ -316,7 +323,7 @@ impl Runner {
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    stop(&mut child);
+                    tree.stop();
                     return Err(format!("the script could not be followed: {error}"));
                 }
             }

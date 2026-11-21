@@ -82,7 +82,12 @@
   import ConfigHistory from "./lib/ConfigHistory.svelte";
   import FilesTab from "./lib/FilesTab.svelte";
   import { stepTitle } from "./lib/jobs";
-  import { liveJob, startLiveJobs, type LiveJob } from "./lib/jobs.svelte";
+  import {
+    liveJob,
+    runningCount,
+    startLiveJobs,
+    type LiveJob,
+  } from "./lib/jobs.svelte";
   import { forgetClosedDrafts, jobDrafts } from "./lib/jobTabs.svelte";
   import {
     hostRole,
@@ -967,17 +972,19 @@
     document.title = value;
   });
 
-  /** Closing the main window while sessions are live (#88), waiting for
-   * the user's answer. */
+  /** Closing the main window while sessions are live (#88), transfers
+   * (#106) or jobs (#124) run, waiting for the user's answer. */
   let quitting = $state<{
     live: number;
     elsewhere: number;
     transfers: number;
+    jobs: number;
   } | null>(null);
 
   // Closing the main window (its Close button, Alt+F4, the taskbar) closes
-  // every window and every session: asked once if a session is opening or
-  // connected in any window, else at once.
+  // every window and every session, and cancels every job (#124): asked
+  // once if a session is opening or connected in any window, a transfer or
+  // a job runs, else at once.
   void getCurrentWindow().onCloseRequested(async (event) => {
     event.preventDefault();
     if (quitting) return;
@@ -985,8 +992,10 @@
     const live = liveSessions + elsewhere;
     // Files tabs are in this window only (#106).
     const transfers = activeTransfers();
-    if (live + transfers === 0) await closeMainWindow();
-    else quitting = { live, elsewhere, transfers };
+    // Jobs of every workspace: the shell keeps them all.
+    const jobs = runningCount() + runningCount(true);
+    if (live + transfers + jobs === 0) await closeMainWindow();
+    else quitting = { live, elsewhere, transfers, jobs };
   });
 
   // Changes from outside the app (a git pull) show without a restart. The
@@ -1931,12 +1940,13 @@
 {/if}
 
 {#if quitting}
-  {@const { live, elsewhere, transfers } = quitting}
+  {@const { live, elsewhere, transfers, jobs } = quitting}
   <ConfirmQuit
     product={name}
     {live}
     {elsewhere}
     {transfers}
+    {jobs}
     onquit={() => void closeMainWindow()}
     oncancel={() => {
       quitting = null;
