@@ -10,6 +10,14 @@
 //! the names. Its secret is the scope, the name as written and the value,
 //! as JSON. Other systems have no keychain support yet: every call fails
 //! with a [`StoreError`].
+//!
+//! Credential Manager loses changes and hands back old values when
+//! several processes call it at the same moment, even for entries no
+//! other process names (#138): every call here takes turns with every
+//! other process of this program through one named mutex, and a write or
+//! delete is read back in its turn (a program that does not take turns can
+//! still undo it, now or a moment later; see
+//! the credentials notes).
 
 use super::{
     CredentialProfile, CredentialStore, ScopedProfile, ScopedSecret, SecretValue, StoreContents,
@@ -313,19 +321,85 @@ fn unreadable(what: &str) -> StoreError {
 #[cfg(windows)]
 mod os {
     //! Windows Credential Manager through the `Cred*W` functions.
+    //!
+    //! Every call holds [`Turn`]: Credential Manager loses changes when two
+    //! processes change it at once (#138), so every process of this
+    //! program, whatever its prefix, takes turns with the others.
 
     use std::ptr;
 
-    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_NOT_FOUND, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
+    };
     use windows_sys::Win32::Security::Credentials::{
         CredDeleteW, CredEnumerateW, CredFree, CredReadW, CredWriteW, CREDENTIALW,
         CRED_MAX_CREDENTIAL_BLOB_SIZE, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
     };
+    use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
     use super::{Blob, EntryKind, StoreError};
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// The mutex every process of this program holds around each call to
+    /// Credential Manager, in this logon session's namespace. Not named
+    /// after the prefix: two prefixes (the app and a test, two tests) lose
+    /// each other's changes as much as two copies of the app do.
+    const TURN: &str = r"Local\netterm-credential-manager";
+
+    /// How long a call waits for its turn before it fails. A call takes
+    /// milliseconds; this is a holder that hangs, not a queue.
+    const TURN_WAIT_MS: u32 = 30_000;
+
+    /// This process's turn at Credential Manager, until dropped.
+    struct Turn(HANDLE);
+
+    impl Turn {
+        fn take() -> Result<Self, StoreError> {
+            let name = wide(TURN);
+            // SAFETY: a NUL-terminated name, default security, not owned
+            // on creation; the handle is closed on drop or below.
+            let mutex = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+            if mutex.is_null() {
+                let error = std::io::Error::last_os_error();
+                return Err(StoreError(format!(
+                    "cannot take turns at the Windows credentials: {error}"
+                )));
+            }
+            // SAFETY: a mutex handle of ours.
+            match unsafe { WaitForSingleObject(mutex, TURN_WAIT_MS) } {
+                // Abandoned: a process ended while it held its turn. Its
+                // call either happened or did not; the turn is ours now.
+                WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Self(mutex)),
+                waited => {
+                    let error = std::io::Error::last_os_error();
+                    // SAFETY: ours, not held.
+                    unsafe { CloseHandle(mutex) };
+                    Err(StoreError(if waited == WAIT_TIMEOUT {
+                        format!(
+                            "the Windows credentials are held by another copy of the app for more than {} s",
+                            TURN_WAIT_MS / 1000
+                        )
+                    } else {
+                        format!("cannot take turns at the Windows credentials: {error}")
+                    }))
+                }
+            }
+        }
+    }
+
+    impl Drop for Turn {
+        fn drop(&mut self) {
+            // SAFETY: held by this thread (taken in `take`, dropped in the
+            // same function), then closed.
+            unsafe {
+                ReleaseMutex(self.0);
+                CloseHandle(self.0);
+            }
+        }
     }
 
     /// The last Windows error, unless it is "not found".
@@ -357,6 +431,7 @@ mod os {
     }
 
     pub fn list(filter: &str) -> Result<Vec<Blob>, StoreError> {
+        let _turn = Turn::take()?;
         let filter = wide(filter);
         let mut count = 0;
         let mut credentials: *mut *mut CREDENTIALW = ptr::null_mut();
@@ -383,6 +458,7 @@ mod os {
 
     /// The names of the generic credentials matching `filter`.
     pub fn targets(filter: &str) -> Result<Vec<String>, StoreError> {
+        let _turn = Turn::take()?;
         let filter = wide(filter);
         let mut count = 0;
         let mut credentials: *mut *mut CREDENTIALW = ptr::null_mut();
@@ -416,7 +492,12 @@ mod os {
     }
 
     pub fn read(target: &str) -> Result<Option<Blob>, StoreError> {
-        let target = wide(target);
+        let _turn = Turn::take()?;
+        read_held(&wide(target))
+    }
+
+    /// [`read`] with the turn held.
+    fn read_held(target: &[u16]) -> Result<Option<Blob>, StoreError> {
         let mut credential: *mut CREDENTIALW = ptr::null_mut();
         // SAFETY: the target is NUL-terminated; Windows allocates the
         // credential, freed below.
@@ -434,6 +515,9 @@ mod os {
         Ok(Some(secret))
     }
 
+    /// Writes the credential, then reads it back in the same turn: a
+    /// change Credential Manager did not keep is an error, never a save
+    /// reported done.
     pub fn write(
         target: &str,
         username: &str,
@@ -461,6 +545,7 @@ mod os {
             UserName: username.as_mut_ptr(),
             ..CREDENTIALW::default()
         };
+        let _turn = Turn::take()?;
         // SAFETY: every pointer is valid for the call.
         let written = unsafe { CredWriteW(&credential, 0) };
         if written == 0 {
@@ -471,11 +556,24 @@ mod os {
                 "cannot write the Windows credential: {error}"
             )));
         }
-        Ok(())
+        match read_held(&target)? {
+            Some(kept) if *kept == *secret => Ok(()),
+            _ => Err(not_kept(&format!("{} was not saved", kind.noun))),
+        }
     }
 
+    /// A change Credential Manager reported done but does not show.
+    fn not_kept(what: &str) -> StoreError {
+        StoreError(format!(
+            "Windows did not keep the change, so {what} (another program was changing the Windows credentials at the same moment?): try again"
+        ))
+    }
+
+    /// Deletes the credential, then looks for it in the same turn: one
+    /// still there is an error.
     pub fn delete(target: &str) -> Result<bool, StoreError> {
         let target = wide(target);
+        let _turn = Turn::take()?;
         // SAFETY: the target is NUL-terminated.
         let deleted = unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) };
         if deleted == 0 {
@@ -484,7 +582,10 @@ mod os {
                 None => Ok(false),
             };
         }
-        Ok(true)
+        match read_held(&target)? {
+            None => Ok(true),
+            Some(_) => Err(not_kept("it is still there")),
+        }
     }
 }
 

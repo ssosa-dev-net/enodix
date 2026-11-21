@@ -98,6 +98,7 @@ pub mod algorithms;
 pub mod credentials;
 pub mod http;
 pub mod jobs;
+pub mod keychain;
 pub mod memory;
 pub mod processes;
 pub mod proxy;
