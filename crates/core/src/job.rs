@@ -58,6 +58,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::credentials::{HostLogin, ProfileError, Profiles};
+use crate::known_hosts::KnownHosts;
 use crate::platform::PlatformDefinition;
 use crate::session::{SshAuth, SshTarget};
 use crate::template::{Template, Variables};
@@ -215,6 +216,77 @@ impl JobPlan {
     pub fn ready(&self) -> bool {
         !self.hosts.is_empty() && self.missing_variables.is_empty()
     }
+
+    /// Looks up, in `known_hosts` only (connecting to nothing), the host
+    /// keys each planned host's run will check: the device's and every
+    /// jump host's of its chain for a job that connects to it, the device's
+    /// and the jump hosts' for a script host behind jump hosts (its
+    /// tunnel's), none for a script host the script reaches by itself. A
+    /// host with one not trusted yet gets a [`HostKeyWarning`]; it stays
+    /// planned, since the key may be trusted before the start, and the run
+    /// is what decides. A key stored for the address counts as trusted
+    /// here: whether the device still presents it (a changed key) is only
+    /// known by connecting, and the run refuses it then. Checking again
+    /// replaces the warnings.
+    pub fn check_host_keys(&mut self, known_hosts: &KnownHosts) {
+        let refuses = if self.step.runs_script() {
+            "the script's tunnel will refuse this host"
+        } else {
+            "the job will refuse this host"
+        };
+        for host in &mut self.hosts {
+            host.host_keys = host_key_warning(&host.work.keys, known_hosts, refuses);
+        }
+    }
+
+    /// How many planned hosts have a [`HostKeyWarning`].
+    pub fn untrusted_keys(&self) -> usize {
+        self.hosts.iter().filter(|h| h.host_keys.is_some()).count()
+    }
+}
+
+/// The warning for a host whose run checks the keys at `places`, if one is
+/// not trusted yet (or the store cannot be read).
+fn host_key_warning(
+    places: &[KeyPlace],
+    known_hosts: &KnownHosts,
+    refuses: &str,
+) -> Option<HostKeyWarning> {
+    let mut untrusted = Vec::new();
+    for place in places {
+        match known_hosts.trusted(&place.host, place.port) {
+            Ok(keys) if keys.is_empty() => untrusted.push(place),
+            Ok(_) => {}
+            Err(error) => {
+                return Some(HostKeyWarning {
+                    keys: Vec::new(),
+                    message: format!("its host key cannot be checked ({error}), so {refuses}"),
+                })
+            }
+        }
+    }
+    let described: Vec<String> = untrusted.iter().map(|place| place.described()).collect();
+    let message = match described.as_slice() {
+        [] => return None,
+        [one] => format!(
+            "the host key of {one} is not trusted yet, so {refuses}: connecting to it once in a terminal (Trust and remember) trusts the key"
+        ),
+        [first @ .., last] => format!(
+            "the host keys of {} and of {last} are not trusted yet, so {refuses}: connecting to it once in a terminal (Trust and remember) trusts them",
+            first.join(", of ")
+        ),
+    };
+    Some(HostKeyWarning {
+        keys: untrusted
+            .into_iter()
+            .map(|place| UntrustedKey {
+                jump_host: place.jump_host.clone(),
+                address: place.host.clone(),
+                port: place.port,
+            })
+            .collect(),
+        message,
+    })
 }
 
 /// A host that will run.
@@ -235,9 +307,80 @@ pub struct PlannedHost {
     /// For sending a file: the path it gets on the host.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination: Option<String>,
+    /// Set by [`JobPlan::check_host_keys`] when a host key the run checks
+    /// is not trusted yet: advice only, the run decides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_keys: Option<HostKeyWarning>,
     /// What the job sends and how it connects: not shown.
     #[serde(skip)]
     work: HostWork,
+}
+
+/// Why a planned host will be refused at run time as the known host keys
+/// are now: a key its run checks (the device's, or a jump host's on the
+/// way) is not trusted yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostKeyWarning {
+    /// The keys not trusted yet, in the order the run meets them (the jump
+    /// hosts first, then the device). Empty when the known host keys
+    /// cannot be read.
+    pub keys: Vec<UntrustedKey>,
+    /// The warning, for the user.
+    pub message: String,
+}
+
+/// A host key a run checks that is not trusted yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UntrustedKey {
+    /// The jump host it belongs to (its workspace id); `None`: the
+    /// device's own key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jump_host: Option<String>,
+    /// The address and port the key is looked up by, as the session
+    /// connects to them.
+    pub address: String,
+    pub port: u16,
+}
+
+/// Where a run checks a host key: the address and port a session (or a
+/// script's tunnel) connects to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyPlace {
+    jump_host: Option<String>,
+    host: String,
+    port: u16,
+}
+
+impl KeyPlace {
+    /// The keys `target`'s session checks: each jump host's, then the
+    /// device's.
+    fn of(target: &SshTarget) -> Vec<Self> {
+        target
+            .jump_hosts
+            .iter()
+            .map(|jump| Self {
+                jump_host: Some(jump.name.clone()),
+                host: jump.host.clone(),
+                port: jump.port,
+            })
+            .chain(std::iter::once(Self {
+                jump_host: None,
+                host: target.host.clone(),
+                port: target.port,
+            }))
+            .collect()
+    }
+
+    /// The key, for the user: "the device's (127.0.0.1 port 22)".
+    fn described(&self) -> String {
+        let at = format!("{} port {}", self.host, self.port);
+        match &self.jump_host {
+            None => format!("the device ({at})"),
+            Some(jump) => format!("its jump host {jump} ({at})"),
+        }
+    }
 }
 
 /// How a planned host is reached and driven.
@@ -272,6 +415,11 @@ struct HostWork {
     /// For sending a file: the host's platform definition, if one applies
     /// (for the SCP hint after a fall back).
     definition: Option<PlatformDefinition>,
+    /// The host keys the app checks when the host runs, in order: a
+    /// session's chain for a host the job connects to, a script's tunnel
+    /// for a script host behind jump hosts, none for a script host the
+    /// script reaches by itself.
+    keys: Vec<KeyPlace>,
 }
 
 /// How a config backup fetches a host's configuration.
@@ -517,6 +665,7 @@ pub fn plan(
                     environment,
                     platform,
                     destination: work.remote.clone(),
+                    host_keys: None,
                     work,
                 });
             }
@@ -696,8 +845,10 @@ fn runnable(
             jump_host: jump.name.clone(),
         });
     }
+    let target = profiles.profile_target(id).map_err(skip)?;
     let work = HostWork {
-        target: Some(profiles.profile_target(id).map_err(skip)?),
+        keys: KeyPlace::of(&target),
+        target: Some(target),
         profile: Some(profile),
         enable_secret,
         prompt: definition.prompt.clone(),
@@ -729,8 +880,9 @@ fn script_runnable(
             });
         }
     }
-    tunnelled(workspace, profiles, host)?;
+    let keys = tunnelled(workspace, profiles, host)?;
     let work = HostWork {
+        keys,
         target: None,
         profile: host
             .settings
@@ -787,8 +939,9 @@ fn enrich_runnable(
             return Err(SkipReason::NoProfile)
         }
     };
-    tunnelled(workspace, profiles, host)?;
+    let keys = tunnelled(workspace, profiles, host)?;
     let work = HostWork {
+        keys,
         target: None,
         profile: Some(profile),
         enable_secret: None,
@@ -879,8 +1032,10 @@ fn file_runnable(
                 names: missing.names,
             })?
     };
+    let target = profiles.profile_target(id).map_err(skip)?;
     let work = HostWork {
-        target: Some(profiles.profile_target(id).map_err(skip)?),
+        keys: KeyPlace::of(&target),
+        target: Some(target),
         profile: Some(profile),
         enable_secret: None,
         prompt: String::new(),
@@ -899,18 +1054,21 @@ fn file_runnable(
 /// Why a script cannot reach `host` if it is behind jump hosts: the
 /// chain is broken, a jump host has no stored profile (the tunnel cannot
 /// log in to it), or the host is reached over telnet (only SSH is
-/// tunnelled). Hosts reached directly, and serial ones, pass.
+/// tunnelled). Hosts reached directly, and serial ones, pass with no keys
+/// to check (the script reaches them itself); a host behind jump hosts
+/// passes with the keys its tunnel checks: each jump host's, then the
+/// device's.
 fn tunnelled(
     workspace: &Workspace,
     profiles: &Profiles<'_>,
     host: &ResolvedHost,
-) -> Result<(), SkipReason> {
+) -> Result<Vec<KeyPlace>, SkipReason> {
     let protocol = host.settings.protocol.value;
     if protocol == Protocol::Serial {
-        return Ok(());
+        return Ok(Vec::new());
     }
     match workspace.jump_chain(host) {
-        Ok(chain) if chain.is_empty() => return Ok(()),
+        Ok(chain) if chain.is_empty() => return Ok(Vec::new()),
         _ if protocol == Protocol::Telnet => {
             return Err(SkipReason::TelnetBehindJumpHost {
                 jump_host: host
@@ -928,7 +1086,12 @@ fn tunnelled(
         Some(jump) => Err(SkipReason::BehindJumpHost {
             jump_host: jump.name.clone(),
         }),
-        None => Ok(()),
+        None => {
+            // As `tunnel::plan` looks the device's key up.
+            let mut target = host.ssh_target_with(String::new(), SshAuth::Prompt);
+            target.jump_hosts = jump_hosts.clone();
+            Ok(KeyPlace::of(&target))
+        }
     }
 }
 

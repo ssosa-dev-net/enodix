@@ -104,6 +104,19 @@ export interface PlannedHost {
   platform: string;
   /** For sending a file: the path it gets on the host. */
   destination?: string;
+  /**
+   * Set when a host key its run checks is not trusted yet (#129): the run
+   * will refuse it unless the key is trusted first. Advice; the run decides.
+   */
+  hostKeys?: HostKeyWarning;
+}
+
+/** A planned host's host keys that are not trusted yet. */
+export interface HostKeyWarning {
+  /** In the order the run meets them: the jump hosts, then the device. */
+  keys: { jumpHost?: string; address: string; port: number }[];
+  /** The warning, for the user. */
+  message: string;
 }
 
 export interface SkippedHost {

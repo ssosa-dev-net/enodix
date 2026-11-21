@@ -1461,20 +1461,25 @@ fn workspace_id(shell: &Shell) -> Result<String, String> {
         .ok_or_else(no_workspace_id)
 }
 
-/// Plans in the open workspace and keeps the plan for `job_start`, under
-/// the id it is shown with.
+/// Plans in the open workspace, marks the hosts whose host keys the run
+/// would refuse as the app's known hosts are now (#129: advice; the run
+/// decides), and keeps the plan for `job_start`, under the id it is shown
+/// with.
 fn keep_plan(
     shell: &Shell,
     plans: &JobPlans,
+    manager: &SessionManager,
     target: JobTarget,
     plan: impl FnOnce(&Workspace, &Profiles<'_>) -> Result<JobPlan, String>,
 ) -> Result<ShownPlan, String> {
     let kept = {
         let guard = shell.workspace();
         let workspace = guard.as_ref().ok_or("no workspace is open")?;
+        let mut plan = plan(workspace, &Profiles::new(&*shell.credentials, workspace))?;
+        plan.check_host_keys(&manager.known_hosts());
         KeptPlan {
             workspace: workspace.id().map(str::to_string),
-            plan: plan(workspace, &Profiles::new(&*shell.credentials, workspace))?,
+            plan,
             target,
         }
     };
@@ -1491,12 +1496,19 @@ fn keep_plan(
 fn job_plan(
     shell: State<'_, Shell>,
     plans: State<'_, JobPlans>,
+    manager: State<'_, SessionManager>,
     target: JobTarget,
     step: JobStep,
 ) -> Result<ShownPlan, String> {
-    keep_plan(&shell, &plans, target.clone(), |workspace, profiles| {
-        job::plan(workspace, profiles, &target, &step).map_err(|error| error.to_string())
-    })
+    keep_plan(
+        &shell,
+        &plans,
+        &manager,
+        target.clone(),
+        |workspace, profiles| {
+            job::plan(workspace, profiles, &target, &step).map_err(|error| error.to_string())
+        },
+    )
 }
 
 /// Forgets the kept plan `plan` (its tab closed, or planned again).
@@ -1520,6 +1532,7 @@ fn job_run_again(
     shell: State<'_, Shell>,
     runs: State<'_, Runs>,
     plans: State<'_, JobPlans>,
+    manager: State<'_, SessionManager>,
     run: String,
 ) -> Result<PlannedAgain, String> {
     let stored = runs
@@ -1529,6 +1542,7 @@ fn job_run_again(
     let plan = keep_plan(
         &shell,
         &plans,
+        &manager,
         stored.target.clone(),
         |workspace, profiles| {
             job::plan_again(workspace, profiles, &stored).map_err(|error| error.to_string())
@@ -1566,6 +1580,7 @@ fn saved_job_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>,
 fn saved_job_plan(
     shell: State<'_, Shell>,
     plans: State<'_, JobPlans>,
+    manager: State<'_, SessionManager>,
     name: String,
 ) -> Result<PlannedAgain, String> {
     let (target, plan) = {
@@ -1578,7 +1593,7 @@ fn saved_job_plan(
         )
         .map_err(|error| error.to_string())?
     };
-    let plan = keep_plan(&shell, &plans, target.clone(), |_, _| Ok(plan))?;
+    let plan = keep_plan(&shell, &plans, &manager, target.clone(), |_, _| Ok(plan))?;
     Ok(PlannedAgain { target, plan })
 }
 
