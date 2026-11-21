@@ -1347,7 +1347,7 @@ async function noConnectionOfItsOwn(step) {
   const { processes, connections: seen, udp, known } = connections.summary();
   // Let through, but never silently (see connections.mjs).
   for (const finding of known) {
-    console.log(`KNOWN FINDING - WebView2 reached Office: ${finding}`);
+    console.log(`KNOWN FINDING (#135) - WebView2's sign-in: ${finding}`);
   }
   const names = Object.entries(processes)
     .map(([name, count]) => `${name} ×${count}`)

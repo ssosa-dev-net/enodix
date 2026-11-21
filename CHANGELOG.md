@@ -105,6 +105,18 @@ folder, and what stalled it was fixed [116].
 - The empty pane says a double click connects a host. The login prompt,
   the Credential profile setting, the Credentials view and the reports of
   the CSV and Nornir imports say how a host gets a credential profile.
+- Opening a folder that holds other things and no host file (a Documents
+  folder picked by mistake) asks before making it a workspace, and nothing
+  is written into it until the answer is yes [131]. Before, the app wrote
+  its `_workspace.yaml` there and showed every subfolder as a host folder.
+  A folder with host files, a workspace's own files or nothing in it opens
+  as before. `netterm-cli inventory` never wrote into such a folder and
+  now warns that it is not a workspace.
+- The CSV and Nornir imports check each address as New host does [131]:
+  one with a space in it fails its row; in a CSV, so does one with a port
+  after it, and the reason says where the port goes; a Nornir hostname
+  with a port gives the host that port. New host refuses a space inside an
+  address too. "Import 0 hosts" can no longer be pressed.
 
 ### SSH login banners
 
@@ -114,7 +126,9 @@ folder, and what stalled it was fixed [116].
   also when the login fails, and the session log keeps it [134]. Before,
   it was dropped. A jump host's banner comes first, under a grey line
   naming the jump host. Jobs, config backups and the Files tab leave it
-  out.
+  out. Checked on the lab's IOS-XE and Arista cEOS devices, which now
+  carry awkward banners all the time (lines ending in `#` and `>`,
+  "Password:" in a sentence), over SSH and, on cEOS, telnet.
 
 ### What the app connects to
 
@@ -320,6 +334,18 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   a computer with neither WebView2 nor internet. The note on back up on
   login mentions the second login a device that refuses a second channel
   gets [127].
+- A saved job no longer keeps the answer to a variable whose name looks
+  like a secret (`{{enable_password}}`, by the rule the imports use): it
+  is asked at each run, and the save form says so [126]. Before, a
+  password typed as an answer went into `_jobs.yaml`, which is shared
+  through git. Such an answer already in the file is never used or shown;
+  the saved job names it so it can be removed from the file by hand (the
+  app cannot remove it from the git history).
+- A job's pre-flight names the hosts whose host key, the device's or a
+  jump host's on the way, is not trusted yet, says how to trust it and
+  counts them in its summary [129]. Before, such a host was only refused
+  once the job ran. It looks in the known host keys and connects to
+  nothing, so a key that has changed still shows only when the job runs.
 
 ## 0.4.1
 

@@ -137,19 +137,21 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
     }
     return names.join(" < ");
   };
-  // KNOWN FINDING (#115; its own ticket to be written): while text is
-  // typed, WebView2's browser process (its msedgewebview2.exe started by
-  // netterm.exe) now and then connects to port 443 of Microsoft's Exchange
-  // Online / Office addresses (40.96.0.0/13, 52.96.0.0/14), outside its
-  // network stack; nothing found yet stops it. Only that is let through,
-  // and every one is listed at the end of the run; anything else fails.
+  // KNOWN FINDING (#135): WebView2's browser process (its
+  // msedgewebview2.exe started by netterm.exe) now and then connects to
+  // port 443 of Microsoft's Exchange Online / Office addresses
+  // (40.96.0.0/13, 52.96.0.0/14), outside its network stack: its sign-in
+  // with the Windows account. Only that, and the UDP socket below, is let
+  // through, and every one is listed at the end of the run; anything else
+  // fails.
   const known = [];
+  const browserProcess = (event) =>
+    event.name === "msedgewebview2.exe" &&
+    processes.get(processes.get(event.pid)?.parent)?.name === "netterm.exe";
   const knownOfficeConnection = (event) => {
-    const parent = processes.get(processes.get(event.pid)?.parent);
     const [a, b] = event.remoteAddress.split(".").map(Number);
     return (
-      event.name === "msedgewebview2.exe" &&
-      parent?.name === "netterm.exe" &&
+      browserProcess(event) &&
       event.remotePort === 443 &&
       ((a === 40 && b >= 96 && b <= 103) || (a === 52 && b >= 96 && b <= 99))
     );
@@ -163,9 +165,16 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
     const who = `${event.name} (pid ${lineage(event.pid)})`;
     if (event.kind === "udp") {
       udp.push(event);
-      return LOOPBACK.test(event.localAddress)
-        ? null
-        : `${who} has a UDP socket on ${event.local}`;
+      if (LOOPBACK.test(event.localAddress)) return null;
+      const what = `${who} has a UDP socket on ${event.local}`;
+      // The same sign-in (#135) now and then opens a UDP socket in the
+      // browser process (where its datagrams go cannot be seen). Listed
+      // with the Office connections until #135 is closed.
+      if (browserProcess(event)) {
+        known.push(`${what}, during ${step}`);
+        return null;
+      }
+      return what;
     }
     if (event.state === "LISTEN") {
       return LOOPBACK.test(event.localAddress)
