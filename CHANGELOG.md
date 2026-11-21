@@ -157,6 +157,19 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   device's words [122]. Before, it carried on unprivileged, and a config
   backup could keep the device's error message as the configuration. A
   backup that shows nothing but an error is never kept.
+- A job keeps at most 32 MiB of each host's output, and of a script's, and
+  says where it stopped [119]. Before, a device or a script that flooded
+  output was held whole in memory and in the kept run. A config backup
+  whose output was cut keeps nothing.
+- A job on hundreds of hosts no longer spends most of its time writing its
+  kept run, and its window keeps up with it: 100 hosts at 50 at once took
+  5 to 21 seconds and now take about 3 [119].
+- A device that echoes the enable secret no longer shows it in a job's
+  output or its kept run [119].
+- Two hosts whose files differ only in their extension (`r1.yaml`,
+  `r1.yml`) each keep their own output in a kept run [127].
+- Fill in from devices no longer loses every host's facts on Windows when
+  another program reads the facts file at the moment it is written [119].
 - A job's command timeout counts from the device's last output, so a long
   configuration that is still printing after 60 seconds is waited for; a
   command whose output never stops is ended after 30 minutes [122].
