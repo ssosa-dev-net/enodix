@@ -12,6 +12,7 @@
     "app:build": "tauri build --no-bundle",
     "test": "cargo test --workspace",
     "smoke": "node scripts/smoke.mjs",
+    "smoke:hidden": "py scripts/run-on-desktop.py netterm-smoke target/smoke-hidden.log node scripts/smoke.mjs",
     "test:lab": "cargo build -p netterm-cli && cargo test -p netterm-core --test containerlab -- --ignored --nocapture --test-threads=1",
     "test:python": "node scripts/test-python.mjs",
     "test:linux": "node scripts/test-linux.mjs",
