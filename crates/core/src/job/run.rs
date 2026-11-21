@@ -797,6 +797,11 @@ impl HostRunner {
         } else {
             self.wait_for(events, patterns, true).await
         };
+        // Only the answer to the question can be its echo. What the device
+        // shows afterwards is the user's: a configuration that holds the
+        // same text as the secret is kept as it is, not with part of it
+        // replaced.
+        self.typed_secret = None;
         match shown {
             Ok(Shown::Prompt) if self.text.current_line().trim() == before => Err(refused()),
             Ok(Shown::Prompt) => Ok(()),
