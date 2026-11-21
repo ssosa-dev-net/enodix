@@ -118,10 +118,22 @@ class Misbehaving(BridgeTest):
         hosts = self.hosts(12)
         seen: List[int] = []
 
+        def read_whole() -> str:
+            # On Windows a reader can be refused for a moment while the file
+            # is replaced (seen on a busy machine); what it reads once it is
+            # let in must be whole. The app itself reads only after the
+            # script has ended.
+            for _ in range(100):
+                try:
+                    return self.facts_file.read_text(encoding="utf-8")
+                except PermissionError:
+                    time.sleep(0.02)
+            return self.facts_file.read_text(encoding="utf-8")
+
         def behave(arguments: Dict[str, Any]) -> Any:
             time.sleep(0.4)
             # The facts file is whole whenever it is read meanwhile.
-            seen.append(len(json.loads(self.facts_file.read_text(encoding="utf-8"))["hosts"]))
+            seen.append(len(json.loads(read_whole())["hosts"]))
             return {"vendor": "Slow", "model": "S", "serial_number": "1", "os_version": "1"}
 
         started = time.monotonic()
