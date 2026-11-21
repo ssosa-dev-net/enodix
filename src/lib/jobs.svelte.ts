@@ -20,6 +20,7 @@ import {
   type JobPlan,
   type JobTarget,
   type SaveOutcome,
+  type SentFile,
 } from "./jobs";
 
 /** A job started in this app run, and what it has reported so far. */
@@ -39,6 +40,12 @@ export interface LiveJob {
   backups: Record<string, SaveOutcome>;
   /** A script's exit status, once it ended with one. */
   exits: Record<string, number>;
+  /** A file job's latest progress per host: `[done, total]`. */
+  progress: Record<string, [number, number | null]>;
+  /** A file job's bytes sent per host, once its file went through. */
+  bytes: Record<string, number>;
+  /** A file job's file, once it ended (with its hashes). */
+  file: SentFile | null;
   finished: boolean;
   /** The number of the latest event it holds. */
   events: number;
@@ -97,13 +104,17 @@ function apply(job: LiveJob, event: JobEvent) {
   } else if (event.kind === "backup") {
     job.backups[event.host] = event.outcome;
     noteBackup();
+  } else if (event.kind === "progress") {
+    job.progress[event.host] = [event.done, event.total];
   } else {
     for (const host of event.hosts) {
       job.states[host.id] = host.state;
       job.outputs[host.id] = host.output;
       if (host.backup) job.backups[host.id] = host.backup;
       if (host.exit_status !== null) job.exits[host.id] = host.exit_status;
+      if (host.bytes !== null) job.bytes[host.id] = host.bytes;
     }
+    job.file = event.file ?? null;
     job.finished = true;
     liveJobs.revision += 1;
     noteBackup();
@@ -194,6 +205,9 @@ export async function launchJob(
       outputs: {},
       backups: {},
       exits: {},
+      progress: {},
+      bytes: {},
+      file: null,
       finished: false,
       events: 0,
     });

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use super::{HostState, JobEvent, JobPlan, JobTarget};
+use super::{HostState, JobEvent, JobPlan, JobTarget, SentFile};
 use crate::configs::SaveOutcome;
 use crate::workspace::HostId;
 
@@ -46,6 +46,12 @@ pub struct LiveJob {
     pub backups: BTreeMap<HostId, SaveOutcome>,
     /// A script's exit status, once it ended with one.
     pub exits: BTreeMap<HostId, i32>,
+    /// A file job's latest progress per host, as `[done, total]`.
+    pub progress: BTreeMap<HostId, (u64, Option<u64>)>,
+    /// A file job's bytes sent per host, once its file went through.
+    pub bytes: BTreeMap<HostId, u64>,
+    /// A file job's file, once it ended (with its hashes).
+    pub file: Option<SentFile>,
     /// Whether its last event (the report) has come.
     pub finished: bool,
     /// How many events it has recorded: the number of the latest.
@@ -65,6 +71,9 @@ impl LiveJob {
             outputs: BTreeMap::new(),
             backups: BTreeMap::new(),
             exits: BTreeMap::new(),
+            progress: BTreeMap::new(),
+            bytes: BTreeMap::new(),
+            file: None,
             finished: false,
             events: 0,
         }
@@ -82,6 +91,9 @@ impl LiveJob {
             JobEvent::Backup { host, outcome } => {
                 self.backups.insert(host.clone(), outcome.clone());
             }
+            JobEvent::Progress { host, done, total } => {
+                self.progress.insert(host.clone(), (*done, *total));
+            }
             JobEvent::Finished(report) => {
                 for result in &report.hosts {
                     self.states.insert(result.id.clone(), result.state.clone());
@@ -93,7 +105,11 @@ impl LiveJob {
                     if let Some(status) = result.exit_status {
                         self.exits.insert(result.id.clone(), status);
                     }
+                    if let Some(bytes) = result.bytes {
+                        self.bytes.insert(result.id.clone(), bytes);
+                    }
                 }
+                self.file.clone_from(&report.file);
                 self.finished = true;
             }
         }

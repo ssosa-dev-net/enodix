@@ -3,6 +3,7 @@
   import Archive from "@lucide/svelte/icons/archive";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import FileCode from "@lucide/svelte/icons/file-code";
+  import FileUp from "@lucide/svelte/icons/file-up";
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import Logs from "@lucide/svelte/icons/logs";
@@ -32,6 +33,7 @@
     openFiles,
     openJob,
     openScript,
+    openSendFile,
     remove,
     renameTo,
     saveHost,
@@ -288,6 +290,15 @@
         onclick={() => openScript({ kind: "hosts", ids: [host.id] }, host.name)}
         ><FileCode size={15} aria-hidden="true" /><span class="visually-hidden"
           >Run script…</span
+        ></button
+      >
+      <button
+        data-host-send-file
+        title="Send a file from this computer to this host, as a job"
+        onclick={() =>
+          openSendFile({ kind: "hosts", ids: [host.id] }, host.name)}
+        ><FileUp size={15} aria-hidden="true" /><span class="visually-hidden"
+          >Send file…</span
         ></button
       >
       <button

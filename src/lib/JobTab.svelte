@@ -4,6 +4,8 @@
   // results. Closing the tab while the job runs leaves it running: the Jobs
   // side view lists it, and opening it there shows its run.
   import { onDestroy, untrack } from "svelte";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
+  import { sizeText } from "./files";
   import {
     cancelJob,
     DEFAULT_PARALLEL,
@@ -39,7 +41,8 @@
   const target = draft.target;
   const label = draft.label;
 
-  type Step = "snippet" | "script" | "variables" | "preflight" | "running";
+  type Step =
+    "snippet" | "script" | "file" | "variables" | "preflight" | "running";
 
   const snippets = $derived(inventory.workspace?.snippets ?? []);
   const initial = draft.planned;
@@ -51,20 +54,39 @@
   const enriching = draft.kind === "enrich";
   /** Whether a Python process runs (a script, or filling in). */
   const usesPython = scripting || enriching;
+  /** Whether the job sends a file (fixed too). */
+  const sending = draft.kind === "file";
   const initialStep = initial?.step.kind === "snippet" ? initial.step : null;
+  const initialFile = initial?.step.kind === "sendFile" ? initial.step : null;
   let step = $state<Step>(
     backingUp || enriching
       ? "preflight"
       : initial === null
         ? scripting
           ? "script"
-          : "snippet"
+          : sending
+            ? "file"
+            : "snippet"
         : initial.missingVariables.length > 0
           ? "variables"
           : "preflight",
   );
   /** The step to go back to from pre-flight. */
-  const firstStep: Step = scripting ? "script" : "snippet";
+  const firstStep: Step = scripting ? "script" : sending ? "file" : "snippet";
+
+  /** The local file to send, its destination folder and overwrite. */
+  let filePath = $state(initialFile?.file ?? "");
+  let destination = $state(initialFile?.destination ?? "");
+  let overwrite = $state(initialFile?.overwrite ?? false);
+
+  async function browseFile() {
+    const chosen = await openDialog({
+      title: "Choose the file to send",
+      multiple: false,
+      directory: false,
+    });
+    if (typeof chosen === "string") filePath = chosen;
+  }
 
   /** The workspace's scripts, once listed. */
   let scripts = $state<string[] | null>(null);
@@ -103,7 +125,9 @@
   let plan = $state<JobPlan | null>(initial);
   let productionConfirmed = $state(false);
   /** How many hosts run at once. */
-  let parallel = $state<number | null>(DEFAULT_PARALLEL);
+  let parallel = $state<number | null>(
+    initial?.defaultParallel ?? DEFAULT_PARALLEL,
+  );
   const parallelValid = $derived(
     parallel !== null &&
       Number.isInteger(parallel) &&
@@ -119,6 +143,9 @@
   const states = $derived<Record<string, HostState>>(live?.states ?? {});
   const outputs = $derived<Record<string, string>>(live?.outputs ?? {});
   const backups = $derived<Record<string, SaveOutcome>>(live?.backups ?? {});
+  const progress = $derived<Record<string, [number, number | null]>>(
+    live?.progress ?? {},
+  );
 
   /** Closes the tab; a running job goes on (see the Jobs side view). */
   function close(quiet = false) {
@@ -154,6 +181,14 @@
     if (backingUp) return { kind: "configBackup" };
     if (enriching) return { kind: "enrich" };
     if (scripting) return { kind: "script", path: scriptPath };
+    if (sending) {
+      return {
+        kind: "sendFile",
+        file: filePath.trim(),
+        destination: destination.trim(),
+        overwrite,
+      };
+    }
     return { kind: "snippet", name: snippet, answers: { ...answers } };
   }
 
@@ -164,6 +199,10 @@
   function preflight() {
     return attempt(async () => {
       const planned = await planJob(target, jobStep());
+      // A number the user changed is kept when planning again.
+      if (plan === null || parallel === plan.defaultParallel) {
+        parallel = planned.defaultParallel;
+      }
       plan = planned;
       productionConfirmed = false;
       if (planned.missingVariables.length > 0) {
@@ -178,7 +217,12 @@
   function start() {
     return attempt(async () => {
       if (!plan) return;
-      live = await launchJob(plan, target, label, parallel ?? DEFAULT_PARALLEL);
+      live = await launchJob(
+        plan,
+        target,
+        label,
+        parallel ?? plan.defaultParallel,
+      );
       if (jobDrafts[subject]) jobDrafts[subject].run = live.run;
       step = "running";
     });
@@ -207,14 +251,22 @@
   const STATE_LABELS: Record<HostState["kind"], string> = {
     waiting: "Waiting",
     connecting: "Connecting",
-    running: "Running",
-    done: "Done",
+    running: sending ? "Sending" : "Running",
+    done: sending ? "Sent" : "Done",
+    alreadyThere: "Already there",
     failed: "Failed",
     cancelled: "Cancelled",
   };
 
+  /** A host's progress while sending, for the user: "1.2 MiB of 4.0 MiB (30 %)". */
+  function progressText(done: number, total: number | null): string {
+    if (total === null || total === 0) return sizeText(done);
+    const percent = Math.floor((done / total) * 100);
+    return `${sizeText(done)} of ${sizeText(total)} (${percent} %)`;
+  }
+
   const counts = $derived.by(() => {
-    const count = { done: 0, failed: 0, cancelled: 0 };
+    const count = { done: 0, alreadyThere: 0, failed: 0, cancelled: 0 };
     for (const state of Object.values(states)) {
       if (state.kind in count) count[state.kind as keyof typeof count] += 1;
     }
@@ -236,7 +288,9 @@
         ? `Fill in ${label} from devices`
         : scripting
           ? `Run a script for ${label}`
-          : `Run a snippet on ${label}`}
+          : sending
+            ? `Send a file to ${label}`
+            : `Run a snippet on ${label}`}
   </h2>
 
   {#if scriptOff !== null && step !== "running"}
@@ -250,7 +304,64 @@
     </div>
   {/if}
 
-  {#if step === "script"}
+  {#if step === "file"}
+    <form
+      data-job-file-form
+      onsubmit={(event) => {
+        event.preventDefault();
+        void preflight();
+      }}
+    >
+      <label>
+        File
+        <span class="file-row">
+          <input
+            name="job-file"
+            bind:this={firstInput}
+            bind:value={filePath}
+            placeholder="The file on this computer"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button type="button" data-job="browse-file" onclick={browseFile}
+            >Browse…</button
+          >
+        </span>
+      </label>
+      <label>
+        Destination folder
+        <input
+          name="job-destination"
+          bind:value={destination}
+          placeholder="Empty: each host's platform file folder"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <label class="check">
+        <input type="checkbox" name="job-overwrite" bind:checked={overwrite} />
+        <span>Overwrite a file of that name already on the device</span>
+      </label>
+      <p class="note" data-job-file-note>
+        The file keeps its name. A typed folder applies to every host and may
+        use the host variables snippets use, such as <code
+          >{"/images/{{site}}"}</code
+        >. Each host logs in with its own credential profile over a file
+        connection of its own (SFTP, or SCP where the device has no SFTP).
+        Without overwrite, a host that already has a file of that name and size
+        counts as done, and one with another size fails. Nothing is sent before
+        you start.
+      </p>
+      <div class="actions">
+        <button
+          type="submit"
+          class="primary"
+          data-job="plan"
+          disabled={busy || !filePath.trim()}>Next</button
+        >
+      </div>
+    </form>
+  {:else if step === "script"}
     {#if scripts === null}
       <p class="note">Looking for scripts…</p>
     {:else if scripts.length === 0}
@@ -408,6 +519,16 @@
         {plan.step.kind === "script" ? plan.step.path : ""} runs for
         {plan.hosts.length === 1 ? "1 host" : `${plan.hosts.length} hosts`},
         {plan.skipped.length} skipped.
+      {:else if sending && plan.file}
+        <strong data-job-file-name>{plan.file.name}</strong>
+        (<span data-job-file-size={plan.file.size}
+          >{sizeText(plan.file.size)}</span
+        >) goes to
+        {plan.hosts.length === 1 ? "1 host" : `${plan.hosts.length} hosts`},
+        {plan.skipped.length} skipped{plan.step.kind === "sendFile" &&
+        plan.step.overwrite
+          ? "; a file of that name is overwritten"
+          : ""}.
       {:else}
         {plan.hosts.length === 1
           ? "1 host runs"
@@ -427,12 +548,19 @@
               class:production={host.environment === "production"}
             >
               <td class="outcome"
-                >{enriching ? "Asked" : scripting ? "In inventory" : "Runs"}</td
+                >{enriching
+                  ? "Asked"
+                  : scripting
+                    ? "In inventory"
+                    : sending
+                      ? "Gets it"
+                      : "Runs"}</td
               >
               <td>{host.name}</td>
               <td>{host.address}</td>
-              <td class="details">
+              <td class="details" data-job-destination={host.destination}>
                 {[
+                  host.destination ? `To ${host.destination}` : "",
                   host.platform ? `Platform ${host.platform}` : "",
                   host.environment === "production" ? "production" : "",
                 ]
@@ -465,7 +593,13 @@
           bind:checked={productionConfirmed}
         />
         <span>
-          {enriching ? "Ask" : scripting ? "Run the script for" : "Run on"}
+          {enriching
+            ? "Ask"
+            : scripting
+              ? "Run the script for"
+              : sending
+                ? "Send to"
+                : "Run on"}
           {plan.production.length === 1
             ? "the production host"
             : `${plan.production.length} production hosts`}:
@@ -509,7 +643,13 @@
         data-job="start"
         disabled={busy || !ready}
         onclick={start}
-        >{enriching ? "Ask" : scripting ? "Run the script for" : "Run on"}
+        >{enriching
+          ? "Ask"
+          : scripting
+            ? "Run the script for"
+            : sending
+              ? "Send to"
+              : "Run on"}
         {plan.hosts.length}
         {plan.hosts.length === 1 ? "host" : "hosts"}</button
       >
@@ -608,7 +748,10 @@
     </div>
   {:else if step === "running" && plan}
     <p class="note" data-job-progress data-finished={finished ? "" : undefined}>
-      {finished ? "Finished" : "Running"}: {counts.done} done, {counts.failed}
+      {finished ? "Finished" : "Running"}: {counts.done}
+      {sending ? "sent" : "done"}{counts.alreadyThere
+        ? `, ${counts.alreadyThere} already there`
+        : ""}, {counts.failed}
       failed{counts.cancelled ? `, ${counts.cancelled} cancelled` : ""} of
       {plan.hosts.length}.
     </p>
@@ -632,6 +775,23 @@
                 data-job-backup={backups[host.id].kind}
                 data-version={backups[host.id].version}
                 >{outcomeText(backups[host.id])}</span
+              >
+            {/if}
+            {#if sending && state.kind === "running" && progress[host.id]}
+              {@const [done, total] = progress[host.id]}
+              <span
+                class="sending"
+                data-job-sending={host.id}
+                data-done={done}
+                data-total={total}
+              >
+                <progress value={done} max={total ?? undefined}></progress>
+                {progressText(done, total)}
+              </span>
+            {/if}
+            {#if sending && live?.bytes[host.id] !== undefined}
+              <span class="backup" data-job-bytes={live.bytes[host.id]}
+                >{sizeText(live.bytes[host.id])}</span
               >
             {/if}
           </summary>
@@ -840,8 +1000,32 @@
     font-weight: var(--weight-semibold);
   }
 
-  .state.done {
+  .state.done,
+  .state.alreadyThere {
     color: var(--ok);
+  }
+
+  .sending {
+    display: inline-flex;
+    gap: var(--space-1-5);
+    align-items: center;
+    color: var(--muted);
+  }
+
+  .file-row {
+    display: flex;
+    gap: var(--space-1-5);
+  }
+
+  .file-row input {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .check {
+    display: flex;
+    gap: var(--space-2);
+    align-items: center;
   }
 
   .state.failed,

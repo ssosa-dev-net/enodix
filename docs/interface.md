@@ -43,6 +43,17 @@ everything 0.2.0 could do, the app still does, reached differently.
   definitions, highlight rules, fill-in review, Python setup and Files
   (one per host). They have an icon and no connection dot, move, split
   and close like session tabs, and never join multi-send.
+- **Send a file to many hosts** (#107): "Send file…" beside Run snippet
+  and Run script (a folder's or host's details sheet, the tree's context
+  menu, a saved filter's actions) opens a job tab: the file (Browse… or a
+  typed path), a destination folder (empty: each host's platform file
+  folder; host variables such as `{{site}}` allowed) and Overwrite. Its
+  pre-flight shows the file's name and size and where it goes on each
+  host; three hosts send at once unless changed. While it runs each host
+  shows Waiting, Sending with its progress, Sent, Already there or Failed
+  with the reason. Its run tab shows the file's name, size, MD5 and
+  SHA-256, the destination and each host's bytes; it cannot be saved as a
+  job (the file is on this computer).
 - **Files tab** (#103): an SSH host's files over SFTP, titled "Files" and
   the host's name, in the main window only (not in a window of its own).
   Opened from the host's details sheet, the tree's context menu, and a
@@ -227,6 +238,7 @@ else. Each of its features, and where it is now:
 | Update check and install                         | Notice in the corner; Preferences tab                                              |
 | Platform definitions                             | Platforms tab (Hosts view header, details sheet, palette)                          |
 | Run snippet, run script on folder/filter/host    | Tree context menu, details sheet, filter actions; job tab                          |
+| Send a file to many hosts (new, #107)            | "Send file…" in the tree context menu, details sheet, filter actions; job tab      |
 | Back up configs                                  | Tree context menu, details sheet, filter actions, Config backups view; job tab     |
 | Fill in from devices and its review              | Tree context menu, details sheet; job tab, then the review tab                     |
 | Past runs (search, compare, save, delete, again) | Jobs view, run tab (can open in its own window)                                    |

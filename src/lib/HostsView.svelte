@@ -6,6 +6,7 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import Cpu from "@lucide/svelte/icons/cpu";
   import FileCode from "@lucide/svelte/icons/file-code";
+  import FileUp from "@lucide/svelte/icons/file-up";
   import Play from "@lucide/svelte/icons/play";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
@@ -29,6 +30,7 @@
     openCsvImport,
     openJob,
     openScript,
+    openSendFile,
     openNornirImport,
     openConfigHistory,
     openFiles,
@@ -222,6 +224,11 @@
     openScript({ kind: "filter", name }, `the hosts of ${name}`);
   }
 
+  /** Sends a file to the hosts the saved filter `name` shows. */
+  function sendFileToFilter(name: string) {
+    openSendFile({ kind: "filter", name }, `the hosts of ${name}`);
+  }
+
   /** Backs up the configs of the hosts the saved filter `name` shows. */
   function backUpFilter(name: string) {
     openBackup({ kind: "filter", name }, `the hosts of ${name}`);
@@ -283,6 +290,11 @@
           id: "run-script",
           label: "Run script…",
           action: () => openScript(target, name),
+        },
+        {
+          id: "send-file",
+          label: "Send file…",
+          action: () => openSendFile(target, name),
         },
         {
           id: "back-up",
@@ -351,6 +363,11 @@
         id: "run-script",
         label: "Run script…",
         action: () => openScript(target, label),
+      },
+      {
+        id: "send-file",
+        label: "Send file…",
+        action: () => openSendFile(target, label),
       },
       {
         id: "back-up",
@@ -525,6 +542,15 @@
             disabled={!inventory.filterView?.hosts.size}
             onclick={() => scriptOnFilter(name)}
             ><FileCode size={15} aria-hidden="true" /></button
+          >
+          <button
+            class="tool"
+            data-filter-send-file
+            aria-label="Send file"
+            title="Send a file from this computer to the hosts this filter shows, as a job"
+            disabled={!inventory.filterView?.hosts.size}
+            onclick={() => sendFileToFilter(name)}
+            ><FileUp size={15} aria-hidden="true" /></button
           >
           <button
             class="tool"

@@ -139,6 +139,11 @@ export function openScript(target: JobTarget, label: string) {
   openJobTab({ kind: "script", target, label, planned: null });
 }
 
+/** Opens a job tab sending a local file to `target`'s hosts. */
+export function openSendFile(target: JobTarget, label: string) {
+  openJobTab({ kind: "file", target, label, planned: null });
+}
+
 /** Opens a job tab backing up the configs of `target`'s hosts. */
 export function openBackup(target: JobTarget, label: string) {
   openJobTab({ kind: "backup", target, label, planned: null });

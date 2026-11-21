@@ -75,7 +75,8 @@
     );
     const count = (kind: string) =>
       states.filter((state) => state.kind === kind).length;
-    const done = count("done");
+    // A file already there needed nothing: it counts as done.
+    const done = count("done") + count("alreadyThere");
     const failed = count("failed");
     const cancelled = count("cancelled");
     const state = runState(entry);

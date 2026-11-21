@@ -7,7 +7,7 @@
 import { stepTitle, type JobPlan, type JobTarget } from "./jobs";
 
 /** What a job tab runs. */
-export type JobKind = "snippet" | "script" | "backup" | "enrich";
+export type JobKind = "snippet" | "script" | "backup" | "enrich" | "file";
 
 /** A job tab's job, from when it opens. */
 export interface JobDraft {
@@ -50,6 +50,8 @@ export function kindOf(plan: JobPlan): JobKind {
       return "enrich";
     case "script":
       return "script";
+    case "sendFile":
+      return "file";
     default:
       return "snippet";
   }
@@ -61,6 +63,8 @@ export function draftTitle(subject: string | null): string {
   if (!draft) return "Job";
   if (draft.kind === "backup") return `Back up ${draft.label}`;
   if (draft.kind === "enrich") return `Fill in ${draft.label}`;
+  if (draft.kind === "file" && !draft.planned)
+    return `Send file to ${draft.label}`;
   const what = draft.planned
     ? stepTitle(draft.planned.step)
     : draft.kind === "script"

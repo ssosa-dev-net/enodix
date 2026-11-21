@@ -1517,7 +1517,7 @@ fn jobs_forget_finished(live: State<'_, Arc<Live>>, keep: Option<String>) {
 }
 
 /// Starts the job last planned, with its own sessions (never logged, never
-/// a terminal's), at most `parallel` hosts at once (default 10), keeping
+/// a terminal's), at most `parallel` hosts at once (default: the plan's), keeping
 /// its run on disk. It is recorded in `Live` (`label` = what it runs on)
 /// and announced to every window (`job-started`), and its progress is
 /// broadcast (`job-event`) until `finished`, whoever listens.
@@ -1569,7 +1569,7 @@ async fn job_start(
     }
     let workspace = planned.workspace.clone().ok_or_else(no_workspace_id)?;
     let options = JobOptions {
-        parallel: parallel.unwrap_or(job::DEFAULT_PARALLEL),
+        parallel: parallel.unwrap_or(planned.plan.default_parallel),
         configs: Some(configs.0.clone()),
         script,
         ..JobOptions::default()

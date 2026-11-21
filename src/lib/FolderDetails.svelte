@@ -2,6 +2,7 @@
   import Archive from "@lucide/svelte/icons/archive";
   import FileCode from "@lucide/svelte/icons/file-code";
   import FileInput from "@lucide/svelte/icons/file-input";
+  import FileUp from "@lucide/svelte/icons/file-up";
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Play from "@lucide/svelte/icons/play";
@@ -23,6 +24,7 @@
     openCsvImport,
     openJob,
     openScript,
+    openSendFile,
     openNornirImport,
     remove,
     renameTo,
@@ -110,6 +112,15 @@
           openScript({ kind: "folder", path: folder.path }, folder.name)}
         ><FileCode size={15} aria-hidden="true" /><span class="visually-hidden"
           >Run script…</span
+        ></button
+      >
+      <button
+        data-folder-send-file
+        title="Send a file from this computer to every host in this folder, as a job"
+        onclick={() =>
+          openSendFile({ kind: "folder", path: folder.path }, folder.name)}
+        ><FileUp size={15} aria-hidden="true" /><span class="visually-hidden"
+          >Send file…</span
         ></button
       >
       <button

@@ -2545,6 +2545,8 @@ async function main() {
     step,
   });
 
+  await fileJob({ evaluate, fillForm, screenshot, step });
+
   await workspaces({
     evaluate,
     fillForm,
@@ -8136,6 +8138,215 @@ async function fileTransfers({
     if (savedPlatforms === null) rmSync(platformsFile, { force: true });
     else writeFileSync(platformsFile, savedPlatforms);
     rmSync(folder, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The file job (#107), after `fileTransfers` (the `files-login` profile,
+ * the example server's key trusted): a file sent from a folder's panel to
+ * its two hosts over SFTP (a telnet one skipped, the production one
+ * confirmed), checked on disk; its kept run opened with the file's name,
+ * size and hashes, refused as a saved job; run again, both hosts already
+ * there.
+ */
+async function fileJob({ evaluate, fillForm, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
+  const folder = join(workspace, "Staging");
+  const platformsFile = join(workspace, "_platforms.yaml");
+  const savedPlatforms = existsSync(platformsFile)
+    ? readFileSync(platformsFile, "utf8")
+    : null;
+  const localFolder = join(userData, "stage-local");
+  const localFile = join(localFolder, "stage.bin");
+  const remote = (name) => join(sftpFolder, "stage", name);
+  const hash = (kind) =>
+    createHash(kind).update(readFileSync(localFile)).digest("hex");
+  const atStep = (name) => exists(`${JOB_TAB}[data-step=${name}]`);
+  const r1 = "Staging/stage-r1.yaml";
+  const prod = "Staging/stage-prod.yaml";
+  const telnet = "Staging/stage-telnet.yaml";
+  const results = () =>
+    evaluate(`Object.fromEntries([...document.querySelectorAll(${json(`${JOB_TAB} [data-job-result]`)})].map(
+      (r) => [r.dataset.jobResult, { state: r.dataset.hostState, reason: r.querySelector("[data-job-reason]")?.textContent ?? "" }]))`);
+  const finished = () =>
+    until("the file job finished", () =>
+      exists(`${JOB_TAB} [data-job-progress][data-finished]`),
+    );
+  const confirmAndStart = async () => {
+    await clickOn(`${JOB_TAB} [name=job-confirm-production]`);
+    await until("the start button enabled", () =>
+      evaluate(
+        `!document.querySelector(${json(`${JOB_TAB} [data-job=start]`)}).disabled`,
+      ),
+    );
+    await clickOn(`${JOB_TAB} [data-job=start]`);
+  };
+
+  rmSync(localFolder, { recursive: true, force: true });
+  mkdirSync(localFolder, { recursive: true });
+  const bytes = Buffer.alloc(3 * 1024 * 1024);
+  for (let i = 0; i < bytes.length; i += 1024) bytes[i] = i % 253;
+  writeFileSync(localFile, bytes);
+  rmSync(join(sftpFolder, "stage"), { recursive: true, force: true });
+  mkdirSync(join(sftpFolder, "stage"), { recursive: true });
+
+  try {
+    writeFileSync(
+      platformsFile,
+      `${savedPlatforms ?? ""}smoke-stage:\n  prompt: 'test-ssh\\$ '\n  file_folder: /stage\n`,
+    );
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(
+      join(folder, "_folder.yaml"),
+      `credential_profile: files-login\nport: ${SSH_PORT}\nplatform: smoke-stage\n`,
+    );
+    writeFileSync(join(folder, "stage-r1.yaml"), "address: 127.0.0.1\n");
+    writeFileSync(
+      join(folder, "stage-prod.yaml"),
+      "address: 127.0.0.1\nenvironment: production\n",
+    );
+    writeFileSync(
+      join(folder, "stage-telnet.yaml"),
+      "address: 127.0.0.1\nprotocol: telnet\n",
+    );
+    const folderRow = 'nav button[data-item=folder][data-path="Staging"]';
+    await until("the Staging folder in the tree", () => exists(folderRow));
+
+    // From the folder's panel, a third kind beside snippet and script.
+    await clickOn(folderRow);
+    await showDetails(evaluate);
+    await until("the Staging folder's side panel", () =>
+      exists(".side [data-folder-send-file]"),
+    );
+    await clickOn(".side [data-folder-send-file]");
+    await until("the send-file tab", () => atStep("file"));
+    await fillForm({ "job-file": localFile }, `${JOB_TAB} form`);
+    await until("the pre-flight list", () => atStep("preflight"));
+    const plan = await evaluate(`(() => {
+      const d = document.querySelector(${json(JOB_TAB)});
+      return {
+        name: d.querySelector("[data-job-file-name]")?.textContent ?? "",
+        size: d.querySelector("[data-job-file-size]")?.dataset.jobFileSize ?? "",
+        runs: [...d.querySelectorAll("[data-job-host]")].map((r) => r.dataset.jobHost),
+        destinations: [...d.querySelectorAll("[data-job-host] [data-job-destination]")].map((c) => c.dataset.jobDestination),
+        skipped: Object.fromEntries([...d.querySelectorAll("[data-job-skipped]")].map(
+          (r) => [r.dataset.jobSkipped, r.dataset.skipReason])),
+        production: d.querySelector("[data-job-production-names]")?.textContent ?? "",
+        parallel: d.querySelector("[name=job-parallel]")?.value ?? "",
+        startDisabled: d.querySelector("[data-job=start]").disabled,
+      };
+    })()`);
+    if (plan.name !== "stage.bin" || plan.size !== String(bytes.length))
+      fail(`pre-flight shows the file as ${plan.name} of ${plan.size} bytes`);
+    if (json(plan.runs) !== json([prod, r1]))
+      fail(`the file job would send to ${json(plan.runs)}`);
+    if (
+      json(plan.destinations) !== json(["/stage/stage.bin", "/stage/stage.bin"])
+    )
+      fail(`the destinations are ${json(plan.destinations)}`);
+    if (json(plan.skipped) !== json({ [telnet]: "notSsh" }))
+      fail(`the file job skips ${json(plan.skipped)}`);
+    if (plan.production !== "stage-prod" || !plan.startDisabled)
+      fail(`the production host must be confirmed first: ${json(plan)}`);
+    if (plan.parallel !== "3")
+      fail(`hosts at once starts at ${plan.parallel}, not 3`);
+    if (await exists(`${JOB_TAB} [data-save-job=open]:not(:disabled)`))
+      fail("a file job can be saved as a job");
+    await screenshot("file-job-preflight");
+    step(
+      "Send file… on a folder plans the file's name and size, each host's platform file folder, skips the telnet host, asks for production once and starts at 3 hosts at once",
+    );
+
+    await confirmAndStart();
+    await finished();
+    const sent = await results();
+    for (const host of [r1, prod]) {
+      if (sent[host]?.state !== "done")
+        fail(`${host} ended ${json(sent[host])}`);
+    }
+    if (!readFileSync(remote("stage.bin")).equals(bytes))
+      fail("the file did not reach the device byte for byte");
+    await screenshot("file-job-sent");
+    step("the file job sends the file to each host, each ends Sent");
+
+    // The kept run: the file, its hashes, the destination; not saveable.
+    await clickOn(`${JOB_TAB} [data-job=view]`);
+    await until("the file run's tab", () =>
+      exists(`${RUN_TAB} [data-run-file-md5]`),
+    );
+    const kept = await evaluate(`(() => {
+      const d = document.querySelector(${json(RUN_TAB)});
+      return {
+        file: d.querySelector("[data-run-file]")?.dataset.runFile ?? "",
+        md5: d.querySelector("[data-run-file-md5]")?.textContent.trim() ?? "",
+        sha256: d.querySelector("[data-run-file-sha256]")?.textContent.trim() ?? "",
+        destination: d.querySelector("[data-run-file-destination]")?.textContent.trim() ?? "",
+        overwrite: d.querySelector("[data-run-file-overwrite]")?.dataset.runFileOverwrite ?? "",
+        hosts: Object.fromEntries([...d.querySelectorAll("[data-run-host]")].map(
+          (r) => [r.dataset.runHost, { state: r.dataset.hostState, bytes: r.querySelector("[data-run-bytes]")?.dataset.runBytes ?? "" }])),
+        saveable: !!d.querySelector("[data-save-job=open]:not(:disabled)"),
+        saveTitle: d.querySelector("[data-save-job=open]")?.title ?? "",
+      };
+    })()`);
+    if (kept.file !== "stage.bin") fail(`the run keeps the file ${kept.file}`);
+    if (kept.md5 !== hash("md5") || kept.sha256 !== hash("sha256"))
+      fail(`the run's hashes are not the file's: ${json(kept)}`);
+    if (
+      !kept.destination.includes("platform file folder") ||
+      kept.overwrite !== "no"
+    )
+      fail(`the run keeps the destination as ${json(kept)}`);
+    for (const host of [r1, prod]) {
+      const entry = kept.hosts[host];
+      if (entry?.state !== "done" || entry.bytes !== String(bytes.length))
+        fail(`the run keeps ${host} as ${json(entry)}`);
+    }
+    if (kept.saveable || !kept.saveTitle.includes("cannot be saved"))
+      fail(`the file run can be saved as a job: ${json(kept)}`);
+    await screenshot("file-job-run");
+    step(
+      "its kept run shows the file's name, size, MD5 and SHA-256, the destination and each host's bytes; saving it as a job is refused with the reason",
+    );
+
+    // Opened later from the Jobs view, read back from disk.
+    const runId = await evaluate(
+      `document.querySelector(${json(RUN_TAB)})?.dataset.runTab ?? ""`,
+    );
+    await closeTabOf(evaluate, RUN_TAB);
+    await until("the run tab closed", async () => !(await exists(RUN_TAB)));
+    await openRun(evaluate, runId);
+    await until("the reopened run's hashes", () =>
+      exists(`${RUN_TAB} [data-run-file-md5]`),
+    );
+    const reopened = await evaluate(
+      `document.querySelector(${json(`${RUN_TAB} [data-run-file-sha256]`)})?.textContent.trim() ?? ""`,
+    );
+    if (reopened !== hash("sha256"))
+      fail(`the reopened run's SHA-256 is ${reopened}`);
+    step("the kept run opened later from the Jobs view shows the same file");
+
+    // Run again without overwrite: the file is already there.
+    await clickOn(`${RUN_TAB} [data-run-action=again]`);
+    await until("run again's pre-flight", () => atStep("preflight"));
+    await confirmAndStart();
+    await finished();
+    const again = await results();
+    for (const host of [r1, prod]) {
+      if (again[host]?.state !== "alreadyThere")
+        fail(`run again left ${host} ${json(again[host])}`);
+    }
+    step("run again without overwrite counts each host as already there");
+    await clickOn(`${JOB_TAB} [data-job=close]`);
+    await until("the job tab closed", async () => !(await exists(JOB_TAB)));
+    await closeTabOf(evaluate, RUN_TAB);
+  } finally {
+    if (savedPlatforms === null) rmSync(platformsFile, { force: true });
+    else writeFileSync(platformsFile, savedPlatforms);
+    rmSync(folder, { recursive: true, force: true });
+    rmSync(localFolder, { recursive: true, force: true });
   }
 }
 

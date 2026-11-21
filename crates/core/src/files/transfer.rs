@@ -137,7 +137,7 @@ pub struct Done {
 }
 
 /// A file's hashes, in lower-case hex.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Hashes {
     pub md5: String,
     pub sha256: String,
@@ -671,6 +671,22 @@ impl Hasher {
             md5: hex(&self.md5.finalize().0),
             sha256: hex(&self.sha256.finalize()),
         }
+    }
+}
+
+/// The hashes of the local file at `path`, read through a buffer of
+/// [`BUFFER_SIZE`] (blocking: call it off the runtime's threads).
+pub(crate) fn hash_file(path: &std::path::Path) -> std::io::Result<Hashes> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Hasher::new();
+    let mut buffer = vec![0; BUFFER_SIZE];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(hasher.finish());
+        }
+        hasher.update(&buffer[..read]);
     }
 }
 
