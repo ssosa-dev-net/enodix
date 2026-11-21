@@ -40,6 +40,10 @@ impl Drop for TestKeychain {
         for scope in [SCOPE_A, SCOPE_B] {
             clear(&self.store, scope);
         }
+        // Whatever else a test that failed part-way left under the prefix,
+        // readable or not: leftovers fill Credential Manager until it
+        // refuses every write ("not enough memory resources").
+        let _ = self.store.remove_all();
     }
 }
 

@@ -442,6 +442,8 @@ fn with_the_app_closed_it_reads_the_keychain() {
             for entry in contents().secrets {
                 let _ = self.0.delete_secret(&entry.scope, &entry.name);
             }
+            // And whatever else is under the prefix, readable or not.
+            let _ = self.0.remove_all();
         }
     }
 
