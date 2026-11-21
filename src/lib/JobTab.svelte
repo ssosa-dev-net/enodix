@@ -245,6 +245,11 @@
     });
   }
 
+  /** Planned hosts the run would refuse for a host key (#129). */
+  const untrustedKeys = $derived(
+    plan?.hosts.filter((host) => host.hostKeys).length ?? 0,
+  );
+
   const ready = $derived(
     plan !== null &&
       plan.hosts.length > 0 &&
@@ -553,6 +558,13 @@
           : `${plan.hosts.length} hosts run`},
         {plan.skipped.length} skipped.
       {/if}
+      {#if untrustedKeys > 0}
+        <span class="untrusted" data-job-untrusted={untrustedKeys}
+          >{untrustedKeys === 1
+            ? "1 host has a host key not trusted yet and will be refused."
+            : `${untrustedKeys} hosts have a host key not trusted yet and will be refused.`}</span
+        >
+      {/if}
     </p>
     <div class="scroll">
       <table>
@@ -584,6 +596,16 @@
                 ]
                   .filter(Boolean)
                   .join(" · ")}
+                {#if host.hostKeys}
+                  <span
+                    class="host-key-warning"
+                    data-job-host-key={host.hostKeys.keys.some(
+                      (key) => key.jumpHost,
+                    )
+                      ? "jumpHost"
+                      : "device"}>{host.hostKeys.message}</span
+                  >
+                {/if}
               </td>
             </tr>
           {/each}
@@ -971,6 +993,15 @@
 
   tr.skipped td {
     color: var(--muted);
+  }
+
+  .host-key-warning {
+    display: block;
+    color: var(--warning);
+  }
+
+  .untrusted {
+    color: var(--warning);
   }
 
   tr.production .outcome {

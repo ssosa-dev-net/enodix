@@ -67,6 +67,15 @@ everything 0.2.0 could do, the app still does, reached differently.
   its own pre-flight lists, after its own production question (#121). A
   pre-flight that is no longer current (another workspace was opened, or
   many jobs were planned since) refuses to start and offers Plan again.
+  Pre-flight also warns of a host whose host key the app has not trusted
+  yet, the device's or a jump host's on the way (#129, every kind of job;
+  for a script or fill-in job only hosts behind a jump host, which its
+  tunnel reaches): the host stays in the list with the key named and "the
+  job will refuse this host: connecting to it once in a terminal (Trust
+  and remember) trusts the key", and the summary counts such hosts. It
+  is advice: the keys are looked up again when the job runs. A key that
+  has changed is not seen here (that needs a connection): the run
+  refuses it.
 - **Send a file to many hosts** (#107): "Send file…" beside Run snippet
   and Run script (a folder's or host's details sheet, the tree's context
   menu, a saved filter's actions) opens a job tab: the file (Browse… or a

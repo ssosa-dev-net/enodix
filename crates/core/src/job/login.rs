@@ -127,6 +127,8 @@ impl LoginBackup {
             napalm_driver: None,
             remote: None,
             definition: None,
+            // Asked nothing: the login has already been made.
+            keys: Vec::new(),
         };
         Some(Self {
             host: PlannedHost {
@@ -136,6 +138,7 @@ impl LoginBackup {
                 environment: host.settings.environment.as_ref().map(|e| e.value),
                 platform: definition.name.clone(),
                 destination: None,
+                host_keys: None,
                 work,
             },
             store,

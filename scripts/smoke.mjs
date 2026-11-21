@@ -6383,8 +6383,12 @@ async function jobs({
       input.value = ${json(String(value))};
       input.dispatchEvent(new Event("input", { bubbles: true }));
     })()`);
-  /** Picks the snippet, answers the variable, and checks pre-flight. */
-  const preflight = async (expectSkipped) => {
+  /**
+   * Picks the snippet, answers the variable, and checks pre-flight: the
+   * skipped hosts, and whether jobs-r1 is warned that its host key is not
+   * trusted yet (#129).
+   */
+  const preflight = async (expectSkipped, expectUntrusted) => {
     await pickSnippet("Job check");
     await until("the snippet's text shown", async () =>
       (await text(`${dialog} [data-job-snippet-text]`)).includes(
@@ -6407,10 +6411,26 @@ async function jobs({
           (r) => [r.dataset.jobSkipped, r.dataset.skipReason])),
         production: d.querySelector("[data-job-production-names]")?.textContent ?? "",
         startDisabled: d.querySelector("[data-job=start]").disabled,
+        keyWarning: d.querySelector('[data-job-host="Jobs/jobs-r1.yaml"] [data-job-host-key]')?.dataset.jobHostKey ?? null,
+        keyMessage: d.querySelector('[data-job-host="Jobs/jobs-r1.yaml"] [data-job-host-key]')?.textContent ?? "",
+        untrusted: d.querySelector("[data-job-summary] [data-job-untrusted]")?.dataset.jobUntrusted ?? null,
       };
     })()`);
     if (json(plan.runs) !== json(["Jobs/jobs-r1.yaml"])) {
       fail(`the job would run on ${json(plan.runs)}`);
+    }
+    if (expectUntrusted) {
+      if (
+        plan.keyWarning !== "device" ||
+        !plan.keyMessage.includes(`127.0.0.1 port ${DEVICE_PORT}`) ||
+        !plan.keyMessage.includes("not trusted yet") ||
+        !plan.keyMessage.includes("connecting to it once in a terminal") ||
+        plan.untrusted !== "1"
+      ) {
+        fail(`pre-flight did not warn of the untrusted key: ${json(plan)}`);
+      }
+    } else if (plan.keyWarning !== null || plan.untrusted !== null) {
+      fail(`pre-flight warns of a trusted key: ${json(plan)}`);
     }
     if (json(plan.skipped) !== json(expectSkipped)) {
       fail(`the job skips ${json(plan.skipped)}`);
@@ -6447,13 +6467,19 @@ async function jobs({
 
   try {
     await runFromFolder();
-    await preflight({
-      "Jobs/jobs-odd.yaml": "noPlatform",
-      "Jobs/jobs-telnet.yaml": "notSsh",
-    });
+    await preflight(
+      {
+        "Jobs/jobs-odd.yaml": "noPlatform",
+        "Jobs/jobs-telnet.yaml": "notSsh",
+      },
+      true,
+    );
     await screenshot("job-preflight");
     step(
       "pre-flight lists the host that runs, the skipped ones with their reasons, and asks for production",
+    );
+    step(
+      "pre-flight warns that the device's host key is not trusted yet and counts it in the summary (#129)",
     );
 
     // Its host key was never trusted: the job refuses it.
@@ -6491,7 +6517,8 @@ async function jobs({
     );
     await clickOn(".side [data-host-run-snippet]");
     await until("the run-snippet tab for the host", () => atStep("snippet"));
-    await preflight({});
+    // Trusted now: no warning.
+    await preflight({}, false);
     // Hosts at once: 1 to 50.
     for (const refused of ["0", "51"]) {
       await setParallel(refused);
