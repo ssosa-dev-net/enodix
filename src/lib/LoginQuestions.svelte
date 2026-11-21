@@ -7,11 +7,14 @@
     prompt: LoginPrompt;
     /** False until the answers can be sent. */
     ready: boolean;
+    /** Whether the device's login banner is in the terminal behind (#134):
+     * the card then sits at the bottom, leaving it readable and scrollable. */
+    banner?: boolean;
     onanswer: (answers: string[]) => void;
     oncancel: () => void;
   }
 
-  let { prompt, ready, onanswer, oncancel }: Props = $props();
+  let { prompt, ready, banner = false, onanswer, oncancel }: Props = $props();
 
   const questions = untrack(() => prompt.questions);
   let answers = $state(questions.map(() => ""));
@@ -26,7 +29,7 @@
   }
 </script>
 
-<div class="overlay">
+<div class="overlay" class:below-banner={banner}>
   <form
     class="questions"
     data-login-prompt
@@ -35,6 +38,11 @@
     aria-label="Login questions"
   >
     <h2>{prompt.name || "The server asks"}</h2>
+    {#if banner}
+      <p class="banner-note" data-login-banner-above>
+        The login banner is in the terminal above.
+      </p>
+    {/if}
     {#if prompt.instructions}
       <p class="instructions">{prompt.instructions}</p>
     {/if}
@@ -66,6 +74,24 @@
     padding: var(--space-6);
     background: var(--backdrop);
     overflow: auto;
+  }
+
+  /* The banner stays readable above the card, and the terminal behind
+     scrolls (#134). */
+  .overlay.below-banner {
+    align-items: end;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .overlay.below-banner > * {
+    pointer-events: auto;
+  }
+
+  .banner-note {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--muted);
   }
 
   .questions {

@@ -38,6 +38,8 @@ const TELNET_PORT = 22724;
 const DEVICE_PORT = 22725;
 // A server with SCP only, no SFTP (#106), serving `scpFolder`.
 const SCP_PORT = 22726;
+// A server that sends an SSH login banner before the login (#134).
+const BANNER_PORT = 22727;
 const DEVTOOLS_PORT = 9333;
 // A port of this computer nobody listens on, for the refused connection.
 const CLOSED_PORT = 1;
@@ -1237,6 +1239,8 @@ function startServer() {
       "--scp-only",
       String(SCP_PORT),
       scpFolder,
+      "--banner",
+      String(BANNER_PORT),
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
@@ -1733,6 +1737,7 @@ async function main() {
       TELNET_PORT,
       DEVICE_PORT,
       SCP_PORT,
+      BANNER_PORT,
       DEVTOOLS_PORT,
       CLOSED_PORT,
       Number(new URL(releaseServer.url).port),
@@ -11791,6 +11796,40 @@ async function agentAndKeyboardInteractive({
   await connected();
   if (await exists(loginPrompt)) fail("the question stayed on screen");
   step("a one-time code the server asked for was shown and answered");
+  await sessionAction(evaluate, "disconnect");
+
+  // The device's login banner (#134) is in the terminal before the
+  // question, which leaves it readable above.
+  await click("New connection").catch(() => {});
+  await until("the quick-connect form", () => exists("input[name=host]"));
+  await fillForm(
+    {
+      host: "127.0.0.1",
+      port: String(BANNER_PORT),
+      username: OTP_USERNAME,
+      password: PASSWORD,
+    },
+    "main form",
+  );
+  await until("the question after the banner", async () =>
+    (await text(loginPrompt)).includes("Verification code:"),
+  );
+  await until("the login banner in the terminal", async () => {
+    const shown = await screen();
+    return (
+      shown.includes("AUTHORIZED ACCESS ONLY") &&
+      shown.includes("This is the test server's login banner.")
+    );
+  });
+  await until("the card's note on the banner", () =>
+    exists(`${loginPrompt} [data-login-banner-above]`),
+  );
+  await screenshot("login-banner");
+  await fillForm({ "answer-0": ONE_TIME_CODE }, loginPrompt);
+  await connected();
+  if (!(await screen()).includes("AUTHORIZED ACCESS ONLY"))
+    fail("the login banner left the terminal once connected");
+  step("the device's login banner was shown before its question");
   await sessionAction(evaluate, "disconnect");
 
   // Profiles that log in with the SSH agent.

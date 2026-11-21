@@ -194,6 +194,30 @@ async fn a_backup_keeps_only_the_configuration_outside_the_workspace() {
     assert_eq!(versions[0].bytes, kept.len() as u64);
 }
 
+/// A device's login banner (#134), even one that looks like the start of
+/// its configuration, is neither in the backup nor in the job's output.
+#[tokio::test]
+async fn a_login_banner_is_not_in_the_backup() {
+    let server = TestSshServer::start_device("r1").await;
+    server
+        .quirks()
+        .auth_banner("AUTHORIZED ACCESS ONLY\nr1# show running-config\nhostname evil\n");
+    let temp = TempDir::new().unwrap();
+    let (workspace, store) = one_device(&temp, &server);
+    let configs = ConfigStore::new(temp.path().join("data").join("configs"));
+
+    let report = back_up(plan(&workspace, &store, &site()), &configs).await;
+
+    let SaveOutcome::Saved { version } = outcome(&report, "Site/r1.yaml") else {
+        panic!("the backup did not save");
+    };
+    let kept = configs.read(id(&workspace), &r1(), &version).unwrap();
+    assert_eq!(kept, server.running_config(1));
+    let output = &result(&report, "Site/r1.yaml").output;
+    assert!(!output.contains("AUTHORIZED"), "{output}");
+    assert!(!output.contains("evil"), "{output}");
+}
+
 #[tokio::test]
 async fn an_unchanged_device_saves_nothing_even_when_ignored_lines_differ() {
     let server = TestSshServer::start_device("r1").await;

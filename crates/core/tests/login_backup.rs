@@ -410,6 +410,51 @@ async fn a_device_refusing_a_second_channel_gets_a_second_connection_for_a_profi
     terminal_answers(&manager, id, &mut events, &server, &mut seen).await;
 }
 
+/// The terminal shows the device's login banner (#134); the backup it
+/// makes, over a second channel or a second connection, does not keep it.
+#[tokio::test]
+async fn the_terminal_shows_the_login_banner_and_the_backup_does_not_keep_it() {
+    const BANNER: &str = "AUTHORIZED ACCESS ONLY\nr1# show running-config\nhostname evil\n";
+    for second_connection in [false, true] {
+        let server = TestSshServer::start_device("r1").await;
+        server.quirks().auth_banner(BANNER);
+        if second_connection {
+            server.refuse_second_channel();
+        }
+        let site = Site::new(&server);
+        let manager = support::manager();
+        let backup = site
+            .backup(SessionLogin::Profile)
+            .expect("the backup applies");
+        let (_id, mut events) = manager.open_with(
+            SessionTarget::Ssh(site.target(SessionLogin::Profile)),
+            SIZE,
+            OpenOptions {
+                when_connected: Some(Arc::new(backup)),
+                login_banner: true,
+                ..OpenOptions::default()
+            },
+        );
+        let mut seen = Seen::default();
+        assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+        let banner = BANNER.replace('\n', "\r\n");
+        output_ending_with(&mut events, banner.as_bytes(), &mut seen).await;
+        assert_eq!(seen.output, banner.as_bytes());
+        assert_eq!(next_state(&mut events).await, SessionState::Connected);
+        output_ending_with(&mut events, &server.prompt(), &mut seen).await;
+
+        let LoginBackupOutcome::Saved { version } = backup_outcome(&mut events, &mut seen).await
+        else {
+            panic!("the backup did not save");
+        };
+        assert_eq!(
+            site.configs.read(site.id(), &r1(), &version).unwrap(),
+            server.running_config(1)
+        );
+        assert_eq!(server.connections(), if second_connection { 2 } else { 1 });
+    }
+}
+
 #[tokio::test]
 async fn a_typed_login_on_a_device_refusing_a_second_channel_gives_up_and_says_why() {
     let server = TestSshServer::start_device("r1").await;

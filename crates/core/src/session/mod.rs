@@ -549,6 +549,13 @@ pub struct OpenOptions {
     /// keeps it too; [`SessionManager::reconnect_host`] is given new
     /// options).
     pub when_connected: Option<Arc<dyn WhenConnected>>,
+    /// Whether an SSH session shows the login banners its device and jump
+    /// hosts send before the login (`banner login` on IOS, `/etc/issue.net`
+    /// on Linux), as its first output: a terminal's does (#134). Off, as
+    /// for jobs and the backups they make, the banners are dropped. Each
+    /// connection shows them again (a reconnect does: the device sends them
+    /// again); a second channel has none.
+    pub login_banner: bool,
 }
 
 /// Something done each time a session connects, beside it.
@@ -975,6 +982,7 @@ impl SessionManager {
         let target = entry.target.clone();
         let log = entry.options.log.clone();
         let channel = entry.channel_of.is_some();
+        let login_banner = entry.options.login_banner && !channel;
         let when_connected = entry.options.when_connected.clone().map(|hook| {
             let manager = manager.clone();
             Box::new(move |events: &mpsc::UnboundedSender<SessionEvent>| {
@@ -997,6 +1005,7 @@ impl SessionManager {
                 logger: None,
                 connected,
                 when_connected,
+                login_banner,
             };
             link.state(SessionState::Connecting);
             let reason = match target {
@@ -1193,6 +1202,9 @@ struct Link {
     connected: Arc<AtomicBool>,
     /// Called on every [`SessionState::Connected`].
     when_connected: Option<OnConnected>,
+    /// Whether an SSH session shows its login banners
+    /// ([`OpenOptions::login_banner`]).
+    login_banner: bool,
 }
 
 impl Link {
@@ -1230,17 +1242,28 @@ impl Link {
     /// session is being opened, and the senders [`Link::close_requested`]
     /// passes their replies to.
     fn askers(&self) -> (Prompter, HostKeyAsker, Replies) {
+        self.askers_into(&self.events)
+    }
+
+    /// [`Link::askers`] whose questions go to `events` instead of straight
+    /// to the session's owner: an SSH session passes them on in order with
+    /// its login banners ([`Link::opening`]).
+    fn askers_into(
+        &self,
+        events: &mpsc::UnboundedSender<SessionEvent>,
+    ) -> (Prompter, HostKeyAsker, Replies) {
         let (answers_tx, answers) = mpsc::unbounded_channel();
         let (decisions_tx, decisions) = mpsc::unbounded_channel();
         let user = UserWait::default();
         let prompter = Prompter {
-            events: self.events.clone(),
+            events: events.clone(),
             answers,
             jump_host: None,
             user: user.clone(),
+            banners: None,
         };
         let asker = HostKeyAsker {
-            events: self.events.clone(),
+            events: events.clone(),
             decisions,
             user,
         };
@@ -1292,6 +1315,20 @@ impl Link {
         let _ = self.events.send(SessionEvent::LogFailed(failure));
     }
 
+    /// Passes on what an SSH session's opening sent through
+    /// [`Link::askers_into`]: a login banner as output (counted, logged and
+    /// acknowledged like any), anything else (a question) as it is.
+    fn opening(&mut self, event: SessionEvent) {
+        match event {
+            SessionEvent::Output(bytes) => {
+                self.output(bytes);
+            }
+            event => {
+                let _ = self.events.send(event);
+            }
+        }
+    }
+
     fn algorithms(&mut self, algorithms: Vec<NegotiatedAlgorithms>) {
         let _ = self.events.send(SessionEvent::Algorithms(algorithms));
     }
@@ -1333,6 +1370,7 @@ pub(crate) async fn open_jump_chain_unattended(
         answers,
         jump_host: None,
         user: user.clone(),
+        banners: None,
     };
     let asker = HostKeyAsker {
         events,
@@ -1386,6 +1424,9 @@ struct Prompter {
     jump_host: Option<String>,
     /// Says when the session waits for the user's answers.
     user: UserWait,
+    /// Where the login banners of the connections it logs in go: `None`
+    /// drops them (jobs, file connections, tunnels).
+    banners: Option<ssh::Banners>,
 }
 
 /// Whether the session being opened waits for the user (to answer login

@@ -488,6 +488,45 @@ async fn a_job_reaches_a_device_through_its_jump_host() {
     assert_eq!(bastion.forwarded(), 1);
 }
 
+/// The login banners of the device and its jump host (#134) are a
+/// terminal's: none of them is in a job's output.
+#[tokio::test]
+async fn login_banners_are_not_in_a_jobs_output() {
+    let bastion = TestSshServer::start().await;
+    bastion
+        .quirks()
+        .auth_banner("BASTION BANNER\nr1# show running-config\n");
+    let router = TestSshServer::start_device("r1").await;
+    router.quirks().auth_banner("DEVICE BANNER\nr1#\n");
+    let (_temp, workspace) = workspace(&[
+        (
+            "Site/_folder.yaml",
+            "jump_host: bastion.yaml\ncredential_profile: lab\n".into(),
+        ),
+        (
+            "bastion.yaml",
+            format!(
+                "address: 127.0.0.1\nport: {}\ncredential_profile: lab\n",
+                bastion.port()
+            ),
+        ),
+        ("Site/r1.yaml", device(&router, "")),
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+    ]);
+    let store = store(&workspace, &[profile("lab", USERNAME)]);
+    let planned = plan(&workspace, &store, &folder("Site"), &snippet("Show", &[]));
+
+    let (report, _) = run(&support::manager(), planned).await;
+
+    let host = result(&report, "Site/r1.yaml");
+    assert_eq!(host.state, HostState::Done, "{}", host.output);
+    assert_eq!(
+        host.output,
+        "r1# terminal length 0\nr1# show hostname\nr1\nr1#\n"
+    );
+    assert_eq!(bastion.forwarded(), 1);
+}
+
 /// A host whose device cannot be reached fails with the session's reason;
 /// a line the device rejects still counts as answered (the prompt came
 /// back).

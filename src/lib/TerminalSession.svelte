@@ -215,6 +215,9 @@
   let hostKey = $state<{ question: HostKeyQuestion; key: number } | null>(null);
   /** What each connection agreed on, jump hosts first. */
   let algorithms = $state<NegotiatedAlgorithms[]>([]);
+  /** Whether this connection showed output before it connected: an SSH
+   * login banner (#134), which the login questions leave readable. */
+  let bannerShown = $state(false);
   /** Why the session's log could not be written; null: logging works. */
   let logFailure = $state<string | null>(null);
   /** How this connection's backup on login ended; null: none (yet). */
@@ -301,6 +304,7 @@
     prompt = null;
     hostKey = null;
     algorithms = [];
+    bannerShown = false;
     logFailure = null;
     backup = null;
     backupNoticeDismissed = false;
@@ -991,7 +995,10 @@
       {
         // Acknowledged once xterm.js has parsed it, so a flood of output
         // never queues up faster than the terminal can show it.
-        onOutput: deliver,
+        onOutput: (bytes, consumed) => {
+          if (status.state === "connecting") bannerShown = true;
+          deliver(bytes, consumed);
+        },
         onState: (state) => {
           stateSeen = true;
           status = state;
@@ -1375,6 +1382,7 @@
         <LoginQuestions
           prompt={prompt.prompt}
           ready={session !== null}
+          banner={bannerShown}
           onanswer={answer}
           oncancel={cancelLogin}
         />
@@ -1396,7 +1404,8 @@
     {/if}
     {#if status.state === "closed" && status.offersPasswordLogin && onpasswordlogin}
       {@const reason = status.reason}
-      <div class="overlay">
+      <!-- Below the device's login banner, if it sent one (#134). -->
+      <div class="overlay" class:below-banner={bannerShown}>
         <form
           class="card"
           role="alert"
@@ -1458,6 +1467,18 @@
     padding: var(--space-6);
     background: var(--backdrop);
     overflow: auto;
+  }
+
+  /* The login banner stays readable above the card, and the terminal
+     behind scrolls (#134). */
+  .overlay.below-banner {
+    align-items: end;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .overlay.below-banner > * {
+    pointer-events: auto;
   }
 
   .card {

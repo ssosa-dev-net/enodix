@@ -1395,6 +1395,7 @@ async fn second_channel(run: &LabRun, device: &Device) -> Result<String, String>
     let options = OpenOptions {
         log: None,
         when_connected: Some(Arc::new(backup)),
+        login_banner: false,
     };
     let target = run.ssh_target(device)?;
     let password = match &target.auth {
@@ -1837,6 +1838,7 @@ impl<'a> Conversation<'a> {
         let options = OpenOptions {
             log,
             when_connected: None,
+            login_banner: false,
         };
         Self::connect_with(manager, target, options, timeout, password).await
     }
