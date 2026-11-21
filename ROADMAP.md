@@ -47,7 +47,7 @@ As of 2026-11-21, every item but 8 is built. Items 1, 2, 3, 5, 6 and 7 were rele
 
 What has to be true before anyone but the developer uses the app. It runs alongside the remaining features and comes first where the two compete. So far the app has had one user and was tested mostly against test servers and one lab.
 
-The parts below are not in an order yet: they are ordered in the pass that follows the features of 0.5.0. Three have tickets: the Linux desktop check (#58), the end-to-end test's clicks (#94) and what a renamed host loses (#99). The rest is still to be ticketed.
+The pass that follows the features of 0.5.0 started on 2026-11-21, and every part below has a ticket: the review of the 0.2.0 work (#112, done) and what it found (#121 to #127), the enable password in the lab (#113, done), the app on Linux under WSLg (#114; a real desktop stays #58), trust written down (#115), the first five minutes (#116), edge testing (#117 credentials and the inventory, #118 sessions and devices, #119 jobs and scripts) and the window's two known faults (#120). The order: what could lose or expose the user's data or act on a device unasked comes first (#121 to #125, #117), then what a newcomer meets (#116, #115), then the rest. Going public waits for all of it.
 
 **The first five minutes**
 
@@ -79,7 +79,7 @@ Done so far, on 2026-11-15 for the session windows (the record is in the window 
 
 **Checks still owed from the work so far**
 
-- A review of the 0.2.0 work (#34 to #57) against its spec. The script tunnels (#60) were reviewed after they were built, and the redesign and the session windows each ended with a sweep of their spec's user stories (#79, #88); the rest of 0.2.0 was not.
+- A review of the 0.2.0 work (#34 to #57) against its specs: done on 2026-11-21 (#112), by reading the code and its tests, story by story. Of 151 stories none is missing and one differs (NX-OS, see Status). It found faults that have to be fixed before 0.5.0: Start in one job tab can run the plan of another tab, production hosts included, with no question asked (#121); a privilege command that comes back without asking counts as privileged mode reached, so a backup can keep a device's error message as the configuration, and the command timeout counts from the send (#122); a paste already under way when its tab joins a multi-send group goes to every member (#123); a script job outlives the app (#124); turning the vault on can leave clear-text copies in the keychain (#125). Saved jobs keep typed answers, passwords included, in the shared jobs file, which needs a decision (#126). The smaller findings are in #127.
 - A release installed and run: the Windows installer and the portable zip. This is done with 0.5.0, before it is published. The Linux packages are part of the Linux desktop check (#58).
 - The items listed under Status as built but not verified.
 
