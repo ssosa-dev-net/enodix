@@ -14,7 +14,8 @@
 //! privilege command (answering its password question with the profile's
 //! enable secret), turns paging off with the definition's disable-paging
 //! command, and sends the snippet line by line, waiting for the prompt
-//! after each. A host that shows no prompt within the command timeout
+//! after each. A host that shows nothing more for the command timeout
+//! without its prompt, or goes on showing output past the command limit,
 //! fails; at most [`JobOptions::parallel`] hosts run at once. Progress
 //! arrives as [`JobEvent`]s on the returned [`Job`], which can cancel the
 //! run.
@@ -67,8 +68,8 @@ pub use live::{LiveJob, LiveJobs, NewLiveJob};
 pub use login::{LoginBackup, LoginBackupOutcome, SessionLogin};
 pub use run::{
     check, start, HostResult, HostState, Job, JobCanceller, JobEvent, JobOptions, JobReport,
-    SentFile, StartError, DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL, JOB_TERMINAL_SIZE,
-    MAX_PARALLEL, PROGRESS_EVERY, PROMPT_SETTLE,
+    SentFile, StartError, DEFAULT_COMMAND_LIMIT, DEFAULT_COMMAND_TIMEOUT, DEFAULT_PARALLEL,
+    JOB_TERMINAL_SIZE, MAX_PARALLEL, PROGRESS_EVERY, PROMPT_SETTLE,
 };
 /// The reasons an unattended file connection gives for a refused question.
 pub(crate) use run::{host_key_refused, login_question_refused};

@@ -317,6 +317,114 @@ async fn the_first_lines_of_a_two_line_prompt_are_not_kept() {
     assert_eq!(kept, server.running_config(1));
 }
 
+/// An enable that comes back to the unprivileged prompt saying "% No
+/// password set" fails the backup, which keeps nothing: the device's error
+/// for `show running-config` never becomes a version.
+#[tokio::test]
+async fn a_backup_whose_privileged_mode_is_not_reached_keeps_nothing() {
+    let server = TestSshServer::start_unprivileged_device("r1").await;
+    server.set_enable(support::EnableMode::NotSet);
+    let temp = TempDir::new().unwrap();
+    let (workspace, store) = one_device(&temp, &server);
+    let configs = ConfigStore::new(temp.path().join("configs"));
+
+    let report = back_up(plan(&workspace, &store, &site()), &configs).await;
+    let host = result(&report, "Site/r1.yaml");
+    let HostState::Failed { reason } = &host.state else {
+        panic!("the backup did not fail: {:?}\n{}", host.state, host.output);
+    };
+    assert!(
+        reason.contains("did not reach privileged mode")
+            && reason.contains(support::NO_ENABLE_PASSWORD),
+        "{reason}"
+    );
+    assert_eq!(host.backup, None);
+    assert!(
+        !host.output.contains("show running-config"),
+        "{}",
+        host.output
+    );
+    assert!(configs.versions(id(&workspace), &r1()).unwrap().is_empty());
+}
+
+/// A definition with no privilege command on a login that is not
+/// privileged: what `show running-config` shows is only the device's
+/// error (a `^` marker and a `%` line), which is not kept.
+#[tokio::test]
+async fn a_backup_that_shows_only_an_error_keeps_nothing() {
+    let server = TestSshServer::start_unprivileged_device("r1").await;
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(
+        &temp,
+        &[
+            (
+                "_platforms.yaml",
+                "plain:\n  prompt: '[\\w.-]+[>#]'\n  show_config: show running-config\n".into(),
+            ),
+            ("Site/_folder.yaml", "credential_profile: lab\n".into()),
+            ("Site/r1.yaml", host(&server, "plain")),
+        ],
+    );
+    let store = store(&workspace);
+    let configs = ConfigStore::new(temp.path().join("configs"));
+
+    let report = back_up(plan(&workspace, &store, &site()), &configs).await;
+    let host = result(&report, "Site/r1.yaml");
+    let HostState::Failed { reason } = &host.state else {
+        panic!("the backup did not fail: {:?}\n{}", host.state, host.output);
+    };
+    assert_eq!(
+        reason,
+        &format!(
+            "\"show running-config\" showed only an error, not a configuration: {:?}",
+            support::INVALID_INPUT
+        )
+    );
+    assert!(configs.versions(id(&workspace), &r1()).unwrap().is_empty());
+}
+
+/// A configuration that takes longer than the command timeout to show,
+/// but never pauses for that long, is waited for and kept whole.
+#[tokio::test]
+async fn a_configuration_shown_slowly_is_kept_whole() {
+    let server = TestSshServer::start_device("r1").await;
+    for n in 1..=4 {
+        server.configure(&format!("interface Loopback{n}"));
+    }
+    // Eight lines, 400 ms apart: 3.2 s in all, never 2 s quiet.
+    server.set_config_pace(std::time::Duration::from_millis(400));
+    let temp = TempDir::new().unwrap();
+    let (workspace, store) = one_device(&temp, &server);
+    let configs = ConfigStore::new(temp.path().join("configs"));
+
+    let options = JobOptions {
+        command_timeout: std::time::Duration::from_secs(2),
+        ..options(&configs)
+    };
+    let mut job = job::start(
+        &support::manager(),
+        plan(&workspace, &store, &site()),
+        options,
+    )
+    .unwrap();
+    let report = tokio::time::timeout(WAIT * 3, async {
+        loop {
+            if let JobEvent::Finished(report) = job.next().await.expect("no report") {
+                return report;
+            }
+        }
+    })
+    .await
+    .expect("the job did not finish");
+    let saved = outcome(&report, "Site/r1.yaml");
+    assert_eq!(
+        configs
+            .read(id(&workspace), &r1(), saved.version())
+            .unwrap(),
+        server.running_config(1)
+    );
+}
+
 #[tokio::test]
 async fn hosts_whose_definition_has_no_show_config_command_are_skipped() {
     let temp = TempDir::new().unwrap();

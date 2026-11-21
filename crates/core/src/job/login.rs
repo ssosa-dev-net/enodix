@@ -144,8 +144,11 @@ impl LoginBackup {
         })
     }
 
-    /// The same backup, giving the device `timeout` (instead of
-    /// [`DEFAULT_COMMAND_TIMEOUT`]) to show its prompt after each line.
+    /// The same backup, letting the device stay quiet for `timeout`
+    /// (instead of [`DEFAULT_COMMAND_TIMEOUT`]) without its prompt after
+    /// each line. As in a job, it counts from the last output, and output
+    /// that goes on without the prompt ends at
+    /// [`super::DEFAULT_COMMAND_LIMIT`].
     pub fn with_command_timeout(mut self, timeout: Duration) -> Self {
         self.command_timeout = timeout;
         self

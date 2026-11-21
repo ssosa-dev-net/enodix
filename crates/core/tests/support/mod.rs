@@ -36,12 +36,18 @@
 //! | `disable`             | back to the unprivileged prompt                 |
 //! | `hang`                | never answers (Ctrl+C gives the prompt back)    |
 //! | `pause <ms>`          | prints the prompt after `<ms>` milliseconds     |
-//! | `show running-config` | prints [`device_config`]: two `! ` header lines (the second a [`CONFIG_TIME`] line that changes every time), `hostname <hostname>`, the lines `configure` added, `end` |
+//! | `drip <n> <ms>`       | prints `line 1` to `line <n>`, one every `<ms>` milliseconds, then the prompt |
+//! | `show running-config` | prints [`device_config`]: two `! ` header lines (the second a [`CONFIG_TIME`] line that changes every time), `hostname <hostname>`, the lines `configure` added, `end`; unprivileged, [`INVALID_INPUT`] (as IOS) |
 //! | `configure <line>`    | adds `<line>` to the configuration (shared by every connection to the server; also [`TestSshServer::configure`]) |
 //!
 //! [`TestSshServer::start_device`] starts privileged (`<hostname># `);
 //! [`TestSshServer::start_unprivileged_device`] starts at `<hostname>> `
-//! ([`unprivileged_prompt`]) and needs `enable`.
+//! ([`unprivileged_prompt`]) and needs `enable`. How `enable` answers is
+//! [`TestSshServer::set_enable`]'s ([`EnableMode`]: asking for the secret,
+//! or as IOS with no enable password, or with a notice);
+//! [`TestSshServer::set_config_pace`] shows the configuration a line at a
+//! time; [`TestSshServer::ask_password_at_login`] makes every shell ask
+//! [`LOGIN_QUESTION`] in-band before its first prompt.
 //! [`TestSshServer::connections_open`] and
 //! [`TestSshServer::most_connections_open`] count the connections that
 //! opened a session channel, while they last.
@@ -167,6 +173,29 @@ pub const DENIED_SECRET: &str = "denied at once";
 pub const ACCESS_DENIED: &str = "% Access denied";
 /// What a device-mode shell prints after three wrong enable secrets.
 pub const BAD_SECRETS: &str = "% Bad secrets";
+/// What a device-mode shell with [`EnableMode::NotSet`] prints for
+/// `enable`, staying at the unprivileged prompt (as IOS with no enable
+/// password).
+pub const NO_ENABLE_PASSWORD: &str = "% No password set";
+/// What a device-mode shell prints, below a `^` marker line, for `show
+/// running-config` at the unprivileged prompt (as IOS).
+pub const INVALID_INPUT: &str = "% Invalid input detected at '^' marker.";
+/// What a shell asks in-band right after login, before its first prompt,
+/// once [`TestSshServer::ask_password_at_login`] is set ([`PASSWORD`]
+/// answers it).
+pub const LOGIN_QUESTION: &str = "Password: ";
+
+/// How a device-mode shell answers `enable` at its unprivileged prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum EnableMode {
+    /// Asks [`ENABLE_QUESTION`] for [`ENABLE_SECRET`].
+    #[default]
+    Secret,
+    /// Prints [`NO_ENABLE_PASSWORD`] and stays unprivileged.
+    NotSet,
+    /// Prints the text and gives the privileged prompt, asking nothing.
+    Notice(String),
+}
 /// How many lines a device-mode shell shows before [`MORE`] until
 /// `terminal length` says otherwise.
 pub const PAGE_LENGTH: u32 = 24;
@@ -291,6 +320,15 @@ struct Device {
     /// A line shown above every prompt, as SR Linux's
     /// `--{ running }--[  ]--`.
     banner: Arc<Mutex<Option<String>>>,
+    /// How `enable` answers at the unprivileged prompt.
+    enable: Arc<Mutex<EnableMode>>,
+    /// The time between the lines of `show running-config` (none: all at
+    /// once).
+    config_pace: Arc<Mutex<Option<Duration>>>,
+    /// Whether each shell asks [`LOGIN_QUESTION`] before its first prompt,
+    /// and every line typed at that question.
+    login_question: Arc<AtomicBool>,
+    typed_at_login: Arc<Mutex<Vec<String>>>,
 }
 
 /// The connections that opened a session channel, while they last.
@@ -665,6 +703,34 @@ impl TestSshServer {
         *device.banner.lock().unwrap() = Some(banner.to_string());
     }
 
+    /// From now on, a device-mode server answers `enable` at its
+    /// unprivileged prompt as `mode` says.
+    pub fn set_enable(&self, mode: EnableMode) {
+        let device = self.device.as_ref().expect("a device-mode server");
+        *device.enable.lock().unwrap() = mode;
+    }
+
+    /// From now on, a device-mode server shows `show running-config` one
+    /// line every `pace`, as a large configuration over a slow link.
+    pub fn set_config_pace(&self, pace: Duration) {
+        let device = self.device.as_ref().expect("a device-mode server");
+        *device.config_pace.lock().unwrap() = Some(pace);
+    }
+
+    /// From now on, every shell of a device-mode server asks
+    /// [`LOGIN_QUESTION`] in-band before its first prompt (as a device or
+    /// console server with a second login), until [`PASSWORD`] is typed.
+    pub fn ask_password_at_login(&self) {
+        let device = self.device.as_ref().expect("a device-mode server");
+        device.login_question.store(true, Ordering::SeqCst);
+    }
+
+    /// Every line typed at [`LOGIN_QUESTION`] so far.
+    pub fn typed_at_login(&self) -> Vec<String> {
+        let device = self.device.as_ref().expect("a device-mode server");
+        device.typed_at_login.lock().unwrap().clone()
+    }
+
     /// Adds `line` to a device-mode server's configuration, as `configure
     /// <line>` does.
     pub fn configure(&self, line: &str) {
@@ -846,6 +912,10 @@ impl Device {
             config: Arc::default(),
             shown: Arc::default(),
             banner: Arc::default(),
+            enable: Arc::default(),
+            config_pace: Arc::default(),
+            login_question: Arc::default(),
+            typed_at_login: Arc::default(),
         }
     }
 
@@ -975,6 +1045,8 @@ enum Waiting {
     Line,
     /// The enable secret (not echoed), the `tries`th time it is asked.
     Secret { typed: Vec<u8>, tries: u32 },
+    /// The answer to [`LOGIN_QUESTION`] (not echoed).
+    Login { typed: Vec<u8> },
     /// A key at [`MORE`]: `lines` output goes on with line `next`, up to
     /// line `last`.
     More { next: u32, last: u32 },
@@ -1159,9 +1231,30 @@ impl ScriptedShell {
                     session.data(channel, format!("{}\r\n", device.hostname).into_bytes())?;
                 }
             }
+            Some("show")
+                if device
+                    && !state.privileged
+                    && line.split_whitespace().nth(1) == Some("running-config") =>
+            {
+                session.data(
+                    channel,
+                    format!("                ^\r\n{INVALID_INPUT}\r\n\r\n").into_bytes(),
+                )?;
+            }
             Some("show") if device && line.split_whitespace().nth(1) == Some("running-config") => {
                 if let Some(device) = &self.device {
                     let config = device.running_config().replace('\n', "\r\n");
+                    let pace = *device.config_pace.lock().unwrap();
+                    if let Some(pace) = pace {
+                        // A line at a time, then the prompt.
+                        let mut lines: Vec<Vec<u8>> = config
+                            .split_inclusive('\n')
+                            .map(|line| line.as_bytes().to_vec())
+                            .collect();
+                        lines.push(self.prompt(channel));
+                        drip_lines(channel, session, lines, pace);
+                        return Ok(());
+                    }
                     session.data(channel, config.into_bytes())?;
                 }
             }
@@ -1185,6 +1278,30 @@ impl ScriptedShell {
                     None => session.data(channel, unknown(&line))?,
                 }
             }
+            Some("enable")
+                if device
+                    && !state.privileged
+                    && self
+                        .device
+                        .as_ref()
+                        .is_some_and(|d| *d.enable.lock().unwrap() != EnableMode::Secret) =>
+            {
+                let mode = self
+                    .device
+                    .as_ref()
+                    .map(|d| d.enable.lock().unwrap().clone())
+                    .unwrap_or_default();
+                match mode {
+                    EnableMode::NotSet => {
+                        session.data(channel, format!("{NO_ENABLE_PASSWORD}\r\n").into_bytes())?
+                    }
+                    EnableMode::Notice(text) => {
+                        session.data(channel, format!("{text}\r\n").into_bytes())?;
+                        state.privileged = true;
+                    }
+                    EnableMode::Secret => unreachable!("asks for the secret"),
+                }
+            }
             Some("enable") if device && !state.privileged => {
                 state.waiting = Waiting::Secret {
                     typed: Vec::new(),
@@ -1197,6 +1314,16 @@ impl ScriptedShell {
             Some("disable") if device => state.privileged = false,
             Some("hang") if device => {
                 state.waiting = Waiting::Nothing;
+                return Ok(());
+            }
+            Some("drip") if device => {
+                let count: u32 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                let millis: u64 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                let mut lines: Vec<Vec<u8>> = (1..=count)
+                    .map(|n| format!("line {n}\r\n").into_bytes())
+                    .collect();
+                lines.push(self.prompt(channel));
+                drip_lines(channel, session, lines, Duration::from_millis(millis));
                 return Ok(());
             }
             Some("pause") if device => {
@@ -1248,6 +1375,21 @@ impl ScriptedShell {
                 session.data(channel, prompt_for(&self.device, state.privileged))?;
             }
             Waiting::Secret { typed, .. } => typed.push(byte),
+            Waiting::Login { typed } if byte == b'\r' => {
+                let answer = String::from_utf8_lossy(typed).into_owned();
+                typed.clear();
+                if let Some(device) = &self.device {
+                    device.typed_at_login.lock().unwrap().push(answer.clone());
+                }
+                session.data(channel, &b"\r\n"[..])?;
+                if answer == PASSWORD {
+                    state.waiting = Waiting::Line;
+                    session.data(channel, prompt_for(&self.device, state.privileged))?;
+                } else {
+                    session.data(channel, LOGIN_QUESTION.as_bytes().to_vec())?;
+                }
+            }
+            Waiting::Login { typed } => typed.push(byte),
             Waiting::More { next, last } => {
                 let (next, last) = (*next, *last);
                 session.data(channel, ERASE_MORE)?;
@@ -1270,6 +1412,20 @@ impl ScriptedShell {
         }
         Ok(())
     }
+}
+
+/// Sends `lines` on `channel` one at a time, `pace` apart (the first after
+/// `pace`).
+fn drip_lines(channel: ChannelId, session: &Session, lines: Vec<Vec<u8>>, pace: Duration) {
+    let handle = session.handle();
+    tokio::spawn(async move {
+        for line in lines {
+            tokio::time::sleep(pace).await;
+            if handle.data(channel, line).await.is_err() {
+                return;
+            }
+        }
+    });
 }
 
 /// What the shell prints when it waits for a line: [`PROMPT`], or a
@@ -1454,6 +1610,15 @@ impl Handler for ScriptedShell {
         self.unclaimed.remove(&channel);
         self.shells.fetch_add(1, Ordering::SeqCst);
         session.channel_success(channel)?;
+        if self
+            .device
+            .as_ref()
+            .is_some_and(|d| d.login_question.load(Ordering::SeqCst))
+        {
+            self.channels.entry(channel).or_default().waiting =
+                Waiting::Login { typed: Vec::new() };
+            return session.data(channel, LOGIN_QUESTION.as_bytes().to_vec());
+        }
         session.data(channel, self.prompt(channel))
     }
 
