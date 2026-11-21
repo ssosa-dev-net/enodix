@@ -120,10 +120,14 @@ folder, and what stalled it was fixed [116].
   what is typed. The app's own code made none of these connections; they
   were found by watching every connection of the app's processes through a
   whole run of the end-to-end test, which now fails on any of them.
-- **Not solved yet:** while text is typed, the engine now and then
-  connects to Microsoft's Office servers. What these connections carry has
-  not been seen. Until this is closed, assume typed text may reach
-  Microsoft; `docs/trust.md` has what is known [135].
+- **Not solved yet:** on a computer where Windows is signed in to a
+  Microsoft account, the engine still connects to Microsoft's Office
+  servers a few seconds after the app starts. It is the engine's own
+  sign-in library fetching that account's profile and picture; typing
+  does not cause it, and nothing points to typed text being in it, though
+  what it carries was not read. A switch that looks likely to stop it is
+  still being measured; `docs/trust.md` has what is known and what you
+  can do meanwhile [135].
 - The README said the app made no connection you did not start, and that
   session logs could be written to a folder you chose. Neither was true;
   both are corrected [115].
@@ -157,6 +161,16 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   device's words [122]. Before, it carried on unprivileged, and a config
   backup could keep the device's error message as the configuration. A
   backup that shows nothing but an error is never kept.
+- A job no longer takes text that looks like the device's prompt for the
+  end of a command [136]. Before, output that ended a line in `#` or `>`
+  (a table's `total#`, a description) and then paused for a third of a
+  second was taken for the prompt: the job typed its next line into the
+  answer and closed the session, the rest of the output was lost, the host
+  still ended Done, and a config backup cut there could be kept as a
+  version. A command now ends when the device comes back to the prompt it
+  was typed at; a prompt that changes on purpose (enable, a configuration
+  mode, a new host name) is waited for a little longer; a configuration
+  ends only at the prompt it was asked at.
 - A job keeps at most 32 MiB of each host's output, and of a script's, and
   says where it stopped [119]. Before, a device or a script that flooded
   output was held whole in memory and in the kept run. A config backup
