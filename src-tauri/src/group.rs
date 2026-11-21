@@ -9,14 +9,21 @@
 //!   app's record of its session (`group_members`): its name, its paste
 //!   safety and its host, so it plans the paste and asks once;
 //! - once confirmed, each member's lines go to the window showing it
-//!   (`group_paste_send` → `group-paste-lines`), which sends them through
-//!   that member's own terminal (its bracketed paste, its line delay,
-//!   stopping when its session ends). Nothing goes through the fan-out.
+//!   (`group_paste_send` → `group-paste-lines`, the pasting window's own
+//!   included), which sends them through that member's own terminal (its
+//!   bracketed paste, its line delay, stopping when its session ends or it
+//!   leaves the group). Nothing goes through the fan-out.
 //!
-//! What is decided is the core's: the members and their order
-//! (`Windows::paste_members`), whether the group changed
-//! (`Windows::group_revision`), where a member's lines go
-//! (`Windows::member_showing`), a member's safety
+//! A group paste goes to the members as they are when it is sent (#123):
+//! the members come with the group's revision, and the paste is called
+//! off (nothing sent, the reason said) if the group changed since, or
+//! the tab pasted in is no longer a member (`group_paste_check` lets the
+//! window close its question as soon as it sees the change).
+//!
+//! What is decided is the core's: the members and their order and the
+//! revision (`Windows::group_paste_members`), whether the paste may go and
+//! where each member's lines go (`Windows::group_paste_targets`), whether
+//! the group changed (`Windows::group_revision`), a member's safety
 //! (`SessionRecords::paste_safety`) and host (`SessionRecord::host_in`).
 
 use std::sync::atomic::Ordering;
@@ -82,9 +89,18 @@ pub(super) struct GroupMember {
     connected: bool,
 }
 
+/// Who a paste in a tab goes to, and the group's revision they were read
+/// at (the paste must still find it when it is sent, #123).
+#[derive(Serialize)]
+pub(super) struct GroupMembers {
+    revision: u64,
+    members: Vec<GroupMember>,
+}
+
 /// Where a paste in the calling window's tab `tab` goes (#87): every
 /// member of the group whose session is known, the one pasted in first,
-/// in any window. Empty when the tab is not a member.
+/// in any window, with the group's revision. Refused (the paste is called
+/// off, #123) when the tab is not a member.
 #[tauri::command]
 pub(super) fn group_members(
     window: tauri::WebviewWindow,
@@ -93,11 +109,15 @@ pub(super) fn group_members(
     relays: State<'_, SessionRelays>,
     records: State<'_, SessionRecords>,
     tab: TabId,
-) -> Result<Vec<GroupMember>, String> {
+) -> Result<GroupMembers, String> {
     let window = calling_window(&window)?;
-    let members = tabs.lock().paste_members(window, tab);
+    let planned = tabs
+        .lock()
+        .group_paste_members(window, tab)
+        .map_err(|refused| refused.to_string())?;
     let workspace = shell.workspace();
-    Ok(members
+    let members = planned
+        .members
         .into_iter()
         .map(|(member, session)| {
             let record = records.get(session);
@@ -120,7 +140,11 @@ pub(super) fn group_members(
                 connected,
             }
         })
-        .collect())
+        .collect();
+    Ok(GroupMembers {
+        revision: planned.revision,
+        members,
+    })
 }
 
 /// A member's lines of a confirmed group paste, as the window showing it
@@ -134,33 +158,70 @@ pub(super) struct GroupPasteLines {
     line_delay_ms: u32,
 }
 
-/// Sends a member's `lines` of a group paste the calling window planned
-/// and the user confirmed (#87) to the window showing the member's
-/// `session` now, which pastes them through that member's terminal.
-/// Refused unless the session is a member's.
-#[tauri::command]
-pub(super) fn group_paste_send(
-    app: AppHandle,
-    tabs: State<'_, Tabs>,
+/// One member's part of a group paste, as the pasting window planned it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MemberLines {
     session: u64,
     lines: Vec<String>,
     line_delay_ms: u32,
+}
+
+/// Sends a group paste the calling window's tab `tab` planned at the
+/// group's `revision` and the user confirmed (#87, #123): each member's
+/// lines to the window showing its session now (this one included), which
+/// pastes them through that member's terminal. Refused whole, nothing
+/// sent, if the tab is no longer a member or the group changed since.
+#[tauri::command]
+pub(super) fn group_paste_send(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    tabs: State<'_, Tabs>,
+    tab: TabId,
+    revision: u64,
+    members: Vec<MemberLines>,
 ) -> Result<(), String> {
-    let member = tabs
+    let window = calling_window(&window)?;
+    let sessions: Vec<SessionId> = members
+        .iter()
+        .map(|member| SessionId(member.session))
+        .collect();
+    let targets = tabs
         .lock()
-        .member_showing(SessionId(session))
-        .ok_or("the session is not in the multi-send group")?;
-    app.emit_to(
-        session_windows::label_for(member.window).as_str(),
-        GROUP_PASTE_LINES_EVENT,
-        GroupPasteLines {
-            tab: member.tab,
-            session,
-            lines,
-            line_delay_ms,
-        },
-    )
-    .map_err(|error| error.to_string())
+        .group_paste_targets(window, tab, revision, &sessions)
+        .map_err(|refused| refused.to_string())?;
+    for (target, member) in targets.into_iter().zip(members) {
+        app.emit_to(
+            session_windows::label_for(target.window).as_str(),
+            GROUP_PASTE_LINES_EVENT,
+            GroupPasteLines {
+                tab: target.tab,
+                session: member.session,
+                lines: member.lines,
+                line_delay_ms: member.line_delay_ms,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Whether a group paste the calling window's tab `tab` planned at the
+/// group's `revision` could still be sent (#123); refused, with the reason
+/// the paste is called off, as `group_paste_send` would. The window asks
+/// when it sees the group change while the paste's question is open.
+#[tauri::command]
+pub(super) fn group_paste_check(
+    window: tauri::WebviewWindow,
+    tabs: State<'_, Tabs>,
+    tab: TabId,
+    revision: u64,
+) -> Result<(), String> {
+    let window = calling_window(&window)?;
+    tabs.lock()
+        .group_paste_targets(window, tab, revision, &[])
+        .map(|_| ())
+        .map_err(|refused| refused.to_string())
 }
 
 /// What applies to the pastes of the session `id`, as `group_members`

@@ -4,6 +4,7 @@
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { TabId } from "./layout";
+import type { InputOrigin } from "./terminalInput";
 import type { FlowControl, Parity, PasteSafety, Role } from "./workspace";
 
 export interface QuickConnectTarget {
@@ -149,6 +150,10 @@ export interface HostKeyQuestion {
 
 export type HostKeyDecision = "trustAndRemember" | "trustOnce" | "cancel";
 
+/** Where input came from, as the shell routes it (`InputOrigin` in the
+ * core): a terminal's origins (`terminalInput`), and a group paste's line. */
+export type SessionInputOrigin = InputOrigin | "group-paste";
+
 export interface Session {
   /** The core's id for the session, for duplicating it. */
   readonly id: number;
@@ -156,11 +161,13 @@ export interface Session {
   readonly encrypted: boolean;
   readonly transport: Transport;
   /**
-   * What the user typed or pasted: the shell sends it to every member of
-   * the multi-send group if this session's tab is in it, else to this
-   * session only.
+   * Input in this session's terminal, with where it came from (#123):
+   * typed, the shell sends it to every member of the multi-send group if
+   * this session's tab is in it; a group paste's line only to this session
+   * and only while its tab is a member; anything else to this session
+   * only.
    */
-  input(data: Uint8Array): void;
+  input(data: Uint8Array, origin: SessionInputOrigin): void;
   /** Input for this session alone (the terminal's replies, mouse reports). */
   write(data: Uint8Array): void;
   /** Sends a break on the line (serial sessions only). */
@@ -462,7 +469,8 @@ export async function openSession(
     async reattach() {
       current = (await attach(id, handlers)).current;
     },
-    input: (data) => send(id, "session_input", { data: Array.from(data) }),
+    input: (data, origin) =>
+      send(id, "session_input", { data: Array.from(data), origin }),
     write: (data) => send(id, "session_write", { data: Array.from(data) }),
     sendBreak: () => send(id, "session_break", {}),
     answer: (answers) => send(id, "session_answer", { answers }),

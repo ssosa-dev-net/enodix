@@ -243,10 +243,15 @@
     transfers: number;
     decide: (choice: "keep" | "close" | "cancel") => void;
   } | null>(null);
-  /** A snippet waiting for the user to give its variables a value. */
-  let asking = $state<{ tab: TabId; name: string; names: string[] } | null>(
-    null,
-  );
+  /** A snippet waiting for the user to give its variables a value;
+   * `group`: sent to the multi-send group (decided when it was sent: the
+   * tab joining or leaving meanwhile does not change it, #123). */
+  let asking = $state<{
+    tab: TabId;
+    name: string;
+    names: string[];
+    group: boolean;
+  } | null>(null);
   /** Tabs waiting for the user's yes before joining the group (#36). */
   let joining = $state<{
     /** The pane the question covers: the tab's, or the pane joining. */
@@ -485,7 +490,8 @@
   function toggleGroup(tab: TabId) {
     if (!sessions[tab]) return;
     if (inGroup(tab)) void edit({ kind: "leaveGroup", tab });
-    else void join([tab], { kind: "joinGroup", tab });
+    else
+      void join([tab], (confirmed) => ({ kind: "joinGroup", tab, confirmed }));
   }
 
   /** Adds every tab of `pane` to the multi-send group. */
@@ -494,21 +500,28 @@
       (panes.find((each) => each.id === pane)?.tabs ?? []).filter(
         (tab) => sessions[tab] && !inGroup(tab),
       );
-    void join(joining(), { kind: "joinPane", pane }, joining);
+    void join(
+      joining(),
+      (confirmed) => ({ kind: "joinPane", pane, confirmed }),
+      joining,
+    );
   }
 
   /**
-   * Makes the layout edit `change`, which adds `tabs` to the multi-send
-   * group, once the user agrees if the core says any of them must be
-   * confirmed (production sessions): one question names them all. If
+   * Makes the layout edit `edition` gives, which adds `tabs` to the
+   * multi-send group, once the user agrees if the core says any of them
+   * must be confirmed (production sessions): one question names them all.
+   * The edit says whether that question was answered: the shell refuses a
+   * production join that was not (#123), and the refusal is said. If
    * `current` (what the edit would add now) gained a tab while the user
    * was asked (one dragged into the pane), they are asked again.
    */
   async function join(
     tabs: TabId[],
-    change: LayoutEdit,
+    edition: (confirmed: boolean) => LayoutEdit,
     current?: () => TabId[],
   ) {
+    const change = edition(false);
     let production: TabId[];
     try {
       production = await joinConfirmations(
@@ -536,10 +549,18 @@
       if (!agreed) return;
       const now = current?.() ?? tabs;
       if (now.some((tab) => !tabs.includes(tab))) {
-        return join(now, change, current);
+        return join(now, edition, current);
       }
     }
-    await edit(change);
+    let changed;
+    try {
+      changed = await editLayout(edition(production.length > 0));
+    } catch (error) {
+      inventory.editError = `Cannot add to the multi-send group: ${error}`;
+      return;
+    }
+    adopt(changed.layout);
+    forgetClosedTabs();
   }
 
   /**
@@ -561,6 +582,7 @@
       focusRequest += 1;
       return send;
     },
+    withdraw: () => groupPasteQuestion?.answer(false),
     failed: (error) => {
       inventory.editError = `Cannot paste to the multi-send group: ${error}`;
     },
@@ -568,6 +590,12 @@
 
   // The group changed in another window: its markers and size here too.
   void onLayoutChanged((next) => adopt(next));
+  // A group paste's question open since before the change closes (#123).
+  $effect(() => {
+    const revision = layout?.groupRevision;
+    if (revision !== undefined)
+      untrack(() => groupPaste.groupChanged(revision));
+  });
 
   function tabState(tab: TabId): TabInfo["state"] {
     const state = states[tab] ?? "connecting";
@@ -1357,19 +1385,23 @@
    * Sends the snippet `name` to the session of `tab` (the active pane's by
    * default): the core fills in its variables from the session's host and
    * `answers`; for any still without a value the user is asked first. The
-   * lines go through the terminal's paste path, one by one.
+   * lines go through the terminal's paste path, one by one. `group`:
+   * whether it goes to the multi-send group, decided when it is first sent
+   * (#123): a snippet begun outside the group stays the tab's, and one
+   * begun in it is the group's.
    */
   async function sendSnippet(
     name: string,
     answers: Record<string, string> = {},
     tab: TabId | null = snippetTab,
+    group: boolean = tab !== null && inGroup(tab),
   ) {
     const session = tab === null ? undefined : sessions[tab];
     if (tab === null || !session || states[tab] !== "connected") {
       inventory.editError = `Cannot send ${name}: no connected session.`;
       return;
     }
-    if (inGroup(tab)) {
+    if (group) {
       await sendSnippetToGroup(name, answers, tab);
       return;
     }
@@ -1382,7 +1414,7 @@
       return;
     }
     if (expansion.kind === "missing") {
-      asking = { tab, name, names: expansion.names };
+      asking = { tab, name, names: expansion.names, group: false };
       return;
     }
     const text = expansion.lines.map((line) => `${line}\n`).join("");
@@ -1405,20 +1437,21 @@
     answers: Record<string, string>,
     tab: TabId,
   ) {
-    let members;
+    let receiving;
     let expansion;
     try {
-      members = await groupPaste.receiving(tab);
-      expansion = await expandForMembers(name, members, answers);
+      // Refused (called off) if the tab is no longer a member.
+      receiving = await groupPaste.receiving(tab);
+      expansion = await expandForMembers(name, receiving.members, answers);
     } catch (error) {
       inventory.editError = `Cannot send ${name}: ${error}`;
       return;
     }
     if (expansion.kind === "missing") {
-      asking = { tab, name, names: expansion.names };
+      asking = { tab, name, names: expansion.names, group: true };
       return;
     }
-    groupPaste.pasteEach(tab, members, expansion.texts);
+    groupPaste.pasteEach(tab, receiving, expansion.texts);
     focusRequest += 1;
   }
 
@@ -1653,16 +1686,16 @@
               />
             {/if}
             {#if asking?.tab === tab}
-              {@const { name: snippet, names } = asking}
+              {@const { name: snippet, names, group } = asking}
               <SnippetVariables
                 {snippet}
-                target={inGroup(tab) ? groupName() : session.name}
+                target={group ? groupName() : session.name}
                 {names}
                 onsend={(answers) => {
                   // Read before clearing `asking`, which these come from.
-                  const send = { snippet, tab };
+                  const send = { snippet, tab, group };
                   asking = null;
-                  void sendSnippet(send.snippet, answers, send.tab);
+                  void sendSnippet(send.snippet, answers, send.tab, send.group);
                 }}
                 oncancel={() => {
                   asking = null;

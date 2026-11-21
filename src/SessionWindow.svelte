@@ -14,7 +14,7 @@
   // window closes itself once its last tab has gone. Its palette (Ctrl+K)
   // connects a host into this window and sends a snippet to its active
   // terminal (#88).
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen } from "@tauri-apps/api/event";
   import CommandPalette from "./lib/CommandPalette.svelte";
@@ -127,9 +127,13 @@
   /** Set while sessions leave: no other move meanwhile. */
   let moving = false;
   /** A snippet waiting for the user to give its variables a value (#86). */
-  let asking = $state<{ tab: TabId; name: string; names: string[] } | null>(
-    null,
-  );
+  /** `group`: sent to the multi-send group, decided when first sent. */
+  let asking = $state<{
+    tab: TabId;
+    name: string;
+    names: string[];
+    group: boolean;
+  } | null>(null);
   /** A production tab waiting for the user's yes before joining (#87). */
   let joining = $state<{
     tab: TabId;
@@ -490,7 +494,19 @@
       focusRequest += 1;
       if (!agreed || !sessions[tab]) return;
     }
-    await edit({ kind: "joinGroup", tab });
+    // The shell refuses a production join that was not confirmed (#123).
+    let changed;
+    try {
+      changed = await editLayout({
+        kind: "joinGroup",
+        tab,
+        confirmed: production.length > 0,
+      });
+    } catch (reason) {
+      error = `Cannot add to the multi-send group: ${reason}`;
+      return;
+    }
+    adopt(changed.layout);
   }
 
   /** This window's group pastes (#87): planned for every member wherever
@@ -507,9 +523,16 @@
       focusRequest += 1;
       return send;
     },
+    withdraw: () => groupPasteQuestion?.answer(false),
     failed: (reason) => {
       error = `Cannot paste to the multi-send group: ${reason}`;
     },
+  });
+  // A group paste's question open since before the change closes (#123).
+  $effect(() => {
+    const revision = layout?.groupRevision;
+    if (revision !== undefined)
+      untrack(() => groupPaste.groupChanged(revision));
   });
 
   // The group's paste question is shown over the tab pasted in, and the
@@ -550,6 +573,8 @@
     tab: TabId,
     name: string,
     answers: Record<string, string> = {},
+    // To the group or not, decided when it is first sent (#123).
+    group: boolean = inGroup(tab),
   ) {
     const terminal = terminals[tab];
     const id = terminal?.sessionId() ?? null;
@@ -558,7 +583,7 @@
       return;
     }
     if (activeTab !== tab) await edit({ kind: "activate", tab });
-    if (inGroup(tab)) {
+    if (group) {
       await sendSnippetToGroup(name, answers, tab);
       return;
     }
@@ -570,7 +595,7 @@
       return;
     }
     if (expansion.kind === "missing") {
-      asking = { tab, name, names: expansion.names };
+      asking = { tab, name, names: expansion.names, group: false };
       return;
     }
     const text = expansion.lines.map((line) => `${line}\n`).join("");
@@ -592,20 +617,21 @@
     answers: Record<string, string>,
     tab: TabId,
   ) {
-    let members;
+    let receiving;
     let expansion;
     try {
-      members = await groupPaste.receiving(tab);
-      expansion = await expandForMembers(name, members, answers);
+      // Refused (called off) if the tab is no longer a member.
+      receiving = await groupPaste.receiving(tab);
+      expansion = await expandForMembers(name, receiving.members, answers);
     } catch (reason) {
       error = `Cannot send ${name}: ${reason}`;
       return;
     }
     if (expansion.kind === "missing") {
-      asking = { tab, name, names: expansion.names };
+      asking = { tab, name, names: expansion.names, group: true };
       return;
     }
-    groupPaste.pasteEach(tab, members, expansion.texts);
+    groupPaste.pasteEach(tab, receiving, expansion.texts);
     focusRequest += 1;
   }
 
@@ -1004,15 +1030,15 @@
             />
           {/if}
           {#if asking?.tab === tab}
-            {@const { name: snippet, names } = asking}
+            {@const { name: snippet, names, group } = asking}
             <SnippetVariables
               {snippet}
-              target={inGroup(tab) ? groupName() : record.name}
+              target={group ? groupName() : record.name}
               {names}
               onsend={(answers) => {
-                const send = { snippet, tab };
+                const send = { snippet, tab, group };
                 asking = null;
-                void sendSnippet(send.tab, send.snippet, answers);
+                void sendSnippet(send.tab, send.snippet, answers, send.group);
               }}
               oncancel={() => {
                 asking = null;

@@ -56,12 +56,15 @@ export interface Layout {
   activePane: PaneId;
   /**
    * This window's tabs in the app's multi-send group, in the order they
-   * joined: what is typed or pasted in one of them reaches every member,
-   * in any window (the shell routes it).
+   * joined: what is typed in one of them reaches every member, in any
+   * window (the shell routes it); a paste, as a group paste.
    */
   group: TabId[];
   /** How many members the group has, in every window (#87). */
   groupSize: number;
+  /** Raised by every change to the group's members (#123): a group
+   * paste's question asked before is out of date. */
+  groupRevision: number;
   /** What each tab holds, by tab id. */
   kinds: Record<string, TabKind>;
   /** Raised by every change: an older layout is out of date. */
@@ -87,9 +90,11 @@ export type LayoutEdit =
   | { kind: "moveTab"; tab: TabId; pane: PaneId; index: number }
   | { kind: "split"; pane: PaneId; direction: SplitDirection }
   | { kind: "closePane"; pane: PaneId }
-  | { kind: "joinGroup"; tab: TabId }
+  /** `confirmed`: the user answered the join question; a production
+   * session joins only then (the shell refuses it otherwise, #123). */
+  | { kind: "joinGroup"; tab: TabId; confirmed: boolean }
   /** Every tab of the pane not yet in the group joins it. */
-  | { kind: "joinPane"; pane: PaneId }
+  | { kind: "joinPane"; pane: PaneId; confirmed: boolean }
   | { kind: "leaveGroup"; tab: TabId }
   | { kind: "endGroup" };
 

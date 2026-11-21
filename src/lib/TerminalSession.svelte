@@ -409,8 +409,10 @@
   let reveal: () => void = () => {};
   /** Keeps the terminal's output aside while it is out of sight. */
   let conceal: () => void = () => {};
-  /** Sends text as pasted (set up on mount); see `sendText`. */
-  let pasteText: (text: string) => void = () => {};
+  /** Sends text as pasted (set up on mount); see `sendText`. `alone`: the
+   * paste was begun for this tab alone (outside the group), whatever the
+   * tab is now. */
+  let pasteText: (text: string, alone?: boolean) => void = () => {};
   /** Pastes lines into this session alone (set up on mount). */
   let sendLines: (
     lines: string[],
@@ -420,8 +422,9 @@
   /**
    * Pastes `lines` (each with its line break) into this session only, as
    * one member's part of a multi-send group paste that was already planned
-   * and confirmed: `lineDelayMs` apart, stopping if the session ends.
-   * Resolves once the last line is sent (or the session ended).
+   * and confirmed: `lineDelayMs` apart, stopping if the session ends or
+   * its tab leaves the group (#123; the shell refuses such a line too).
+   * Resolves once the last line is sent (or it stopped).
    */
   export function pasteLines(
     lines: string[],
@@ -436,13 +439,15 @@
   }
 
   /**
-   * Sends `text` to the session the way a paste is sent (a snippet's
-   * lines, each ending in a line break). Only while connected; returns
-   * whether it was sent.
+   * Sends `text` to this session alone the way a paste is sent (a
+   * snippet's lines, each ending in a line break): for a snippet begun
+   * outside the multi-send group, which stays this tab's even if the tab
+   * joined while its variables were asked (#123). Only while connected;
+   * returns whether it was sent.
    */
   export function sendText(text: string): boolean {
     if (!session || status.state !== "connected") return false;
-    pasteText(text);
+    pasteText(text, true);
     return true;
   }
 
@@ -759,21 +764,28 @@
       }
       await pasteEach(plan.lines, plan.lineDelayMs, false);
     };
-    /** Sends the lines; `alone`: to this session only, not its group. */
+    /**
+     * Sends the lines to this session (never fanned out, #123); `group`:
+     * this member's part of a group paste, which stops once its tab is no
+     * longer a member.
+     */
     const pasteEach = async (
       lines: string[],
       lineDelayMs: number,
-      alone: boolean,
+      group: boolean,
     ) => {
       for (const [index, line] of lines.entries()) {
         if (index > 0 && lineDelayMs > 0) await wait(lineDelayMs);
         // A session that ended (or a terminal gone) takes no more lines.
         if (ended()) return;
-        pastingAlone = alone;
+        // A paste belongs to the group it began in: a member that left
+        // gets no more of it.
+        if (group && untrack(() => groupSize) === null) return;
+        pastingGroup = group;
         try {
           input?.paste(line);
         } finally {
-          pastingAlone = false;
+          pastingGroup = false;
         }
       }
     };
@@ -788,10 +800,12 @@
         .finally(() => (pastes -= 1));
       return pasting;
     };
-    pasteText = (text: string) => {
+    pasteText = (text: string, alone = false) => {
       if (text === "") return;
       // A member's paste is the group's: planned once for every member.
-      if (untrack(() => groupSize) !== null) {
+      // Decided here, once: a paste begun outside the group stays this
+      // tab's if the tab joins meanwhile (its lines never fan out, #123).
+      if (!alone && untrack(() => groupSize) !== null) {
         if (!ended()) ongrouppaste(text);
         return;
       }
@@ -892,17 +906,19 @@
     });
 
     let disposed = false;
-    /** Set while a group paste's line goes to this session alone. */
-    let pastingAlone = false;
+    /** Set while one of this member's lines of a group paste goes out. */
+    let pastingGroup = false;
     const encoder = new TextEncoder();
     const size = () => ({ cols: terminal.cols, rows: terminal.rows });
     currentSize = size;
     markReconnect = () =>
       terminal.write("\r\n\x1b[2m--- reconnecting ---\x1b[0m\r\n");
 
-    // Only typed and pasted input is the user's own (#34): it goes through
-    // the shell's multi-send routing. The terminal's replies and mouse
-    // reports depend on this terminal's screen and go to this session only.
+    // Every input goes to the shell with its origin (#34, #123), which
+    // routes it: only typed keys fan out to the multi-send group. A paste
+    // reaches the group only as a group paste (each member's lines through
+    // its own terminal); the terminal's replies and mouse reports depend on
+    // this terminal's screen and go to this session only.
     input = terminalInput(terminal, ({ data, binary, origin }) => {
       // A closed session keeps its scrollback; Enter reconnects it.
       if (status.state === "closed") {
@@ -915,10 +931,10 @@
         : encoder.encode(data);
       // Only a connected session shares (input while connecting is
       // dropped by the core anyway, and must not reach the other members).
-      const shared =
-        origin === "typed" || (origin === "pasted" && !pastingAlone);
-      if (shared && status.state === "connected") session?.input(bytes);
-      else session?.write(bytes);
+      if (status.state !== "connected") session?.write(bytes);
+      else if (origin === "pasted" && pastingGroup)
+        session?.input(bytes, "group-paste");
+      else session?.input(bytes, origin);
     });
     // For the smoke test, which checks where input came from.
     Object.assign(container, { input });
