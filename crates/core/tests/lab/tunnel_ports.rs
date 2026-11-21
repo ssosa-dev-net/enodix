@@ -33,7 +33,12 @@ pub struct Reported {
 pub async fn check(lab: &Lab) -> Result<Vec<Reported>, String> {
     let python = scripts::python("ncclient and requests")?;
     let cli = scripts::cli()?;
-    let first = |platform: Platform| lab.devices.iter().find(|d| d.platform == platform);
+    // Not an entry that names its checks (a second login, for those only).
+    let first = |platform: Platform| {
+        lab.devices
+            .iter()
+            .find(|d| d.platform == platform && d.only.is_none())
+    };
     let netconf = first(Platform::Junos);
     let eapi = first(Platform::Ceos);
     let devices: Vec<&Device> = netconf.into_iter().chain(eapi).collect();

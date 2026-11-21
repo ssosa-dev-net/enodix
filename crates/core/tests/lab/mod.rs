@@ -355,6 +355,9 @@ struct DeviceFile {
     privilege_expect: Option<String>,
     config_end: Option<String>,
     paging_command: Option<String>,
+    /// The checks made on this entry, by name (default: all of them). For
+    /// a second login to a device that is there for a few checks only.
+    checks: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -432,6 +435,8 @@ pub struct Device {
     pub config_end: Option<Regex>,
     /// A command printing more lines than a job's terminal has rows.
     pub paging_command: Option<String>,
+    /// The only checks made on this entry; `None`: all of them.
+    pub only: Option<Vec<Check>>,
 }
 
 impl std::fmt::Debug for Device {
@@ -654,7 +659,32 @@ impl Lab {
             let paging_command = device
                 .paging_command
                 .or_else(|| defaults.paging_command.map(str::to_owned));
+            let only = match device.checks {
+                None => None,
+                Some(names) => Some(
+                    names
+                        .iter()
+                        .map(|wanted| {
+                            ALL_CHECKS
+                                .iter()
+                                .copied()
+                                .find(|check| check.name() == wanted)
+                                .ok_or_else(|| {
+                                    format!(
+                                        "device {name}: `checks` names {wanted:?}; the checks are: {}",
+                                        ALL_CHECKS
+                                            .iter()
+                                            .map(|check| check.name())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<Check>, String>>()?,
+                ),
+            };
             devices.push(Device {
+                only,
                 paging_command,
                 definition,
                 enable_secret,
@@ -856,9 +886,31 @@ impl LabRun {
         step: JobStep,
         configs: Option<ConfigStore>,
     ) -> Result<HostResult, String> {
+        let result = self
+            .job_result(manager, device, step, configs, &self.profiles())
+            .await?;
+        match &result.state {
+            HostState::Done => Ok(result),
+            other => Err(format!(
+                "the job ended {other:?}; its output ended: {:?}",
+                tail(&result.output, 600)
+            )),
+        }
+    }
+
+    /// Runs a job of `step` on `device` alone, with the logins of
+    /// `profiles`; how the host ended, whatever its state.
+    async fn job_result(
+        &self,
+        manager: &SessionManager,
+        device: &Device,
+        step: JobStep,
+        configs: Option<ConfigStore>,
+        profiles: &Profiles<'_>,
+    ) -> Result<HostResult, String> {
         let plan = job::plan(
             &self.workspace,
-            &self.profiles(),
+            profiles,
             &JobTarget::Hosts {
                 ids: vec![device.host_id()],
             },
@@ -888,18 +940,33 @@ impl LabRun {
         })
         .await
         .map_err(|_| "the job did not finish".to_owned())??;
-        let result = report
+        report
             .hosts
             .into_iter()
             .next()
-            .ok_or_else(|| "the job ran no host".to_owned())?;
-        match &result.state {
-            HostState::Done => Ok(result),
-            other => Err(format!(
-                "the job ended {other:?}; its output ended: {:?}",
-                tail(&result.output, 600)
-            )),
+            .ok_or_else(|| "the job ran no host".to_owned())
+    }
+
+    /// The suite's logins, with `secret` as `device`'s enable secret.
+    fn store_with_enable_secret(
+        &self,
+        device: &Device,
+        secret: &str,
+    ) -> Result<MemoryStore, String> {
+        let store = MemoryStore::new();
+        let scope = self.workspace.credential_scope();
+        for profile in self.store.list(&scope).map_err(|error| error.0)? {
+            let profile = if profile.name == device.name {
+                CredentialProfile {
+                    enable_secret: Some(secret.into()),
+                    ..profile
+                }
+            } else {
+                profile
+            };
+            store.put(&scope, &profile).map_err(|error| error.0)?;
         }
+        Ok(store)
     }
 
     fn timeout(&self) -> Duration {
@@ -1073,6 +1140,13 @@ impl Check {
     }
 
     pub async fn run(self, run: &LabRun, device: &Device) -> Outcome {
+        if device
+            .only
+            .as_ref()
+            .is_some_and(|only| !only.contains(&self))
+        {
+            return Outcome::NotApplicable("left out by the entry's `checks`".into());
+        }
         match self {
             Check::LoginAndCommand => login_and_command(run, device).await.into(),
             Check::HostKeys => host_keys(run, device).await.into(),
@@ -1126,7 +1200,11 @@ impl Check {
                         (Some(_), None) => {
                             Outcome::NotApplicable("no privilege_check for this device".into())
                         }
-                        (Some(_), Some((_, expect))) => privilege(run, device, expect).await.into(),
+                        (Some(_), Some((_, expect))) => {
+                            privilege(run, device, expect, found.privilege_prompt.as_deref())
+                                .await
+                                .into()
+                        }
                     },
                     _ => second_channel(run, device).await.into(),
                 }
@@ -1238,25 +1316,63 @@ async fn config_backup(run: &LabRun, device: &Device) -> Result<String, String> 
     ))
 }
 
-async fn privilege(run: &LabRun, device: &Device, expect: &Regex) -> Result<String, String> {
+/// An enable secret no device of the lab has.
+const WRONG_ENABLE_SECRET: &str = "netterm-lab-not-the-enable-secret";
+
+/// `question` is the definition's privilege password pattern. An entry
+/// with an enable secret is there to show the question answered: the
+/// device must have asked it, and a job with a wrong secret must fail the
+/// host with the device's refusal (not hang, not carry on unprivileged).
+async fn privilege(
+    run: &LabRun,
+    device: &Device,
+    expect: &Regex,
+    question: Option<&str>,
+) -> Result<String, String> {
     let manager = run.trusting_manager(device).await?;
-    let result = run
-        .run_job(
-            &manager,
-            device,
-            JobStep::Snippet {
-                name: privilege_snippet(device),
-                answers: Default::default(),
-            },
-            None,
-        )
-        .await?;
-    match expect.find(&result.output) {
-        Some(found) => Ok(found.as_str().to_owned()),
-        None => Err(format!(
+    let step = || JobStep::Snippet {
+        name: privilege_snippet(device),
+        answers: Default::default(),
+    };
+    let result = run.run_job(&manager, device, step(), None).await?;
+    let Some(found) = expect.find(&result.output) else {
+        return Err(format!(
             "the job's output does not match {:?}: {:?}",
             expect.as_str(),
             tail(&result.output, 600)
+        ));
+    };
+    let level = found.as_str().to_owned();
+    if device.enable_secret.is_none() {
+        return Ok(level);
+    }
+    let question = question.ok_or("the definition has no privilege password pattern")?;
+    let asked = Regex::new(&format!(r"(?m)^[ \t]*(?:{question})[ \t]*$"))
+        .map_err(|error| format!("the definition's privilege password pattern: {error}"))?;
+    if !asked.is_match(&result.output) {
+        return Err(format!(
+            "the entry has an enable secret, but the privilege command asked for no password \
+             (is the login privileged already?): {:?}",
+            tail(&result.output, 600)
+        ));
+    }
+    let wrong = run.store_with_enable_secret(device, WRONG_ENABLE_SECRET)?;
+    let refused = run
+        .job_result(
+            &manager,
+            device,
+            step(),
+            None,
+            &Profiles::new(&wrong, &run.workspace),
+        )
+        .await?;
+    match &refused.state {
+        HostState::Failed { reason } if reason.contains("refused the enable secret") => Ok(
+            format!("{level}; the device asked for the enable secret; a wrong one was refused"),
+        ),
+        other => Err(format!(
+            "with a wrong enable secret the job ended {other:?}, not refused; its output ended: {:?}",
+            tail(&refused.output, 600)
         )),
     }
 }

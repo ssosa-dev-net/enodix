@@ -258,9 +258,31 @@ fn the_example_lab_file_parses_with_the_passwords_in_the_environment() {
             ("frr1-vtysh", "frr secret"),
             ("csr1", "csr secret"),
             ("cjunos1", "junos secret"),
+            ("ceos1-enable", "labuser"),
+            ("csr1-enable", "labuser"),
         ]
         .map(|(name, password)| (name, Some(password)))
     );
+    // The two second logins are there for the job checks only, with the
+    // enable secret their device asks for.
+    for device in &lab.devices[6..] {
+        assert_eq!(device.username, "labuser");
+        assert_eq!(device.enable_secret.as_deref(), Some("netterm-enable"));
+        assert_eq!(
+            device.only.as_deref(),
+            Some(
+                &[
+                    Check::Privilege,
+                    Check::Paging,
+                    Check::ConfigBackup,
+                    Check::SecondChannel
+                ][..]
+            )
+        );
+    }
+    assert!(lab.devices[..6]
+        .iter()
+        .all(|d| d.only.is_none() && d.enable_secret.is_none()));
     // Each device is checked against its built-in platform definition,
     // except FRR's root (a shell).
     let definitions: Vec<Option<&str>> = lab
@@ -276,7 +298,9 @@ fn the_example_lab_file_parses_with_the_passwords_in_the_environment() {
             None,
             Some("frr"),
             Some("ios"),
-            Some("junos")
+            Some("junos"),
+            Some("eos"),
+            Some("ios")
         ]
     );
     // The server logs in with this computer's SSH agent.
@@ -726,6 +750,76 @@ async fn a_device_refusing_a_second_channel_is_reported_and_still_backed_up() {
     let outcome = Check::SecondChannel.run(&run, &run.lab.devices[0]).await;
     assert!(
         matches!(&outcome, Outcome::Passed(note) if note.contains("REFUSED")),
+        "{outcome:?}"
+    );
+}
+
+/// An entry with an enable secret is there to show the question answered:
+/// the check says the device asked, and that a wrong secret fails the host.
+#[tokio::test]
+async fn the_privilege_check_shows_the_enable_secret_asked_for_and_a_wrong_one_refused() {
+    let device = TestSshServer::start_unprivileged_device("r1").await;
+    let run = LabRun::new(device_lab(device.port())).unwrap();
+    let outcome = Check::Privilege.run(&run, &run.lab.devices[0]).await;
+    assert!(
+        matches!(&outcome, Outcome::Passed(note)
+            if note.contains("asked for the enable secret")
+                && note.contains("a wrong one was refused")),
+        "{outcome:?}"
+    );
+}
+
+/// A login that is privileged already is never asked, so an enable secret
+/// in its entry would prove nothing: the check fails rather than pass.
+#[tokio::test]
+async fn an_enable_secret_the_device_never_asks_for_fails_the_privilege_check() {
+    let device = TestSshServer::start_device("r1").await;
+    let run = LabRun::new(device_lab(device.port())).unwrap();
+    let outcome = Check::Privilege.run(&run, &run.lab.devices[0]).await;
+    assert!(
+        matches!(&outcome, Outcome::Failed(why) if why.contains("asked for no password")),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn an_entry_can_name_the_checks_made_on_it() {
+    let text = "devices:\n  - name: r1\n    platform: ceos\n    address: 192.0.2.1\n    password: p\n    checks: [privileged mode, config backup]\n";
+    let lab = Lab::parse(text, &env_with(&[])).unwrap();
+    assert_eq!(
+        lab.devices[0].only.as_deref(),
+        Some(&[Check::Privilege, Check::ConfigBackup][..])
+    );
+    let all = Lab::parse(
+        &text.replace("    checks: [privileged mode, config backup]\n", ""),
+        &env_with(&[]),
+    )
+    .unwrap();
+    assert_eq!(all.devices[0].only, None);
+    // A name the suite does not know is refused, with the names it does.
+    let error = Lab::parse(
+        &text.replace("config backup", "config backups"),
+        &env_with(&[]),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("\"config backups\"") && error.contains("paging off"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn checks_an_entry_does_not_name_are_not_made_on_it() {
+    let device = TestSshServer::start_unprivileged_device("r1").await;
+    let mut lab = device_lab(device.port());
+    lab.devices[0].only = Some(vec![Check::Privilege]);
+    let run = LabRun::new(lab).unwrap();
+    let results = lab::run_checks(&run, ALL_CHECKS).await;
+    assert!(results.failures.is_empty(), "{:#?}", results.failures);
+    assert_eq!(results.checked, 1);
+    let outcome = Check::Files.run(&run, &run.lab.devices[0]).await;
+    assert!(
+        matches!(&outcome, Outcome::NotApplicable(why) if why.contains("`checks`")),
         "{outcome:?}"
     );
 }
