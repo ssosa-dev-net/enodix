@@ -8,7 +8,11 @@
 //! then, without overwrite, look whether the file is there: the same size
 //! is [`HostState::AlreadyThere`], another size fails, and a device that
 //! cannot tell (SCP) fails asking for overwrite. Then the file is sent,
-//! its progress reported as [`JobEvent::Progress`]. Cancel stops the run:
+//! its progress reported as [`JobEvent::Progress`]. Every host gets the
+//! file pre-flight read (#137): its hashes are read once at the start, a
+//! host whose file changed (size or modification time) since pre-flight is
+//! sent nothing, and one whose sent bytes hash otherwise fails, what was
+//! sent left on the device. Cancel stops the run:
 //! hosts not started end cancelled, a running transfer is cancelled through
 //! the engine, which deals with its partial file.
 
@@ -22,7 +26,8 @@ use super::{
     PROGRESS_EVERY,
 };
 use crate::files::{
-    hash_file, FileConnection, Files, Link, Outcome, Partial, Presence, Status, Transfer, Transfers,
+    hash_file, Done, FileConnection, Files, Hashes, Link, Outcome, Partial, Presence, Status,
+    Transfer, Transfers,
 };
 use crate::known_hosts::KnownHosts;
 use crate::workspace::HostId;
@@ -47,8 +52,16 @@ pub(super) fn spawn(
             state: HostState::Waiting,
         });
     }
-    let path = file.path.clone();
-    let hashing = tokio::task::spawn_blocking(move || hash_file(&path));
+    // The planned file's hashes, read once at the start: what every host
+    // must get (#137). Each host waits for them once its file is sent.
+    let (planned, reference) = watch::channel(None);
+    let hashed = file.clone();
+    tokio::spawn(async move {
+        let hashes = tokio::task::spawn_blocking(move || planned_hashes(&hashed))
+            .await
+            .unwrap_or_else(|error| Err(Reference::Unreadable(error.to_string())));
+        planned.send_replace(Some(Arc::new(hashes)));
+    });
     let room = Arc::new(Semaphore::new(parallel));
     let transfers = Transfers::new();
     let tasks: Vec<_> = plan
@@ -62,6 +75,7 @@ pub(super) fn spawn(
                 transfers: transfers.clone(),
                 known_hosts: known_hosts.clone(),
                 file: file.clone(),
+                reference: reference.clone(),
                 overwrite,
                 output: String::new(),
             };
@@ -100,7 +114,10 @@ pub(super) fn spawn(
         let hashes = if *cancel.borrow() {
             None
         } else {
-            hashing.await.ok().and_then(Result::ok)
+            match planned_reference(reference).await.as_deref() {
+                Some(Ok(hashes)) => Some(hashes.clone()),
+                _ => None,
+            }
         };
         let file = SentFile {
             name: file.name,
@@ -112,6 +129,67 @@ pub(super) fn spawn(
             file: Some(file),
         }));
     });
+}
+
+/// Why the planned file's hashes are not known.
+#[derive(Debug)]
+enum Reference {
+    /// It is no longer the file pre-flight read: why.
+    Changed(String),
+    /// It could not be read.
+    Unreadable(String),
+}
+
+/// The planned file's hashes, if it is still the file pre-flight read
+/// before and after they are read (blocking).
+fn planned_hashes(file: &PlannedFile) -> Result<Hashes, Reference> {
+    let unchanged = || match std::fs::metadata(&file.path) {
+        Ok(metadata) => match differs(file, &metadata) {
+            None => Ok(()),
+            Some(how) => Err(Reference::Changed(how)),
+        },
+        Err(error) => Err(Reference::Unreadable(error.to_string())),
+    };
+    unchanged()?;
+    let hashes = hash_file(&file.path).map_err(|error| Reference::Unreadable(error.to_string()))?;
+    unchanged()?;
+    Ok(hashes)
+}
+
+/// How the local file, as `metadata` describes it, differs from the one
+/// pre-flight read (its size or its modification time); `None` if it
+/// does not.
+fn differs(file: &PlannedFile, metadata: &std::fs::Metadata) -> Option<String> {
+    let size = metadata.len();
+    if size != file.size {
+        return Some(format!(
+            "it was {} bytes at pre-flight and is {size} bytes now",
+            file.size
+        ));
+    }
+    let modified = metadata.modified().ok();
+    if modified.is_some() && file.modified.is_some() && modified != file.modified {
+        return Some("it was written to since pre-flight (its modification time changed)".into());
+    }
+    None
+}
+
+/// The words for a host's file not sent because the file changed.
+fn changed_before(how: &str) -> String {
+    format!(
+        "the file changed since pre-flight ({how}): nothing was sent; plan the job again to send the file as it is now"
+    )
+}
+
+/// The planned file's hashes, or why there are none, once read.
+async fn planned_reference(
+    mut reference: watch::Receiver<Option<Arc<Result<Hashes, Reference>>>>,
+) -> Option<Arc<Result<Hashes, Reference>>> {
+    reference
+        .wait_for(Option::is_some)
+        .await
+        .ok()
+        .and_then(|read| read.clone())
 }
 
 /// Resolves once the job is cancelled (never, if its handle is gone).
@@ -128,6 +206,8 @@ struct Sender {
     transfers: Transfers,
     known_hosts: KnownHosts,
     file: PlannedFile,
+    /// The planned file's hashes, once read at the start.
+    reference: watch::Receiver<Option<Arc<Result<Hashes, Reference>>>>,
     overwrite: bool,
     /// What happened, for the user: the host's output.
     output: String,
@@ -243,6 +323,15 @@ impl Sender {
         cancel: &mut watch::Receiver<bool>,
     ) -> (HostState, Option<u64>) {
         let remote = remote(host);
+        // A file gone is the engine's to say (it names the file).
+        if let Ok(metadata) = tokio::fs::metadata(&self.file.path).await {
+            if let Some(how) = differs(&self.file, &metadata) {
+                if let Some(connection) = ready.connection {
+                    connection.close().await;
+                }
+                return (failed(changed_before(&how)), None);
+            }
+        }
         self.state(HostState::Running);
         self.line(&format!("Sending {} to {remote}.", self.file.name));
         let key = host.id.as_str();
@@ -295,7 +384,10 @@ impl Sender {
                     "Sent {} bytes to {remote}; {}.",
                     done.bytes, done.size
                 ));
-                (HostState::Done, Some(done.bytes))
+                match self.checked(&done, cancel).await {
+                    None => (HostState::Done, Some(done.bytes)),
+                    Some(reason) => (failed(reason), None),
+                }
             }
             Outcome::Failed { error, partial } => {
                 let reason = match partial {
@@ -308,6 +400,38 @@ impl Sender {
                 self.line(&format!("Cancelled: {partial}."));
                 (HostState::Cancelled, None)
             }
+        }
+    }
+
+    /// Whether what was sent is the file pre-flight read, by its hashes:
+    /// `None` if it is, or if that cannot be told (said in the output);
+    /// else why the host fails. What was sent stays on the device.
+    async fn checked(&mut self, done: &Done, cancel: &mut watch::Receiver<bool>) -> Option<String> {
+        let reference = tokio::select! {
+            reference = planned_reference(self.reference.clone()) => reference,
+            () = cancelled(cancel) => {
+                self.line("Not checked against the file pre-flight read: the job was cancelled first.");
+                return None;
+            }
+        };
+        match reference.as_deref() {
+            Some(Ok(planned)) => match &done.hashes {
+                Some(sent) if sent != planned => Some(format!(
+                    "the file changed while it was sent: the device got another file than the one pre-flight read (SHA-256 {} sent, {} planned); what was sent was left on the device",
+                    sent.sha256, planned.sha256
+                )),
+                _ => None,
+            },
+            Some(Err(Reference::Changed(how))) => Some(format!(
+                "the file changed during the run ({how}), so what was sent may not be the file pre-flight read; it was left on the device"
+            )),
+            Some(Err(Reference::Unreadable(error))) => {
+                self.line(&format!(
+                    "Not checked against the file pre-flight read: it could not be read again ({error})."
+                ));
+                None
+            }
+            None => None,
         }
     }
 

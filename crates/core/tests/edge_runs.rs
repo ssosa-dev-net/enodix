@@ -8,7 +8,9 @@ mod support;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use netterm_core::job::results::{OutputRef, ResultsError, RunStore, RUN_FILE, SAVE_EVERY};
+use netterm_core::job::results::{
+    OutputRef, ResultsError, RunList, RunStore, StoredRun, RUN_FILE, SAVE_EVERY,
+};
 use netterm_core::job::{HostResult, HostState, JobEvent, JobPlan, JobReport};
 use netterm_core::workspace::HostId;
 use support::jobs::{folder, host_at, snippet, Lab};
@@ -275,8 +277,17 @@ fn a_running_runs_description_is_written_now_and_then_and_at_the_end() {
     assert!(store.running(&ws).is_empty());
 }
 
-/// `runs` kept runs of a workspace of ten hosts, listed: the time it takes.
-fn list_many(runs: usize) -> Duration {
+/// How long `runs` kept runs of a workspace of ten hosts take to list,
+/// and to list again.
+struct Listing {
+    first: Duration,
+    again: Duration,
+    /// To read every description whole, one after the other, as each list
+    /// did before #137.
+    reading: Duration,
+}
+
+fn list_many(runs: usize) -> Listing {
     let lab = lab(10);
     let plan = lab.plan(&folder(""), &snippet("Show"));
     let store = RunStore::new(lab.folder("data/jobs"));
@@ -297,24 +308,132 @@ fn list_many(runs: usize) -> Duration {
     let took = listing.elapsed();
     assert_eq!(listed.runs.len(), runs);
     assert!(listed.damaged.is_empty());
-    println!("{runs} kept runs of 10 hosts: made in {made:?}, listed in {took:?}");
-    took
+    let listing = Instant::now();
+    let again = store.list(&ws).unwrap();
+    let took_again = listing.elapsed();
+    assert_eq!(again, listed);
+    let reading = Instant::now();
+    for entry in fs::read_dir(store.root().join(&ws)).unwrap() {
+        let text = fs::read_to_string(entry.unwrap().path().join(RUN_FILE)).unwrap();
+        let run: StoredRun = serde_norway::from_str(&text).unwrap();
+        assert_eq!(run.hosts.len(), 10);
+    }
+    let reading = reading.elapsed();
+    println!(
+        "{runs} kept runs of 10 hosts: made in {made:?}, listed in {took:?}, again in {took_again:?}; read one by one in {reading:?}"
+    );
+    Listing {
+        first: took,
+        again: took_again,
+        reading,
+    }
 }
 
 /// Two hundred kept runs list in well under a second's worth per hundred.
-/// Listing reads every description whole, so the time grows with the runs:
-/// 1 000 took 1.2 s and 5 000 took 9.6 s in a debug build on 2026-11-21
-/// (the ignored test below), which the Jobs view waits for each time it
-/// lists (a finding of #119, left for a ticket).
 #[test]
 fn two_hundred_kept_runs_list_quickly() {
-    let took = list_many(200);
+    let took = list_many(200).first;
     assert!(took < Duration::from_secs(5), "{took:?}");
+}
+
+/// Listing again reads only the descriptions that changed (#137; every
+/// list used to read every description whole, which the Jobs view waits
+/// for each time a job starts or ends): a second list of 2 000 runs takes
+/// well under half of reading every description, measured beside it.
+#[test]
+fn listing_many_kept_runs_again_is_quick() {
+    let Listing {
+        first,
+        again,
+        reading,
+    } = list_many(2000);
+    assert!(
+        again < reading / 2,
+        "first {first:?}, again {again:?}, reading {reading:?}"
+    );
+}
+
+/// What a store lists after its runs were listed once and then changed on
+/// disk: a run rewritten (ended, a host's state changed), one added, one
+/// deleted, one damaged, one repaired, through the store and behind its
+/// back; another store on the same folder sees the same.
+#[test]
+fn a_second_listing_sees_every_change_since_the_first() {
+    let lab = lab(2);
+    let plan = lab.plan(&folder(""), &snippet("Show"));
+    let store = RunStore::new(lab.folder("data/jobs"));
+    let ws = lab.id();
+    let ended = keep(&store, &ws, &plan, "r1#\n");
+    let gone = keep(&store, &ws, &plan, "r1#\n");
+    let broken = keep(&store, &ws, &plan, "r1#\n");
+    let mut running = store.begin(&ws, &folder(""), &plan).unwrap();
+    let running_id = running.id().to_string();
+    let first = store.list(&ws).unwrap();
+    assert_eq!(first.runs.len(), 4);
+    assert!(first.damaged.is_empty());
+    let listed = |list: &RunList, id: &str| list.runs.iter().find(|run| run.id == id).cloned();
+    assert!(!listed(&first, &running_id).unwrap().ended());
+
+    // Through the store: the running run gets a state and its end.
+    running
+        .record(&JobEvent::State {
+            host: plan.hosts[0].id.clone(),
+            state: HostState::Running,
+        })
+        .unwrap();
+    running.flush().unwrap();
+    let second = store.list(&ws).unwrap();
+    assert_eq!(
+        listed(&second, &running_id).unwrap().hosts[0].state,
+        HostState::Running
+    );
+    running
+        .record(&JobEvent::Finished(report(&plan, "r1#\n")))
+        .unwrap();
+    drop(running);
+
+    // Behind its back: one deleted, one damaged, one rewritten by hand
+    // to the same size, one added.
+    let root = store.root().join(&ws);
+    fs::remove_dir_all(root.join(&gone)).unwrap();
+    fs::write(root.join(&broken).join(RUN_FILE), "hosts: [").unwrap();
+    let text = fs::read_to_string(root.join(&ended).join(RUN_FILE)).unwrap();
+    let renamed = text.replacen("name: r0", "name: q0", 1);
+    assert_ne!(text, renamed);
+    assert_eq!(text.len(), renamed.len());
+    fs::write(root.join(&ended).join(RUN_FILE), &renamed).unwrap();
+    let added = "2001-01-01_00-00-00";
+    fs::create_dir_all(root.join(added)).unwrap();
+    fs::write(root.join(added).join(RUN_FILE), &text).unwrap();
+
+    for store in [store.clone(), RunStore::new(store.root())] {
+        let third = store.list(&ws).unwrap();
+        assert!(listed(&third, &running_id).unwrap().ended());
+        assert!(listed(&third, &gone).is_none());
+        assert!(listed(&third, &broken).is_none());
+        assert_eq!(
+            third
+                .damaged
+                .iter()
+                .map(|d| d.id.as_str())
+                .collect::<Vec<_>>(),
+            [broken.as_str()]
+        );
+        assert_eq!(listed(&third, &ended).unwrap().hosts[0].name, "q0");
+        assert_eq!(listed(&third, added).unwrap().id, added);
+        assert_eq!(third.runs.len(), 3);
+    }
+
+    // Repaired: listed again.
+    fs::write(root.join(&broken).join(RUN_FILE), &text).unwrap();
+    let fourth = store.list(&ws).unwrap();
+    assert!(fourth.damaged.is_empty());
+    assert!(listed(&fourth, &broken).is_some());
 }
 
 #[test]
 #[ignore = "heavy: 5 000 run folders written to disk (a minute); `cargo test -p netterm-core --test edge_runs -- --ignored --nocapture`"]
 fn five_thousand_kept_runs_list() {
-    let took = list_many(5000);
+    let took = list_many(5000).first;
     assert!(took < Duration::from_secs(30), "{took:?}");
 }

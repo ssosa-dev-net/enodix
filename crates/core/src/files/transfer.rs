@@ -52,6 +52,13 @@ const BUFFER_SIZE: usize = 256 * 1024;
 /// learn why.
 const LOST_REASON_WAIT: Duration = Duration::from_secs(1);
 
+/// How long a cancelled SFTP upload waits for the device to remove its
+/// partial file (#137). A device that stopped answering would otherwise
+/// hold a cancel for the stall limit (45 s by default), longer than the
+/// app waits for its jobs when it closes; the outcome then says a partial
+/// file may remain.
+pub const CANCEL_REMOVE_WAIT: Duration = Duration::from_secs(2);
+
 /// One transfer, as [`Transfers::add`] numbers it.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -170,6 +177,13 @@ pub enum Partial {
     /// SCP cannot remove a file; some devices (IOS) remove it themselves.
     #[error("a partial file may remain on the device (SCP cannot remove it)")]
     MayRemainOnDevice,
+    /// A cancelled upload's remove went unanswered for
+    /// [`CANCEL_REMOVE_WAIT`]: the device may still do it, or not.
+    #[error(
+        "a partial file may remain on the device: it did not answer the request to remove it within {} s",
+        .after.as_secs()
+    )]
+    RemoveUnanswered { after: Duration },
     #[error("the partial local file was removed")]
     RemovedLocally,
     #[error("a partial local file remains; it could not be removed ({reason})")]
@@ -797,6 +811,17 @@ async fn remove_remote(sftp: &Sftp, remote: &str) -> Partial {
     }
 }
 
+/// A cancelled SFTP upload: its partial file removed, waiting for the
+/// device at most [`CANCEL_REMOVE_WAIT`].
+async fn cancelled_upload(sftp: &Sftp, remote: &str) -> Outcome {
+    let removing = tokio::time::timeout(CANCEL_REMOVE_WAIT, remove_remote(sftp, remote));
+    Outcome::Cancelled {
+        partial: removing.await.unwrap_or(Partial::RemoveUnanswered {
+            after: CANCEL_REMOVE_WAIT,
+        }),
+    }
+}
+
 /// Removes a failed download's partial local file.
 async fn remove_local(local: &Path) -> Partial {
     match tokio::fs::remove_file(local).await {
@@ -871,15 +896,11 @@ async fn sftp_upload(
     };
     let copied = tokio::select! {
         biased;
-        () = cancelled(cancel) => None,
+        () = cancelled(cancel.clone()) => None,
         copied = while_connected(sftp, copying) => Some(copied),
     };
     let sent = match copied {
-        None => {
-            return Outcome::Cancelled {
-                partial: remove_remote(sftp, remote).await,
-            }
-        }
+        None => return cancelled_upload(sftp, remote).await,
         Some(Err(error)) => {
             return Outcome::Failed {
                 error,
@@ -893,9 +914,15 @@ async fn sftp_upload(
             .await
             .map_err(|error| device_error(sftp, error))
     };
-    let size = match while_connected(sftp, stat).await {
-        Ok(entry) => entry.size,
-        Err(error) => {
+    let stat = tokio::select! {
+        biased;
+        () = cancelled(cancel) => None,
+        stat = while_connected(sftp, stat) => Some(stat),
+    };
+    let size = match stat {
+        None => return cancelled_upload(sftp, remote).await,
+        Some(Ok(entry)) => entry.size,
+        Some(Err(error)) => {
             return Outcome::Failed {
                 error,
                 partial: remove_remote(sftp, remote).await,
