@@ -21,8 +21,8 @@ use netterm_core::session::{SessionManager, SessionState, SessionTarget, Termina
 use netterm_core::workspace::HostId;
 use support::jobs::{closes, folder, follow, host, host_at, profile, run, snippet, Lab};
 use support::{
-    next_state, output_ending_with, SilentServer, TestSshServer, ENABLE_SECRET, OTP_USERNAME,
-    PASSWORD, STALLING_USERNAME, USERNAME, WAIT,
+    next_state, output_ending_with, SilentServer, TestSshServer, ENABLE_SECRET, HALT_REST,
+    OTP_USERNAME, PASSWORD, STALLING_USERNAME, USERNAME, WAIT,
 };
 
 /// Short timeouts, so that every way of failing ends quickly.
@@ -620,11 +620,10 @@ async fn slow_consoles_are_waited_for() {
 
 /// A device that pauses half way through a line that ends like a prompt
 /// (`total#`), longer than the prompt must stay quiet to count, then goes
-/// on. The job takes the pause for the prompt and types the next line
-/// while the device is still answering: a known limit of prompt detection
-/// by pattern and quiet (see the report of #119).
+/// on. Found by #119: the job took the pause for the prompt, typed the next
+/// line into the answer and closed the session after it. Since #136 only
+/// the prompt the line was typed at (`r1#`) ends it quickly.
 #[tokio::test]
-#[ignore = "#119 finding: a pause after text that looks like the prompt ends the command early (ticket to be written)"]
 async fn a_pause_after_text_like_the_prompt_does_not_end_the_command() {
     let device = TestSshServer::start_device("r1").await;
     let lab = Lab::new(&[
@@ -646,6 +645,253 @@ async fn a_pause_after_text_like_the_prompt_does_not_end_the_command() {
         r1.output.contains("total#42 routes\nr1# echo after\n"),
         "{}",
         r1.output
+    );
+}
+
+/// A table line that ends like a prompt (a description ending in `#`) and
+/// a pause there, in a snippet: the answer is read whole before the next
+/// line is typed (#136).
+#[tokio::test]
+async fn a_table_line_ending_like_the_prompt_and_a_pause_do_not_end_the_command() {
+    let device = TestSshServer::start_device("r1").await;
+    let lab = Lab::new(&[
+        (
+            "_snippets.yaml",
+            "Table: \"halt 1500 Gi1 up up uplink to core-2#\\necho after\"\n".into(),
+        ),
+        ("r1.yaml", host(&device, "frr", "")),
+    ]);
+    let plan = lab.plan(&folder(""), &snippet("Table"));
+    let options = JobOptions {
+        command_timeout: Duration::from_secs(5),
+        ..JobOptions::default()
+    };
+    let ran = run(&support::manager(), plan, options, WAIT * 3).await;
+    let r1 = ran.result("r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    assert_eq!(
+        r1.output,
+        format!(
+            "r1# terminal length 0\nr1# halt 1500 Gi1 up up uplink to core-2#\nGi1 up up uplink to core-2#\n{HALT_REST}\nr1# echo after\nafter\nr1#\n"
+        )
+    );
+}
+
+/// When the first output event holding `first` came, and the time from it
+/// to the first holding `then` (after it).
+fn gap(ran: &support::jobs::Ran, first: &str, then: &str) -> Duration {
+    let at = |text: &str, from: usize| {
+        ran.events
+            .iter()
+            .zip(&ran.times)
+            .enumerate()
+            .skip(from)
+            .find_map(|(index, (event, time))| match event {
+                JobEvent::Output { text: shown, .. } if shown.contains(text) => {
+                    Some((index, *time))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no output holds {text:?}"))
+    };
+    let (index, before) = at(first, 0);
+    let (_, after) = at(then, index + 1);
+    after - before
+}
+
+/// A prompt changed on purpose (configuration mode entered and left, the
+/// name changed by the snippet) counts once it has been quiet for longer
+/// than a prompt that stayed the same (#136); one changed by a command a
+/// job does not know to change it counts later still, but still ends it.
+#[tokio::test]
+async fn a_changed_prompt_counts_only_after_a_longer_settle() {
+    let device = TestSshServer::start_device("r1").await;
+    let lab = Lab::new(&[
+        (
+            "_snippets.yaml",
+            "Modes: \"prompt r1(config)\\necho in config\\nprompt core-2\\necho renamed\\nprompt\\necho back\\nrename edge-9\\necho unknown\"\n".into(),
+        ),
+        ("r1.yaml", host(&device, "frr", "")),
+    ]);
+    let plan = lab.plan(&folder(""), &snippet("Modes"));
+    let options = JobOptions {
+        command_timeout: Duration::from_secs(10),
+        ..JobOptions::default()
+    };
+    let ran = run(&support::manager(), plan, options, WAIT * 4).await;
+    let r1 = ran.result("r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    assert_eq!(
+        r1.output,
+        "r1# terminal length 0\nr1# prompt r1(config)\nr1(config)# echo in config\nin config\nr1(config)# prompt core-2\ncore-2# echo renamed\nrenamed\ncore-2# prompt\nr1# echo back\nback\nr1# rename edge-9\nedge-9# echo unknown\nunknown\nedge-9#\n"
+    );
+    for (typed, next, settle) in [
+        (
+            "prompt r1(config)",
+            "echo in config",
+            job::PROMPT_CHANGE_SETTLE,
+        ),
+        ("prompt core-2", "echo renamed", job::PROMPT_CHANGE_SETTLE),
+        ("core-2# prompt\n", "echo back", job::PROMPT_CHANGE_SETTLE),
+        ("rename edge-9", "echo unknown", job::PROMPT_DOUBT_SETTLE),
+    ] {
+        let waited = gap(&ran, typed, next);
+        assert!(waited >= settle, "{typed:?}: {next:?} after {waited:?}");
+    }
+}
+
+/// The privilege command changes the prompt (`r1>` to `r1#`): the new one
+/// counts after the longer settle too (#136).
+#[tokio::test]
+async fn the_privileged_prompt_counts_after_the_longer_settle() {
+    let device = TestSshServer::start_unprivileged_device("r1").await;
+    let lab = Lab::new(&[
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+        (
+            "r1.yaml",
+            host(&device, "eos", "credential_profile: enable\n"),
+        ),
+    ]);
+    lab.put(CredentialProfile {
+        enable_secret: Some(ENABLE_SECRET.into()),
+        ..profile("enable", USERNAME)
+    });
+    let plan = lab.plan(&folder(""), &snippet("Show"));
+    let ran = run(&support::manager(), plan, JobOptions::default(), WAIT * 3).await;
+    let r1 = ran.result("r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    assert_eq!(
+        r1.output,
+        "r1> enable\nPassword:\nr1# terminal length 0\nr1# show hostname\nr1\nr1#\n"
+    );
+    let waited = gap(&ran, "Password:", "terminal length 0");
+    assert!(waited >= job::PROMPT_CHANGE_SETTLE, "{waited:?}");
+}
+
+/// A two-line prompt (SR Linux's: `--{ running }--[  ]--`, then
+/// `A:srl1#`) is the same prompt again after each line, and a pause after a
+/// line ending like a prompt of that platform does not end the command
+/// (#136).
+#[tokio::test]
+async fn a_two_line_prompt_is_followed_and_a_pause_in_an_answer_is_not_taken_for_it() {
+    let device = TestSshServer::start_device("A:srl1").await;
+    device.set_prompt_banner("--{ running }--[  ]--");
+    let lab = Lab::new(&[
+        (
+            "_snippets.yaml",
+            "Show: \"show hostname\\nhalt 1500 B:leaf2#\\necho after\"\n".into(),
+        ),
+        ("srl1.yaml", host(&device, "srlinux", "")),
+    ]);
+    let plan = lab.plan(&folder(""), &snippet("Show"));
+    let options = JobOptions {
+        command_timeout: Duration::from_secs(5),
+        ..JobOptions::default()
+    };
+    let ran = run(&support::manager(), plan, options, WAIT * 3).await;
+    let srl1 = ran.result("srl1.yaml");
+    assert_eq!(srl1.state, HostState::Done, "{}", srl1.output);
+    let prompt = "\n--{ running }--[  ]--\nA:srl1#";
+    assert_eq!(
+        srl1.output,
+        format!(
+            "{prompt} show hostname\nA:srl1\n{prompt} halt 1500 B:leaf2#\nB:leaf2#\n{HALT_REST}\n{prompt} echo after\nafter\n{prompt}\n"
+        )
+    );
+}
+
+/// A login banner whose last line ends like a prompt, with a pause before
+/// the device's real prompt, is not taken for the prompt: the first line
+/// is typed at the real one (#136).
+#[tokio::test]
+async fn a_login_banner_ending_like_a_prompt_is_not_taken_for_it() {
+    let device = TestSshServer::start_device("r1").await;
+    device.set_shell_start(vec![
+        (
+            Duration::ZERO,
+            b"Authorized users only. Report misuse to noc@core-1#".to_vec(),
+        ),
+        (
+            Duration::from_millis(600),
+            [b"\r\n".as_slice(), &device.prompt()].concat(),
+        ),
+    ]);
+    let lab = Lab::new(&[
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+        ("r1.yaml", host(&device, "frr", "")),
+    ]);
+    let plan = lab.plan(&folder(""), &snippet("Show"));
+    let ran = run(&support::manager(), plan, JobOptions::default(), WAIT * 3).await;
+    let r1 = ran.result("r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    assert_eq!(
+        r1.output,
+        "Authorized users only. Report misuse to noc@core-1#\nr1# terminal length 0\nr1# show hostname\nr1\nr1#\n"
+    );
+}
+
+/// A banner line that is all prompt-like (`core-1#`), with a pause before
+/// the real prompt, is taken for the first prompt (it matches the pattern
+/// whole, as a prompt does): the first line is typed early. That costs
+/// time, never output: the device answers it at its real prompt, which the
+/// job then waits for as a changed one, and every line is answered whole.
+#[tokio::test]
+async fn a_banner_taken_for_the_first_prompt_costs_time_not_output() {
+    let device = TestSshServer::start_device("r1").await;
+    device.set_shell_start(vec![
+        (Duration::ZERO, b"Welcome\r\ncore-1#".to_vec()),
+        (
+            Duration::from_millis(600),
+            [b"\r\n".as_slice(), &device.prompt()].concat(),
+        ),
+    ]);
+    let lab = Lab::new(&[
+        (
+            "_snippets.yaml",
+            "Show: \"show hostname\\necho after\"\n".into(),
+        ),
+        ("r1.yaml", host(&device, "frr", "")),
+    ]);
+    let plan = lab.plan(&folder(""), &snippet("Show"));
+    let ran = run(&support::manager(), plan, JobOptions::default(), WAIT * 3).await;
+    let r1 = ran.result("r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    for answered in [
+        "terminal length 0\n",
+        "r1# show hostname\nr1\nr1# echo after\nafter\nr1#\n",
+    ] {
+        assert!(r1.output.contains(answered), "{}", r1.output);
+    }
+}
+
+/// A device that shows its prompt, then a log message, then its prompt
+/// again (after a line, and after logging in): the prompt shown again is
+/// the same line, and the next line is typed after it (#136).
+#[tokio::test]
+async fn a_log_message_between_two_prompts_is_kept_and_waited_for() {
+    let device = TestSshServer::start_device("r1").await;
+    let log = "%LINK-3-UPDOWN: Interface Gi1, changed state to up";
+    device.set_shell_start(vec![
+        (Duration::ZERO, device.prompt()),
+        (
+            Duration::from_millis(100),
+            [format!("\r\n{log}\r\n").as_bytes(), &device.prompt()].concat(),
+        ),
+    ]);
+    let lab = Lab::new(&[
+        (
+            "_snippets.yaml",
+            format!("Log: \"log 100 {log}\\necho after\"\n"),
+        ),
+        ("r1.yaml", host(&device, "frr", "")),
+    ]);
+    let plan = lab.plan(&folder(""), &snippet("Log"));
+    let ran = run(&support::manager(), plan, JobOptions::default(), WAIT * 3).await;
+    let r1 = ran.result("r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    assert_eq!(
+        r1.output,
+        format!("r1#\n{log}\nr1# terminal length 0\nr1# log 100 {log}\nr1#\n{log}\nr1# echo after\nafter\nr1#\n")
     );
 }
 

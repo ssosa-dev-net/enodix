@@ -46,6 +46,9 @@
 //! | `hang`                | never answers (Ctrl+C gives the prompt back)    |
 //! | `pause <ms>`          | prints the prompt after `<ms>` milliseconds     |
 //! | `drip <n> <ms>`       | prints `line 1` to `line <n>`, one every `<ms>` milliseconds, then the prompt |
+//! | `halt <ms> <text>`    | prints `<text>`, nothing for `<ms>`, then the line break, [`HALT_REST`] and the prompt |
+//! | `log <ms> <text>`     | the prompt, then after `<ms>` the text on a line of its own and the prompt again |
+//! | `prompt <name>` / `rename <name>` | the prompt shows `<name>` from now on (no name: the hostname) |
 //! | `show running-config` | prints [`device_config`]: two `! ` header lines (the second a [`CONFIG_TIME`] line that changes every time), `hostname <hostname>`, the lines `configure` added, `end`; unprivileged, [`INVALID_INPUT`] (as IOS) |
 //! | `configure <line>`    | adds `<line>` to the configuration (shared by every connection to the server; also [`TestSshServer::configure`]) |
 //!
@@ -55,7 +58,10 @@
 //! [`TestSshServer::set_enable`]'s ([`EnableMode`]: asking for the secret,
 //! or as IOS with no enable password, or with a notice);
 //! [`TestSshServer::set_config_pace`] shows the configuration a line at a
-//! time; [`TestSshServer::ask_password_at_login`] makes every shell ask
+//! time, [`TestSshServer::set_config_stall`] pauses it half way through a
+//! line; [`TestSshServer::set_shell_start`] replaces each shell's first
+//! prompt with pieces sent after pauses (a banner, a log message);
+//! [`TestSshServer::ask_password_at_login`] makes every shell ask
 //! [`LOGIN_QUESTION`] in-band before its first prompt.
 //! [`TestSshServer::connections_open`] and
 //! [`TestSshServer::most_connections_open`] count the connections that
@@ -240,6 +246,9 @@ pub fn device_config(hostname: &str, added: &[String], n: u64) -> String {
     text.push_str("end\n");
     text
 }
+
+/// The line `halt` shows after the line it paused in.
+pub const HALT_REST: &str = "rest of the answer";
 
 /// What Ctrl+C prints before the next prompt.
 pub const INTERRUPTED: &[u8] = b"^C\r\n";
@@ -439,7 +448,15 @@ struct Device {
     /// Whether the enable question echoes what is typed at it (a console
     /// that does: the secret shows).
     echo_secret: Arc<AtomicBool>,
+    /// A configured line after which `show running-config` says nothing
+    /// for a while, before that line's break.
+    config_stall: Arc<Mutex<Option<(String, Duration)>>>,
+    /// What every shell shows in place of its first prompt.
+    shell_start: Arc<Mutex<Option<Pieces>>>,
 }
+
+/// Output in pieces, each sent after its pause.
+type Pieces = Vec<(Duration, Vec<u8>)>;
 
 /// The connections that opened a session channel, while they last.
 #[derive(Default)]
@@ -863,6 +880,24 @@ impl TestSshServer {
         *device.config_pace.lock().unwrap() = Some(pace);
     }
 
+    /// From now on, a device-mode server's `show running-config` says
+    /// nothing for `pause` right after the configured line `line`, before
+    /// its line break (a device building a large configuration, or a slow
+    /// link, half way through a line).
+    pub fn set_config_stall(&self, line: &str, pause: Duration) {
+        let device = self.device.as_ref().expect("a device-mode server");
+        *device.config_stall.lock().unwrap() = Some((line.to_string(), pause));
+    }
+
+    /// From now on, every shell of a device-mode server shows `pieces`, each
+    /// after its pause, in place of its first prompt (a login banner, a log
+    /// message after the prompt): the last piece should end with
+    /// [`Self::prompt`].
+    pub fn set_shell_start(&self, pieces: Pieces) {
+        let device = self.device.as_ref().expect("a device-mode server");
+        *device.shell_start.lock().unwrap() = Some(pieces);
+    }
+
     /// From now on, every shell of a device-mode server asks
     /// [`LOGIN_QUESTION`] in-band before its first prompt (as a device or
     /// console server with a second login), until [`PASSWORD`] is typed.
@@ -1073,6 +1108,8 @@ impl Device {
             login_question: Arc::default(),
             typed_at_login: Arc::default(),
             echo_secret: Arc::default(),
+            config_stall: Arc::default(),
+            shell_start: Arc::default(),
         }
     }
 
@@ -1479,6 +1516,19 @@ impl ScriptedShell {
             Some("show") if device && line.split_whitespace().nth(1) == Some("running-config") => {
                 if let Some(device) = &self.device {
                     let config = device.running_config().replace('\n', "\r\n");
+                    let stall = device.config_stall.lock().unwrap().clone();
+                    let stalled = stall.and_then(|(line, pause)| {
+                        let at = config.find(&format!("\n{line}\r\n"))? + 1 + line.len();
+                        Some((at, pause))
+                    });
+                    if let Some((at, pause)) = stalled {
+                        // Up to the end of that line, then its break and
+                        // the rest after the pause.
+                        let rest = [&config.as_bytes()[at..], &self.prompt(channel)].concat();
+                        session.data(channel, config.as_bytes()[..at].to_vec())?;
+                        drip_lines(channel, session, vec![rest], pause);
+                        return Ok(());
+                    }
                     let pace = *device.config_pace.lock().unwrap();
                     if let Some(pace) = pace {
                         // A line at a time, then the prompt.
@@ -1563,8 +1613,37 @@ impl ScriptedShell {
             }
             // The prompt changes to show `name` (no name: the hostname
             // again), as a device entering or leaving config mode.
-            Some("prompt") if device => {
+            // (`rename` does the same, as a command a job does not know to
+            // change the prompt.)
+            Some("prompt" | "rename") if device => {
                 state.prompt_name = words.next().map(str::to_string);
+            }
+            // Shows `text` (the rest of the line), says nothing for `ms`,
+            // then the line's end, [`HALT_REST`] and the prompt: a table
+            // line that ends like a prompt, and a device that pauses there.
+            Some("halt") if device => {
+                let millis: u64 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                let text = words.collect::<Vec<_>>().join(" ");
+                let prompt = self.prompt(channel);
+                let rest = [format!("\r\n{HALT_REST}\r\n").as_bytes(), &prompt].concat();
+                session.data(channel, text.into_bytes())?;
+                drip_lines(channel, session, vec![rest], Duration::from_millis(millis));
+                return Ok(());
+            }
+            // The prompt, then after `ms` a log message on a line of its
+            // own and the prompt again (as a device logging to the
+            // terminal).
+            Some("log") if device => {
+                let millis: u64 = words.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                let text = words.collect::<Vec<_>>().join(" ");
+                let prompt = self.prompt(channel);
+                let message = [format!("\r\n{text}\r\n").as_bytes(), &prompt].concat();
+                drip_lines(
+                    channel,
+                    session,
+                    vec![message],
+                    Duration::from_millis(millis),
+                );
             }
             // A console that answers a byte at a time, `ms` apart, prompt
             // included.
@@ -1927,6 +2006,22 @@ impl Handler for ScriptedShell {
             self.channels.entry(channel).or_default().waiting =
                 Waiting::Login { typed: Vec::new() };
             return session.data(channel, LOGIN_QUESTION.as_bytes().to_vec());
+        }
+        let start = self
+            .device
+            .as_ref()
+            .and_then(|d| d.shell_start.lock().unwrap().clone());
+        if let Some(pieces) = start {
+            let handle = session.handle();
+            tokio::spawn(async move {
+                for (pause, piece) in pieces {
+                    tokio::time::sleep(pause).await;
+                    if handle.data(channel, piece).await.is_err() {
+                        return;
+                    }
+                }
+            });
+            return Ok(());
         }
         session.data(channel, self.prompt(channel))
     }

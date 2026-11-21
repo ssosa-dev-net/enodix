@@ -48,10 +48,12 @@ config also turns on eAPI over HTTPS (`management api http-commands`,
 fitted in the flow-control window, the large-output check says so, since
 flow control was then not exercised.
 
-A prompt counts once the output ends with it and nothing more arrives for
-300 ms, so output that briefly ends in `#` or `>` is not taken for one.
-Device names may not start with `_` or be `clab-server` (the suite's own
-files).
+In the suite's own terminal checks, a prompt counts once the output ends
+with it and nothing more arrives for 300 ms, so output that briefly ends
+in `#` or `>` is not taken for one. Jobs (the platform checks) are
+stricter since #136: see [How a job finds the end of a
+command](#how-a-job-finds-the-end-of-a-command). Device names may not
+start with `_` or be `clab-server` (the suite's own files).
 
 ## Running it
 
@@ -288,6 +290,51 @@ and `flash:` on physical Catalyst hardware.
 
 Not covered yet: NX-OS (needs an n9kv image), legacy-crypto devices,
 public-key logins to the devices themselves other than through the agent.
+
+## How a job finds the end of a command
+
+Since #136 the end of a command is the device's prompt, not text that
+resembles one. A job remembers the prompt line it typed each line at.
+After the line, that same line again, alone on its line, ends it once
+the device has said nothing more for 300 ms (as before). A prompt that
+changed counts only where a change is expected (the privilege command; a
+line entering or leaving a configuration mode or renaming the device;
+any line typed inside such a mode), and only as a whole line the
+definition's pattern matches, after 1 s of quiet; after any other line
+(a `show` command) a changed prompt needs 3 s, and after the show-config
+command none counts, so a configuration is never kept cut at a line that
+merely looks like a prompt. The first prompt after logging in is a line
+the pattern matches whole, after 300 ms (or, for a pattern that matches
+only the end of its line, after 1 s). Before, any output ending with
+something the pattern matched, followed by 300 ms of quiet, was taken
+for the prompt: a table line ending in `#` and a pause cut the answer.
+
+For whoever writes a platform definition's prompt pattern: write it to
+match the whole prompt line in every mode the device has (`r1>`, `r1#`,
+`r1(config-if)#`, `admin@r1>`), without `^` or `$`; only the line the
+prompt is on counts (the `--{ running }--[  ]--` line above SR Linux's,
+or `[edit]` above Junos's, is not part of it). A pattern that matches
+only the end of the line (`[>#]`) still works, but then any line ending
+in `#` or `>` can pass for a changed prompt, and the first prompt waits
+1 s. A device whose prompt line holds something that changes by itself
+(a clock) does not suit jobs: every line would wait 3 s for a "changed"
+prompt and its config backups would fail.
+
+What to expect on the lab devices, by reading (not run yet: run
+`lab_paging`, `lab_config_backup`, `lab_privilege` and
+`lab_second_channel` on every device, both logins of cEOS and the CSR):
+every built-in pattern matches its device's whole prompt line
+(`A:srl1#`, `ceos1>`/`ceos1#`, `frr1#`, `csr1>`/`csr1#`,
+`admin@cjunos1>`), and none of the checks changes mode, so every command
+should end at the same line as before, taking what it took before. The
+privilege step on the `labuser` logins (`ceos1>` to `ceos1#`, `csr1>` to
+`csr1#`) now waits 1 s at the new prompt. What to look at if a check
+fails or takes seconds per command: the job output's prompt lines.
+SR Linux draws its CLI with control sequences; if its prompt line held
+anything besides `A:srl1#` that changes between commands, the paging
+check would slow down and the config backup would fail with "its last
+line … is not the prompt … was typed at". Junos prints `{master:0}` on
+the line above its prompt, which does not matter.
 
 ## Files on the lab devices
 

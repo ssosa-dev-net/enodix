@@ -27,7 +27,12 @@ pub struct PlatformDefinition {
     pub name: String,
     /// Other names a host's platform may give for it.
     pub other_names: Vec<String>,
-    /// A pattern matching the device's prompt.
+    /// A pattern matching the device's prompt: best written to match the
+    /// whole prompt line, in every mode (`r1>`, `r1#`, `r1(config-if)#`),
+    /// without `^` or `$`. A job then takes a changed prompt only when it
+    /// fills its line; a pattern that matches only the end of the line
+    /// (`[>#]`) still works, but text ending in `#` or `>` anywhere can
+    /// then pass for a changed prompt (`job/run.rs`, #136).
     pub prompt: String,
     /// The command that turns off paging.
     pub disable_paging: Option<String>,

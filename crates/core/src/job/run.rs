@@ -33,10 +33,24 @@ pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// showing output without getting back to the prompt, when nothing says
 /// otherwise: it ends output that never stops.
 pub const DEFAULT_COMMAND_LIMIT: Duration = Duration::from_secs(30 * 60);
-/// How long output must stay quiet after it ends with the prompt for the
-/// prompt to count, so that output merely ending in `#` for a moment is not
-/// taken for it (the containerlab suite's rule).
+/// How long output must stay quiet at the prompt for it to count, when the
+/// prompt is the very line the command was typed at (or the first prompt
+/// after logging in, a line the platform's pattern matches whole), so that
+/// output merely ending in it for a moment is not taken for it (the
+/// containerlab suite's rule).
 pub const PROMPT_SETTLE: Duration = Duration::from_millis(300);
+/// How long output must stay quiet at a prompt that changed for it to
+/// count, after a line expected to change it (the privilege command, a line
+/// that enters or leaves a configuration mode or renames the device, any
+/// line typed in such a mode). Also the first prompt after logging in, when
+/// the platform's pattern matches only the end of its line.
+pub const PROMPT_CHANGE_SETTLE: Duration = Duration::from_secs(1);
+/// How long output must stay quiet at a prompt that changed after a line
+/// not expected to change it (a `show` command, the disable-paging
+/// command) for it to count: such a line is far more likely the device's
+/// answer paused half way than a new prompt, but a command the job does not
+/// know to change the prompt still ends.
+pub const PROMPT_DOUBT_SETTLE: Duration = Duration::from_secs(3);
 /// How much of one host's (or one script's) output a job keeps when
 /// nothing says otherwise: 32 MiB of plain text. Past it the output is
 /// still read (the device or script goes on), but no longer kept, shown or
@@ -395,6 +409,14 @@ struct HostRunner {
     /// The enable secret once it has been typed, never shown in the
     /// output (a device that echoes it would put it there).
     typed_secret: Option<EnableSecret>,
+    /// The prompt line the device last came back to (trimmed): the one the
+    /// next line is typed at. `None` before the first prompt.
+    at: Option<String>,
+    /// Whether the platform's pattern matched the whole first prompt line:
+    /// then a changed prompt must be a whole line the pattern matches;
+    /// otherwise (a pattern written for the end of the line only, such as
+    /// `[>#]`) the pattern at the end of the line, as before #136.
+    whole_lines: bool,
 }
 
 /// The host's session, once opened.
@@ -425,8 +447,10 @@ enum NoPrompt {
 /// The patterns a host is driven by.
 struct Patterns {
     /// The prompt, at the end of the line being shown.
-    prompt: Regex,
-    /// The privilege password question, likewise.
+    prompt_end: Regex,
+    /// The prompt as the whole line being shown (blanks around it aside).
+    prompt_line: Regex,
+    /// The privilege password question, at the end of the line.
     privilege_prompt: Option<Regex>,
 }
 
@@ -435,6 +459,63 @@ struct Patterns {
 enum Shown {
     Prompt,
     PrivilegePrompt,
+}
+
+/// Which prompt a wait expects: what counts as the end of the command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    /// The first prompt after logging in: there is no line to compare with.
+    First,
+    /// The prompt the line was typed at; a changed one counts only after
+    /// [`PROMPT_DOUBT_SETTLE`].
+    Same,
+    /// The prompt the line was typed at, or a changed one after
+    /// [`PROMPT_CHANGE_SETTLE`]: the line is expected to change it.
+    Change,
+    /// Only the prompt the line was typed at (the show-config command,
+    /// which never changes it: a configuration is never kept cut short).
+    Only,
+}
+
+/// Whether `line`, typed at the prompt a snippet starts at, is expected to
+/// change the prompt: its first word (a leading `/` aside, any case) is, or
+/// abbreviates, a command that enters or leaves a mode, a shell or the
+/// device, or renames it.
+fn changes_prompt(line: &str) -> bool {
+    /// Each command, and the shortest abbreviation taken for it.
+    const COMMANDS: [(&str, usize); 24] = [
+        ("configure", 4),
+        ("enable", 2),
+        ("disable", 4),
+        ("end", 3),
+        ("exit", 3),
+        ("quit", 4),
+        ("return", 6),
+        ("edit", 4),
+        ("enter", 5),
+        ("commit", 6),
+        ("prompt", 6),
+        ("hostname", 8),
+        ("system-view", 3),
+        ("cli", 3),
+        ("vtysh", 5),
+        ("start", 5),
+        ("shell", 5),
+        ("bash", 4),
+        ("tclsh", 5),
+        ("ssh", 3),
+        ("telnet", 6),
+        ("su", 2),
+        ("sudo", 4),
+        ("cd", 2),
+    ];
+    let Some(word) = line.split_whitespace().next() else {
+        return false;
+    };
+    let word = word.trim_start_matches('/').to_lowercase();
+    COMMANDS
+        .iter()
+        .any(|(command, shortest)| word.len() >= *shortest && command.starts_with(&word))
 }
 
 /// How long a closed session may take to say so before it is let go.
@@ -483,6 +564,8 @@ impl HostRunner {
             text: PlainText::new(),
             backup: None,
             typed_secret: None,
+            at: None,
+            whole_lines: false,
         }
     }
 
@@ -578,7 +661,7 @@ impl HostRunner {
         let id = *id;
         self.state(HostState::Running);
 
-        match self.wait_for(events, &patterns, false).await {
+        match self.wait_for(events, &patterns, false, Expect::First).await {
             Ok(Shown::Prompt) => {}
             // A password question before the first prompt is the login's
             // (a second login in-band), never the privilege command's.
@@ -616,15 +699,26 @@ impl HostRunner {
             }
         }
         if let Some(command) = &work.disable_paging {
-            match self.send(id, events, command, &patterns).await {
+            match self
+                .send(id, events, command, &patterns, Expect::Same)
+                .await
+            {
                 Ok(Shown::Prompt) => {}
                 Ok(Shown::PrivilegePrompt) => return failed(asked_for_password(command)),
                 Err(error) => return failed(self.no_prompt_after(&quoted(command), error)),
             }
         }
+        // The prompt the snippet starts at: a line typed at any other (in a
+        // configuration mode, say) may change it.
+        let start = self.at.clone();
         let count = work.lines.len();
         for (index, line) in work.lines.iter().enumerate() {
-            match self.send(id, events, line, &patterns).await {
+            let expect = if self.at != start || changes_prompt(line) {
+                Expect::Change
+            } else {
+                Expect::Same
+            };
+            match self.send(id, events, line, &patterns, expect).await {
                 Ok(Shown::Prompt) => {}
                 // A job never types into a password question.
                 Ok(Shown::PrivilegePrompt) => return failed(asked_for_password(line)),
@@ -658,9 +752,20 @@ impl HostRunner {
         // typed at is not in it yet, and the one after it never is.
         let start = self.output.text.len();
         let prompt = self.text.current_line().trim_end().to_string();
-        match self.send(id, events, command, patterns).await {
+        match self.send(id, events, command, patterns, Expect::Only).await {
             Ok(Shown::Prompt) => {}
             Ok(Shown::PrivilegePrompt) => return Err(asked_for_password(command)),
+            // Only the very prompt it was typed at ends a configuration: say
+            // so if the device seems to have stopped at another.
+            Err(NoPrompt::TimedOut) if patterns.prompt_end.is_match(&self.text.current_line()) => {
+                return Err(format!(
+                    "{}, and its last line {:?} is not the prompt {:?} was typed at ({}); nothing was backed up",
+                    self.no_prompt_after(&quoted(command), NoPrompt::TimedOut),
+                    self.text.current_line().trim(),
+                    command,
+                    prompt.trim()
+                ))
+            }
             Err(error) => return Err(self.no_prompt_after(&quoted(command), error)),
         }
         // Only part of it was kept: never a version.
@@ -710,18 +815,23 @@ impl HostRunner {
 
     /// The host's patterns, or why one cannot be used.
     fn patterns(&self, host: &PlannedHost) -> Result<Patterns, String> {
-        let at_end = |pattern: &str, what: &str| {
-            Regex::new(&format!(r"(?:{pattern})[ \t]*\z")).map_err(|error| {
+        let compile = |pattern: String, what: &str| {
+            Regex::new(&pattern).map_err(|error| {
                 format!(
                     "the {what} pattern of the platform {} cannot be used: {error}",
                     host.platform
                 )
             })
         };
+        let prompt = &host.work.prompt;
         Ok(Patterns {
-            prompt: at_end(&host.work.prompt, "prompt")?,
+            prompt_end: compile(format!(r"(?:{prompt})[ \t]*\z"), "prompt")?,
+            prompt_line: compile(format!(r"\A[ \t]*(?:{prompt})[ \t]*\z"), "prompt")?,
             privilege_prompt: match &host.work.privilege_prompt {
-                Some(pattern) => Some(at_end(pattern, "privilege password")?),
+                Some(pattern) => Some(compile(
+                    format!(r"(?:{pattern})[ \t]*\z"),
+                    "privilege password",
+                )?),
                 None => None,
             },
         })
@@ -748,7 +858,7 @@ impl HostRunner {
         let work = &host.work;
         let before = self.text.current_line().trim().to_string();
         let start = self.output.text.len();
-        match self.send(id, events, command, patterns).await {
+        match self.send(id, events, command, patterns, Expect::Change).await {
             Ok(Shown::Prompt) => {
                 let after = self.text.current_line().trim().to_string();
                 let said = said_after(&self.output.text[start..], command);
@@ -795,7 +905,7 @@ impl HostRunner {
         {
             Err(NoPrompt::NotSent)
         } else {
-            self.wait_for(events, patterns, true).await
+            self.wait_for(events, patterns, true, Expect::Change).await
         };
         // Only the answer to the question can be its echo. What the device
         // shows afterwards is the user's: a configuration that holds the
@@ -810,14 +920,15 @@ impl HostRunner {
         }
     }
 
-    /// Sends `line` and waits for the device to answer with its prompt (or
-    /// its privilege password question).
+    /// Sends `line` and waits for the device to answer with the prompt
+    /// `expect` says (or its privilege password question).
     async fn send(
         &mut self,
         id: SessionId,
         events: &mut SessionEvents,
         line: &str,
         patterns: &Patterns,
+        expect: Expect,
     ) -> Result<Shown, NoPrompt> {
         if self
             .manager
@@ -826,7 +937,7 @@ impl HostRunner {
         {
             return Err(NoPrompt::NotSent);
         }
-        self.wait_for(events, patterns, true).await
+        self.wait_for(events, patterns, true, expect).await
     }
 
     /// Why the host failed when `what` (a quoted line, or a description
@@ -938,19 +1049,22 @@ impl HostRunner {
         }
     }
 
-    /// Takes output until the line being shown ends with the prompt (or
-    /// the privilege password question) and nothing more arrives for
-    /// [`PROMPT_SETTLE`]. With `after_input`, what is already shown does
-    /// not count: the device must answer first.
+    /// Takes output until the line being shown is the prompt `expect` says
+    /// (or the privilege password question) and nothing more arrives for as
+    /// long as that prompt must settle ([`Self::shown`]). With
+    /// `after_input`, what is already shown does not count: the device must
+    /// answer first. The prompt found is the one the next line is typed at.
     ///
     /// It gives up when nothing has arrived for the command timeout
     /// (counted from the last output) or, while output keeps arriving,
-    /// once the command limit has passed since it started waiting.
+    /// once the command limit has passed since it started waiting. A settle
+    /// longer than what is left of the command timeout ends with it.
     async fn wait_for(
         &mut self,
         events: &mut SessionEvents,
         patterns: &Patterns,
         after_input: bool,
+        expect: Expect,
     ) -> Result<Shown, NoPrompt> {
         let started = Instant::now();
         let limit = started + self.options.command_limit;
@@ -959,34 +1073,32 @@ impl HostRunner {
         loop {
             let deadline = quiet_until.min(limit);
             let shown = if answered {
-                let line = self.text.current_line();
-                if patterns.prompt.is_match(&line) {
-                    Some(Shown::Prompt)
-                } else if patterns
-                    .privilege_prompt
-                    .as_ref()
-                    .is_some_and(|question| question.is_match(&line))
-                {
-                    Some(Shown::PrivilegePrompt)
-                } else {
-                    None
-                }
+                self.shown(&self.text.current_line(), patterns, expect)
             } else {
                 None
             };
-            let until = if shown.is_some() {
-                (Instant::now() + PROMPT_SETTLE).min(deadline)
-            } else {
-                deadline
+            let until = match shown {
+                Some((_, settle)) => (Instant::now() + settle).min(deadline),
+                None => deadline,
             };
             match tokio::time::timeout_at(until, events.next()).await {
                 // Quiet at the prompt (even if only just in time).
                 Err(_) => {
-                    return shown.ok_or(if limit <= quiet_until {
-                        NoPrompt::Endless
-                    } else {
-                        NoPrompt::TimedOut
-                    })
+                    let Some((shown, _)) = shown else {
+                        return Err(if limit <= quiet_until {
+                            NoPrompt::Endless
+                        } else {
+                            NoPrompt::TimedOut
+                        });
+                    };
+                    if shown == Shown::Prompt {
+                        let line = self.text.current_line();
+                        if expect == Expect::First {
+                            self.whole_lines = patterns.prompt_line.is_match(&line);
+                        }
+                        self.at = Some(line.trim().to_string());
+                    }
+                    return Ok(shown);
                 }
                 Ok(Some(SessionEvent::Output(bytes))) => {
                     self.take(events, &bytes);
@@ -1000,6 +1112,53 @@ impl HostRunner {
                 Ok(None) => return Err(NoPrompt::Closed(CloseReason::ClosedLocally)),
             }
         }
+    }
+
+    /// What `line`, the line being shown, is (the prompt, or the privilege
+    /// password question) when the job waits for `expect`, and how long it
+    /// must stay quiet to count; `None` if it is neither.
+    ///
+    /// The prompt the line was typed at, the same line again, counts after
+    /// [`PROMPT_SETTLE`] (except at the first prompt, which has none to be
+    /// compared with). A changed prompt is a line the pattern matches whole
+    /// (or, for a pattern written for the end of the line only, a line it
+    /// matches at the end): after [`PROMPT_CHANGE_SETTLE`] where a change
+    /// is expected, after [`PROMPT_DOUBT_SETTLE`] where it is not, and never
+    /// after the show-config command. The first prompt is a line the pattern
+    /// matches whole after [`PROMPT_SETTLE`], or at its end after
+    /// [`PROMPT_CHANGE_SETTLE`].
+    fn shown(&self, line: &str, patterns: &Patterns, expect: Expect) -> Option<(Shown, Duration)> {
+        let trimmed = line.trim();
+        let same = !trimmed.is_empty() && self.at.as_deref() == Some(trimmed);
+        let settle = match expect {
+            Expect::First if patterns.prompt_line.is_match(line) => Some(PROMPT_SETTLE),
+            Expect::First if patterns.prompt_end.is_match(line) => Some(PROMPT_CHANGE_SETTLE),
+            Expect::First => None,
+            _ if same => Some(PROMPT_SETTLE),
+            Expect::Only => None,
+            Expect::Same | Expect::Change => {
+                let pattern = if self.whole_lines {
+                    &patterns.prompt_line
+                } else {
+                    &patterns.prompt_end
+                };
+                pattern
+                    .is_match(line)
+                    .then_some(if expect == Expect::Change {
+                        PROMPT_CHANGE_SETTLE
+                    } else {
+                        PROMPT_DOUBT_SETTLE
+                    })
+            }
+        };
+        if let Some(settle) = settle {
+            return Some((Shown::Prompt, settle));
+        }
+        patterns
+            .privilege_prompt
+            .as_ref()
+            .is_some_and(|question| question.is_match(line))
+            .then_some((Shown::PrivilegePrompt, PROMPT_SETTLE))
     }
 
     /// Takes output from the device: acknowledged at once, kept as text.
