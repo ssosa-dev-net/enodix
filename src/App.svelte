@@ -97,6 +97,7 @@
     openDetails,
     openFiles,
     openNornirImport,
+    select,
     selectedFolder,
     selectedHost,
     setWorkspace,
@@ -1222,7 +1223,7 @@
    * asking for credentials (or for the profile to set up).
    */
   async function prompt(host: Host, protocol: Protocol | null = null) {
-    inventory.selected = { kind: "host", id: host.id };
+    select({ kind: "host", id: host.id });
     let login;
     try {
       login = await hostLogin(host.id, protocol);

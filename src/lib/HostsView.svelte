@@ -19,7 +19,10 @@
   import { openView } from "./views";
   import {
     canMoveInto,
+    clearSelection,
+    inTreeOrder,
     inventory,
+    jobTargetLabel,
     move,
     moveInto,
     newFilter,
@@ -37,6 +40,7 @@
     remove,
     removeFilter,
     rename,
+    select,
     targetFolder,
     viewThrough,
     type Item,
@@ -76,6 +80,9 @@
   let ghost = $state<{ label: string; x: number; y: number } | null>(null);
   let menu = $state<{
     item: Item;
+    /** The hosts of a selection of several the menu acts on, in tree
+     * order (#110); null for one item. */
+    hosts: string[] | null;
     x: number;
     y: number;
     /** A host's settings, once the core gave them (for its ways in). */
@@ -161,6 +168,8 @@
     ghost = null;
     inventory.dropTarget = null;
     if (!dragged || !item) return;
+    // A drag moves only the row dragged, and ends a selection of several.
+    if (inventory.several.length > 0) clearSelection();
     // The click that ends a drag is not a selection.
     const swallow = (event: Event) => {
       event.stopPropagation();
@@ -174,10 +183,22 @@
   function oncontextmenu(event: MouseEvent) {
     event.preventDefault();
     const item = itemAt(event.target) ?? { kind: "folder", path: "" };
-    inventory.selected = item;
-    menu = { item, x: event.clientX, y: event.clientY, settings: null };
+    // On a row of a selection of several, the menu acts on all of them;
+    // on any other row, that row is selected alone.
+    const several =
+      item.kind === "host" && inventory.several.includes(item.id)
+        ? inTreeOrder(inventory.several)
+        : null;
+    if (!several) select(item);
+    menu = {
+      item,
+      hosts: several,
+      x: event.clientX,
+      y: event.clientY,
+      settings: null,
+    };
     const opened = ++menus;
-    if (item.kind === "host") {
+    if (item.kind === "host" && !several) {
       resolveSettings(item)
         .then((settings) => {
           if (menu && menus === opened) menu.settings = settings;
@@ -189,6 +210,14 @@
   }
 
   function ontreekeydown(event: KeyboardEvent) {
+    // Escape ends a selection of several (after closing a menu, if open).
+    if (event.key === "Escape" && !menu && inventory.several.length > 0) {
+      event.preventDefault();
+      clearSelection();
+      return;
+    }
+    // Renaming and deleting are about one item: not offered for several.
+    if (inventory.several.length > 0) return;
     const item = itemAt(event.target);
     if (!item) return;
     if (event.key === "F2") {
@@ -259,6 +288,40 @@
     action: () => void;
     /** Why it cannot be used now, if it cannot. */
     blocked?: string | null;
+  }
+
+  /** The menu's entries for a selection of several hosts: the jobs only,
+   * each on exactly those hosts (#110). */
+  function severalEntries(ids: string[]): Entry[] {
+    const target = { kind: "hosts" as const, ids };
+    const label = jobTargetLabel(target);
+    return [
+      {
+        id: "run-snippet",
+        label: "Run snippet…",
+        action: () => openJob(target, label),
+      },
+      {
+        id: "run-script",
+        label: "Run script…",
+        action: () => openScript(target, label),
+      },
+      {
+        id: "send-file",
+        label: "Send file…",
+        action: () => openSendFile(target, label),
+      },
+      {
+        id: "back-up",
+        label: "Back up configs",
+        action: () => openBackup(target, label),
+      },
+      {
+        id: "enrich",
+        label: "Fill in from devices…",
+        action: () => openEnrich(target, label),
+      },
+    ];
   }
 
   /** The menu's entries for an item: every action of its details too. */
@@ -437,7 +500,7 @@
         inventory.selected.path === ""}
       title="Settings of the whole workspace (its top folder)"
       disabled={!workspace}
-      onclick={() => (inventory.selected = { kind: "folder", path: "" })}
+      onclick={() => select({ kind: "folder", path: "" })}
       ><SlidersHorizontal size={16} aria-hidden="true" /></button
     >
     <button
@@ -663,6 +726,24 @@
       {/if}
     </nav>
 
+    <!-- Under the tree, so that its rows stay put when it appears. -->
+    {#if inventory.several.length > 0}
+      <div
+        class="selection"
+        data-selection={inventory.several.length}
+        title="Right-click one of them for the jobs to run on them all"
+      >
+        <span class="count">{inventory.several.length} hosts selected</span>
+        <button
+          class="tool"
+          data-selection-clear
+          aria-label="Clear the selection"
+          title="Clear the selection (Escape)"
+          onclick={clearSelection}><X size={15} aria-hidden="true" /></button
+        >
+      </div>
+    {/if}
+
     {#if workspace.problems.length > 0}
       <footer class="problems">
         {#if problemsOpen}
@@ -727,11 +808,12 @@
   <div
     class="menu"
     role="menu"
+    data-menu-hosts={menu.hosts?.length}
     style:left="{menu.x}px"
     style:top="{menu.y}px"
     {@attach inWindow}
   >
-    {#each entries(menu.item, menu.settings) as entry (entry.id)}
+    {#each menu.hosts ? severalEntries(menu.hosts) : entries(menu.item, menu.settings) as entry (entry.id)}
       <button
         role="menuitem"
         data-menu={entry.id}
@@ -900,6 +982,21 @@
     color: var(--muted);
     font-size: var(--text-xs);
     white-space: nowrap;
+  }
+
+  .selection {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-1-5) var(--space-1) var(--space-2-5);
+    border-top: 1px solid var(--border);
+    background: var(--selected);
+  }
+
+  .selection .count {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--text-xs);
   }
 
   .tree {

@@ -124,8 +124,9 @@ direction, name, progress and speed.
 
 **Send file…** is beside Run snippet and Run script: on a folder's or
 host's details sheet, in the tree's context menu and on a saved filter.
-Like every job it takes a folder, a saved filter or one host; to send to
-a few chosen hosts, save a filter that shows them. It opens a job tab:
+Like every job it takes a folder, a saved filter, one host or a few
+chosen hosts: select them in the tree with Ctrl+click or Shift+click,
+then use the context menu on one of them. It opens a job tab:
 
 1. The file (Browse…, or a typed path), a destination folder and
    **Overwrite**. An empty destination means each host's platform file

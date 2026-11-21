@@ -55,7 +55,15 @@ export const inventory = $state({
   openError: null as string | null,
   /** Why the last edit failed, if it did. */
   editError: null as string | null,
+  /** The item selected alone; null with nothing or several selected. */
   selected: null as Item | null,
+  /**
+   * The hosts of a selection of several (#110), by id: two or more, or
+   * none. While it holds hosts, `selected` is null, so whatever follows
+   * one item (the details sheet, Ctrl+Shift+D) does not apply. Change it
+   * through `select`, `clickHost` and `clearSelection`.
+   */
+  several: [] as string[],
   /**
    * Whether the details sheet is open over the side view (#64): it shows
    * the selected host or folder, following the selection.
@@ -281,7 +289,7 @@ export async function runNornirImport(
 
 export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.workspace = workspace;
-  inventory.selected = null;
+  select(null);
   inventory.expanded = {};
   inventory.editError = null;
   inventory.moveReport = null;
@@ -300,8 +308,7 @@ export function setWorkspace(workspace: WorkspaceView | null) {
 export function hostShown(id: string): boolean {
   const view = inventory.filterView;
   if (!view || view.hosts.has(id)) return true;
-  const selected = inventory.selected;
-  return selected?.kind === "host" && selected.id === id;
+  return isHostSelected(id);
 }
 
 /** Whether the tree shows the folder at `path` under the active filter. */
@@ -309,9 +316,116 @@ export function folderShown(path: string): boolean {
   const view = inventory.filterView;
   if (!view || view.folders.has(path)) return true;
   const selected = inventory.selected;
-  if (!selected) return false;
-  const at = selected.kind === "host" ? selected.id : selected.path;
-  return at === path || at.startsWith(`${path}/`);
+  const at = selected
+    ? [selected.kind === "host" ? selected.id : selected.path]
+    : inventory.several;
+  return at.some((each) => each === path || each.startsWith(`${path}/`));
+}
+
+/** Where a Shift+click selects from: the host clicked last without Shift. */
+let anchor: string | null = null;
+
+/** Selects `item` alone, or nothing; ends a selection of several. */
+export function select(item: Item | null) {
+  inventory.selected = item;
+  inventory.several = [];
+  anchor = item?.kind === "host" ? item.id : null;
+}
+
+/** Ends a selection of several (or one): nothing is selected. */
+export function clearSelection() {
+  select(null);
+}
+
+/** Selects the hosts `ids`: alone if one, as several if more. */
+function selectHosts(ids: string[]) {
+  if (ids.length >= 2) {
+    inventory.selected = null;
+    inventory.several = ids;
+  } else {
+    inventory.several = [];
+    inventory.selected = ids.length === 1 ? { kind: "host", id: ids[0] } : null;
+  }
+}
+
+/** The hosts selected, by id: several, the one selected, or none. */
+export function selectedHostIds(): string[] {
+  const selected = inventory.selected;
+  if (selected?.kind === "host") return [selected.id];
+  return inventory.several;
+}
+
+/** Whether the host `id` is selected, alone or among several. */
+export function isHostSelected(id: string): boolean {
+  const selected = inventory.selected;
+  if (selected) return selected.kind === "host" && selected.id === id;
+  return inventory.several.includes(id);
+}
+
+/**
+ * The hosts of `folder` the tree shows, in its order (folders first, then
+ * hosts): with `shown`, only in open folders and as the active filter
+ * shows them; otherwise all of them.
+ */
+function hostsInTreeOrder(folder: Folder, shown: boolean): string[] {
+  const inside = folder.folders
+    .filter(
+      (child) =>
+        !shown || (folderShown(child.path) && inventory.expanded[child.path]),
+    )
+    .flatMap((child) => hostsInTreeOrder(child, shown));
+  const own = folder.hosts
+    .map((host) => host.id)
+    .filter((id) => !shown || hostShown(id));
+  return [...inside, ...own];
+}
+
+/** `ids` in the order the tree shows them (a job's hosts go in it). */
+export function inTreeOrder(ids: string[]): string[] {
+  const tree = inventory.workspace?.tree;
+  if (!tree) return ids;
+  const wanted = new Set(ids);
+  return hostsInTreeOrder(tree, false).filter((id) => wanted.has(id));
+}
+
+/**
+ * A click on the host row `id`: alone selects it; with `toggle` (Ctrl) it
+ * joins the selection or leaves it; with `range` (Shift) the hosts the
+ * tree shows from the last one clicked to this one are selected.
+ */
+export function clickHost(
+  id: string,
+  { toggle, range }: { toggle: boolean; range: boolean },
+) {
+  if (range && anchor !== null) {
+    const shown = inventory.workspace
+      ? hostsInTreeOrder(inventory.workspace.tree, true)
+      : [];
+    const from = shown.indexOf(anchor);
+    const to = shown.indexOf(id);
+    if (from !== -1 && to !== -1) {
+      selectHosts(shown.slice(Math.min(from, to), Math.max(from, to) + 1));
+      return;
+    }
+  }
+  if (toggle) {
+    const ids = selectedHostIds();
+    selectHosts(
+      ids.includes(id) ? ids.filter((each) => each !== id) : [...ids, id],
+    );
+    anchor = id;
+    return;
+  }
+  select({ kind: "host", id });
+}
+
+/** Takes out of a selection of several the hosts `tree` no longer has. */
+function keepSelectedIn(tree: Folder) {
+  const several = inventory.several;
+  if (several.length === 0) return;
+  const left = several.filter((id) => api.findHost(tree, id));
+  if (left.length !== several.length) selectHosts(left);
+  if (anchor !== null && !api.findHost(tree, anchor)) anchor = null;
 }
 
 export function selectedHost(): Host | null {
@@ -350,7 +464,7 @@ export function openDetails(item: Item) {
   if (item.kind === "host") revealHost(item.id);
   else {
     reveal(item.path);
-    inventory.selected = item;
+    select(item);
   }
   inventory.details = true;
 }
@@ -371,7 +485,7 @@ export function revealHost(id: string) {
     inventory.query = "";
   }
   reveal(id);
-  inventory.selected = { kind: "host", id };
+  select({ kind: "host", id });
 }
 
 /** Views the tree through the saved filter `name`, or no saved filter
@@ -604,6 +718,7 @@ function adopt(workspace: WorkspaceView): boolean {
     return false;
   }
   inventory.workspace = workspace;
+  keepSelectedIn(workspace.tree);
   return true;
 }
 
@@ -617,7 +732,8 @@ function apply<T>(edited: Edited<T>): T {
 /**
  * Shows the workspace as reloaded after files changed outside the app.
  * The selection and expanded folders stay; a selected item that no longer
- * exists is deselected. Open sessions are not touched.
+ * exists is deselected (a host of several leaves them, in `adopt`). Open
+ * sessions are not touched.
  */
 export function workspaceChanged(workspace: WorkspaceView) {
   // A late notice about a workspace no longer open, or an outdated one.
@@ -673,6 +789,9 @@ function moved(from: string, to: string) {
           : { kind: "folder", path };
     }
   }
+  if (inventory.several.length > 0) {
+    inventory.several = inventory.several.map((id) => rebase(id) ?? id);
+  }
   const expanded: Record<string, boolean> = {};
   for (const [path, open] of Object.entries(inventory.expanded)) {
     expanded[rebase(path) ?? path] = open;
@@ -691,7 +810,7 @@ export function newFolder(parent: string) {
       inDialog(async () => {
         const path = apply(await api.createFolder(parent, name));
         reveal(path);
-        inventory.selected = { kind: "folder", path };
+        select({ kind: "folder", path });
       }),
   };
 }
@@ -709,7 +828,7 @@ export function newHost(folder: string) {
       inDialog(async () => {
         const id = apply(await api.createHost(folder, name, address));
         reveal(id);
-        inventory.selected = { kind: "host", id };
+        select({ kind: "host", id });
       }),
   };
 }
