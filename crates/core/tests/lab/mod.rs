@@ -1705,7 +1705,73 @@ async fn telnet(
         ));
     }
     session.exit(&device.exit).await?;
-    Ok(String::new())
+
+    // A quiet telnet session is asked for a timing mark once per connect
+    // timeout (#133). A real device must show nothing for it, and the
+    // session must go on working: a session of its own with a short
+    // timeout, left quiet for four of them.
+    const PROBE_EVERY: Duration = Duration::from_secs(2);
+    let quiet_for = PROBE_EVERY * 4;
+    let manager = run.manager();
+    let target = SessionTarget::Telnet(TelnetTarget {
+        host: device
+            .telnet_address
+            .clone()
+            .unwrap_or_else(|| device.address.clone()),
+        port,
+        connect_timeout: PROBE_EVERY,
+    });
+    let mut session = Conversation::connect(&manager, target, None, run.timeout(), password)
+        .await
+        .map_err(|failure| format!("the quiet session: {failure}"))?;
+    session.wait_for(&device.login_prompt).await?;
+    session.send_line(&device.username)?;
+    session.wait_for(&device.password_prompt).await?;
+    session.send_line(password)?;
+    session.wait_for(&device.prompt).await?;
+    for line in &device.setup {
+        session.run(line, &device.prompt).await?;
+    }
+    let until = tokio::time::Instant::now() + quiet_for;
+    let mut shown = Vec::new();
+    loop {
+        let left = until.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match session.event_within(left).await? {
+            None => break,
+            Some(SessionEvent::Output(bytes)) => shown.extend_from_slice(&bytes),
+            Some(other) => {
+                return Err(format!(
+                    "while the session was quiet (probed every {} s): unexpected {other:?}",
+                    PROBE_EVERY.as_secs()
+                ))
+            }
+        }
+    }
+    if !plain(&shown).trim().is_empty() {
+        return Err(format!(
+            "the device showed {:?} while the session was quiet (probed every {} s)",
+            tail(&plain(&shown), 200),
+            PROBE_EVERY.as_secs()
+        ));
+    }
+    let output = session.run(&device.command, &device.prompt).await?;
+    if !device.expect.is_match(&output) {
+        return Err(format!(
+            "after {} s of quiet the output of {:?} does not match {:?}: {output:?}",
+            quiet_for.as_secs(),
+            device.command,
+            device.expect.as_str()
+        ));
+    }
+    session.exit(&device.exit).await?;
+    Ok(format!(
+        "quiet for {} s, probed every {} s: nothing shown, the session went on",
+        quiet_for.as_secs(),
+        PROBE_EVERY.as_secs()
+    ))
 }
 
 /// Why a session did not connect.

@@ -184,6 +184,23 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   closed while the job ran." [124]
 - A script job no longer leaves running what it started once it exits
   [124].
+- Reconnecting a session (Enter, or Reconnect in its menu) uses the host
+  as it is now: its address, port, jump host and other settings, and its
+  credential profile as the Credentials view has it [130]. Correct a
+  password or a port and press Enter. Before, a reconnect used what the
+  first attempt had, so only connecting again from the tree picked up a
+  correction. A typed login is used again unless the host has a profile
+  now; a host whose profile is gone asks for the login; a host that was
+  deleted, or set to another protocol, is said so and not tried. Quick
+  connections reconnect as they were made.
+- A telnet session over a link that went silent ends as lost within about
+  three connect timeouts, as an SSH session does [133]. When the device
+  has been quiet, the session asks it for a timing mark; a device that
+  never answers one is left alone and never taken for dead. Before, such
+  a session stayed "Connected" until it was closed by hand.
+- A jump host that stops answering while a session is being opened is
+  named in the failure. Before, the device was reported as not answering
+  [133].
 - A session whose output was held back when its window went away ends
   and lets go of the device (and of a serial port). Before, it stayed
   connected for ever [118].
