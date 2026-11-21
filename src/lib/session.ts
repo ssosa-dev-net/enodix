@@ -179,11 +179,15 @@ export interface Session {
   resize(size: TerminalSize): void;
   close(): void;
   /**
-   * Opens the session again once it has closed: the same target, settings
-   * and login. Its events go to the same handlers, starting with
-   * `connecting`; rejects if it is still open.
+   * Opens the session again once it has closed. A session to a workspace
+   * host connects as the host's settings and credential profile are now
+   * (#130); a quick connection as it was made. Its events go to the same
+   * handlers, starting with `connecting`. Resolves to a note for the
+   * terminal when it logs in otherwise than before (null: none); rejects
+   * with a `ReconnectFailure` when the host is gone or can no longer be
+   * reached that way, or the session is still open.
    */
-  reconnect(size: TerminalSize): Promise<void>;
+  reconnect(size: TerminalSize): Promise<string | null>;
   /** Forgets the session (closing it if open), when its terminal goes. */
   discard(): void;
   /**
@@ -231,6 +235,25 @@ export interface SessionRecord {
   workspace: string | null;
   safety: PasteSafety;
   role: Role | null;
+}
+
+/** Why a reconnect did not start (`Session.reconnect` rejects with it):
+ * the reason and what to do about it. */
+export interface ReconnectFailure {
+  reason: string;
+  advice: string | null;
+}
+
+/** A reconnect's failure as the closed state shows it. */
+export function reconnectFailure(error: unknown): {
+  reason: string;
+  advice: string | null;
+} {
+  if (typeof error === "object" && error !== null && "reason" in error) {
+    const failure = error as ReconnectFailure;
+    return { reason: String(failure.reason), advice: failure.advice ?? null };
+  }
+  return { reason: String(error), advice: null };
 }
 
 /** What the interface does with a session's events. */
@@ -481,12 +504,16 @@ export async function openSession(
     async reconnect(size) {
       // New channels: the old ones ended with the old connection.
       current = channels(handlers);
-      const consumer = await invoke<number>("session_reconnect", {
+      const reconnected = await invoke<{
+        consumer: number;
+        note: string | null;
+      }>("session_reconnect", {
         id,
         size,
         ...eventsOf(current),
       });
-      current.ready(id, consumer);
+      current.ready(id, reconnected.consumer);
+      return reconnected.note;
     },
     discard: () => send(id, "session_discard", {}),
   };

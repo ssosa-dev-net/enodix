@@ -219,9 +219,21 @@ everything 0.2.0 could do, the app still does, reached differently.
   refused port, the address, the device and the Connect timeout for no
   answer, the username and password (and the Credentials view) for a
   refused login, the agent for an agent login; a jump host's failure
-  says it is the jump host's. Enter then says it tries again with the
-  same settings: a host's changed settings or profile are used by
-  connecting it again from the Hosts view.
+  says it is the jump host's. Fix it where the advice says, then press
+  Enter in the terminal to reconnect.
+- **Reconnecting** (Enter in a closed session, or the session menu's
+  Reconnect; the same in a split pane and in a session window) connects
+  a workspace host as it is now (#130): its address, port, protocol, jump
+  host, timeouts and logging, and its credential profile as the
+  Credentials view has it. A login typed for the session is used again,
+  unless the host has a profile now that it did not have then;
+  a host whose profile is gone or not set up asks for the username and
+  password. A grey line under `--- reconnecting ---` says when the login
+  is not the one the session had. A host deleted (or moved outside the
+  app), with no address, or set to another protocol since is not tried:
+  the bar says why. A quick connection reconnects as it was made, and so
+  does a session kept from a workspace that is not open now (the grey
+  line says so).
 - **First hosts and logins** (#116): the New host form refuses an
   address with a port after it (`10.0.0.1:2222`) saying to set the
   Port in the host's details. The Credential profile setting says what

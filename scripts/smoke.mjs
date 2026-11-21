@@ -2326,15 +2326,21 @@ async function main() {
     "the authentication failure",
     async () => (await status()) === "Closed: authentication failed",
   );
-  // It says what to check, and that Enter tries the same login (#116).
+  // It says what to check (#116), and Enter reconnects (a quick connection
+  // as it was made; a host's with what it has then: `credentialProfiles`
+  // corrects a profile's password and reconnects, #130).
   const failedBar = `${shownSession} [data-session-ended]`;
   await until("the authentication failure's advice", async () =>
     (await text(`${failedBar} [data-session-advice]`)).includes(
       "Check the username and password",
     ),
   );
-  if (!(await text(failedBar)).includes("try again with the same settings")) {
-    fail(`the failure's bar says: ${await text(failedBar)}`);
+  const failedWords = await text(failedBar);
+  if (
+    !failedWords.includes("Press Enter to reconnect.") ||
+    failedWords.includes("same settings")
+  ) {
+    fail(`the failure's bar says: ${failedWords}`);
   }
   await screenshot("authentication-failed");
   step(
@@ -2523,6 +2529,7 @@ async function main() {
     evaluate,
     text,
     click,
+    type,
     fillForm,
     changeField,
     doubleClick,
@@ -11364,6 +11371,7 @@ async function credentialProfiles({
   evaluate,
   text,
   click,
+  type,
   fillForm,
   changeField,
   doubleClick,
@@ -11470,6 +11478,54 @@ async function credentialProfiles({
   }
   if (await exists("input[name=password]")) fail("a password was asked for");
   step("a host with a profile connected without a prompt");
+
+  // A wrong password in the profile fails with what to check; corrected in
+  // the Credentials view, Enter reconnects with the corrected one (#130).
+  const editPassword = async (password) => {
+    await openProfiles(evaluate);
+    await clickOn(`${profileRow("lab-login")} [data-profile-edit]`);
+    await until("the edit form", () =>
+      exists(`${profilesDialog} [name=profile-password]`),
+    );
+    await fillForm({ "profile-password": password }, `${profilesDialog} form`);
+    await until("the profile saved", () =>
+      exists(`${profilesDialog}[data-mode=list] [data-profile="lab-login"]`),
+    );
+  };
+  const pressEnter = async () => {
+    await evaluate(
+      `document.querySelector('${SHOWN_SESSION} .xterm textarea').focus()`,
+    );
+    await type("\r");
+  };
+  await sessionAction(evaluate, "disconnect");
+  await until("the session closed", async () =>
+    (await status()).startsWith("Closed"),
+  );
+  await editPassword("not the password");
+  await pressEnter();
+  await until(
+    "the profile's wrong password refused",
+    async () => (await status()) === "Closed: authentication failed",
+  );
+  const endedBar = `${SHOWN_SESSION} [data-session-ended]`;
+  await until("its advice", async () =>
+    (await text(`${endedBar} [data-session-advice]`)).includes(
+      "change them in the Credentials view, then reconnect",
+    ),
+  );
+  if (!(await text(endedBar)).includes("Press Enter to reconnect.")) {
+    fail(`the failure's bar says: ${await text(endedBar)}`);
+  }
+  await editPassword(PASSWORD);
+  await pressEnter();
+  await connected();
+  await screenshot("reconnected-with-corrected-profile");
+  await showSideView(evaluate, "hosts");
+  await showDetails(evaluate);
+  step(
+    "a profile's password corrected in the Credentials view was used by Enter's reconnect",
+  );
 
   // A profile the workspace names but this computer lacks is asked for by
   // name, saved, and used.

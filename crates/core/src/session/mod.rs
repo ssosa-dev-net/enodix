@@ -9,6 +9,7 @@
 mod agent;
 mod algorithms;
 pub(crate) mod connection;
+mod origin;
 mod output;
 mod record;
 mod recording;
@@ -35,6 +36,7 @@ pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
 };
+pub use origin::{HostOrigin, HostSession, HostWay, ReconnectRefused, Reconnection, TypedLogin};
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
 pub use record::{SessionRecord, SessionRecords};
@@ -57,8 +59,8 @@ pub struct TerminalSize {
     pub rows: u32,
 }
 
-/// What to connect to.
-#[derive(Clone)]
+/// What to connect to. `Debug` leaves the secrets out.
+#[derive(Debug, Clone)]
 pub enum SessionTarget {
     Ssh(SshTarget),
     Telnet(TelnetTarget),
@@ -447,7 +449,7 @@ impl OpenError {
                 .into(),
             Self::AuthenticationFailed => "Check the username and password (or key). For a \
                 host with a credential profile, change them in the Credentials view, then \
-                connect to the host again."
+                reconnect."
                 .into(),
             Self::Agent(AgentError::NotRunning(_)) => {
                 "Start your SSH agent with your key in it and connect again, or log in with a \
@@ -544,7 +546,8 @@ pub struct OpenOptions {
     pub log: Option<SessionLog>,
     /// Called each time the session connects: on opening, and again on
     /// every [`SessionManager::reconnect`] (a [`SessionManager::duplicate`]
-    /// keeps it too).
+    /// keeps it too; [`SessionManager::reconnect_host`] is given new
+    /// options).
     pub when_connected: Option<Arc<dyn WhenConnected>>,
 }
 
@@ -608,6 +611,10 @@ struct Entry {
     target: SessionTarget,
     /// The log, and what is done once connected.
     options: OpenOptions,
+    /// For a session to a workspace host: how it was asked for, what
+    /// reconnecting it works the target out from (#130). `None`: it
+    /// reconnects as it was made (a quick connection).
+    origin: Option<HostOrigin>,
     /// For a second channel: the session whose connection carries it.
     channel_of: Option<SessionId>,
     /// `None` once the session has closed.
@@ -729,7 +736,35 @@ impl SessionManager {
         size: TerminalSize,
         options: OpenOptions,
     ) -> (SessionId, SessionEvents) {
-        self.add(target, options, None, size)
+        self.add(target, options, None, None, size)
+    }
+
+    /// Like [`Self::open_with`], for a session to a workspace host worked
+    /// out by [`crate::credentials::Profiles::host_session`]: the manager
+    /// keeps its origin ([`Self::origin`]), so that reconnecting it can work
+    /// the target out again ([`Reconnection::work_out`],
+    /// [`Self::reconnect_host`]).
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn open_host(
+        &self,
+        session: HostSession,
+        size: TerminalSize,
+        options: OpenOptions,
+    ) -> (SessionId, SessionEvents) {
+        self.add(session.target, options, Some(session.origin), None, size)
+    }
+
+    /// How the session `id` (open or closed, until it is discarded) was
+    /// asked for, if it goes to a workspace host ([`Self::open_host`], or a
+    /// duplicate of such a session); `None` for one opened by its target
+    /// alone, which reconnects as it was made.
+    pub fn origin(&self, id: SessionId) -> Result<Option<HostOrigin>, SessionError> {
+        self.inner
+            .sessions()
+            .get(&id)
+            .map(|entry| entry.origin.clone())
+            .ok_or(SessionError::NotFound)
     }
 
     /// Opens another shell, with its own terminal of `size`, on the SSH
@@ -760,7 +795,7 @@ impl SessionManager {
             }
             (entry.target.clone(), of)
         };
-        Ok(self.add(target, OpenOptions::default(), Some(of), size))
+        Ok(self.add(target, OpenOptions::default(), None, Some(of), size))
     }
 
     /// Adds a session and starts it.
@@ -768,6 +803,7 @@ impl SessionManager {
         &self,
         target: SessionTarget,
         options: OpenOptions,
+        origin: Option<HostOrigin>,
         channel_of: Option<SessionId>,
         size: TerminalSize,
     ) -> (SessionId, SessionEvents) {
@@ -783,6 +819,7 @@ impl SessionManager {
             Entry {
                 target,
                 options,
+                origin,
                 channel_of,
                 open: None,
             },
@@ -796,7 +833,9 @@ impl SessionManager {
     /// settings and login, under the same id: its owner keeps writing to
     /// the same session. Events start again with `Connecting` on the
     /// returned stream (the old one has ended). `size` is the terminal's
-    /// size now.
+    /// size now. A session to a workspace host is reconnected with
+    /// [`Self::reconnect_host`] instead, unless its workspace is not open
+    /// ([`Reconnection::AsMade`]).
     ///
     /// Must be called from within a Tokio runtime.
     pub fn reconnect(
@@ -814,9 +853,37 @@ impl SessionManager {
         Ok(self.start(id, entry, size, parent))
     }
 
+    /// Opens the closed session `id` to a workspace host again, in place
+    /// as [`Self::reconnect`] does, but to `session`: its target worked out
+    /// again ([`Reconnection::work_out`]), with `options` (the log and what
+    /// is done once connected, as the host's settings are now). The
+    /// session keeps `session`'s origin for the next reconnect.
+    ///
+    /// Must be called from within a Tokio runtime.
+    pub fn reconnect_host(
+        &self,
+        id: SessionId,
+        session: HostSession,
+        size: TerminalSize,
+        options: OpenOptions,
+    ) -> Result<SessionEvents, SessionError> {
+        let mut sessions = self.inner.sessions();
+        let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
+        if entry.open.is_some() {
+            return Err(SessionError::StillOpen);
+        }
+        let parent = parent_commands(&sessions, entry.channel_of);
+        let entry = sessions.get_mut(&id).expect("just found");
+        entry.target = session.target;
+        entry.options = options;
+        entry.origin = Some(session.origin);
+        Ok(self.start(id, entry, size, parent))
+    }
+
     /// Opens a new session to the same target as the session `id` (open
     /// or closed), with the same settings and login, logged in the same
     /// place (a second channel: another channel on the same connection).
+    /// It keeps the same origin, so it reconnects as the original would.
     ///
     /// Must be called from within a Tokio runtime.
     pub fn duplicate(
@@ -824,16 +891,34 @@ impl SessionManager {
         id: SessionId,
         size: TerminalSize,
     ) -> Result<(SessionId, SessionEvents), SessionError> {
-        let (target, options, channel_of) = {
+        let (target, options, origin, channel_of) = {
             let sessions = self.inner.sessions();
             let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
             (
                 entry.target.clone(),
                 entry.options.clone(),
+                entry.origin.clone(),
                 entry.channel_of,
             )
         };
-        Ok(self.add(target, options, channel_of, size))
+        Ok(self.add(target, options, origin, channel_of, size))
+    }
+
+    /// The hosts of `moves` in the workspace at `root` have new ids (#99):
+    /// the sessions to them (open or closed) reconnect to the new ones.
+    /// Returns how many sessions it changed.
+    pub fn move_hosts(
+        &self,
+        root: &std::path::Path,
+        moves: &[crate::workspace::HostMove],
+    ) -> usize {
+        self.inner
+            .sessions()
+            .values_mut()
+            .filter_map(|entry| entry.origin.as_mut())
+            .map(|origin| origin.follow(root, moves))
+            .filter(|followed| *followed)
+            .count()
     }
 
     /// Makes every session (open or closed, not discarded) that logs to

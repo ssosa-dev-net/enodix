@@ -31,6 +31,7 @@
   import {
     discardSession,
     openSession,
+    reconnectFailure,
     type HostKeyDecision,
     type HostKeyQuestion,
     type LoginPrompt,
@@ -287,8 +288,12 @@
   });
   /** Marks where the old connection's output ends in the scrollback. */
   let markReconnect: () => void = () => {};
+  /** Writes the core's note on a reconnect under the marker: the profile it
+   * logs in with now, or why it asks for the login (#130). */
+  let noteReconnect: (note: string) => void = () => {};
 
-  /** Opens the closed session again in this terminal (same target). */
+  /** Opens the closed session again in this terminal: a host's session
+   * with the host's settings and profile as they are now (#130). */
   function reconnect() {
     if (!session || status.state !== "closed") return;
     const reconnecting = session;
@@ -302,7 +307,8 @@
     markReconnect();
     const requested = currentSize();
     reconnecting.reconnect(requested).then(
-      () => {
+      (note) => {
+        if (note) noteReconnect(note);
         // The terminal may have changed size while the shell was
         // reconnecting (the closed notice goes away at once): a resize
         // sent before the new connection existed reached the old one.
@@ -311,13 +317,17 @@
           reconnecting.resize(now);
         }
       },
-      (error) =>
-        (status = {
+      (error) => {
+        // Not tried: the host is gone, or no longer reached this way.
+        const { reason, advice } = reconnectFailure(error);
+        status = {
           state: "closed",
-          reason: String(error),
+          reason,
           offersPasswordLogin: false,
           negotiation: null,
-        }),
+          advice,
+        };
+      },
     );
   }
 
@@ -913,6 +923,7 @@
     currentSize = size;
     markReconnect = () =>
       terminal.write("\r\n\x1b[2m--- reconnecting ---\x1b[0m\r\n");
+    noteReconnect = (note) => terminal.write(`\x1b[2m${note}\x1b[0m\r\n`);
 
     // Every input goes to the shell with its origin (#34, #123), which
     // routes it: only typed keys fan out to the multi-send group. A paste
@@ -1330,14 +1341,10 @@
       <div class="ended" role="alert" data-session-ended>
         <span class="reason">{status.reason}.</span>
         {#if status.advice}
-          <!-- What to change; Enter would try the same again (#116). -->
+          <!-- What to change (#116); Enter then uses it (#130). -->
           <span data-session-advice>{status.advice}</span>
-          <span
-            >Press <kbd>Enter</kbd> to try again with the same settings.</span
-          >
-        {:else}
-          <span>Press <kbd>Enter</kbd> to reconnect.</span>
         {/if}
+        <span>Press <kbd>Enter</kbd> to reconnect.</span>
         <button data-session-new-connection onclick={ondismiss}
           >New connection</button
         >
