@@ -7,7 +7,7 @@ What comes after v1. The order and the decisions below were settled in a design 
 - **Daily use drives the order.** Features are built in the order they are needed in real work, since that is what can be verified without users.
 - **Small releases.** Each numbered item below ships on its own. The exception is 0.5.0, which holds the last two together (see "Next: 0.5.0").
 - **Python is optional.** Everything except script jobs and host enrichment works without it.
-- **Local and trusted.** The app holds some of the most sensitive passwords an organisation has, so it stays on the user's computer: no telemetry, no accounts, no cloud. The only connection it makes on its own is the update check, which can be turned off; every other connection is one the user started (a session, a Files tab or a file job, a web link, a script, a Python setup they confirmed). Nothing is added that breaks this.
+- **Local and trusted.** The app holds some of the most sensitive passwords an organisation has, so it stays on the user's computer: no telemetry, no accounts, no cloud. The only connection it makes on its own is the update check, which can be turned off; every other connection is one the user started (a session, a Files tab or a file job, a web link, a script, a Python setup they confirmed). Nothing is added that breaks this. One known exception, found on 2026-11-21 and not closed yet: the window's engine sometimes reaches Microsoft's Office servers while text is typed (#135, see "Trust, written down").
 - **Solid before wide.** Hardening what exists comes before showing it to anyone, and before most new features.
 - **Windows first, then Linux.** The core keeps no Windows-only assumptions. macOS is not planned for now.
 
@@ -94,6 +94,9 @@ Jobs and scripts (#119) has its ticket and waits for the job fixes to settle; Wi
 
 - One plain document: where passwords and keys are kept, what is encrypted and what is not (logs, job results and config backups are plain files), and every connection the app can make and why.
 - A test that the app makes no connection on its own with the update check off (the smoke test already checks this at start; extend it over a whole run).
+- Built on 2026-11-21 (#115): [docs/trust.md](docs/trust.md), every statement checked against the code, and the end-to-end test now watches the TCP and UDP endpoints of the app's processes and the web engine's own network log for its whole run, failing on anything but the test's servers on this computer. It was shown to fail with a connection made on purpose.
+- What the watch found: the "Local and trusted" principle had not held in any release so far, 0.4.1 included. The app's own code made no connection of its own, but the window's engine, Microsoft's WebView2, did: it fetched Edge's configuration at start (with a client id, the OS version and the install date), looked up `wpad` for a proxy script, asked for component updates and downloaded them, and ran Edge's autofill and writing suggestions on what is typed. All of that is now turned off.
+- **Still open, and to close before 0.5.0 (#135):** while text is typed, the engine's browser process now and then connects to Microsoft's Office and Exchange Online addresses. These connections do not go through the engine's network stack, so what they carry has not been seen; it is not known whether typed text is in them. Until this is closed or understood, `docs/trust.md` says so plainly and the end-to-end test lists the connections as a known finding.
 
 **Going public**
 
