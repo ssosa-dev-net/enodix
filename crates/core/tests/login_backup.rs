@@ -264,6 +264,41 @@ async fn a_session_backs_up_over_a_second_channel_with_a_single_login() {
     assert_eq!(manager.encrypted(id), Ok(true));
 }
 
+/// As in a job, the command timeout counts from the last output: a
+/// configuration that takes longer than it to show is kept whole.
+#[tokio::test]
+async fn a_configuration_shown_slowly_is_backed_up_whole() {
+    let server = TestSshServer::start_device("r1").await;
+    for n in 1..=4 {
+        server.configure(&format!("interface Loopback{n}"));
+    }
+    // Eight lines, 400 ms apart: 3.2 s in all, never 2 s quiet.
+    server.set_config_pace(std::time::Duration::from_millis(400));
+    let site = Site::new(&server);
+    let manager = support::manager();
+    let backup = site
+        .backup(SessionLogin::Profile)
+        .expect("the backup applies")
+        .with_command_timeout(std::time::Duration::from_secs(2));
+    let (_id, mut events) = manager.open_with(
+        SessionTarget::Ssh(site.target(SessionLogin::Profile)),
+        SIZE,
+        OpenOptions {
+            when_connected: Some(Arc::new(backup)),
+            ..OpenOptions::default()
+        },
+    );
+    let mut seen = Seen::default();
+    connected(&mut events, &server, &mut seen).await;
+    let LoginBackupOutcome::Saved { version } = backup_outcome(&mut events, &mut seen).await else {
+        panic!("the slow configuration was not saved");
+    };
+    assert_eq!(
+        site.configs.read(site.id(), &r1(), &version).unwrap(),
+        server.running_config(1)
+    );
+}
+
 #[tokio::test]
 async fn it_runs_again_after_a_reconnect() {
     let server = TestSshServer::start_device("r1").await;

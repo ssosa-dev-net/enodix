@@ -262,6 +262,23 @@ credential profile …". No value of the `eos` or `ios` definition had to
 change. A terminal session is not affected: the app never types
 `enable` there.
 
+Since #122 a privilege command that comes back, without asking, to the
+very prompt it was typed at counts as privileged mode only if the device
+said nothing on the way (a login privileged already: `csr1#` and `ceos1#`
+say nothing to `enable`). If it said something (IOS with no enable
+password: `% No password set`, staying at `csr1>`), the job fails the host
+with "\"enable\" did not reach privileged mode: the device answered … and
+stayed at …", and a config backup keeps nothing; a show-config that shows
+only `%` lines (and IOS's `^` marker) is never kept either. A
+`Password:` before the first prompt fails the host as a login question.
+The command timeout now counts from the device's last output (quiet
+time), and a command still showing output after 30 minutes fails. Not
+yet checked on the lab devices: the admin logins (already privileged)
+and the `labuser` logins (asked for the enable secret) should pass
+`lab_privilege`, `lab_config_backup` and `lab_second_channel` as before,
+and `labuser` on csr1 with the device's enable secret removed should fail
+with `% No password set`.
+
 Each built-in definition's file folder (#102) comes from
 [Files on the lab devices](#files-on-the-lab-devices): `eos` `/mnt/flash`
 (cEOS), `junos` `/var/tmp` (cJunos), `ios` `flash:` (on the CSR 1000v it

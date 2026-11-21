@@ -25,9 +25,14 @@ use crate::workspace::HostId;
 pub const DEFAULT_PARALLEL: usize = 10;
 /// The most hosts that may run at once.
 pub const MAX_PARALLEL: usize = 50;
-/// How long a host may take to show its prompt after a line is sent (or
-/// after logging in) when nothing says otherwise.
+/// How long a host may stay quiet without showing its prompt, after a line
+/// is sent (or after logging in), when nothing says otherwise: counted
+/// from the last output, so a command still printing is waited for.
 pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+/// The longest one command (or the wait after logging in) may go on
+/// showing output without getting back to the prompt, when nothing says
+/// otherwise: it ends output that never stops.
+pub const DEFAULT_COMMAND_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// How long output must stay quiet after it ends with the prompt for the
 /// prompt to count, so that output merely ending in `#` for a moment is not
 /// taken for it (the containerlab suite's rule).
@@ -45,9 +50,12 @@ pub struct JobOptions {
     /// How many hosts run at once (each with its one connection open), 1
     /// to [`MAX_PARALLEL`]; [`start`] refuses other values.
     pub parallel: usize,
-    /// How long a host may take to show its prompt after each line; a host
-    /// that takes longer fails.
+    /// How long a host may show nothing more without its prompt after each
+    /// line (counted from its last output); a host quiet for longer fails.
     pub command_timeout: Duration,
+    /// How long a host may go on showing output after each line without
+    /// getting back to its prompt; a host that does fails.
+    pub command_limit: Duration,
     /// Where a config backup keeps the configurations it fetches; a config
     /// backup cannot start without it.
     pub configs: Option<ConfigStore>,
@@ -61,6 +69,7 @@ impl Default for JobOptions {
         Self {
             parallel: DEFAULT_PARALLEL,
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
+            command_limit: DEFAULT_COMMAND_LIMIT,
             configs: None,
             script: None,
         }
@@ -385,7 +394,10 @@ enum Open {
 
 /// How waiting for a prompt ended, if not with the prompt.
 enum NoPrompt {
+    /// Nothing more arrived for the command timeout.
     TimedOut,
+    /// Output was still arriving when the command limit passed.
+    Endless,
     Closed(CloseReason),
     /// The line could not be sent: the session had ended.
     NotSent,
@@ -546,18 +558,34 @@ impl HostRunner {
         let id = *id;
         self.state(HostState::Running);
 
-        if let Err(error) = self.wait_for(events, &patterns, false).await {
-            return failed(match error {
-                NoPrompt::TimedOut => format!(
-                    "no prompt within {} of logging in (does the platform {}'s prompt pattern match?)",
-                    seconds(self.options.command_timeout),
-                    host.platform
-                ),
-                NoPrompt::Closed(reason) => {
-                    format!("the session ended before the first prompt: {reason}")
-                }
-                NoPrompt::NotSent => unreachable!("nothing was sent"),
-            });
+        match self.wait_for(events, &patterns, false).await {
+            Ok(Shown::Prompt) => {}
+            // A password question before the first prompt is the login's
+            // (a second login in-band), never the privilege command's.
+            Ok(Shown::PrivilegePrompt) => {
+                return failed(format!(
+                    "the device asked {:?} after logging in, before its first prompt; a job never answers login questions",
+                    self.text.current_line().trim()
+                ))
+            }
+            Err(error) => {
+                return failed(match error {
+                    NoPrompt::TimedOut => format!(
+                        "no prompt after logging in: the device showed nothing more for {} (does the platform {}'s prompt pattern match?)",
+                        span(self.options.command_timeout),
+                        host.platform
+                    ),
+                    NoPrompt::Endless => format!(
+                        "no prompt after logging in: it was still showing output after {} (does the platform {}'s prompt pattern match?)",
+                        span(self.options.command_limit),
+                        host.platform
+                    ),
+                    NoPrompt::Closed(reason) => {
+                        format!("the session ended before the first prompt: {reason}")
+                    }
+                    NoPrompt::NotSent => unreachable!("nothing was sent"),
+                })
+            }
         }
         if let Some(command) = &work.privilege_command {
             if let Err(reason) = self
@@ -624,6 +652,11 @@ impl HostRunner {
         if config.is_empty() {
             return Err(format!("{command:?} showed nothing to back up"));
         }
+        if let Some(error) = only_an_error(&config) {
+            return Err(format!(
+                "{command:?} showed only an error, not a configuration: {error:?}"
+            ));
+        }
         let Some((store, workspace)) = &self.configs else {
             unreachable!("a config backup starts only with a store and a workspace id")
         };
@@ -666,6 +699,12 @@ impl HostRunner {
     /// question with the profile's enable secret; why not, if the host does
     /// not get back to its prompt, or gets back to the very prompt it had
     /// before (the device refused the secret without asking again).
+    ///
+    /// Without a question, coming back to the very prompt it was typed at
+    /// is privileged mode reached only if the device said nothing (a login
+    /// privileged already); if it said something ("% No password set"),
+    /// the device refused, and the host fails with what it said. A changed
+    /// prompt is privileged mode, whatever was said on the way.
     async fn enter_privileged(
         &mut self,
         id: SessionId,
@@ -676,13 +715,23 @@ impl HostRunner {
     ) -> Result<(), String> {
         let work = &host.work;
         let before = self.text.current_line().trim().to_string();
+        let start = self.output.len();
         match self.send(id, events, command, patterns).await {
-            Ok(Shown::Prompt) => return Ok(()),
+            Ok(Shown::Prompt) => {
+                let after = self.text.current_line().trim().to_string();
+                let said = said_after(&self.output[start..], command);
+                if after != before || said.is_empty() {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "{command:?} did not reach privileged mode: the device answered {said:?} and stayed at {after}"
+                ));
+            }
             Ok(Shown::PrivilegePrompt) => {}
             Err(NoPrompt::TimedOut) if patterns.privilege_prompt.is_none() => {
                 return Err(format!(
-                    "no prompt within {} after {command:?}; if it asked for a password, the platform {} has no privilege password pattern to recognise it",
-                    seconds(self.options.command_timeout),
+                    "no prompt after {command:?}: the device showed nothing more for {}; if it asked for a password, the platform {} has no privilege password pattern to recognise it",
+                    span(self.options.command_timeout),
                     host.platform
                 ))
             }
@@ -745,8 +794,12 @@ impl HostRunner {
     fn no_prompt_after(&self, what: &str, error: NoPrompt) -> String {
         match error {
             NoPrompt::TimedOut => format!(
-                "no prompt within {} after {what}",
-                seconds(self.options.command_timeout)
+                "no prompt after {what}: the device showed nothing more for {}",
+                span(self.options.command_timeout)
+            ),
+            NoPrompt::Endless => format!(
+                "no prompt after {what}: it was still showing output after {}, the most one command may take",
+                span(self.options.command_limit)
             ),
             NoPrompt::Closed(reason) => format!("the session ended after {what}: {reason}"),
             NoPrompt::NotSent => format!("the session ended before {what} was sent"),
@@ -849,15 +902,22 @@ impl HostRunner {
     /// the privilege password question) and nothing more arrives for
     /// [`PROMPT_SETTLE`]. With `after_input`, what is already shown does
     /// not count: the device must answer first.
+    ///
+    /// It gives up when nothing has arrived for the command timeout
+    /// (counted from the last output) or, while output keeps arriving,
+    /// once the command limit has passed since it started waiting.
     async fn wait_for(
         &mut self,
         events: &mut SessionEvents,
         patterns: &Patterns,
         after_input: bool,
     ) -> Result<Shown, NoPrompt> {
-        let deadline = Instant::now() + self.options.command_timeout;
+        let started = Instant::now();
+        let limit = started + self.options.command_limit;
+        let mut quiet_until = started + self.options.command_timeout;
         let mut answered = !after_input;
         loop {
+            let deadline = quiet_until.min(limit);
             let shown = if answered {
                 let line = self.text.current_line();
                 if patterns.prompt.is_match(&line) {
@@ -881,10 +941,17 @@ impl HostRunner {
             };
             match tokio::time::timeout_at(until, events.next()).await {
                 // Quiet at the prompt (even if only just in time).
-                Err(_) => return shown.ok_or(NoPrompt::TimedOut),
+                Err(_) => {
+                    return shown.ok_or(if limit <= quiet_until {
+                        NoPrompt::Endless
+                    } else {
+                        NoPrompt::TimedOut
+                    })
+                }
                 Ok(Some(SessionEvent::Output(bytes))) => {
                     self.take(events, &bytes);
                     answered = true;
+                    quiet_until = Instant::now() + self.options.command_timeout;
                 }
                 Ok(Some(SessionEvent::State(SessionState::Closed(reason)))) => {
                     return Err(NoPrompt::Closed(reason))
@@ -946,6 +1013,45 @@ fn config_shown(shown: &str, prompt: &str, command: &str, ignored: Option<&Regex
     lines.iter().map(|line| format!("{line}\n")).collect()
 }
 
+/// What the device said in `shown`, the plain-text output (complete lines)
+/// after `command` was typed: its lines without the echo (a first line
+/// ending with the command) and without blank ones, joined by spaces.
+fn said_after(shown: &str, command: &str) -> String {
+    let mut lines = crate::diff::lines(shown);
+    if lines
+        .first()
+        .is_some_and(|echo| echo.trim_end().ends_with(command.trim()))
+    {
+        lines.remove(0);
+    }
+    lines
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The device's error, when `config` (what the show-config command showed)
+/// is nothing but one: every line a `%` message, or the `^` marker IOS
+/// puts above one. Such a text is never a configuration.
+fn only_an_error(config: &str) -> Option<String> {
+    let lines: Vec<&str> = config
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let messages: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with('%'))
+        .collect();
+    let all = lines
+        .iter()
+        .all(|line| line.starts_with('%') || line.chars().all(|c| c == '^'));
+    (all && !messages.is_empty()).then(|| messages.join(" "))
+}
+
 fn failed(reason: String) -> HostState {
     HostState::Failed { reason }
 }
@@ -960,9 +1066,15 @@ fn asked_for_password(line: &str) -> String {
     format!("{line:?} asked for a password, and a job only answers the privilege command's")
 }
 
-/// `duration` in seconds, for the user: `60 s`, `0.5 s`.
-fn seconds(duration: Duration) -> String {
-    format!("{} s", duration.as_secs_f64())
+/// `duration` for the user: `60 s`, `0.5 s`, or whole minutes from two
+/// minutes on (`30 min`).
+fn span(duration: Duration) -> String {
+    let whole = duration.as_secs();
+    if whole >= 120 && whole.is_multiple_of(60) && duration.subsec_nanos() == 0 {
+        format!("{} min", whole / 60)
+    } else {
+        format!("{} s", duration.as_secs_f64())
+    }
 }
 
 /// Why a host whose key was not trusted failed.

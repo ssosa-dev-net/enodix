@@ -700,6 +700,166 @@ async fn privileged_mode_is_entered_with_the_enable_secret() {
         .contains(support::ACCESS_DENIED));
 }
 
+/// A privilege command that comes back to the very prompt it was typed at,
+/// having said something (IOS with no enable password: "% No password
+/// set" at `r1>`), did not reach privileged mode: the host fails with what
+/// the device answered, and nothing more is sent. A device that prints
+/// something and changes its prompt got there, and so did one already
+/// privileged that says nothing and stays at `r3#`.
+#[tokio::test]
+async fn a_privilege_command_that_stays_at_the_prompt_saying_something_fails_the_host() {
+    let r1 = TestSshServer::start_unprivileged_device("r1").await;
+    r1.set_enable(support::EnableMode::NotSet);
+    let r2 = TestSshServer::start_unprivileged_device("r2").await;
+    r2.set_enable(support::EnableMode::Notice(
+        "Entering privileged mode".into(),
+    ));
+    let r3 = TestSshServer::start_device("r3").await;
+    let (_temp, workspace) = workspace(&[
+        ("_folder.yaml", "credential_profile: enable\n".into()),
+        ("r1.yaml", device_on(&r1, "eos", "")),
+        ("r2.yaml", device_on(&r2, "eos", "")),
+        ("r3.yaml", device_on(&r3, "eos", "")),
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+    ]);
+    let store = store(
+        &workspace,
+        &[CredentialProfile {
+            enable_secret: Some(support::ENABLE_SECRET.into()),
+            ..profile("enable", USERNAME)
+        }],
+    );
+    let planned = plan(&workspace, &store, &folder(""), &snippet("Show", &[]));
+    let report = run_with(&support::manager(), planned, JobOptions::default()).await;
+
+    let reason = failure(&report, "r1.yaml");
+    assert_eq!(
+        reason,
+        format!(
+            "\"enable\" did not reach privileged mode: the device answered {:?} and stayed at r1>",
+            support::NO_ENABLE_PASSWORD
+        )
+    );
+    let r1 = result(&report, "r1.yaml");
+    assert!(!r1.output.contains("show hostname"), "{}", r1.output);
+    assert!(!r1.output.contains("terminal length"), "{}", r1.output);
+
+    let r2 = result(&report, "r2.yaml");
+    assert_eq!(r2.state, HostState::Done, "{}", r2.output);
+    assert!(
+        r2.output
+            .starts_with("r2> enable\nEntering privileged mode\nr2# terminal length 0\n"),
+        "{}",
+        r2.output
+    );
+    let r3 = result(&report, "r3.yaml");
+    assert_eq!(r3.state, HostState::Done, "{}", r3.output);
+    assert!(r3.output.starts_with("r3# enable\nr3# terminal length 0\n"));
+}
+
+/// A "Password:" right after logging in is a login question, even where
+/// it matches the privilege password pattern: the host fails saying so,
+/// and neither the privilege command nor the enable secret is typed into
+/// it.
+#[tokio::test]
+async fn a_password_question_right_after_login_fails_the_host_and_is_never_answered() {
+    let r1 = TestSshServer::start_unprivileged_device("r1").await;
+    r1.ask_password_at_login();
+    let r2 = TestSshServer::start_unprivileged_device("r2").await;
+    let (_temp, workspace) = workspace(&[
+        ("_folder.yaml", "credential_profile: enable\n".into()),
+        ("r1.yaml", device_on(&r1, "eos", "")),
+        ("r2.yaml", device_on(&r2, "eos", "")),
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+    ]);
+    let store = store(
+        &workspace,
+        &[CredentialProfile {
+            enable_secret: Some(support::ENABLE_SECRET.into()),
+            ..profile("enable", USERNAME)
+        }],
+    );
+    let planned = plan(&workspace, &store, &folder(""), &snippet("Show", &[]));
+    let report = run_with(&support::manager(), planned, JobOptions::default()).await;
+
+    let reason = failure(&report, "r1.yaml");
+    assert_eq!(
+        reason,
+        format!(
+            "the device asked {:?} after logging in, before its first prompt; a job never answers login questions",
+            support::LOGIN_QUESTION.trim()
+        )
+    );
+    assert_eq!(r1.typed_at_login(), Vec::<String>::new());
+    let output = &result(&report, "r1.yaml").output;
+    assert_eq!(output.trim(), support::LOGIN_QUESTION.trim(), "{output}");
+    // The other host still enters privileged mode as ever.
+    let r2 = result(&report, "r2.yaml");
+    assert_eq!(r2.state, HostState::Done, "{}", r2.output);
+}
+
+/// The command timeout counts from the last output: a command that keeps
+/// printing for longer than the timeout is waited for, to its prompt.
+#[tokio::test]
+async fn output_still_arriving_after_the_command_timeout_is_waited_for() {
+    let r1 = TestSshServer::start_device("r1").await;
+    let (_temp, workspace) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("r1.yaml", device(&r1, "")),
+        ("_snippets.yaml", "Slow: drip 12 250\n".into()),
+    ]);
+    let store = store(&workspace, &[profile("lab", USERNAME)]);
+    let planned = plan(&workspace, &store, &folder(""), &snippet("Slow", &[]));
+    // 12 lines a quarter of a second apart: 3 s in all, never 2 s quiet.
+    let options = JobOptions {
+        command_timeout: std::time::Duration::from_secs(2),
+        ..JobOptions::default()
+    };
+    let report = run_with(&support::manager(), planned, options).await;
+    let r1 = result(&report, "r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    let all: String = (1..=12).map(|n| format!("line {n}\n")).collect();
+    assert_eq!(
+        r1.output,
+        format!("r1# terminal length 0\nr1# drip 12 250\n{all}r1#\n")
+    );
+}
+
+/// Output that never ends is ended by the command limit, which the reason
+/// names; the default limit is half an hour.
+#[tokio::test]
+async fn output_that_never_ends_fails_its_host_at_the_command_limit() {
+    let r1 = TestSshServer::start_device("r1").await;
+    let (_temp, workspace) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("r1.yaml", device(&r1, "")),
+        // A line every 100 ms, for hours.
+        ("_snippets.yaml", "Endless: drip 100000 100\n".into()),
+    ]);
+    let store = store(&workspace, &[profile("lab", USERNAME)]);
+    let planned = plan(&workspace, &store, &folder(""), &snippet("Endless", &[]));
+    assert_eq!(
+        JobOptions::default().command_limit,
+        std::time::Duration::from_secs(30 * 60)
+    );
+    let options = JobOptions {
+        command_timeout: std::time::Duration::from_secs(1),
+        command_limit: std::time::Duration::from_secs(2),
+        ..JobOptions::default()
+    };
+    let report = run_with(&support::manager(), planned, options).await;
+    assert_eq!(
+        failure(&report, "r1.yaml"),
+        "no prompt after \"drip 100000 100\": it was still showing output after 2 s, the most one command may take"
+    );
+    assert!(
+        result(&report, "r1.yaml").output.contains("\nline 5\n"),
+        "{}",
+        result(&report, "r1.yaml").output
+    );
+    closes(&r1).await;
+}
+
 /// A snippet line that makes the device ask for a password fails the host
 /// at the question; the next line is never typed into it.
 #[tokio::test]
@@ -761,7 +921,10 @@ async fn paged_output_is_captured_whole_after_paging_is_turned_off() {
         format!("r1# terminal length 0\nr1# lines 60\n{all}r1#\n")
     );
     let reason = failure(&report, "r2.yaml");
-    assert_eq!(reason, "no prompt within 1 s after \"lines 60\"");
+    assert_eq!(
+        reason,
+        "no prompt after \"lines 60\": the device showed nothing more for 1 s"
+    );
     let r2 = result(&report, "r2.yaml");
     assert!(r2.output.contains("line 24\n"), "{}", r2.output);
     assert!(!r2.output.contains("line 25\n"), "{}", r2.output);
@@ -800,7 +963,7 @@ async fn a_command_that_never_returns_fails_only_its_host() {
     let report = run_with(&support::manager(), planned, options).await;
     assert_eq!(
         failure(&report, "r1.yaml"),
-        "no prompt within 1 s after \"hang\""
+        "no prompt after \"hang\": the device showed nothing more for 1 s"
     );
     assert!(!result(&report, "r1.yaml").output.contains("after"));
     let r2 = result(&report, "r2.yaml");

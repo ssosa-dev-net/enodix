@@ -925,6 +925,7 @@ impl LabRun {
             command_timeout: self.timeout(),
             configs,
             script: None,
+            ..JobOptions::default()
         };
         let mut job = job::start(manager, plan, options)
             .map_err(|error| format!("the job did not start: {error}"))?;
