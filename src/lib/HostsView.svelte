@@ -641,6 +641,29 @@
     <p class="error" role="alert">{inventory.openError}</p>
   {/if}
 
+  {#if workspace?.unavailable}
+    {@const unavailable = workspace.unavailable}
+    <div
+      class="unavailable"
+      role="alert"
+      data-workspace-unavailable={unavailable.kind}
+    >
+      <p class="unavailable-line">
+        <TriangleAlert size={14} aria-hidden="true" />
+        <span
+          >{unavailable.message.charAt(0).toUpperCase() +
+            unavailable.message.slice(1)}.</span
+        >
+      </p>
+      <p class="unavailable-explanation">{unavailable.explanation}</p>
+      {#if unavailable.kind === "otherWorkspace"}
+        <button data-workspace-unavailable-open onclick={onopen}
+          >Workspaces…</button
+        >
+      {/if}
+    </div>
+  {/if}
+
   {#if inventory.editError}
     <p class="error edit-error" role="alert">
       <span>{inventory.editError}</span>
@@ -1057,6 +1080,33 @@
     background: none;
     padding: 0 var(--space-1);
     color: var(--muted);
+  }
+
+  .unavailable {
+    margin: var(--space-2) var(--space-2) 0;
+    border: 1px solid var(--warning-border);
+    border-radius: var(--radius-md);
+    background: var(--warning-bg);
+    padding: var(--space-1-5) var(--space-2);
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
+  }
+
+  .unavailable-line {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-1-5);
+    margin: 0;
+    color: var(--warning);
+  }
+
+  .unavailable-explanation {
+    margin: var(--space-1) 0 0;
+    color: var(--text);
+  }
+
+  .unavailable button {
+    margin-top: var(--space-1-5);
   }
 
   .move-report {

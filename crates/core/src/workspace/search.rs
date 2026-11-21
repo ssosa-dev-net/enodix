@@ -22,6 +22,7 @@ use serde::Serialize;
 
 use super::filters::{Condition, SavedFilter, CUSTOM_PREFIX, TAG, TEXT};
 use super::{Folder, HostId, ADDRESS, NAME, PLATFORM};
+use crate::names;
 
 /// What a search found: the best hits, up to the limit asked for, and how
 /// many hosts matched in all.
@@ -91,7 +92,7 @@ struct Field {
 
 impl Entry {
     fn push(&mut self, key: impl Into<Cow<'static, str>>, value: &str, weight: u32) {
-        let lower = value.to_lowercase();
+        let lower = names::folded(value);
         let key = key.into();
         if value.is_empty()
             || self
@@ -179,7 +180,7 @@ enum Rule {
 
 impl Rule {
     fn of(condition: &Condition) -> Self {
-        let value = condition.value.trim().to_lowercase();
+        let value = names::folded(condition.value.trim());
         if condition.field == TEXT {
             Rule::Text(value.split_whitespace().map(str::to_string).collect())
         } else {
@@ -283,7 +284,7 @@ impl SearchIndex {
     /// The hosts matching every word of `query`, best first, at most
     /// `limit` of them. An empty query matches every host.
     pub(super) fn search(&self, query: &str, limit: usize) -> SearchResults {
-        let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let terms: Vec<String> = query.split_whitespace().map(names::folded).collect();
         let mut scored: Vec<(u32, &Entry, Vec<usize>)> = self
             .entries
             .iter()

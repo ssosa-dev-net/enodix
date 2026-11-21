@@ -102,13 +102,13 @@ impl FolderMove<'_> {
 }
 
 /// The new id of the host `reference` names, if it is one of `moves`.
-/// References match host ids ignoring case and surrounding blanks, as the
-/// jump hosts do.
+/// References match host ids ignoring case, Unicode form and surrounding
+/// blanks, as the jump hosts do.
 fn moved_host(moves: &[HostMove], reference: &str) -> Option<String> {
-    let reference = reference.trim().replace('\\', "/").to_lowercase();
+    let reference = crate::names::folded(&reference.trim().replace('\\', "/"));
     moves
         .iter()
-        .find(|moved| moved.from.as_str().to_lowercase() == reference)
+        .find(|moved| crate::names::folded(moved.from.as_str()) == reference)
         .map(|moved| moved.to.as_str().to_string())
 }
 

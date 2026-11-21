@@ -305,6 +305,64 @@ fn the_work_on_the_whole_inventory_grows_linearly_with_the_number_of_hosts() {
     }
 }
 
+/// What the shell holds its workspace lock for on a live reload of 20 000
+/// hosts after one file changed (#132): the whole refresh (as before), or
+/// only taking a workspace loaded beside the lock (`refresh_with`); and
+/// what the shell then does under the lock either way, building the view
+/// it sends (here: the tree, roles and paste safety, as JSON).
+#[test]
+#[ignore = "writes 20 000 files: run in a release build with --ignored --nocapture"]
+fn a_refresh_of_a_large_inventory_holds_the_workspace_only_to_take_it() {
+    use std::sync::Mutex;
+    let hosts = 20_000;
+    let temp = generated(hosts, Shape::Flat);
+    let root = temp.path();
+    let shared = Mutex::new(Workspace::open(root).unwrap());
+    let change = |n: usize| {
+        fs::write(
+            root.join("host-00001.yaml"),
+            format!("address: 10.9.9.{n}\n"),
+        )
+        .unwrap();
+    };
+    let mut under_lock = Vec::new();
+    let mut beside = Vec::new();
+    let mut view = Vec::new();
+    for round in 0..3 {
+        change(round * 2);
+        let started = Instant::now();
+        assert!(shared.lock().unwrap().refresh().unwrap());
+        under_lock.push(started.elapsed());
+
+        change(round * 2 + 1);
+        let fresh = Workspace::open(root);
+        let started = Instant::now();
+        assert!(shared.lock().unwrap().refresh_with(fresh).unwrap());
+        beside.push(started.elapsed());
+
+        let started = Instant::now();
+        let guard = shared.lock().unwrap();
+        let json = serde_json::to_vec(&(
+            guard.tree(),
+            guard.roles(),
+            guard.host_roles(),
+            guard.host_paste_safety(),
+        ))
+        .unwrap();
+        drop(guard);
+        view.push(started.elapsed());
+        assert!(!json.is_empty());
+    }
+    let best = |times: &[Duration]| times.iter().min().copied().unwrap();
+    println!(
+        "{hosts} hosts, the lock held for: the whole refresh {:?}, taking one loaded beside {:?}; \
+         the view after it {:?}",
+        best(&under_lock),
+        best(&beside),
+        best(&view)
+    );
+}
+
 #[test]
 #[ignore = "writes 50 000 files: run in a release build with --ignored --nocapture (see the module's note)"]
 fn large_inventories_measured() {

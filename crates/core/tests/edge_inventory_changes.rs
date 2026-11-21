@@ -17,7 +17,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use netterm_core::workspace::{
-    Changes, Condition, EditError, HostId, SavedFilter, WatchOptions, Workspace, WorkspaceWatcher,
+    Changes, Condition, EditError, HostId, SavedFilter, Unavailable, WatchOptions, Workspace,
+    WorkspaceWatcher,
 };
 use support::workspaces::files;
 use tempfile::TempDir;
@@ -397,10 +398,203 @@ fn live_reload_goes_on_after_the_workspace_folder_is_moved_away_and_back() {
     watcher_after_return(Return::MovedBack);
 }
 
+/// Windows and Linux: the system's watch ends with the folder it watched;
+/// the watcher looks for the folder and watches the new one (#132).
 #[test]
-#[ignore = "live reload stops for good once the watched folder is removed, even when it is \
-            made again (a network drive that reconnects): nothing watches for its return \
-            (ticket proposed in #117's report); run with --ignored"]
 fn live_reload_goes_on_after_the_workspace_folder_is_removed_and_made_again() {
     watcher_after_return(Return::MadeAgain);
+}
+
+/// Watches `root` checking the folder every 200 ms.
+fn watch_checking_often(root: &Path) -> Watched {
+    let workspace = Workspace::open(root).unwrap();
+    let (sender, changes) = mpsc::channel();
+    let options = WatchOptions {
+        check_every: Duration::from_millis(200),
+        ..WatchOptions::default()
+    };
+    let watcher = WorkspaceWatcher::start(root, options, move |change| {
+        let _ = sender.send(change);
+    })
+    .unwrap();
+    Watched {
+        workspace,
+        changes,
+        _watcher: watcher,
+    }
+}
+
+impl Watched {
+    /// Refreshes on each notification until `until` holds after one, as
+    /// the app does; fails after [`WITHIN`].
+    fn refresh_until(&mut self, what: &str, until: impl Fn(&Workspace) -> bool) {
+        let started = Instant::now();
+        loop {
+            let left = WITHIN.saturating_sub(started.elapsed());
+            match self.changes.recv_timeout(left) {
+                Ok(_) => {
+                    let _ = self.workspace.refresh();
+                    if until(&self.workspace) {
+                        return;
+                    }
+                }
+                Err(_) => panic!("{what}: not within {WITHIN:?}"),
+            }
+        }
+    }
+}
+
+/// Windows and Linux: the folder going is reported by itself (no file need
+/// change after it), the workspace then says it cannot be reached and why,
+/// every edit is refused with that reason; once the folder is back the
+/// workspace loads it again by itself and the edits work.
+#[test]
+fn a_workspace_folder_that_cannot_be_reached_says_so_until_it_is_back() {
+    let parent = TempDir::new().unwrap();
+    let root = parent.path().join("ws");
+    let away = parent.path().join("ws-away");
+    fs::rename(generated(5).keep(), &root).unwrap();
+    let mut watched = watch_checking_often(&root);
+    let host = watched
+        .workspace
+        .host(&HostId::new("site1/host-0001.yaml"))
+        .unwrap()
+        .clone();
+    let revision = watched.workspace.revision();
+
+    fs::rename(&root, &away).unwrap();
+    watched.refresh_until("the folder going was not seen", |workspace| {
+        workspace.unavailable().is_some()
+    });
+    let workspace = &mut watched.workspace;
+    let unavailable = workspace.unavailable().unwrap().clone();
+    assert!(
+        matches!(unavailable, Unavailable::Unreachable { .. }),
+        "{unavailable:?}"
+    );
+    assert!(
+        unavailable.to_string().contains("cannot be reached"),
+        "{unavailable}"
+    );
+    assert!(
+        workspace.revision() > revision,
+        "a newer revision, so that the window shows it"
+    );
+    assert_eq!(workspace.search("", 100).total, 5, "what was shown is kept");
+    let mut edited = host.clone();
+    edited.description = Some("while gone".into());
+    let error = workspace.write_host(&edited).unwrap_err();
+    assert!(matches!(error, EditError::Unavailable(_)), "{error}");
+    assert!(error.to_string().contains("cannot be reached"), "{error}");
+    let error = workspace.create_folder("", "new").unwrap_err();
+    assert!(matches!(error, EditError::Unavailable(_)), "{error}");
+    assert!(!root.exists(), "an edit made the folder again");
+
+    fs::rename(&away, &root).unwrap();
+    watched.refresh_until("the folder coming back was not seen", |workspace| {
+        workspace.unavailable().is_none()
+    });
+    watched.workspace.write_host(&edited).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// Windows and Linux: the refresh that finds the folder gone says so even
+/// before the watcher notices (the app refreshes on any change), and the
+/// edits refuse with the reason without a refresh first.
+#[test]
+fn an_edit_while_the_folder_is_gone_is_refused_with_that_reason() {
+    let parent = TempDir::new().unwrap();
+    let root = parent.path().join("ws");
+    fs::rename(generated(3).keep(), &root).unwrap();
+    let mut workspace = Workspace::open(&root).unwrap();
+    fs::rename(&root, parent.path().join("away")).unwrap();
+    let error = workspace.create_host("", "new", "10.9.9.9").unwrap_err();
+    assert!(matches!(error, EditError::Unavailable(_)), "{error}");
+    assert!(workspace.refresh().is_err());
+    assert!(workspace.unavailable().is_some());
+}
+
+/// Windows and Linux: a folder that comes back holding another workspace
+/// (its `_workspace.yaml` names another id) is not taken for the one that
+/// was open: what was shown is kept, edits are refused, and it says why.
+#[test]
+fn a_folder_that_comes_back_as_another_workspace_is_not_taken_for_the_open_one() {
+    let parent = TempDir::new().unwrap();
+    let root = parent.path().join("ws");
+    let away = parent.path().join("away");
+    fs::rename(generated(4).keep(), &root).unwrap();
+    let mut workspace = Workspace::open(&root).unwrap();
+    assert_eq!(workspace.id(), Some("edge-changes"));
+
+    fs::rename(&root, &away).unwrap();
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("_workspace.yaml"), "id: someone-else\n").unwrap();
+    fs::write(root.join("theirs.yaml"), "address: 10.7.7.7\n").unwrap();
+    assert!(workspace.refresh().is_err());
+    let unavailable = workspace.unavailable().unwrap().clone();
+    assert_eq!(
+        unavailable,
+        Unavailable::OtherWorkspace {
+            id: Some("someone-else".into())
+        }
+    );
+    let text = format!("{unavailable} {}", unavailable.explanation());
+    for word in [
+        "another workspace",
+        "someone-else",
+        "Credential",
+        "open it again",
+    ] {
+        assert!(text.contains(word), "{word:?} not in {text}");
+    }
+    assert_eq!(workspace.search("", 100).total, 4, "what was shown is kept");
+    let error = workspace.create_host("", "new", "10.9.9.9").unwrap_err();
+    assert!(matches!(error, EditError::Unavailable(_)), "{error}");
+    assert!(!root.join("new.yaml").exists());
+
+    // Without an identity file at all: not taken either.
+    fs::remove_file(root.join("_workspace.yaml")).unwrap();
+    assert!(workspace.refresh().is_err());
+    assert_eq!(
+        workspace.unavailable(),
+        Some(&Unavailable::OtherWorkspace { id: None })
+    );
+
+    // The right folder back: shown again.
+    fs::remove_dir_all(&root).unwrap();
+    fs::rename(&away, &root).unwrap();
+    assert!(workspace.refresh().unwrap());
+    assert_eq!(workspace.unavailable(), None);
+    workspace.create_host("", "new", "10.9.9.9").unwrap();
+}
+
+/// Windows and Linux: a system watch can end without a word (a network
+/// share's connection drops while the folder stays the same): asked to
+/// check again, the watcher watches the folder anew and reports.
+#[test]
+fn asked_to_check_again_the_watcher_watches_the_folder_anew() {
+    let temp = generated(3);
+    let root = temp.path();
+    let watched = watch_checking_often(root);
+    watched._watcher.check_again();
+    let started = Instant::now();
+    let change = watched
+        .changes
+        .recv_timeout(Duration::from_secs(10))
+        .expect("no notification after asking to check again");
+    assert!(change.files.is_empty(), "{change:?}");
+    println!("reported after {:?}", started.elapsed());
+
+    fs::write(root.join("site1/host-0001.yaml"), host(1, "after")).unwrap();
+    let change = watched
+        .changes
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a change after watching anew was not reported");
+    assert!(
+        change
+            .files
+            .iter()
+            .any(|file| file == "site1/host-0001.yaml"),
+        "{change:?}"
+    );
 }

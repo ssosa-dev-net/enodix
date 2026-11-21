@@ -308,5 +308,5 @@ fn check_pattern(pattern: &str) -> Result<(), String> {
 
 /// Names are the same ignoring case and surrounding blanks.
 pub(crate) fn same(a: &str, b: &str) -> bool {
-    a.trim().to_lowercase() == b.trim().to_lowercase()
+    crate::names::same_trimmed_name(a, b)
 }

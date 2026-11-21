@@ -165,19 +165,138 @@ fn a_rename_that_changes_only_the_case_leaves_one_host_of_the_new_name() {
     );
 }
 
+/// `café` with one character for the é.
+const COMPOSED: &str = "caf\u{e9}";
+/// `café` with an e and a combining accent (what macOS and some editors
+/// write).
+const DECOMPOSED: &str = "cafe\u{301}";
+
 /// Windows and Linux (NTFS and ext4 both keep the two forms apart).
 #[test]
-#[ignore = "a name in its composed and its decomposed Unicode form is two hosts that look the \
-            same: the app does not normalise names (ticket proposed in #117's report); run with --ignored"]
 fn a_name_in_its_other_unicode_form_is_the_same_name() {
     let (_temp, mut workspace) = empty_workspace();
-    let composed = "caf\u{e9}";
-    let decomposed = "cafe\u{301}";
-    workspace.create_host("", composed, "10.0.0.1").unwrap();
+    workspace.create_host("", COMPOSED, "10.0.0.1").unwrap();
     let error = workspace
-        .create_host("", decomposed, "10.0.0.2")
+        .create_host("", DECOMPOSED, "10.0.0.2")
         .unwrap_err();
     assert!(matches!(error, EditError::AlreadyExists(_)), "{error}");
+}
+
+/// Windows and Linux: every edit that checks a name is free compares the
+/// two forms as one, for hosts and folders, ignoring case as before.
+#[test]
+fn creating_renaming_and_moving_into_a_name_in_its_other_form_is_refused() {
+    let (temp, mut workspace) = empty_workspace();
+    let upper_decomposed = "CAFE\u{301}";
+    workspace.create_folder("", COMPOSED).unwrap();
+    let error = workspace.create_folder("", DECOMPOSED).unwrap_err();
+    assert!(matches!(error, EditError::AlreadyExists(_)), "{error}");
+
+    let spare = workspace.create_folder("", "spare").unwrap();
+    let error = workspace
+        .rename_folder(&spare, upper_decomposed)
+        .unwrap_err();
+    assert!(matches!(error, EditError::AlreadyExists(_)), "{error}");
+
+    workspace
+        .create_host(COMPOSED, COMPOSED, "10.0.0.1")
+        .unwrap();
+    let other = workspace.create_host(COMPOSED, "r2", "10.0.0.2").unwrap();
+    let error = workspace.rename_host(&other, DECOMPOSED).unwrap_err();
+    assert!(matches!(error, EditError::AlreadyExists(_)), "{error}");
+
+    let below = workspace.create_folder("spare", "r1").unwrap();
+    let moved = workspace
+        .create_host(&below, DECOMPOSED, "10.0.0.3")
+        .unwrap();
+    // A host may share its name with a folder beside it.
+    let root_host = workspace.create_host("", "r9", "10.0.0.4").unwrap();
+    workspace.rename_host(&root_host, COMPOSED).unwrap();
+    let error = workspace.move_host(&moved, "").unwrap_err();
+    assert!(matches!(error, EditError::AlreadyExists(_)), "{error}");
+
+    // The file keeps the form it was given.
+    assert!(files(temp.path()).contains(&format!("spare/r1/{DECOMPOSED}.yaml")));
+}
+
+/// Windows and Linux: two files whose names are one name in two forms
+/// (pulled from a branch made on a Mac, say) both load, neither hiding
+/// the other, and the second is a problem that says why they look alike.
+#[test]
+fn two_files_of_one_name_in_two_forms_both_load_and_are_a_problem() {
+    let (temp, _) = empty_workspace();
+    let root = temp.path();
+    fs::write(root.join(format!("{COMPOSED}.yaml")), "address: 10.0.0.1\n").unwrap();
+    fs::write(
+        root.join(format!("{DECOMPOSED}.yaml")),
+        "address: 10.0.0.2\n",
+    )
+    .unwrap();
+    fs::create_dir(root.join(format!("Sede {COMPOSED}"))).unwrap();
+    fs::create_dir(root.join(format!("Sede {DECOMPOSED}"))).unwrap();
+    let workspace = Workspace::open(root).unwrap();
+
+    assert_eq!(workspace.tree().hosts.len(), 2);
+    assert_eq!(workspace.tree().folders.len(), 2);
+    let problems = workspace.problems();
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    for problem in problems {
+        assert!(problem.message.contains("two Unicode forms"), "{problem}");
+    }
+}
+
+/// Windows and Linux: what finds a host by its name or id finds it in
+/// either form: a jump host reference, an export's list of hosts, the
+/// search and saved filters.
+#[test]
+fn a_name_in_its_other_form_finds_the_host() {
+    use netterm_core::workspace::{Condition, HostId, SavedFilter};
+    let (temp, _) = empty_workspace();
+    let root = temp.path();
+    fs::write(
+        root.join(format!("{COMPOSED}.yaml")),
+        "address: 10.0.0.1\ndescription: Sala caf\u{e9}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("edge.yaml"),
+        format!("address: 10.0.0.2\njump_host: {DECOMPOSED}.yaml\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("via-upper.yaml"),
+        format!(
+            "address: 10.0.0.3\njump_host: {}.YAML\n",
+            DECOMPOSED.to_uppercase()
+        ),
+    )
+    .unwrap();
+    let workspace = Workspace::open(root).unwrap();
+    assert!(
+        workspace.problems().is_empty(),
+        "{:?}",
+        workspace.problems()
+    );
+
+    for id in ["edge.yaml", "via-upper.yaml"] {
+        let host = workspace.resolve_host(&HostId::new(id)).unwrap();
+        let chain = workspace.jump_chain(&host).unwrap();
+        assert_eq!(chain[0].host.address, "10.0.0.1", "{id}");
+    }
+    let export = inventory::export(
+        &workspace,
+        &Limit::Hosts(vec![format!("{DECOMPOSED}.yaml")]),
+    )
+    .unwrap();
+    assert_eq!(export.hosts[0].address, "10.0.0.1");
+
+    let hits = workspace.search(&format!("sala {DECOMPOSED}"), 10);
+    assert_eq!(hits.total, 1, "the search");
+    let view = workspace.apply_filter(&SavedFilter {
+        name: "Caf".into(),
+        conditions: vec![Condition::new("description", format!("sala {DECOMPOSED}"))],
+    });
+    assert_eq!(view.hosts.len(), 1, "a saved filter");
 }
 
 /// Linux only: a case-sensitive file system can hold two host files whose

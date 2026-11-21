@@ -259,5 +259,5 @@ fn same_key(key: &Value, name: &str) -> bool {
 
 /// Rule names are the same ignoring case and surrounding blanks.
 pub(super) fn same(a: &str, b: &str) -> bool {
-    a.trim().to_lowercase() == b.trim().to_lowercase()
+    crate::names::same_trimmed_name(a, b)
 }

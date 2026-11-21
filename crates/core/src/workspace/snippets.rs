@@ -76,9 +76,9 @@ impl Snippet {
     /// Whether every word of `query` is part of its name, group or text
     /// (ignoring case), and whether they all are part of its name.
     pub(super) fn matches(&self, words: &[String]) -> Option<bool> {
-        let name = self.name.to_lowercase();
-        let group = self.group.as_deref().unwrap_or_default().to_lowercase();
-        let text = self.text.to_lowercase();
+        let name = crate::names::folded(&self.name);
+        let group = crate::names::folded(self.group.as_deref().unwrap_or_default());
+        let text = crate::names::folded(&self.text);
         words
             .iter()
             .all(|word| name.contains(word) || group.contains(word) || text.contains(word))
@@ -226,5 +226,5 @@ fn same_key(key: &Value, name: &str) -> bool {
 
 /// Snippet names are the same ignoring case and surrounding blanks.
 pub(super) fn same(a: &str, b: &str) -> bool {
-    a.trim().to_lowercase() == b.trim().to_lowercase()
+    crate::names::same_trimmed_name(a, b)
 }

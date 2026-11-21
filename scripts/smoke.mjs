@@ -9,6 +9,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11362,6 +11363,37 @@ async function liveReload({ evaluate, text, screenshot, step }) {
   );
   if (!(await oddSelected())) fail("the reload lost the selection");
   step("a host deleted on disk left the tree; the selection stayed");
+
+  // The workspace folder removed (a network drive that disconnects) and
+  // made again with the same files (it reconnects): the Hosts view says
+  // it cannot be reached meanwhile, then live reload goes on (#132).
+  const unavailable = "[data-workspace-unavailable=unreachable]";
+  const kept = join(userData, "smoke-workspace-kept");
+  cpSync(workspace, kept, { recursive: true });
+  rmSync(workspace, { recursive: true, maxRetries: 10, retryDelay: 200 });
+  const said = await until("the workspace said to be unreachable", () =>
+    text(unavailable),
+  );
+  if (!/cannot be reached/.test(said))
+    fail(`the unreachable workspace: ${said}`);
+  if (!(await exists(odd))) fail("what was shown went with the folder");
+  await screenshot("workspace-unreachable");
+  cpSync(kept, workspace, { recursive: true });
+  rmSync(kept, { recursive: true, maxRetries: 10, retryDelay: 200 });
+  await until(
+    "the workspace loaded again once back",
+    async () => !(await exists(unavailable)),
+  );
+  writeFileSync(join(workspace, "pulled-r2.yaml"), "address: 192.0.2.21\n");
+  const pulledAgain = 'nav [data-host="pulled-r2.yaml"]';
+  await until("a host added after the folder came back", () =>
+    exists(pulledAgain),
+  );
+  rmSync(join(workspace, "pulled-r2.yaml"));
+  await until("that host gone again", async () => !(await exists(pulledAgain)));
+  step(
+    "the workspace folder removed and made again: said to be unreachable, then live reload went on",
+  );
 }
 
 /** A credential profile is created in the Credentials view and assigned to

@@ -20,6 +20,7 @@ use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
 use crate::import::is_secret_name;
+use crate::names;
 use crate::session::{DEFAULT_SSH_PORT, DEFAULT_TELNET_PORT};
 use crate::workspace::{
     CustomField, Environment, FlowControl, Folder, HostId, Parity, Problem, Protocol, ResolvedHost,
@@ -284,11 +285,11 @@ fn selected(workspace: &Workspace, limit: &Limit) -> Result<Vec<HostId>, ExportE
             Ok(sorted(hosts_below(folder)))
         }
         Limit::Filter(name) => {
-            let wanted = name.trim().to_lowercase();
+            let wanted = names::folded(name.trim());
             let filter = workspace
                 .filters()
                 .iter()
-                .find(|filter| filter.name.to_lowercase() == wanted)
+                .find(|filter| names::folded(&filter.name) == wanted)
                 .ok_or_else(|| ExportError::UnknownFilter {
                     name: name.clone(),
                     known: workspace.filters().iter().map(|f| f.name.clone()).collect(),
@@ -342,11 +343,11 @@ fn find_folder<'a>(root: &'a Folder, path: &str) -> Option<&'a Folder> {
                 .iter()
                 .find(|child| child.name == name)
                 .or_else(|| {
-                    let lower = name.to_lowercase();
+                    let lower = names::folded(name);
                     folder
                         .folders
                         .iter()
-                        .find(|child| child.name.to_lowercase() == lower)
+                        .find(|child| names::folded(&child.name) == lower)
                 })
         })
 }
