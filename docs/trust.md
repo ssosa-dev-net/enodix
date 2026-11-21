@@ -24,9 +24,12 @@ ships with. The paths are those of Windows unless a Linux path is given.
   session, a Files tab, a job, a script or a Python setup you confirmed.
   The update check is the one connection it makes on its own; unsigned
   pre-releases and builds of your own have no release server and check
-  nothing. One exception is not solved yet: the window's engine,
-  Microsoft's WebView2, now and then reaches Microsoft's Office servers
-  while you type (see "The window" below).
+  nothing. One exception is not solved yet: if Windows is signed in to a
+  Microsoft account, the window's engine, Microsoft's WebView2, now and
+  then fetches that account's profile from Microsoft's Office servers a
+  few seconds after the app starts. It is not caused by typing, and
+  nothing seen points to it carrying what you type (see "The window"
+  below).
 - There is no telemetry, no account, no cloud service and no crash
   reporting.
 - The app trusts every program that runs under your Windows account, as an
@@ -262,30 +265,91 @@ connections showed it:
 - look up the name `wpad` on the local network, for a proxy script;
 - ask `edge.microsoft.com` for component updates a minute after start, and
   download them;
-- connect to Microsoft's Office servers while text is typed into a field,
-  for Edge's text predictions (writing suggestions), and around forms, for
-  Edge's autofill. What these send could not be seen (the connections are
-  encrypted); text predictions work by sending the text being typed.
+- run Edge's autofill and its text predictions (writing suggestions),
+  which work by sending the text being typed to Microsoft;
+- fetch the profile of the Microsoft account Windows is signed in with
+  from `substrate.office.com`, on Microsoft's Office and Exchange Online
+  addresses, now and then a few seconds to half a minute after the
+  window opens, whatever you do in it (see "The sign-in with your
+  Windows account" below).
 
-The app turns all of these off: WebView2 is started with
+The app turns the first four off: WebView2 is started with
 `--disable-background-networking`, `--no-proxy-server` and
 `--disable-component-update` (and SmartScreen off), its general autofill
 is off, and every field of the interface, the terminals' input included,
-is marked `writingsuggestions="false"`. Each of these was seen to stop the
-connections it names.
+is marked `writingsuggestions="false"`. The first three were each seen
+to stop the connection they name. The last one is not solved yet.
 
-**Not solved yet:** even so, while you type (in a terminal or a field),
-WebView2 now and then connects to Microsoft's Office servers (Exchange
-Online addresses, port 443): in the smoke test's last full run, 8 times
-across 3 of its 7 starts of the app.
-These connections are made by WebView2 itself, outside the part of it
-the app can watch in detail, so what they carry could not be seen, and
-nothing tried so far stops them. Until it is solved, assume that what you
-type in the app's window may reach Microsoft. The smoke test lists each
-one it sees and fails on any other connection. WebView2 belongs to Windows and is
-updated by Windows (Edge's updater), not by the app, so a later WebView2
-may add something new; the smoke test watches for it (see the end of this
+WebView2 belongs to Windows and is updated by Windows (Edge's updater),
+not by the app, so a later WebView2 may add something new, or stop
+honouring a switch; the smoke test watches for it (see the end of this
 page).
+
+#### The sign-in with your Windows account
+
+Earlier versions of this page said that WebView2 reached Microsoft's
+Office servers while you type. Measured again (#135), typing has nothing
+to do with it: it came as often with nothing typed (7 of 8 starts of the
+app) as while typing (7 of 8), at most once per start, at a time
+unrelated to the keyboard. What it is, as far as could be seen without
+breaking the encryption:
+
+- It is made by WebView2's main process with Microsoft's sign-in library
+  (OneAuth, which ships inside WebView2) and Windows' account broker, not
+  by the part of WebView2 that loads pages: WebView2's own network log
+  shows nothing of it. OneAuth was loaded in every start that made the
+  connection (5 of 5 checked) and in none that did not (39 checked).
+- Its addresses are the ones `substrate.office.com` resolves to (the same
+  front door as `outlook.office.com`). WebView2 holds the addresses of
+  Substrate's profile and picture services for the signed-in account.
+- Within a second of each such connection (5 times), OneAuth rewrote its
+  record of the account's profile and picture in
+  `%LOCALAPPDATA%\Microsoft\OneAuth`, and not after any of the 52 starts
+  without one that were watched for it. That record is shared by every
+  Microsoft program that signs in with the Windows account (Office,
+  Edge, Teams), which is most likely why the connection does not come at
+  every start: after a refresh, starts mostly fetched nothing for a
+  while (20 minutes to over an hour).
+- What it carries could not be read. Everything seen points to a request
+  for your own account's profile, sent with your account's sign-in
+  token; nothing points to text you typed being in it.
+
+It was seen on a Windows account signed in to a personal Microsoft
+account. A Windows account with no Microsoft account should have no
+profile to fetch; that was not tried. Other app makers have reported the
+same behaviour of WebView2 157 to Microsoft (WebView2Feedback issue
+5760), with no answer so far.
+
+**Turning it off.** A switch is being tested: starting WebView2 with
+Edge's OneAuth and implicit sign-in features off (`msOneAuthWAM`,
+`msForceOneAuthWAM`, `msOneAuthIDHRD`, `msLoadOneAuthInBackground`,
+`msImplicitSignin`, `msImplicitSignInNetworkRetry`,
+`msM365LinksImplicitSignin`, `msSeamlessWebToBrowserSignIn`,
+`msEnableWebToBrowserSignIn`). With it, the connection was never seen
+and OneAuth was never loaded. That is not yet proof, because whether the
+connection comes at all depends on OneAuth's shared record: in the first
+hour of testing it came at 14 of 16 starts with nothing turned off,
+later at 4 of 34. The comparisons that count are the ones where the
+switch and no switch ran back to back while the record was stale; there
+have been two so far (one while the computer was also in use), and in
+both the start without the switch made the connection and the start
+with it did not. The implicit
+sign-in features alone are not enough (one start with them off made the
+connection). One more thing is open: with the switch, WebView2 loads a
+different part of Windows' account broker, so Edge may sign in another
+way, through Windows' own broker process, which the app's watch does
+not see. The app does not use the switch yet; until it is proven,
+the smoke test lets exactly this connection through and lists every one
+it sees.
+
+What you can do now, outside the app, all untested here: use a Windows
+account that is not signed in to a Microsoft account; or have an
+administrator block `msedgewebview2.exe` from 40.96.0.0/13 and
+52.96.0.0/14 on port 443 in the firewall (this also cuts other programs
+that use WebView2 with your account, such as the new Outlook, off from
+Exchange Online). Edge's own policies (for example `BrowserSignin`,
+`ImplicitSignInEnabled`) are not read by WebView2, and were reported not
+to stop it.
 
 ### The installer
 
