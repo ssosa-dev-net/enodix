@@ -84,6 +84,28 @@ Checked on the lab's devices through its jump host: SFTP on Nokia SR Linux
 - The README says how to uninstall, what stays, and the installer's silent
   switches [111].
 
+### The first run
+
+The path a newcomer takes was walked in the built app with an empty data
+folder, and what stalled it was fixed [116].
+
+- A connection that fails says what to check next: the address, the port,
+  whether the device is up, the login and where it is set, the SSH agent.
+  A jump host's failure says so for the jump host.
+- A folder or a file that is not there is said plainly, without the
+  system's "os error 2"; so is a file chosen where a folder was meant.
+  Creating a workspace over a folder with files says to open it. The
+  workspace switcher says "Open an existing folder", as the welcome view
+  does.
+- New host and a changed address refuse an address written with its port
+  (`10.0.0.1:2222`) and say where the port goes. Before, it was accepted
+  and failed as a name that could not be resolved.
+- A jump host named by its host name where its id belongs gets the id in
+  the error. A CSV file with no row of column names is told to get one.
+- The empty pane says a double click connects a host. The login prompt,
+  the Credential profile setting, the Credentials view and the reports of
+  the CSV and Nornir imports say how a host gets a credential profile.
+
 ## 0.4.1
 
 A pre-release: not code-signed, and without automatic updates (install it
