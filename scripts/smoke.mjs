@@ -12790,7 +12790,13 @@ async function tabsAndPanes({
   // Splitting a pane with one tab gives an empty pane for a new session.
   // At 800 px the top-right pane has folded its tools and its new-tab
   // button into the "…" button (#100); the tab and the window's buttons
-  // stay clickable. Split from its menu.
+  // stay clickable. Split from its menu. The bar folds once it has measured
+  // itself, a moment after the split.
+  await until("the top-right pane folded its tools", () =>
+    evaluate(
+      `!!document.querySelector(".pane.active [data-tab-bar] [data-pane-tools-more]")`,
+    ),
+  );
   const sideBySide = await foldedToolEntries(
     evaluate,
     `document.querySelector(".pane.active [data-tab-bar]")`,

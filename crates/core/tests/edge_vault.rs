@@ -451,12 +451,22 @@ fn every_write_leaves_a_whole_vault_for_a_reader_at_every_moment() {
     done.store(true, Ordering::SeqCst);
     let (reads, read_failures) = reader.join().unwrap();
     assert!(reads > 0);
+    // Said together: a reader that saw no file while every write was
+    // reported done is a gap in the write; with writes failing too, the
+    // folder itself went away under the test.
     assert!(
         read_failures.is_empty(),
-        "{} of {} reads failed, first {:?}",
+        "{} of {} reads failed, first {:?}; {} of 150 writes failed, first {:?}; the vault file is {} now",
         read_failures.len(),
         reads + read_failures.len(),
-        read_failures.first()
+        read_failures.first(),
+        write_failures.len(),
+        write_failures.first(),
+        if data.vault().exists() {
+            "there"
+        } else {
+            "not there"
+        }
     );
     assert!(
         write_failures.is_empty(),
