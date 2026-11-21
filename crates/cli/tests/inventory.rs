@@ -185,6 +185,66 @@ fn an_unknown_folder_filter_or_host_is_an_error() {
     );
 }
 
+/// Every file under `root` with its contents.
+fn files_under(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path.clone());
+                found.push((path, Vec::new()));
+            } else {
+                let contents = std::fs::read(&path).unwrap();
+                found.push((path, contents));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A folder that is not a workspace (#131): it is only read, never written
+/// into, and stderr says it holds no host files.
+#[test]
+fn a_folder_that_is_not_a_workspace_is_read_and_never_written_into() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("letter.docx"), "Dear ...").unwrap();
+    std::fs::write(
+        temp.path().join("docker-compose.yml"),
+        "services:\n  web:\n    image: nginx\n",
+    )
+    .unwrap();
+    std::fs::create_dir(temp.path().join("Photos")).unwrap();
+    std::fs::write(temp.path().join("Photos").join("beach.jpg"), "jpeg").unwrap();
+    let before = files_under(temp.path());
+
+    let output = run(&["inventory", temp.path().to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let json: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
+    assert_eq!(json["hosts"], serde_json::json!([]));
+    assert_eq!(json["workspace"]["id"], Value::Null);
+    let message = stderr(&output);
+    assert!(
+        message.contains("warning: ") && message.contains("is not a workspace: no host files"),
+        "{message}"
+    );
+    assert_eq!(files_under(temp.path()), before);
+
+    // An empty folder is a workspace with no hosts yet: no warning about it.
+    let empty = tempfile::tempdir().unwrap();
+    let output = run(&["inventory", empty.path().to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("no host files"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(files_under(empty.path()).is_empty());
+}
+
 #[test]
 fn a_command_line_it_does_not_understand_gives_status_2() {
     let root = fixture("export");

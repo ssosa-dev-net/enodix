@@ -423,11 +423,27 @@ export async function pickWorkspaceFolder(
 }
 
 /**
- * Opens a workspace folder (an existing one is added to the known
- * workspaces); it reopens on the next launch.
+ * What a folder holds, as the core tells (#131): host files or a
+ * workspace's own files, nothing (hidden entries and empty folders), or
+ * other things only, which opening would make a workspace.
  */
-export function openWorkspace(path: string): Promise<WorkspaceView> {
-  return invoke<WorkspaceView>("workspace_open", { path });
+export type FolderKind = "workspace" | "empty" | "other";
+
+/** What kind of folder `path` is; nothing is written. */
+export function folderKind(path: string): Promise<FolderKind> {
+  return invoke<FolderKind>("workspace_folder_kind", { path });
+}
+
+/**
+ * Opens a workspace folder (an existing one is added to the known
+ * workspaces); it reopens on the next launch. A folder of other things is
+ * refused unless the user said yes to making it a workspace (`confirmed`).
+ */
+export function openWorkspace(
+  path: string,
+  confirmed = false,
+): Promise<WorkspaceView> {
+  return invoke<WorkspaceView>("workspace_open", { path, confirmed });
 }
 
 /**

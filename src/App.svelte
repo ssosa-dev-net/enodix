@@ -16,6 +16,7 @@
   import ConfirmJoin from "./lib/ConfirmJoin.svelte";
   import PasteConfirm, { type PasteMember } from "./lib/PasteConfirm.svelte";
   import ConfirmSwitch from "./lib/ConfirmSwitch.svelte";
+  import ConfirmOpenFolder from "./lib/ConfirmOpenFolder.svelte";
   import ConfirmQuit from "./lib/ConfirmQuit.svelte";
   import { activeTransfers } from "./lib/fileTransfers.svelte";
   import { addressBesides, hostConnection } from "./lib/hostConnect";
@@ -152,7 +153,9 @@
   import {
     expandSnippet,
     findHost,
+    folderKind,
     onWorkspaceChanged,
+    openWorkspace,
     resolveSettings,
     restoreWorkspace,
     type Environment,
@@ -242,6 +245,12 @@
     /** Transfers the Files tabs have running or waiting (#106). */
     transfers: number;
     decide: (choice: "keep" | "close" | "cancel") => void;
+  } | null>(null);
+  /** A folder of other things waiting for the user's yes before it
+   * becomes a workspace (#131). */
+  let adopting = $state<{
+    path: string;
+    decide: (open: boolean) => void;
   } | null>(null);
   /** A snippet waiting for the user to give its variables a value;
    * `group`: sent to the multi-send group (decided when it was sent: the
@@ -1101,6 +1110,30 @@
     return null;
   }
 
+  /**
+   * Opens the folder at `path` as a workspace, from the welcome view or the
+   * workspaces (a known one, or one chosen or typed). The core says what it
+   * holds first (#131): a folder of other things would become a workspace,
+   * with a file written into it, so the user is asked; nothing is written
+   * before the answer, nor after Cancel. Resolves as `switchWorkspace`.
+   */
+  async function openFolder(path: string): Promise<string | null> {
+    let kind;
+    try {
+      kind = await folderKind(path);
+    } catch (error) {
+      return String(error);
+    }
+    if (kind === "other") {
+      const yes = await new Promise<boolean>((decide) => {
+        adopting = { path, decide };
+      });
+      adopting = null;
+      if (!yes) return null;
+    }
+    return switchWorkspace(() => openWorkspace(path, kind === "other"));
+  }
+
   /** Quick connect over SSH, without an inventory host. */
   function quickConnect(target: QuickConnectTarget) {
     connect(
@@ -1553,6 +1586,7 @@
       inventory.palette ||
       switcher ||
       switching ||
+      adopting ||
       quitting ||
       closingFiles !== null ||
       joining ||
@@ -1879,6 +1913,7 @@
               <Welcome
                 {name}
                 onswitch={switchWorkspace}
+                onopen={openFolder}
                 onconnect={quickConnect}
                 onserial={quickSerial}
               />
@@ -1965,6 +2000,7 @@
 {#if switcher}
   <WorkspacesDialog
     onswitch={switchWorkspace}
+    onopen={openFolder}
     onclose={() => {
       switcher = false;
       focusRequest += 1;
@@ -1998,6 +2034,15 @@
     onkeep={() => decide("keep")}
     onclosesessions={() => decide("close")}
     oncancel={() => decide("cancel")}
+  />
+{/if}
+
+{#if adopting}
+  {@const { path, decide } = adopting}
+  <ConfirmOpenFolder
+    {path}
+    onopen={() => decide(true)}
+    oncancel={() => decide(false)}
   />
 {/if}
 

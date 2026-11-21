@@ -1677,6 +1677,41 @@ async function welcome({ evaluate, text, screenshot, step }) {
   if ((await text("[data-welcome-error]")).includes("os error")) {
     fail(`the welcome view says: ${await text("[data-welcome-error]")}`);
   }
+  // A folder of other things, chosen by mistake, is asked about first,
+  // with Cancel focused; nothing is written before the answer nor after
+  // Cancel (#131).
+  const documents = otherThingsFolder();
+  const documentsBefore = entriesBelow(documents);
+  await evaluate(`(() => {
+    const form = document.querySelector("[data-welcome-form=open]");
+    const input = form.querySelector("[name=welcome-folder]");
+    input.value = ${json(documents)};
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    form.requestSubmit();
+  })()`);
+  await until("the question about a folder of other things", () =>
+    exists("[data-confirm-open-folder] [data-confirm-folder=cancel]"),
+  );
+  await checkOpenFolderQuestion(evaluate, text, documents);
+  if (json(entriesBelow(documents)) !== json(documentsBefore))
+    fail("the folder was written into before the answer");
+  await screenshot("welcome-other-folder");
+  await mouseClick(evaluate, "[data-confirm-folder=cancel]");
+  await until(
+    "the question gone",
+    async () => !(await exists("[data-confirm-open-folder]")),
+  );
+  if (!(await exists("[data-welcome]"))) fail("Cancel left the welcome view");
+  if (await exists("[data-welcome-error]"))
+    fail(`Cancel says: ${await text("[data-welcome-error]")}`);
+  // The shell's own answers come after the question; give a late write a
+  // moment to show.
+  await sleep(500);
+  if (json(entriesBelow(documents)) !== json(documentsBefore))
+    fail("the folder was written into after Cancel");
+  step(
+    "a folder of other things is asked about first (Cancel focused) and nothing is written before the answer nor after Cancel",
+  );
   await evaluate(`(() => {
     const input = document.querySelector("[data-welcome-form=open] [name=welcome-folder]");
     input.value = "";
@@ -1702,6 +1737,57 @@ async function welcome({ evaluate, text, screenshot, step }) {
     "the welcome view gone",
     async () => !(await exists("[data-welcome]")),
   );
+}
+
+/**
+ * A folder of other things and nothing of a workspace, as a Documents
+ * folder chosen by mistake (#131): made once, the same for every part.
+ */
+function otherThingsFolder() {
+  const folder = join(userData, "documents");
+  if (!existsSync(folder)) {
+    mkdirSync(join(folder, "Photos"), { recursive: true });
+    writeFileSync(join(folder, "letter.txt"), "Dear ...\n");
+    writeFileSync(
+      join(folder, "docker-compose.yml"),
+      "services:\n  web:\n    image: nginx\n",
+    );
+    writeFileSync(join(folder, "Photos", "beach.jpg"), "jpeg");
+  }
+  return folder;
+}
+
+/** Every entry below `folder` (hidden ones too), by path, with its text. */
+function entriesBelow(folder, found = {}) {
+  for (const entry of readdirSync(folder, { withFileTypes: true })) {
+    const path = join(folder, entry.name);
+    if (entry.isDirectory()) {
+      found[`${path}/`] = "";
+      entriesBelow(path, found);
+    } else found[path] = readFileSync(path, "utf8");
+  }
+  return found;
+}
+
+/**
+ * The question before a folder of other things becomes a workspace (#131):
+ * what was found, what opening does, the folder's path, Cancel focused.
+ */
+async function checkOpenFolderQuestion(evaluate, text, folder) {
+  const said = await text("[data-confirm-open-folder]");
+  for (const words of [
+    "Make this folder a workspace?",
+    "No host files here",
+    "_workspace.yaml",
+    folder,
+  ]) {
+    if (!said.includes(words))
+      fail(`the question does not say ${words}: ${said}`);
+  }
+  const focused = await evaluate(
+    "document.activeElement?.dataset.confirmFolder ?? null",
+  );
+  if (focused !== "cancel") fail(`the question focuses ${focused}, not Cancel`);
 }
 
 /** Every file of the folder below `root`, by path, with its text. */
@@ -5051,6 +5137,7 @@ async function csvImport({
         "odd;192.0.2.99;Juniper;;;;",
         ";;;;;;",
         "bad:name;10.9.0.5;;;;;",
+        "imp-port;10.9.0.6:2222;;;;;",
         "",
       ].join("\r\n"),
   );
@@ -5135,7 +5222,7 @@ async function csvImport({
 
   // The preview shows every row's fate and writes nothing.
   await preview();
-  const expected = "2:create 3:create 4:exists 5:skip 6:fail";
+  const expected = "2:create 3:create 4:exists 5:skip 6:fail 7:fail";
   await until(
     `the preview rows ${expected}`,
     async () => (await outcomes()) === expected,
@@ -5161,10 +5248,18 @@ async function csvImport({
     /Import\s+3\s+hosts/.test(await text(`${dialog} [data-csv=import]`)),
   );
   await runImport();
-  const first = "created=2 updated=1 skipped=2 failed=1";
+  const first = "created=2 updated=1 skipped=2 failed=2";
   await until(`the report ${first}`, async () => (await counts()) === first);
-  const failed = await text(`${dialog} [data-report=failed] li`);
+  const failed = await text(`${dialog} [data-report=failed]`);
   if (!failed.includes("Row 6")) fail(`the failed row: ${failed}`);
+  // An address with its port, refused as New host refuses it (#131).
+  if (
+    !failed.includes("Row 7") ||
+    !failed.includes("write the address without the port (10.9.0.6)")
+  )
+    fail(`the failed row with a port: ${failed}`);
+  if (existsSync(join(workspace, "imp-port.yaml")))
+    fail("the row with a port in its address was imported");
   // New hosts come with the next step: connecting, and a profile (#116).
   if (
     !(await text(`${dialog} [data-report-next]`)).includes(
@@ -5220,11 +5315,24 @@ async function csvImport({
   await until(
     "every host existing",
     async () =>
-      (await outcomes()) === "2:exists 3:exists 4:exists 5:skip 6:fail",
+      (await outcomes()) === "2:exists 3:exists 4:exists 5:skip 6:fail 7:fail",
   );
-  await runImport();
-  const second = "created=0 updated=0 skipped=5 failed=1";
-  await until(`the report ${second}`, async () => (await counts()) === second);
+  // Nothing new and nothing ticked: "Import 0 hosts" is off (#131), on
+  // once a host is ticked, off again when it is not.
+  const importButton = `document.querySelector("${dialog} [data-csv=import]")`;
+  await until("Import 0 hosts, disabled", () =>
+    evaluate(
+      `${importButton}.disabled && ${importButton}.textContent.replace(/\\s+/g, " ").includes("Import 0 hosts")`,
+    ),
+  );
+  await clickOn(`${dialog} [data-replace="odd.yaml"]`);
+  await until("Import 1 host, enabled", () =>
+    evaluate(`!${importButton}.disabled`),
+  );
+  await clickOn(`${dialog} [data-replace="odd.yaml"]`);
+  await until("Import 0 hosts, disabled again", () =>
+    evaluate(`${importButton}.disabled`),
+  );
   if (readFileSync(oddFile, "utf8") !== oddBefore)
     fail("odd.yaml was overwritten");
   if (
@@ -5234,13 +5342,10 @@ async function csvImport({
   ) {
     fail("imp-1.yaml was overwritten");
   }
-  if (await exists(`${dialog} [data-report-next]`)) {
-    fail("the CSV report gives a next step with no host created");
-  }
-  await clickOn(`${dialog} [data-csv=close]`);
+  await clickOn(`${dialog} [data-csv=cancel]`);
   await until("the CSV import tab closed", async () => !(await exists(dialog)));
   step(
-    "a re-import from a folder's menu, in the one tab, overwrites no existing host without confirmation",
+    "a re-import from a folder's menu, in the one tab, offers no import with nothing new or ticked",
   );
 
   // A first export's mistake: no row of column names. The first device is
@@ -5314,6 +5419,8 @@ async function nornirImport({
       "  port: 2201",
       "broken:",
       "  platform: eos",
+      "spaced:",
+      "  hostname: 10.8.0.3 10.8.0.4",
       "",
     ].join("\n"),
   );
@@ -5397,7 +5504,7 @@ async function nornirImport({
 
   // The preview: each host's fate, the passwords left out, nothing written.
   await preview();
-  const expected = "nr-1:create nr-2:create broken:fail";
+  const expected = "nr-1:create nr-2:create broken:fail spaced:fail";
   await until(
     `the Nornir preview ${expected}`,
     async () => (await outcomes()) === expected,
@@ -5417,8 +5524,17 @@ async function nornirImport({
 
   // Importing: inherited values, tags and custom fields; no password.
   await runImport();
-  const first = "created=2 updated=0 skipped=3 failed=1";
+  const first = "created=2 updated=0 skipped=3 failed=2";
   await until(`the report ${first}`, async () => (await counts()) === first);
+  // A hostname with a space in it, refused as New host refuses it (#131).
+  if (
+    !(await text(`${dialog} [data-report=failed]`)).includes(
+      "the address has a space in it (10.8.0.3 10.8.0.4)",
+    )
+  )
+    fail("the Nornir report does not say the spaced hostname was refused");
+  if (existsSync(join(workspace, "Europe", "spaced.yaml")))
+    fail("the host with a space in its hostname was imported");
   await screenshot("nornir-report");
   const nr1Text = readFileSync(nr1, "utf8");
   const expectedNr1 =
@@ -5449,17 +5565,26 @@ async function nornirImport({
   await preview(true);
   await until(
     "both Nornir hosts existing",
-    async () => (await outcomes()) === "nr-1:exists nr-2:exists broken:fail",
+    async () =>
+      (await outcomes()) === "nr-1:exists nr-2:exists broken:fail spaced:fail",
   );
-  await runImport();
-  const second = "created=0 updated=0 skipped=5 failed=1";
-  await until(`the report ${second}`, async () => (await counts()) === second);
+  // Nothing new and nothing ticked: "Import 0 hosts" is off (#131).
+  const importButton = `document.querySelector("${dialog} [data-nornir=import]")`;
+  await until("Import 0 hosts, disabled", () =>
+    evaluate(
+      `${importButton}.disabled && ${importButton}.textContent.replace(/\\s+/g, " ").includes("Import 0 hosts")`,
+    ),
+  );
   if (readFileSync(nr1, "utf8") !== expectedNr1)
     fail("nr-1.yaml was overwritten");
   if (readFileSync(nr2, "utf8") !== nr2Before)
     fail("nr-2.yaml was overwritten");
-  await close();
-  step("a Nornir re-import overwrites no existing host without confirmation");
+  await clickOn(`${dialog} [data-nornir=cancel]`);
+  await until(
+    "the Nornir import tab closed",
+    async () => !(await exists(dialog)),
+  );
+  step("a Nornir re-import with nothing new or ticked offers no import");
 }
 
 /**
@@ -9801,6 +9926,74 @@ async function workspaces({
   );
   step(
     "switching with live sessions closed them when asked to, the session window's too",
+  );
+
+  // A folder of other things typed in the switcher is asked about first
+  // (#131): Escape cancels the question, not the switcher, and nothing is
+  // written; then answered yes it becomes a workspace, its one file
+  // written, and it opens.
+  const documents = otherThingsFolder();
+  const documentsBefore = entriesBelow(documents);
+  await openSwitcher();
+  await fillForm(
+    { "workspace-folder": documents },
+    "[data-workspace-form=add]",
+  );
+  await until("the question about a folder of other things", () =>
+    exists("[data-confirm-open-folder] [data-confirm-folder=cancel]"),
+  );
+  await checkOpenFolderQuestion(evaluate, text, documents);
+  if (json(entriesBelow(documents)) !== json(documentsBefore))
+    fail("the folder was written into before the answer");
+  await devtools.send("Input.dispatchKeyEvent", { type: "keyDown", ...escape });
+  await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...escape });
+  await until(
+    "the question gone",
+    async () => !(await exists("[data-confirm-open-folder]")),
+  );
+  if (!(await exists("[data-dialog=workspaces]")))
+    fail("Escape on the question closed the switcher");
+  if ((await openName()) !== "customer-b")
+    fail(`after Cancel the open workspace is ${await openName()}`);
+  await sleep(500);
+  if (json(entriesBelow(documents)) !== json(documentsBefore))
+    fail("the folder was written into after Cancel");
+  await clickOn("[data-workspace-form=add] button[type=submit]");
+  await until("the question again", () =>
+    exists("[data-confirm-open-folder] [data-confirm-folder=open]"),
+  );
+  await clickOn("[data-confirm-folder=open]");
+  await until(
+    "the folder open as a workspace",
+    async () => (await openName()) === "documents",
+  );
+  if (!idOf(documents)) fail("the folder made a workspace has no identifier");
+  const written = Object.keys(entriesBelow(documents)).filter(
+    (path) => !(path in documentsBefore),
+  );
+  if (json(written) !== json([join(documents, "_workspace.yaml")]))
+    fail(`making the folder a workspace wrote ${json(written)}`);
+  // Back to customer-b, and the folder off the list.
+  await openSwitcher();
+  await clickOn(`[data-workspace=${json(second)}]`);
+  await until(
+    "customer-b open again",
+    async () => (await openName()) === "customer-b",
+  );
+  await openSwitcher();
+  await clickOn(`[data-workspace=${json(documents)}] [data-workspace-remove]`);
+  await until(
+    "the folder off the list",
+    async () => json(await known()) === json([`${second} (open)`, workspace]),
+  );
+  await devtools.send("Input.dispatchKeyEvent", { type: "keyDown", ...escape });
+  await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...escape });
+  await until(
+    "the switcher closed",
+    async () => !(await exists("[data-dialog=workspaces]")),
+  );
+  step(
+    "a folder of other things typed in the switcher is asked about (Escape cancels it, nothing written), and made a workspace on yes",
   );
 
   // Removed from the list, the smoke workspace keeps its folder; added

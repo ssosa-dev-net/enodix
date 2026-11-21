@@ -576,6 +576,32 @@ fn invalid_edits_are_refused_and_the_file_is_untouched() {
     assert_eq!(read(&root, "Core/core-r1.yaml"), CORE_R1);
 }
 
+/// An address is one host name or IP address (#131, the check the imports
+/// share): a space inside it is refused, around it trimmed.
+#[test]
+fn a_new_host_with_a_space_in_its_address_is_refused() {
+    let (_temp, root, mut workspace) = edit_workspace();
+
+    let error = workspace
+        .create_host("", "edge1", "10.0.0.9 10.0.0.10")
+        .unwrap_err();
+    assert!(matches!(error, EditError::Invalid(_)), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "the address has a space in it (10.0.0.9 10.0.0.10): write one host name or IP address"
+    );
+    assert_eq!(files(&root), FIXTURE_FILES);
+
+    let mut changed = host(&workspace, "Core/core-r1.yaml");
+    changed.address = "core r1".into();
+    let error = workspace.write_host(&changed).unwrap_err();
+    assert!(error.to_string().contains("has a space in it"), "{error}");
+    assert_eq!(read(&root, "Core/core-r1.yaml"), CORE_R1);
+
+    workspace.create_host("", "edge1", " 10.0.0.9 ").unwrap();
+    assert_eq!(read(&root, "edge1.yaml"), "address: 10.0.0.9\n");
+}
+
 #[test]
 fn a_new_host_with_a_port_after_its_address_is_refused_with_where_the_port_goes() {
     let (_temp, root, mut workspace) = edit_workspace();

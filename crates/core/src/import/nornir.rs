@@ -34,6 +34,7 @@ use super::{
 };
 use crate::names;
 use crate::workspace::import::check_import_name;
+use crate::workspace::{bad_address, BadAddress};
 use crate::workspace::{join, CustomField, HostId, Workspace, HOST_EXTENSION};
 
 /// One of the files of a simple inventory.
@@ -444,7 +445,31 @@ impl<'a> Resolver<'a> {
                 .filter(|text| !text.is_empty())
                 .ok_or_else(|| format!("hostname {} is not an address", yaml_text(value)))?,
         };
-        let port = inherited(PORT).map(port).transpose()?;
+        let mut port = inherited(PORT).map(port).transpose()?;
+        // As New host checks it (#131); a port after the hostname is taken
+        // as the port setting, which a Nornir inventory has.
+        let address = match bad_address(&address) {
+            None => address,
+            Some(BadAddress::Port { host, port: after }) => {
+                let after: u16 =
+                    after
+                        .parse()
+                        .ok()
+                        .filter(|after| *after > 0)
+                        .ok_or_else(|| {
+                            format!("hostname {address} has {after} after it, which is not a port")
+                        })?;
+                if let Some(set) = port.filter(|set| *set != after) {
+                    return Err(format!(
+                        "hostname {address} has port {after} after it, but port is {set}: write \
+                         the hostname without the port, or make them the same"
+                    ));
+                }
+                port = Some(after);
+                host.to_string()
+            }
+            Some(bad) => return Err(bad.reason(&address, |_| String::new())),
+        };
         let mut fields = Vec::new();
         if let Some(value) = inherited(PLATFORM) {
             let platform = scalar_text(value)
