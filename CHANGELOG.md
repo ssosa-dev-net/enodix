@@ -269,6 +269,14 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
 - A second copy of netterm notices when the first turns the vault on or
   off or changes its master password, and says so. Before, it went on
   saving to a keychain nobody read, or called the vault damaged [117].
+- Saved logins in Windows Credential Manager: Windows loses changes, or
+  hands back the value from before them, when two programs change the
+  credentials at the same moment, whatever the entries are called. Copies
+  of the app and `netterm-cli` now take turns at it, and every save and
+  delete is read back before it is called done; a change Windows did not
+  keep is an error, never a save reported done [138]. A program that is
+  not netterm writing at the same moment can still undo a change a moment
+  later; Windows gives no way to prevent that.
 - Two copies of netterm saving to the vault at the same moment both keep
   every change: they take turns through a lock file beside the vault, and
   two turning the vault on at once make one vault [125]. Before, about
