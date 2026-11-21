@@ -7524,7 +7524,9 @@ async function filesTab({
  * terminal is shown; closing the tab and the main window while one runs
  * asking first, Cancel keeping everything; and a device with SCP only: the
  * form, sent to and fetched from typed paths, a drop filling the file, the
- * line that an existing file is replaced, and a refusal with its hint.
+ * line that an existing file is replaced, a refusal with its hint, and a
+ * typed login whose one-time code each send asks again over the form
+ * (#109), Cancel failing that send alone.
  *
  * The system's file and folder dialogs are answered in the page, on the
  * IPC protocol (DevTools cannot click them); the buttons that open them
@@ -7556,6 +7558,9 @@ async function fileTransfers({
   const r1 = "Transfers/xfer-r1.yaml";
   const prod = "Transfers/xfer-prod.yaml";
   const scp = "Transfers/xfer-scp.yaml";
+  // At the top, out of the folder's profile: a typed login.
+  const otp = "xfer-otp.yaml";
+  const otpFile = join(workspace, otp);
   const tabOf = (host) => `.slot.view [data-view=files][data-host="${host}"]`;
   const row = (host) => `nav [data-host="${host}"]`;
   const localFolder = join(userData, "transfers-local");
@@ -8126,6 +8131,100 @@ async function fileTransfers({
     await until("scp on", async () => (await screen()).includes("scp on"));
     step("a device's refusal shows in its own words with the hint under it");
 
+    // SCP only, with a login that asks a one-time code each time (#109):
+    // each transfer's own login asks it over the SCP form; the password
+    // typed for the tab is not asked again; Cancel fails that transfer
+    // alone and the next asks for itself. The device's key was remembered
+    // above, so only the code is asked.
+    writeFileSync(
+      otpFile,
+      `address: 127.0.0.1\nport: ${SCP_PORT}\nplatform: smoke-scp\n`,
+    );
+    await until("the one-time-code host in the tree", () => exists(row(otp)));
+    await openFiles(otp);
+    const typedLogin = `${tabOf(otp)} [data-files-login] [data-login-prompt]`;
+    await until("the login asked over the tab", () => exists(typedLogin));
+    await evaluate(`(() => {
+      const form = document.querySelector(${json(typedLogin)});
+      for (const [name, value] of [["answer-0", ${json(OTP_USERNAME)}], ["answer-1", ${json(PASSWORD)}]]) {
+        const input = form.querySelector("[name=" + name + "]");
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    })()`);
+    await clickOn(`${typedLogin} button[type=submit]`);
+    const codePrompt = `${tabOf(otp)} [data-login-prompt]`;
+    /** Waits for the code's question over the tab: one field, the code. */
+    const codeAsked = async (what) => {
+      await until(`the code asked for ${what}`, async () =>
+        (
+          await evaluate(
+            `document.querySelector(${json(codePrompt)})?.textContent ?? ""`,
+          )
+        ).includes("Verification code:"),
+      );
+      if (await exists(`${codePrompt} [name=answer-1]`))
+        fail(`${what} asks more than the code`);
+    };
+    const answerCode = async () => {
+      await until("the code's field focused", () =>
+        evaluate(
+          `document.activeElement === document.querySelector(${json(`${codePrompt} input[name=answer-0]`)})`,
+        ),
+      );
+      await type(ONE_TIME_CODE);
+      await clickOn(`${codePrompt} button[type=submit]`);
+      await until(
+        "the code's question gone",
+        async () => !(await exists(codePrompt)),
+      );
+    };
+    await codeAsked("the tab's login");
+    await answerCode();
+    await until(
+      "the one-time-code host's SCP form",
+      async () => (await filesState(otp)) === "transfer-only",
+    );
+    const otpField = (name) =>
+      evaluate(
+        `document.querySelector(${json(`${tabOf(otp)} [name=${name}]`)})?.value ?? null`,
+      );
+    rmSync(join(scpFolder, "scp/up3.cfg"), { force: true });
+    await answerDialogs([localFile("up3.cfg")]);
+    await clickOn(`${tabOf(otp)} [data-files-action=choose-send]`);
+    await until(
+      "the one-time-code host's path filled in",
+      async () => (await otpField("files-send-remote")) === "/scp/up3.cfg",
+    );
+    await clickOn(`${tabOf(otp)} [data-files-action=send]`);
+    await codeAsked("the send's login");
+    if ((await transferAt(otp, 0)())?.state !== "connecting")
+      fail(
+        `the send asking its code is ${json(await transferAt(otp, 0)())}, not connecting`,
+      );
+    if ((await filesState(otp)) !== "transfer-only")
+      fail("the send's question is not over the SCP form");
+    await screenshot("files-scp-code");
+    await clickOn(`${codePrompt} .actions button[type=button]`);
+    const declined = await ended(otp, 0, "failed");
+    if (!declined.text.includes("the login was cancelled"))
+      fail(`the cancelled send says ${declined.text}`);
+    if (await exists(codePrompt)) fail("the cancelled question stayed");
+    if (existsSync(join(scpFolder, "scp/up3.cfg")))
+      fail("a send whose login was cancelled reached the device");
+    await clickOn(`${tabOf(otp)} [data-files-action=send]`);
+    await codeAsked("the next send's login");
+    await answerCode();
+    await ended(otp, 1, "done");
+    if (
+      readFileSync(join(scpFolder, "scp/up3.cfg"), "utf8") !== "hostname up3\n"
+    )
+      fail("the send whose code was answered did not reach the device");
+    step(
+      "on a device with SCP only, each send's login asks its one-time code over the form (the typed password is not asked again); Cancel fails that send alone, the next asks again and goes through once answered",
+    );
+    await closeTabOf(evaluate, tabOf(otp));
+
     await closeTabOf(evaluate, tabOf(scp));
     for (const tab of [scpTerminal, terminalTab]) {
       await clickOn(`[data-tab-bar] [data-tab="${tab}"] [data-tab-close]`);
@@ -8149,6 +8248,7 @@ async function fileTransfers({
     if (savedPlatforms === null) rmSync(platformsFile, { force: true });
     else writeFileSync(platformsFile, savedPlatforms);
     rmSync(folder, { recursive: true, force: true });
+    rmSync(otpFile, { force: true });
   }
 }
 

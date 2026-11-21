@@ -24,7 +24,10 @@ in the project's tracker.
     app tries SFTP and falls back by itself, connects for each file and
     holds no connection in between, so the tab does not take one of an IOS
     device's few lines. A refusal is shown in the device's own words, with
-    the command that turns the feature on where the app knows it.
+    the command that turns the feature on where the app knows it. What a
+    device asks at each of those logins (a one-time code, a host key
+    trusted once) is asked in the tab for each file; Cancel fails that
+    file alone [109].
   - Transfers show progress and speed and can be cancelled, one at a time
     per host with the rest waiting. Sizes are checked where the protocol
     allows, a cancelled or failed upload removes its partial file where it

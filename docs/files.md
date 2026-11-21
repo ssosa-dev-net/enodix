@@ -63,6 +63,16 @@ between: IOS-XE closes the connection after each transfer anyway, and an
 idle connection would take one of the device's few lines. The tab says
 that no connection is held.
 
+So each file is a new login. A stored profile makes that invisible, and a
+login typed when the tab opened is kept while the tab is open and used for
+each file. What the device itself asks at each login is asked over the
+tab, as it was when the tab opened: a one-time code, or a host key that
+was trusted once and not remembered. The transfer shows as connecting
+until you answer, however long that takes. Cancel fails that transfer
+alone ("the login was cancelled", or the refused key); the next one
+connects and asks for itself. Closing the tab with a question open
+cancels the transfer.
+
 ### What a device needs
 
 | Platform | What it offers | What must be set on the device | Account |
@@ -181,7 +191,9 @@ lab's CSR 1000v is held to 1 Mbit/s by its licence).
 - A cancelled SFTP upload on cJunos: its partial file was removed.
 - Not on a device, but against the app's test server: a transfer that
   stops moving (failed after three connect timeouts, saying so), a lost
-  connection and Reconnect, and the production questions.
+  connection and Reconnect, and the production questions. Also only there:
+  a one-time code and a host key trusted once, asked for each file on a
+  device with SCP only, since no lab device asks a question at login.
 
 ## Known limits
 
@@ -192,12 +204,10 @@ lab's CSR 1000v is held to 1 Mbit/s by its licence).
   host unless Overwrite is ticked.
 - **Over SCP a wrong folder fails only at the end**: IOS takes the whole
   file and then answers `Write failed`.
-- **Over SCP each file is a new login.** A stored profile makes that
-  invisible, and a login typed when the tab opened is kept while the tab
-  is open and used for each file. But nobody is asked during a transfer:
-  a device whose login asks a question each time (a one-time code), or
-  whose host key was trusted once and not remembered, fails each transfer
-  with that reason.
+- **Over SCP each file is a new login**, so a device whose login asks a
+  question each time (a one-time code) asks it for every file in the tab.
+  The file job asks nothing: it fails such a host, and one whose key is
+  not trusted, with that reason.
 - **An SCP upload's size cannot be checked**, and a cancelled one may
   leave a partial file (IOS removes it itself; EOS and Junos keep it).
   Cancelling an upload that was replacing a file leaves neither on IOS:

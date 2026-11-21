@@ -94,7 +94,10 @@ everything 0.2.0 could do, the app still does, reached differently.
   folder).
   It says that a file of that name is replaced (the device cannot be
   asked), that no connection is held between transfers, and shows a
-  device's refusal in its words with the app's hint under it.
+  device's refusal in its words with the app's hint under it. Each
+  transfer logs in again, and what that login asks (a one-time code, a
+  host key trusted once) is asked over the form while the transfer shows
+  as connecting; Cancel fails that transfer alone.
 - **Real windows**: a job run and a host's config history can open in a
   window of their own ("Open in window") and dock back. Closing the main
   window closes them; closing a run's window leaves its job running.

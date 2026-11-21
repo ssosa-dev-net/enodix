@@ -761,14 +761,72 @@ async fn an_scp_upload_that_stops_moving_fails_after_the_stall_time() {
     assert_eq!(partial, Partial::MayRemainOnDevice);
 }
 
-/// A caller's own way of connecting for SCP that fails, as a login the
-/// user cancels.
+/// A caller's own way of connecting for SCP whose connection fails.
 struct Refusing;
 
 impl netterm_core::files::Connect for Refusing {
     fn connect(&self) -> netterm_core::files::Connecting<'_> {
-        Box::pin(async { Err("the login was cancelled".to_owned()) })
+        Box::pin(async { Err("the login was cancelled".to_owned().into()) })
     }
+}
+
+/// A caller's own way of connecting for SCP whose user says no to the
+/// first question, then connects unattended.
+struct DecliningOnce {
+    declined: std::sync::atomic::AtomicBool,
+    target: SshTarget,
+}
+
+impl netterm_core::files::Connect for DecliningOnce {
+    fn connect(&self) -> netterm_core::files::Connecting<'_> {
+        Box::pin(async move {
+            if !self
+                .declined
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(netterm_core::files::ConnectFailure::Declined(
+                    "the login was cancelled".into(),
+                ));
+            }
+            netterm_core::files::FileConnection::open_unattended(
+                self.target.clone(),
+                support::known_hosts(),
+            )
+            .await
+            .map_err(|error| error.to_string().into())
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_declined_scp_connection_fails_that_transfer_alone_and_the_next_one_connects() {
+    let (server, remote) = scp_server().await;
+    let local = TempDir::new().unwrap();
+    let path = local_file(&local, "hello.txt", b"hello");
+    let transfers = Transfers::new();
+    transfers.connect(
+        HOST,
+        Link::scp(DecliningOnce {
+            declined: Default::default(),
+            target: server.target(),
+        }),
+    );
+
+    let (_, first) = transfers.add(HOST, Transfer::upload(&path, "flash:a.txt"));
+    let (_, second) = transfers.add(HOST, Transfer::upload(&path, "flash:b.txt"));
+    let Outcome::Failed { error, partial } = outcome(first).await else {
+        panic!("not failed")
+    };
+    assert_eq!(
+        error,
+        TransferError::Declined("the login was cancelled".into())
+    );
+    assert_eq!(error.to_string(), "the login was cancelled");
+    assert_eq!(partial, Partial::Nothing);
+    done(outcome(second).await);
+    assert!(transfers.is_connected(HOST));
+    assert!(exists(&remote, "b.txt"));
+    assert!(!exists(&remote, "a.txt"));
 }
 
 #[tokio::test]

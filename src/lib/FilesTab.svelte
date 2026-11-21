@@ -14,6 +14,11 @@
   // shows each one, waiting ones in order, finished ones kept while the tab
   // is open. A device without SFTP gets a form that sends and fetches by
   // path over SCP. The connection and the transfers end with the tab.
+  //
+  // Over SCP each transfer logs in again (#109): what that login asks (a
+  // one-time code, a host key trusted once) comes as the browser's events
+  // and is asked over the tab with the same components; Cancel fails that
+  // transfer alone.
   import { onDestroy, onMount, tick } from "svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -329,6 +334,10 @@
         confirming = null;
         transferQuestion = null;
         phase = { kind: "lost", reason: event.reason };
+        break;
+      case "questionClosed":
+        hostKey = null;
+        prompt = null;
         break;
     }
   }

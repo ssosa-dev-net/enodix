@@ -4,7 +4,9 @@
 //! there (on the device and locally), the transfer states the interface
 //! shows, cancelling, transfers waiting across a reconnect, closing a host,
 //! and a device without SFTP, whose browser sends and fetches by path over
-//! SCP and shows a refusal with its hint.
+//! SCP and shows a refusal with its hint. Over SCP each transfer connects
+//! and asks over the tab what its login asks (#109): a one-time code, a
+//! host key trusted once.
 
 mod support;
 
@@ -16,8 +18,10 @@ use netterm_core::files::{
     existing_locally, follow, Added, BrowseError, BrowserEvent, BrowserId, Direction, FileBrowsers,
     Listing, TransferState, TransferWatch,
 };
+use netterm_core::known_hosts::KnownHosts;
+use netterm_core::session::{HostKeyDecision, SshTarget};
 use support::scp::ScpQuirk;
-use support::{known_hosts, TestSshServer, WAIT};
+use support::{known_hosts, TestSshServer, CODE_QUESTION, ONE_TIME_CODE, OTP_USERNAME, WAIT};
 use tempfile::TempDir;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -511,4 +515,339 @@ async fn the_test_shell_turns_scp_off_and_on_for_the_smoke_test() {
         .unwrap();
     assert!(matches!(last(watch).await, TransferState::Done { .. }));
     manager.close(session).unwrap();
+}
+
+/// A server with SCP only, serving a new folder.
+async fn scp_server() -> (TestSshServer, TempDir) {
+    let server = TestSshServer::start().await;
+    let remote = TempDir::new().unwrap();
+    server.serve_scp(remote.path());
+    (server, remote)
+}
+
+/// The one-time-code user's login at `server` (a password, then a code).
+fn otp_target(server: &TestSshServer) -> SshTarget {
+    let mut target = server.target();
+    target.username = OTP_USERNAME.into();
+    target
+}
+
+/// Opens a browser on an SCP-only device as the tab does, answering its
+/// first login's questions: a host key with `decision`, the one-time code.
+async fn open_scp(
+    browsers: &FileBrowsers,
+    target: SshTarget,
+    known_hosts: KnownHosts,
+    decision: HostKeyDecision,
+) -> (BrowserId, UnboundedReceiver<BrowserEvent>) {
+    let (id, mut events) = browsers.open(HOST, target, known_hosts, None, None);
+    loop {
+        match next(&mut events).await {
+            BrowserEvent::HostKey { .. } => browsers.decide_host_key(id, decision),
+            BrowserEvent::Prompt { .. } => browsers.answer(id, vec![ONE_TIME_CODE.into()]),
+            BrowserEvent::TransferOnly { .. } => return (id, events),
+            other => panic!("expected transfer only, got {other:?}"),
+        }
+    }
+}
+
+/// A local file `name` holding `bytes`, in `folder`.
+fn local_file(folder: &TempDir, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    let path = folder.path().join(name);
+    fs::write(&path, bytes).unwrap();
+    path
+}
+
+/// Waits for the transfer to show as connecting.
+async fn until_connecting(watch: &mut TransferWatch) {
+    tokio::time::timeout(WAIT, async {
+        while TransferState::from(&watch.status()) != TransferState::Connecting {
+            watch.changed().await;
+        }
+    })
+    .await
+    .expect("the transfer connects");
+}
+
+/// The tab's next event, which must be the one-time code's question (the
+/// password typed is not asked again).
+async fn code_asked(events: &mut UnboundedReceiver<BrowserEvent>) {
+    match next(events).await {
+        BrowserEvent::Prompt { prompt } => {
+            let asked: Vec<&str> = prompt.questions.iter().map(|q| q.text.as_str()).collect();
+            assert_eq!(asked, [CODE_QUESTION]);
+        }
+        other => panic!("expected the code's question, got {other:?}"),
+    }
+}
+
+/// No event comes for a while.
+async fn nothing_asked(events: &mut UnboundedReceiver<BrowserEvent>) {
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    if let Ok(event) = events.try_recv() {
+        panic!("nothing should be asked, got {event:?}");
+    }
+}
+
+#[tokio::test]
+async fn over_scp_each_send_asks_the_one_time_code_and_goes_through_once_answered() {
+    let (server, remote) = scp_server().await;
+    let browsers = FileBrowsers::new();
+    let (id, mut events) = open_scp(
+        &browsers,
+        otp_target(&server),
+        known_hosts(),
+        HostKeyDecision::Cancel,
+    )
+    .await;
+    let local = TempDir::new().unwrap();
+    let path = local_file(&local, "a.cfg", b"hostname a\n");
+
+    for round in 1..=2 {
+        let (_, mut watch) = browsers.send(id, path.clone(), "/a.cfg").unwrap();
+        until_connecting(&mut watch).await;
+        code_asked(&mut events).await;
+        assert_eq!(
+            TransferState::from(&watch.status()),
+            TransferState::Connecting,
+            "it waits for the answer"
+        );
+        browsers.answer(id, vec![ONE_TIME_CODE.into()]);
+        assert!(
+            matches!(last(watch).await, TransferState::Done { .. }),
+            "send {round}"
+        );
+    }
+    assert_eq!(
+        fs::read(remote.path().join("a.cfg")).unwrap(),
+        b"hostname a\n"
+    );
+    // The tab's login and one for each send.
+    assert_eq!(server.logins(), 3);
+}
+
+#[tokio::test]
+async fn a_cancelled_question_fails_that_transfer_alone_and_the_next_one_asks_again() {
+    let (server, remote) = scp_server().await;
+    let browsers = FileBrowsers::new();
+    let (id, mut events) = open_scp(
+        &browsers,
+        otp_target(&server),
+        known_hosts(),
+        HostKeyDecision::Cancel,
+    )
+    .await;
+    let local = TempDir::new().unwrap();
+    let a = local_file(&local, "a.cfg", b"a");
+    let b = local_file(&local, "b.cfg", b"b");
+
+    let (_, first) = browsers.send(id, a, "/a.cfg").unwrap();
+    let (_, second) = browsers.send(id, b, "/b.cfg").unwrap();
+    code_asked(&mut events).await;
+    browsers.cancel(id);
+    match last(first).await {
+        TransferState::Failed {
+            reason, partial, ..
+        } => {
+            assert_eq!(reason, "the login was cancelled");
+            assert_eq!(partial, "no partial file was left");
+        }
+        other => panic!("expected failed, got {other:?}"),
+    }
+    code_asked(&mut events).await;
+    browsers.answer(id, vec![ONE_TIME_CODE.into()]);
+    assert!(matches!(last(second).await, TransferState::Done { .. }));
+    assert!(!remote.path().join("a.cfg").exists());
+    assert_eq!(fs::read(remote.path().join("b.cfg")).unwrap(), b"b");
+}
+
+#[tokio::test]
+async fn a_host_key_trusted_once_is_asked_about_for_each_transfer() {
+    let (server, remote) = scp_server().await;
+    fs::write(remote.path().join("old.cfg"), b"old").unwrap();
+    let browsers = FileBrowsers::new();
+    let (id, mut events) = open_scp(
+        &browsers,
+        server.target(),
+        KnownHosts::in_memory(),
+        HostKeyDecision::TrustOnce,
+    )
+    .await;
+    let local = TempDir::new().unwrap();
+    let path = local_file(&local, "a.cfg", b"a");
+
+    let (_, send) = browsers.send(id, path.clone(), "/a.cfg").unwrap();
+    assert!(matches!(
+        next(&mut events).await,
+        BrowserEvent::HostKey { .. }
+    ));
+    browsers.decide_host_key(id, HostKeyDecision::TrustOnce);
+    assert!(matches!(last(send).await, TransferState::Done { .. }));
+
+    let (_, fetch) = browsers.fetch(id, "/old.cfg", local.path()).unwrap();
+    assert!(matches!(
+        next(&mut events).await,
+        BrowserEvent::HostKey { .. }
+    ));
+    browsers.decide_host_key(id, HostKeyDecision::TrustOnce);
+    assert!(matches!(last(fetch).await, TransferState::Done { .. }));
+
+    // Refused, the key fails that transfer with the refusal's reason; the
+    // next one asks again.
+    let (_, refused) = browsers.send(id, path.clone(), "/b.cfg").unwrap();
+    let (_, next_send) = browsers.send(id, path, "/c.cfg").unwrap();
+    assert!(matches!(
+        next(&mut events).await,
+        BrowserEvent::HostKey { .. }
+    ));
+    browsers.decide_host_key(id, HostKeyDecision::Cancel);
+    match last(refused).await {
+        TransferState::Failed { reason, .. } => assert!(reason.contains("host key"), "{reason}"),
+        other => panic!("expected failed, got {other:?}"),
+    }
+    assert!(matches!(
+        next(&mut events).await,
+        BrowserEvent::HostKey { .. }
+    ));
+    browsers.decide_host_key(id, HostKeyDecision::TrustOnce);
+    assert!(matches!(last(next_send).await, TransferState::Done { .. }));
+    assert!(!remote.path().join("b.cfg").exists());
+    assert!(remote.path().join("c.cfg").exists());
+}
+
+#[tokio::test]
+async fn a_stored_profile_with_remembered_keys_asks_nothing_per_transfer() {
+    let (server, _remote) = scp_server().await;
+    let browsers = FileBrowsers::new();
+    let (id, mut events) = open_scp(
+        &browsers,
+        server.target(),
+        known_hosts(),
+        HostKeyDecision::Cancel,
+    )
+    .await;
+    let local = TempDir::new().unwrap();
+    let path = local_file(&local, "a.cfg", b"a");
+    for _ in 0..2 {
+        let (_, watch) = browsers.send(id, path.clone(), "/a.cfg").unwrap();
+        assert!(matches!(last(watch).await, TransferState::Done { .. }));
+    }
+    nothing_asked(&mut events).await;
+}
+
+#[tokio::test]
+async fn an_unknown_key_trusted_and_remembered_is_asked_only_once() {
+    let (server, _remote) = scp_server().await;
+    let browsers = FileBrowsers::new();
+    let (id, mut events) = open_scp(
+        &browsers,
+        server.target(),
+        KnownHosts::in_memory(),
+        HostKeyDecision::TrustAndRemember,
+    )
+    .await;
+    let local = TempDir::new().unwrap();
+    let path = local_file(&local, "a.cfg", b"a");
+    for _ in 0..2 {
+        let (_, watch) = browsers.send(id, path.clone(), "/a.cfg").unwrap();
+        assert!(matches!(last(watch).await, TransferState::Done { .. }));
+    }
+    nothing_asked(&mut events).await;
+}
+
+#[tokio::test]
+async fn a_question_left_open_longer_than_the_stall_limit_does_not_fail_the_transfer() {
+    let (server, remote) = scp_server().await;
+    let mut target = otp_target(&server);
+    // The stall limit is three connect timeouts: 3 s.
+    target.connect_timeout = Duration::from_secs(1);
+    let browsers = FileBrowsers::new();
+    let (id, mut events) =
+        open_scp(&browsers, target, known_hosts(), HostKeyDecision::Cancel).await;
+    let local = TempDir::new().unwrap();
+    let path = local_file(&local, "a.cfg", b"a");
+
+    let (_, mut watch) = browsers.send(id, path, "/a.cfg").unwrap();
+    until_connecting(&mut watch).await;
+    code_asked(&mut events).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(
+        TransferState::from(&watch.status()),
+        TransferState::Connecting
+    );
+    browsers.answer(id, vec![ONE_TIME_CODE.into()]);
+    assert!(matches!(last(watch).await, TransferState::Done { .. }));
+    assert!(remote.path().join("a.cfg").exists());
+}
+
+#[tokio::test]
+async fn a_transfer_cancelled_while_it_asks_takes_its_question_off_the_tab() {
+    let (server, _remote) = scp_server().await;
+    let browsers = FileBrowsers::new();
+    let (id, mut events) = open_scp(
+        &browsers,
+        otp_target(&server),
+        known_hosts(),
+        HostKeyDecision::Cancel,
+    )
+    .await;
+    let local = TempDir::new().unwrap();
+    let path = local_file(&local, "a.cfg", b"a");
+    let (added, watch) = browsers.send(id, path, "/a.cfg").unwrap();
+    code_asked(&mut events).await;
+    assert!(browsers.cancel_transfer(added.id));
+    assert!(matches!(last(watch).await, TransferState::Cancelled { .. }));
+    assert!(matches!(
+        next(&mut events).await,
+        BrowserEvent::QuestionClosed
+    ));
+}
+
+#[tokio::test]
+async fn closing_the_browser_with_a_question_open_cancels_the_transfer_and_the_next_asks_the_new_one(
+) {
+    let (server, remote) = scp_server().await;
+    let browsers = FileBrowsers::new();
+    let (id, mut events) = open_scp(
+        &browsers,
+        otp_target(&server),
+        known_hosts(),
+        HostKeyDecision::Cancel,
+    )
+    .await;
+    let local = TempDir::new().unwrap();
+    let a = local_file(&local, "a.cfg", b"a");
+    let b = local_file(&local, "b.cfg", b"b");
+    let (_, first) = browsers.send(id, a, "/a.cfg").unwrap();
+    let (_, second) = browsers.send(id, b, "/b.cfg").unwrap();
+    code_asked(&mut events).await;
+
+    // A Reconnect: the browser closes and a new one opens.
+    browsers.close(id);
+    assert!(matches!(last(first).await, TransferState::Cancelled { .. }));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        TransferState::from(&second.status()),
+        TransferState::Waiting,
+        "it waits for the new browser"
+    );
+    let (id, mut events) = open_scp(
+        &browsers,
+        otp_target(&server),
+        known_hosts(),
+        HostKeyDecision::Cancel,
+    )
+    .await;
+    code_asked(&mut events).await;
+    browsers.answer(id, vec![ONE_TIME_CODE.into()]);
+    assert!(matches!(last(second).await, TransferState::Done { .. }));
+    assert_eq!(fs::read(remote.path().join("b.cfg")).unwrap(), b"b");
+
+    // Closing the tab gives a question up too.
+    let (_, third) = browsers
+        .send(id, local.path().join("a.cfg"), "/a.cfg")
+        .unwrap();
+    code_asked(&mut events).await;
+    browsers.close_host(HOST);
+    assert!(matches!(last(third).await, TransferState::Cancelled { .. }));
 }
