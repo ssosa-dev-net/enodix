@@ -25,7 +25,9 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard};
+use std::time::{Duration, SystemTime};
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, Generate, KeyInit, Payload};
@@ -56,6 +58,17 @@ const MIN_SALT_LEN: usize = 16;
 /// The most memory a header may ask the key derivation for (4 GiB): a
 /// damaged or hostile header must not exhaust the machine.
 const MAX_MEMORY_KIB: u32 = 4 * 1024 * 1024;
+/// A temporary file of the vault's older than this was left by a write that
+/// stopped (a power cut, a crash): no write takes that long.
+const LEFTOVER_AGE: Duration = Duration::from_secs(60);
+
+/// Why a change to an unlocked vault whose file was sealed again under
+/// another key was refused.
+const REPLACED: &str = "the vault's master password was changed (perhaps by another copy of the app) since it was unlocked here: this change was not saved; unlock it again with the master password it has now";
+/// Why a change to an unlocked vault whose file is gone was refused.
+const TURNED_OFF: &str = "the vault was turned off (perhaps by another copy of the app) since it was unlocked here, and its profiles and secrets moved to the keychain: this change was not saved; restart the app to use the keychain";
+/// Why an app using the keychain refuses once a vault file appeared.
+const TURNED_ON: &str = "the vault is locked: it was turned on (perhaps by another copy of the app) since this one started, and the keychain's profiles and secrets moved into it; unlock it to use them";
 
 /// The Argon2id cost of deriving the key from the master password.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,18 +324,17 @@ impl Vault {
         self.body.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The file's contents as they are now, opened with this vault's key.
+    /// The file's contents as they are now, opened with this vault's key. A
+    /// file sealed under another key (its master password changed, perhaps
+    /// by another copy of the app) is [`VaultError::Invalid`] with
+    /// [`REPLACED`], not damage: it opens with its own password.
     fn reread(&self) -> Result<Body, VaultError> {
         let (sealed, salt) = read_sealed(&self.path)?;
         if salt != self.salt || sealed.kdf.params != self.kdf {
-            return Err(VaultError::Damaged(
-                "it was replaced since it was unlocked".into(),
-            ));
+            return Err(VaultError::Invalid(REPLACED.into()));
         }
         open(&sealed, &self.key).map_err(|error| match error {
-            VaultError::WrongPassword => {
-                VaultError::Damaged("it was replaced since it was unlocked".into())
-            }
+            VaultError::WrongPassword => VaultError::Invalid(REPLACED.into()),
             other => other,
         })
     }
@@ -330,7 +342,10 @@ impl Vault {
     /// Applies `edit` to the file's current contents and writes them.
     fn change<T>(&self, edit: impl FnOnce(&mut Body) -> T) -> Result<T, StoreError> {
         let mut held = self.body();
-        let mut fresh = self.reread().map_err(store_error)?;
+        let mut fresh = self.reread().map_err(|error| match error {
+            VaultError::NoVault => StoreError(TURNED_OFF.into()),
+            other => store_error(other),
+        })?;
         let result = edit(&mut fresh);
         self.write(&fresh).map_err(store_error)?;
         *held = fresh;
@@ -525,21 +540,87 @@ fn open(sealed: &Sealed, key: &[u8; 32]) -> Result<Body, VaultError> {
     Ok(Body::from_contents(contents))
 }
 
+/// Writes `bytes` to a temporary file beside `path`, flushes it to the disk
+/// and renames it over `path`: a reader sees the old file or the new one,
+/// never part of one. Each write has a temporary file of its own
+/// (`<file>.<process>-<count>.tmp`), so that two copies of the app writing
+/// at once never write into the same one.
 fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
     let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
+    temporary.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
     let temporary = PathBuf::from(temporary);
     let written = (|| {
-        let mut file = fs::File::create(&temporary)?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&temporary, path)
+        fs::rename(&temporary, path)?;
+        sync_folder(path);
+        Ok(())
     })();
     if written.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     written
+}
+
+/// Flushes the rename of `path` to the disk where the system needs it
+/// asked for (Linux: the folder's entry), so that a power cut after a write
+/// reported done does not bring back the file before it. Best effort: the
+/// write itself is already whole.
+fn sync_folder(path: &Path) {
+    #[cfg(unix)]
+    if let Some(folder) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Ok(folder) = fs::File::open(folder) {
+            let _ = folder.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Removes the temporary files beside the vault at `path` that writes which
+/// stopped half way (a power cut, a crash) left: those not changed for
+/// [`LEFTOVER_AGE`], so that another copy of the app writing now keeps its
+/// own. Older versions named theirs `<file>.tmp`. They hold nothing the
+/// vault does not (a write is only done once renamed) and are never read.
+fn remove_leftovers(path: &Path) {
+    let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    let folder = if folder.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        folder
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let entry_name = entry.file_name().to_string_lossy().into_owned();
+        if !(entry_name.starts_with(&prefix) && entry_name.ends_with(".tmp")) {
+            continue;
+        }
+        let stopped = entry
+            .metadata()
+            .ok()
+            .filter(fs::Metadata::is_file)
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age >= LEFTOVER_AGE);
+        if stopped {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -743,8 +824,11 @@ impl fmt::Debug for ActiveStore {
 impl ActiveStore {
     /// The store over `keychain`, with the vault kept at `vault_file`
     /// ([`vault_file`] of the data folder): locked if that file exists.
+    /// Temporary files left beside it by a write that stopped half way are
+    /// removed.
     pub fn new(keychain: Box<dyn CredentialStore>, vault_file: impl Into<PathBuf>) -> Self {
         let vault_file = vault_file.into();
+        remove_leftovers(&vault_file);
         let state = if Vault::exists(&vault_file) {
             State::Locked
         } else {
@@ -780,7 +864,11 @@ impl ActiveStore {
         !self.has_keychain && self.status() == VaultStatus::Off
     }
 
+    /// Off, locked or unlocked. A vault file that appeared while this store
+    /// used the keychain (another copy of the app turned the vault on)
+    /// makes it locked.
     pub fn status(&self) -> VaultStatus {
+        self.notice_vault_turned_on();
         match &*self.state() {
             State::Off => VaultStatus::Off,
             State::Locked => VaultStatus::Locked,
@@ -792,14 +880,33 @@ impl ActiveStore {
         self.state.read().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// While off: if a vault file is there now, another copy of the app
+    /// turned the vault on and moved the keychain's entries into it, so this
+    /// store is locked from now on rather than writing to (and reading from)
+    /// a keychain nobody else uses. Whether it changed to locked now.
+    fn notice_vault_turned_on(&self) -> bool {
+        if !matches!(*self.state(), State::Off) || !Vault::exists(&self.vault_file) {
+            return false;
+        }
+        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        if !matches!(*state, State::Off) || !Vault::exists(&self.vault_file) {
+            // This store's own turn on (or the file gone again) came first.
+            return false;
+        }
+        *state = State::Locked;
+        true
+    }
+
     /// Unlocks the vault with `password`; it stays unlocked as long as this
-    /// store lives. On an unlocked vault the password is still checked.
+    /// store lives. On an unlocked vault the password is still checked, and
+    /// the file opened again with it (after another copy of the app changed
+    /// the master password, the new one unlocks it here too).
     pub fn unlock(&self, password: &str) -> Result<(), VaultError> {
+        self.notice_vault_turned_on();
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         match *state {
             State::Off => Err(VaultError::NoVault),
-            State::Unlocked(_) => Vault::unlock(&self.vault_file, password).map(drop),
-            State::Locked => {
+            State::Unlocked(_) | State::Locked => {
                 *state = State::Unlocked(Vault::unlock(&self.vault_file, password)?);
                 Ok(())
             }
@@ -1048,6 +1155,9 @@ impl ActiveStore {
         &self,
         use_store: impl FnOnce(&dyn CredentialStore) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
+        if self.notice_vault_turned_on() {
+            return Err(StoreError(TURNED_ON.into()));
+        }
         match &*self.state() {
             State::Off => use_store(self.keychain.as_ref()),
             State::Locked => Err(StoreError(VaultError::Locked.to_string())),
