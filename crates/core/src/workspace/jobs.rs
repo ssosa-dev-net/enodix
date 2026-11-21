@@ -50,6 +50,48 @@ pub struct SavedJob {
     pub step: JobStep,
     /// A folder, a saved filter or exactly one host.
     pub target: JobTarget,
+    /// The variables whose answers the jobs file holds but a saved job
+    /// never uses, because their names look like secrets (#126, see
+    /// [`secret_answers`]): asked at each run instead. Names only; the
+    /// answers are never read into the job. Never written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored_answers: Vec<String>,
+}
+
+impl SavedJob {
+    /// A saved job with no ignored answers.
+    pub fn new(name: impl Into<String>, step: JobStep, target: JobTarget) -> Self {
+        Self {
+            name: name.into(),
+            step,
+            target,
+            ignored_answers: Vec::new(),
+        }
+    }
+}
+
+/// The variables of `step`'s answers that a saved job does not keep,
+/// because their names look like secrets (a password, a secret, a key, a
+/// token, a community...), by the rule the CSV and Nornir imports use for
+/// fields: they are asked at each run. Empty for anything but a snippet.
+pub fn secret_answers(step: &JobStep) -> Vec<String> {
+    match step {
+        JobStep::Snippet { answers, .. } => answers
+            .keys()
+            .filter(|name| crate::import::is_secret_name(name))
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `answers` without those whose names look like secrets.
+fn kept_answers(answers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    answers
+        .iter()
+        .filter(|(name, _)| !crate::import::is_secret_name(name))
+        .map(|(name, answer)| (name.clone(), answer.clone()))
+        .collect()
 }
 
 /// The saved jobs of the jobs file (`document`), in file order, and a
@@ -119,16 +161,25 @@ fn parse(name: &str, definition: &Value) -> Result<SavedJob, String> {
             ))
         }
     };
+    let mut ignored_answers = Vec::new();
     if let Some(given) = answers {
         let JobStep::Snippet { answers, .. } = &mut step else {
             return Err(format!("`{ANSWERS}` only go with a `{SNIPPET}`"));
         };
-        *answers = given;
+        // A secret-looking answer in the file (saved before #126, or
+        // written by hand) is left in the file but never used.
+        ignored_answers = given
+            .keys()
+            .filter(|name| crate::import::is_secret_name(name))
+            .cloned()
+            .collect();
+        *answers = kept_answers(&given);
     }
     Ok(SavedJob {
         name: name.to_string(),
         step,
         target,
+        ignored_answers,
     })
 }
 
@@ -218,7 +269,8 @@ pub(super) fn clean(job: &SavedJob) -> Result<SavedJob, String> {
             }
             JobStep::Snippet {
                 name: name.to_string(),
-                answers: answers.clone(),
+                // Never kept: asked at each run (#126).
+                answers: kept_answers(answers),
             }
         }
         JobStep::Script { path } => {
@@ -269,6 +321,7 @@ pub(super) fn clean(job: &SavedJob) -> Result<SavedJob, String> {
         name: name.to_string(),
         step,
         target,
+        ignored_answers: job.ignored_answers.clone(),
     })
 }
 
@@ -319,13 +372,22 @@ pub(super) fn write(
         return Err(job.name.clone());
     }
     let name = Value::from(job.name.as_str());
-    let definition = to_value(job);
+    let mut definition = to_value(job);
     let Some(previous) =
         previous.filter(|previous| document.keys().any(|key| same_key(key, previous)))
     else {
         document.insert(name, definition);
         return Ok(());
     };
+    // The secret-looking answers the replaced entry holds (unused, #126)
+    // stay as they were: the app never removes them silently; the user does.
+    if let Some(old) = document
+        .iter()
+        .find(|(key, _)| same_key(key, previous))
+        .map(|(_, value)| value)
+    {
+        keep_ignored_answers(old, &mut definition);
+    }
     *document = std::mem::take(document)
         .into_iter()
         .map(|(key, value)| {
@@ -337,6 +399,33 @@ pub(super) fn write(
         })
         .collect();
     Ok(())
+}
+
+/// Copies into the snippet entry `definition` the answers of the entry
+/// `old` whose names look like secrets, as written there.
+fn keep_ignored_answers(old: &Value, definition: &mut Value) {
+    let Some(Value::Mapping(old)) = old.get(ANSWERS) else {
+        return;
+    };
+    let kept: Vec<(Value, Value)> = old
+        .iter()
+        .filter(|(name, _)| {
+            scalar_text(name).is_some_and(|name| crate::import::is_secret_name(name.trim()))
+        })
+        .map(|(name, answer)| (name.clone(), answer.clone()))
+        .collect();
+    let Value::Mapping(definition) = definition else {
+        return;
+    };
+    if kept.is_empty() || !definition.contains_key(SNIPPET) {
+        return;
+    }
+    let answers = definition
+        .entry(ANSWERS.into())
+        .or_insert_with(|| Value::Mapping(Mapping::new()));
+    if let Value::Mapping(answers) = answers {
+        answers.extend(kept);
+    }
 }
 
 /// Removes the entry called `name` (ignoring case); false if there is none.

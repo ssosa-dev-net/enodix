@@ -754,6 +754,7 @@ fn filling_in_cannot_be_saved_as_a_job() {
             name: "enrich".into(),
             step: JobStep::Enrich,
             target: site(),
+            ignored_answers: Vec::new(),
         },
     );
     assert!(matches!(refused, Err(EditError::Invalid(_))), "{refused:?}");

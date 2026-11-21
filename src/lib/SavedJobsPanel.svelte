@@ -32,6 +32,17 @@
     return `${what} on ${on}`;
   }
 
+  /**
+   * What the job says of answers the jobs file holds but it never uses,
+   * their names looking like secrets (#126).
+   */
+  function ignoredText(names: string[]): string {
+    const listed = names.map((name) => `{{${name}}}`).join(", ");
+    return names.length === 1
+      ? `The answer to ${listed} in _jobs.yaml is no longer used (the name looks like a secret): it is asked at each run. Remove it from the file; the app cannot remove it from the git history.`
+      : `The answers to ${listed} in _jobs.yaml are no longer used (the names look like secrets): they are asked at each run. Remove them from the file; the app cannot remove them from the git history.`;
+  }
+
   async function run(job: ListedSavedJob) {
     if (busy) return;
     busy = true;
@@ -89,6 +100,13 @@
                 {#if job.problem}
                   <span class="problem" data-saved-job-problem={job.name}
                     >{job.problem}</span
+                  >
+                {/if}
+                {#if job.ignored_answers?.length}
+                  <span
+                    class="ignored"
+                    data-saved-job-ignored={job.ignored_answers.join(",")}
+                    >{ignoredText(job.ignored_answers)}</span
                   >
                 {/if}
               </button>
@@ -214,6 +232,12 @@
   .problem {
     color: var(--danger);
     font-size: var(--text-2xs);
+  }
+
+  .run .ignored {
+    color: var(--warning);
+    font-size: var(--text-2xs);
+    white-space: normal;
   }
 
   li.broken .name {

@@ -1567,6 +1567,13 @@ fn saved_job_save(
     })
 }
 
+/// The variables of `step`'s answers a saved job does not keep (#126):
+/// their names look like secrets, so they are asked at each run.
+#[tauri::command]
+fn saved_job_secret_answers(step: JobStep) -> Vec<String> {
+    netterm_core::workspace::secret_answers(&step)
+}
+
 /// Deletes the saved job `name` from the workspace's jobs file.
 #[tauri::command]
 fn saved_job_delete(shell: State<'_, Shell>, name: String) -> Result<Edited<()>, String> {
@@ -3479,6 +3486,7 @@ pub fn run() {
             job_run_again,
             saved_job_save,
             saved_job_delete,
+            saved_job_secret_answers,
             saved_job_plan,
             job_runs,
             job_run,

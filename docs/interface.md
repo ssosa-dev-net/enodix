@@ -76,6 +76,16 @@ everything 0.2.0 could do, the app still does, reached differently.
   is advice: the keys are looked up again when the job runs. A key that
   has changed is not seen here (that needs a connection): the run
   refuses it.
+- **Save as job** (job tab pre-flight, run tab) keeps the snippet's
+  variable answers in `_jobs.yaml`, which the team shares, except for
+  variables whose names look like secrets (password, secret, key, token,
+  community..., as the imports judge field names; #126): the form lists
+  them as "Not saved, asked at each run", and running the saved job asks
+  them. A saved job whose `_jobs.yaml` entry already holds such an answer
+  (saved before, or written by hand) says in the Jobs view that the
+  answer is no longer used and should be removed from the file, and that
+  the app cannot remove it from the git history; the app never uses or
+  shows it and leaves the file as it is.
 - **Send a file to many hosts** (#107): "Send file…" beside Run snippet
   and Run script (a folder's or host's details sheet, the tree's context
   menu, a saved filter's actions) opens a job tab: the file (Browse… or a

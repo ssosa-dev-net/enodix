@@ -11,7 +11,9 @@ use netterm_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
 use netterm_core::job::{self, JobPlan, JobStep, JobTarget, PlanError};
-use netterm_core::workspace::{EditError, HostId, SavedJob, ScriptError, Workspace, JOBS_FILE};
+use netterm_core::workspace::{
+    secret_answers, EditError, HostId, SavedJob, ScriptError, Workspace, JOBS_FILE,
+};
 use support::workspaces::{fixture, fixture_copy, read};
 
 fn open() -> Workspace {
@@ -30,11 +32,7 @@ fn folder(path: &str) -> JobTarget {
 }
 
 fn job(name: &str, step: JobStep, target: JobTarget) -> SavedJob {
-    SavedJob {
-        name: name.into(),
-        step,
-        target,
-    }
+    SavedJob::new(name, step, target)
 }
 
 /// A store holding the profile every host of the fixture logs in with.
@@ -541,5 +539,150 @@ fn an_external_edit_of_the_jobs_file_is_picked_up_by_a_refresh() {
     assert_eq!(
         problems(&workspace),
         ["saved job `Broken`: missing `snippet` or `script`"]
+    );
+}
+
+// --- Answers that look like secrets (#126) ---
+
+/// A copy of the fixture with a snippet asking a VLAN and an enable
+/// password, and a jobs file holding `jobs`.
+fn with_secret_snippet(jobs: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let (temp, root) = fixture_copy("jobs");
+    let snippets = read(&root, "_snippets.yaml");
+    fs::write(
+        root.join("_snippets.yaml"),
+        format!("{snippets}Vlan: vlan {{{{vlan}}}} secret {{{{enable_password}}}}\n"),
+    )
+    .unwrap();
+    if jobs.is_empty() {
+        fs::remove_file(root.join(JOBS_FILE)).unwrap();
+    } else {
+        fs::write(root.join(JOBS_FILE), jobs).unwrap();
+    }
+    (temp, root)
+}
+
+fn answers(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(name, answer)| (name.to_string(), answer.to_string()))
+        .collect()
+}
+
+#[test]
+fn which_answers_look_like_secrets_follows_the_imports_rule() {
+    let step = JobStep::Snippet {
+        name: "Any".into(),
+        answers: answers(&[
+            ("vlan", "10"),
+            ("enable_password", "x"),
+            ("snmp-community", "x"),
+            ("api_token", "x"),
+            ("Secret", "x"),
+            ("interface", "Ethernet1"),
+            ("keychain", "x"),
+        ]),
+    };
+    assert_eq!(
+        secret_answers(&step),
+        ["Secret", "api_token", "enable_password", "snmp-community"]
+    );
+    assert!(secret_answers(&JobStep::Script {
+        path: "scripts/check.py".into()
+    })
+    .is_empty());
+}
+
+/// Saving keeps the VLAN's answer and never writes the password's: it is
+/// asked at each run.
+#[test]
+fn a_secret_looking_answer_is_not_saved_and_is_asked_at_each_run() {
+    let (_temp, root) = with_secret_snippet("");
+    let mut workspace = Workspace::open(&root).unwrap();
+    let step = JobStep::Snippet {
+        name: "Vlan".into(),
+        answers: answers(&[("vlan", "10"), ("enable_password", "hunter2")]),
+    };
+    workspace
+        .save_job(None, &job("Vlan ten", step, folder("Madrid")))
+        .unwrap();
+
+    let text = read(&root, JOBS_FILE);
+    assert_eq!(
+        text,
+        "Vlan ten:\n  snippet: Vlan\n  answers:\n    vlan: '10'\n  folder: Madrid\n"
+    );
+    let saved = workspace.saved_job("Vlan ten").unwrap();
+    assert_eq!(
+        saved.step,
+        JobStep::Snippet {
+            name: "Vlan".into(),
+            answers: answers(&[("vlan", "10")]),
+        }
+    );
+    assert!(saved.ignored_answers.is_empty());
+
+    let plan = plan_saved(&workspace, "Vlan ten").unwrap();
+    assert_eq!(plan.missing_variables, ["enable_password"]);
+}
+
+/// A jobs file that already holds such an answer is read as it is, never
+/// rewritten: the saved job names the answer as ignored, its value is used
+/// nowhere (not in the job, not in its plan), and a rename keeps it in the
+/// file for the user to remove.
+#[test]
+fn a_secret_looking_answer_already_in_the_file_is_ignored_and_left_there() {
+    let original = "Vlan twenty:\n  snippet: Vlan\n  answers:\n    vlan: '20'\n    enable_password: hunter2\n  folder: Madrid\n";
+    let (_temp, root) = with_secret_snippet(original);
+    let mut workspace = Workspace::open(&root).unwrap();
+    assert!(
+        problems(&workspace).is_empty(),
+        "{:?}",
+        problems(&workspace)
+    );
+
+    let saved = workspace.saved_job("Vlan twenty").unwrap();
+    assert_eq!(saved.ignored_answers, ["enable_password"]);
+    assert_eq!(
+        saved.step,
+        JobStep::Snippet {
+            name: "Vlan".into(),
+            answers: answers(&[("vlan", "20")]),
+        }
+    );
+    assert!(!format!("{saved:?}").contains("hunter2"));
+    let shown = serde_json::to_string(saved).unwrap();
+    assert!(
+        shown.contains(r#""ignored_answers":["enable_password"]"#) && !shown.contains("hunter2"),
+        "{shown}"
+    );
+    assert_eq!(read(&root, JOBS_FILE), original, "not rewritten on load");
+
+    let plan = plan_saved(&workspace, "Vlan twenty").unwrap();
+    assert_eq!(plan.missing_variables, ["enable_password"]);
+    assert!(!format!("{plan:?}").contains("hunter2"));
+    assert!(!serde_json::to_string(&plan).unwrap().contains("hunter2"));
+
+    // A rename (as the interface sends it: the job as listed) keeps the
+    // answer in the file, and the job still says it is ignored.
+    let listed = workspace.saved_job("Vlan twenty").unwrap().clone();
+    workspace
+        .save_job(
+            Some("Vlan twenty"),
+            &SavedJob::new("Vlan 20", listed.step, listed.target),
+        )
+        .unwrap();
+    let text = read(&root, JOBS_FILE);
+    assert!(
+        text.contains("Vlan 20:") && text.contains("enable_password: hunter2"),
+        "{text}"
+    );
+    assert_eq!(
+        workspace.saved_job("Vlan 20").unwrap().ignored_answers,
+        ["enable_password"]
+    );
+    assert_eq!(
+        plan_saved(&workspace, "Vlan 20").unwrap().missing_variables,
+        ["enable_password"]
     );
 }
