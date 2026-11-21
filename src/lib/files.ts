@@ -41,7 +41,10 @@ export type BrowserEvent =
       folder: string | null;
     }
   | { kind: "failed"; reason: string }
-  | { kind: "lost"; reason: string };
+  | { kind: "lost"; reason: string }
+  /** A transfer's question went unanswered (the transfer was cancelled,
+   * or its connection gave up): it comes off the tab. */
+  | { kind: "questionClosed" };
 
 /** Opens a browser on the host `host` (its stored profile, or the typed
  * `credentials`), starting in `folder` or the host's platform file folder

@@ -33,7 +33,9 @@
 //! `--sftp`, the first server and the `--device` server serve the folder
 //! (created if missing) over SFTP, as `/` (`tests/support/sftp.rs`); without
 //! it they refuse the subsystem, as a device without SFTP. With
-//! `--scp-only`, a server with the same login listens on the given port,
+//! `--scp-only`, a server with the same logins (`engineer-otp`'s one-time
+//! code included, which the smoke test answers per transfer) listens on
+//! the given port,
 //! has no SFTP the way IOS-XE has none (it accepts the subsystem, closes
 //! the channel and then the whole connection) and serves the folder
 //! (created if missing) over SCP, as `/` (`tests/support/scp.rs`). The

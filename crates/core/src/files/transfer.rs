@@ -202,6 +202,11 @@ pub enum TransferError {
     /// Connecting for an SCP transfer failed.
     #[error("could not connect for the transfer: {0}")]
     Connect(String),
+    /// The user said no to a question while the transfer connected (the
+    /// login cancelled, the host key refused): why. Only this transfer
+    /// fails; the host's next one connects and asks for itself.
+    #[error("{0}")]
+    Declined(String),
 }
 
 impl TransferError {
@@ -248,10 +253,30 @@ impl Files {
 }
 
 /// A future the engine awaits; `Send`, for its tasks.
-pub type Connecting<'a> = Pin<Box<dyn Future<Output = Result<FileConnection, String>> + Send + 'a>>;
+pub type Connecting<'a> =
+    Pin<Box<dyn Future<Output = Result<FileConnection, ConnectFailure>> + Send + 'a>>;
+
+/// Why [`Connect::connect`] gave no connection.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectFailure {
+    /// The connection failed (`TransferError::Connect`): the host's
+    /// waiting transfers wait for a new link.
+    #[error("{0}")]
+    Failed(String),
+    /// The user said no to a question (`TransferError::Declined`): this
+    /// transfer fails alone and the next one connects.
+    #[error("{0}")]
+    Declined(String),
+}
+
+impl From<String> for ConnectFailure {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
 
 /// How an SCP transfer gets its connection: one per transfer. [`Scp`]
-/// connects unattended; a caller that asks the user (a typed login) gives
+/// connects unattended; a caller that asks the user (the Files tab) gives
 /// its own.
 pub trait Connect: Send + Sync + 'static {
     /// A new logged-in connection, or why there is none.
@@ -263,7 +288,7 @@ impl Connect for Scp {
         Box::pin(async move {
             self.connect_unattended()
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| ConnectFailure::Failed(error.to_string()))
         })
     }
 }
@@ -318,6 +343,14 @@ impl Link {
         match &self.inner {
             LinkInner::Sftp { sftp, .. } => sftp.presence(path).await,
             LinkInner::Scp(_) => Ok(Presence::CannotTell),
+        }
+    }
+
+    /// Whether `other` is this SCP link (or a clone of it).
+    fn is_scp(&self, other: &Link) -> bool {
+        match (&self.inner, &other.inner) {
+            (LinkInner::Scp(this), LinkInner::Scp(other)) => Arc::ptr_eq(this, other),
+            _ => false,
         }
     }
 
@@ -539,6 +572,19 @@ impl Transfers {
         };
         for id in ids {
             self.cancel(id);
+        }
+    }
+
+    /// Forgets `host`'s link if it is the SCP link `link` (whoever asked
+    /// its questions is gone): the waiting transfers wait for a new one. A
+    /// running one keeps its own.
+    pub(crate) fn forget_scp(&self, host: &str, link: &Link) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(entry) = state.hosts.get_mut(host) {
+            if entry.link.as_ref().is_some_and(|held| held.is_scp(link)) {
+                entry.link = None;
+                entry.generation += 1;
+            }
         }
     }
 
@@ -994,7 +1040,10 @@ async fn scp_connection(
     tokio::select! {
         biased;
         () = cancelled(cancel) => None,
-        connected = connect.connect() => Some(connected.map_err(TransferError::Connect)),
+        connected = connect.connect() => Some(connected.map_err(|failure| match failure {
+            ConnectFailure::Failed(reason) => TransferError::Connect(reason),
+            ConnectFailure::Declined(reason) => TransferError::Declined(reason),
+        })),
     }
 }
 

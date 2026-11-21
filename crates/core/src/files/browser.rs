@@ -9,11 +9,14 @@
 //! lost and opened again, and end when the host is closed
 //! ([`FileBrowsers::close_host`]). A device without SFTP gives a browser
 //! that only sends and fetches by path, over SCP, holding no connection
-//! between transfers ([`BrowserEvent::TransferOnly`]).
+//! between transfers ([`BrowserEvent::TransferOnly`]). Each of those
+//! transfers connects attended (#109): what its login asks comes out as the
+//! browser's `HostKey` and `Prompt` events and is answered with the same
+//! commands as the browser's own login.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -22,13 +25,13 @@ use tokio::sync::mpsc;
 
 use super::sftp::{EntryKind, FileError, RemoteEntry, Sftp, StartError};
 use super::transfer::{
-    Direction, Hashes, Link, Outcome, Presence, SizeCheck, Status, Transfer, TransferError,
-    TransferId, TransferWatch, Transfers,
+    Connect, ConnectFailure, Connecting, Direction, Hashes, Link, Outcome, Presence, SizeCheck,
+    Status, Transfer, TransferError, TransferId, TransferWatch, Transfers,
 };
-use super::Files;
+use super::{Files, Scp};
 use crate::known_hosts::KnownHosts;
 use crate::platform::PlatformDefinition;
-use crate::session::connection::{FileConnection, OpeningEvent};
+use crate::session::connection::{ConnectError, FileConnection, OpeningEvent};
 use crate::session::{HostKeyDecision, HostKeyQuestion, LoginPrompt, SshTarget};
 
 /// How long a closed browser's connection stays for its host's cancelled
@@ -81,6 +84,11 @@ pub enum BrowserEvent {
     Failed { reason: String },
     /// The connection ended: why.
     Lost { reason: String },
+    /// After `TransferOnly`: the question asked for a transfer's
+    /// connection is no longer open, though nobody answered it (the
+    /// transfer was cancelled, or its connection gave up). The tab takes it
+    /// off.
+    QuestionClosed,
 }
 
 /// Why a browser command failed, in the app's words.
@@ -120,6 +128,8 @@ struct Slot {
     commands: mpsc::UnboundedSender<Command>,
     task: tokio::task::JoinHandle<()>,
     open: Arc<Mutex<Reach>>,
+    /// Whether an SCP transfer's question is open over this browser.
+    asking: Arc<AtomicBool>,
 }
 
 impl Drop for Slot {
@@ -276,6 +286,7 @@ impl FileBrowsers {
         let (events_tx, events) = mpsc::unbounded_channel();
         let (commands_tx, commands) = mpsc::unbounded_channel();
         let open = Arc::new(Mutex::new(Reach::default()));
+        let asking = Arc::new(AtomicBool::new(false));
         let task = tokio::spawn(run(
             Run {
                 host: host.to_owned(),
@@ -284,6 +295,7 @@ impl FileBrowsers {
                 known_hosts,
                 start,
                 platform: platform.cloned(),
+                asking: asking.clone(),
             },
             events_tx,
             commands,
@@ -296,6 +308,7 @@ impl FileBrowsers {
                 commands: commands_tx,
                 task,
                 open,
+                asking,
             },
         );
         (id, events)
@@ -307,7 +320,8 @@ impl FileBrowsers {
         }
     }
 
-    /// Answers the last login question, in its order.
+    /// Answers the last login question, in its order (the browser's own
+    /// login's, or after `TransferOnly` a transfer's).
     pub fn answer(&self, id: BrowserId, answers: Vec<String>) {
         self.command(id, Command::Answer(answers));
     }
@@ -317,14 +331,34 @@ impl FileBrowsers {
         self.command(id, Command::Decide(decision));
     }
 
-    /// Gives up a login still going on: it ends `Failed`, cancelled.
+    /// Gives up a login still going on: it ends `Failed`, cancelled. After
+    /// `TransferOnly`, the login of the transfer asking: that transfer
+    /// fails, "the login was cancelled", and the next one connects.
     pub fn cancel(&self, id: BrowserId) {
         self.command(id, Command::Cancel);
     }
 
-    /// Closes the browser and its connection; nothing more is reported.
+    /// Closes the browser and its connection; nothing more is reported. A
+    /// transfer asking over it is cancelled, and the host's waiting ones
+    /// wait for the next browser to ask over.
     pub fn close(&self, id: BrowserId) {
         let slot = self.slots().remove(&id);
+        if let Some(slot) = &slot {
+            let link = slot
+                .open
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .link
+                .clone();
+            if let Some(link) = link {
+                self.transfers.forget_scp(&slot.host, &link);
+            }
+            if slot.asking.load(Ordering::SeqCst) {
+                if let Some(running) = self.transfers.running(&slot.host) {
+                    self.transfers.cancel(running);
+                }
+            }
+        }
         drop(slot);
     }
 
@@ -599,11 +633,12 @@ struct Run {
     known_hosts: KnownHosts,
     start: Option<String>,
     platform: Option<PlatformDefinition>,
+    asking: Arc<AtomicBool>,
 }
 
 /// A browser's life: log in (passing questions out and answers in), start
-/// SFTP (or fall back to SCP), list the starting folder, then wait for the
-/// connection to end.
+/// SFTP (or fall back to SCP, whose transfers then ask over the browser),
+/// list the starting folder, then wait for the connection to end.
 async fn run(
     run: Run,
     events: mpsc::UnboundedSender<BrowserEvent>,
@@ -617,6 +652,7 @@ async fn run(
         known_hosts,
         start,
         platform,
+        asking,
     } = run;
     let send = |event| {
         let _ = events.send(event);
@@ -653,7 +689,12 @@ async fn run(
         Ok(Files::Scp(scp)) => {
             let reason = StartError::NoSftp(scp.no_sftp()).to_string();
             let hint = scp.hint().map(str::to_owned);
-            let link = Link::scp(scp);
+            let link = Link::scp(Asking {
+                scp,
+                events: events.clone(),
+                commands: tokio::sync::Mutex::new(commands),
+                asking,
+            });
             open.lock().unwrap_or_else(|e| e.into_inner()).link = Some(link.clone());
             transfers.connect(&host, link);
             return send(BrowserEvent::TransferOnly {
@@ -704,6 +745,132 @@ async fn run(
     send(BrowserEvent::Lost {
         reason: lost.to_string(),
     });
+}
+
+/// How an SCP-only browser's transfers connect, one connection each:
+/// attended, as the browser's own login was. A host-key or login question
+/// goes out as the browser's event and its answer comes in through the
+/// browser's commands. The login typed for the tab is in the target, so
+/// only what the device itself asks is asked. Transfers run one at a time
+/// per host, so one connection asks at a time.
+struct Asking {
+    scp: Scp,
+    events: mpsc::UnboundedSender<BrowserEvent>,
+    commands: tokio::sync::Mutex<mpsc::UnboundedReceiver<Command>>,
+    /// Whether a question is open (the slot's, for `close`).
+    asking: Arc<AtomicBool>,
+}
+
+impl Connect for Asking {
+    fn connect(&self) -> Connecting<'_> {
+        Box::pin(self.attended())
+    }
+}
+
+/// The question a transfer's connection has open: when it goes without an
+/// answer (the transfer cancelled, the connection given up), the tab is
+/// told to take it off.
+struct Open<'a> {
+    events: &'a mpsc::UnboundedSender<BrowserEvent>,
+    asking: &'a AtomicBool,
+}
+
+impl Open<'_> {
+    fn ask(&self, event: BrowserEvent) {
+        self.asking.store(true, Ordering::SeqCst);
+        let _ = self.events.send(event);
+    }
+
+    fn answered(&self) {
+        self.asking.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Drop for Open<'_> {
+    fn drop(&mut self) {
+        if self.asking.swap(false, Ordering::SeqCst) {
+            let _ = self.events.send(BrowserEvent::QuestionClosed);
+        }
+    }
+}
+
+impl Asking {
+    async fn attended(&self) -> Result<FileConnection, ConnectFailure> {
+        let failed = |error: ConnectError| ConnectFailure::Failed(error.to_string());
+        let mut commands = self.commands.lock().await;
+        // What was sent while nothing was asked answers nothing now.
+        loop {
+            match commands.try_recv() {
+                Ok(_) => continue,
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                // The browser is closed: nobody is there to ask.
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    return self.scp.connect_unattended().await.map_err(failed);
+                }
+            }
+        }
+        let open = Open {
+            events: &self.events,
+            asking: &self.asking,
+        };
+        let mut opening = self.scp.connect();
+        let mut attended = true;
+        let mut declined = false;
+        loop {
+            tokio::select! {
+                event = opening.next() => match event {
+                    Some(OpeningEvent::HostKey(question)) if !attended => {
+                        return Err(failed(ConnectError::HostKeyRefused(question)));
+                    }
+                    Some(OpeningEvent::Prompt(prompt)) if !attended => {
+                        return Err(failed(ConnectError::QuestionRefused(prompt)));
+                    }
+                    Some(OpeningEvent::HostKey(question)) => {
+                        open.ask(BrowserEvent::HostKey { question });
+                    }
+                    Some(OpeningEvent::Prompt(prompt)) => open.ask(BrowserEvent::Prompt { prompt }),
+                    Some(OpeningEvent::Opened(connection)) => return Ok(connection),
+                    Some(OpeningEvent::Failed(error)) => {
+                        let reason = error.to_string();
+                        return Err(if declined {
+                            ConnectFailure::Declined(reason)
+                        } else {
+                            ConnectFailure::Failed(reason)
+                        });
+                    }
+                    None => {
+                        return Err(ConnectFailure::Failed(
+                            "the connection ended while it was being opened".into(),
+                        ));
+                    }
+                },
+                command = commands.recv(), if attended => match command {
+                    Some(Command::Answer(answers)) => {
+                        open.answered();
+                        opening.answer(answers);
+                    }
+                    Some(Command::Decide(decision)) => {
+                        open.answered();
+                        declined |= decision == HostKeyDecision::Cancel;
+                        opening.decide_host_key(decision);
+                    }
+                    Some(Command::Cancel) => {
+                        open.answered();
+                        return Err(ConnectFailure::Declined("the login was cancelled".into()));
+                    }
+                    // The browser closed while this connected (closing
+                    // cancels a transfer whose question is open): what is
+                    // asked from now on is refused.
+                    None if self.asking.load(Ordering::SeqCst) => {
+                        return Err(ConnectFailure::Failed(
+                            "the tab that asked for this transfer was closed".into(),
+                        ));
+                    }
+                    None => attended = false,
+                },
+            }
+        }
+    }
 }
 
 async fn login_folder(sftp: &Sftp) -> Result<Listing, FileError> {
