@@ -13,6 +13,7 @@ use netterm_core::python::{
     FindError, InstallSource, Library, OfferError, PythonChoice, PythonProblem, PythonStatus,
     Setup, SetupCanceller, SetupError, SetupOffer, SetupProgress,
 };
+use support::processes;
 use support::python::{build_wheel, real_python, too_old, FakePython};
 use tempfile::TempDir;
 
@@ -365,6 +366,109 @@ fn a_setup_can_be_cancelled() {
     assert!(matches!(error, SetupError::Cancelled { .. }), "{error:?}");
     assert!(started.elapsed() < Duration::from_secs(20));
     assert_eq!(PythonChoice::load(&data), None);
+}
+
+/// This test binary run again as a helper process (`support::processes`):
+/// a tree of processes, or [`SETUP_OWNER`].
+#[test]
+fn helper() {
+    processes::play();
+    if processes::role().as_deref() == Some(SETUP_OWNER) {
+        own_a_setup();
+    }
+}
+
+/// A process that runs a setup whose first step is a process tree, and
+/// then goes away without cancelling it (killed by the test).
+const SETUP_OWNER: &str = "setup owner";
+
+/// A setup plan in `folder` whose first step (creating the environment)
+/// runs a process tree writing to `pids`.
+fn tree_setup(folder: &std::path::Path, pids: &std::path::Path) -> python::SetupPlan {
+    let data = folder.join("data");
+    let wheel = folder.join(wheel_name(EXPECTED));
+    fs::write(&wheel, "x").unwrap();
+    let good = FakePython::answering(folder, "good", "3.12.4", None);
+    let mut offer = SetupOffer::find(&[good.candidate()], &data, folder, EXPECTED).unwrap();
+    offer.base.executable = processes::tree_python(folder, "tree", pids).path;
+    offer.plan(&[])
+}
+
+fn tree_pids(pids: &std::path::Path) -> Vec<u32> {
+    processes::wait_for_pids(
+        pids,
+        &[processes::CHILD, processes::GRANDCHILD],
+        Duration::from_secs(60),
+    )
+    .expect("the step started its child and grandchild")
+}
+
+/// Closing the app while a setup runs (#124): cancelled, it ends the
+/// step's processes with what they started, and the app can wait for it.
+#[test]
+fn closing_the_app_stops_a_setup_and_the_processes_of_its_step() {
+    let folder = TempDir::new().unwrap();
+    let pids = folder.path().join("pids");
+    fs::create_dir(&pids).unwrap();
+    let plan = tree_setup(folder.path(), &pids);
+    let data = folder.path().join("data");
+    let canceller = SetupCanceller::new();
+    let running = canceller.clone();
+    let setup = std::thread::spawn(move || {
+        create_environment(&plan, &data, EXPECTED, &running, &mut |_| {})
+    });
+    let started = tree_pids(&pids);
+    assert!(!canceller.wait(Duration::ZERO), "the setup is running");
+    canceller.cancel();
+    assert!(canceller.wait(Duration::from_secs(30)), "the setup stopped");
+    let error = setup.join().unwrap().unwrap_err();
+    assert!(matches!(error, SetupError::Cancelled { .. }), "{error:?}");
+    let alive = processes::wait_gone(&started, Duration::from_secs(30));
+    assert!(alive.is_empty(), "still running: {alive:?}");
+}
+
+/// The app is killed, or crashes, during a setup (#124): the step's
+/// processes end with it. The owner is this binary run again.
+#[test]
+fn a_setups_processes_end_when_the_app_is_killed() {
+    let folder = TempDir::new().unwrap();
+    let pids = folder.path().join("pids");
+    fs::create_dir(&pids).unwrap();
+    let mut owner = processes::helper(SETUP_OWNER, &pids)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let found = processes::wait_for_pids(
+        &pids,
+        &[processes::CHILD, processes::GRANDCHILD],
+        Duration::from_secs(60),
+    );
+    let Some(started) = found else {
+        let _ = owner.kill();
+        panic!("the owner's setup did not start: {:?}", owner.wait());
+    };
+    assert!(owner.try_wait().unwrap().is_none(), "the owner went away");
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    let alive = processes::wait_gone(&started, Duration::from_secs(30));
+    assert!(alive.is_empty(), "still running: {alive:?}");
+}
+
+/// [`SETUP_OWNER`]: runs the setup and never cancels it.
+fn own_a_setup() -> ! {
+    let pids = std::path::PathBuf::from(std::env::var_os(processes::PIDS_VARIABLE).unwrap());
+    let folder = pids.parent().unwrap().join("owner");
+    fs::create_dir_all(&folder).unwrap();
+    let plan = tree_setup(&folder, &pids);
+    let _ = create_environment(
+        &plan,
+        &folder.join("data"),
+        EXPECTED,
+        &SetupCanceller::new(),
+        &mut |_| {},
+    );
+    std::process::exit(0)
 }
 
 #[test]

@@ -49,6 +49,7 @@ mod live;
 mod login;
 pub mod results;
 mod run;
+mod running;
 pub mod script;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,6 +76,7 @@ pub use run::{
 };
 /// The reasons an unattended file connection gives for a refused question.
 pub(crate) use run::{host_key_refused, login_question_refused};
+pub use running::{FollowedRun, RunningJobs, APP_CLOSED, APP_CLOSE_WAIT};
 pub use script::{ScriptOptions, ScriptTargets, SCRIPT_OUTPUT};
 
 /// Which hosts a job runs on.

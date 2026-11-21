@@ -26,14 +26,16 @@ use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Condvar, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::process;
 
 /// The oldest Python the package supports.
 pub const MIN_VERSION: PythonVersion = PythonVersion {
@@ -804,9 +806,18 @@ pub enum SetupProgress {
     Output { line: String },
 }
 
-/// Stops a running setup (the step's process is ended).
+/// Stops a running setup (the step's process is ended, with what it
+/// started), and tells when it has stopped.
 #[derive(Debug, Clone, Default)]
-pub struct SetupCanceller(Arc<AtomicBool>);
+pub struct SetupCanceller(Arc<SetupState>);
+
+#[derive(Debug, Default)]
+struct SetupState {
+    cancelled: AtomicBool,
+    /// How many [`create_environment`] calls run with it.
+    running: Mutex<usize>,
+    ended: Condvar,
+}
 
 impl SetupCanceller {
     pub fn new() -> Self {
@@ -814,11 +825,47 @@ impl SetupCanceller {
     }
 
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.0.cancelled.store(true, Ordering::SeqCst);
     }
 
     fn cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Waits up to `within` until no setup runs with it (closing the app
+    /// after [`cancel`](Self::cancel)); whether none does.
+    pub fn wait(&self, within: Duration) -> bool {
+        let running = self
+            .0
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (running, _) = self
+            .0
+            .ended
+            .wait_timeout_while(running, within, |count| *count > 0)
+            .unwrap_or_else(PoisonError::into_inner);
+        *running == 0
+    }
+
+    /// Counts a setup as running with it until the guard is dropped.
+    fn running(&self) -> SetupRunning<'_> {
+        *self
+            .0
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += 1;
+        SetupRunning(self)
+    }
+}
+
+struct SetupRunning<'a>(&'a SetupCanceller);
+
+impl Drop for SetupRunning<'_> {
+    fn drop(&mut self) {
+        let state = &(self.0).0;
+        *state.running.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        state.ended.notify_all();
     }
 }
 
@@ -851,6 +898,7 @@ pub fn create_environment(
     canceller: &SetupCanceller,
     progress: &mut dyn FnMut(SetupProgress),
 ) -> Result<PythonStatus, SetupError> {
+    let _running = canceller.running();
     let interpreter = plan.interpreter.as_os_str();
     let pip = |args: &[&OsStr]| {
         let mut all: Vec<OsString> = ["-m", "pip", "install", "--disable-pip-version-check"]
@@ -1008,10 +1056,10 @@ fn leave_the_bundle(command: &mut Command) {
 ///
 /// Elsewhere it starts in a session of its own, so that it has no
 /// terminal either (as a Windows process without a console: the headless
-/// binary then never waits on a password prompt nobody sees) and
-/// [`stop`] can end the processes it started with it. Started from an
-/// AppImage, it gets none of the bundle's variables
-/// ([`leave_the_bundle`]).
+/// binary then never waits on a password prompt nobody sees) and its
+/// process group holds the processes it starts (`crate::process`). Start
+/// it with `crate::process::start`. Started from an AppImage, it gets none
+/// of the bundle's variables ([`leave_the_bundle`]).
 pub(crate) fn quiet_command(program: &OsStr) -> Command {
     let mut command = Command::new(program);
     leave_the_bundle(&mut command);
@@ -1025,9 +1073,7 @@ pub(crate) fn quiet_command(program: &OsStr) -> Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        /// `CREATE_NO_WINDOW`.
-        const NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(NO_WINDOW);
+        command.creation_flags(crate::process::NO_WINDOW);
     }
     #[cfg(unix)]
     {
@@ -1047,25 +1093,6 @@ pub(crate) fn quiet_command(program: &OsStr) -> Command {
     command
 }
 
-/// Starts `command`. On Unix, a program written a moment ago can be
-/// refused as "text file busy" while another thread of this process is
-/// starting a program of its own (its child briefly holds the file open
-/// for writing, until it runs its own program): that passes in a moment,
-/// so it is tried again for a while.
-pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
-    let until = Instant::now() + Duration::from_secs(2);
-    loop {
-        match command.spawn() {
-            Err(error)
-                if error.kind() == io::ErrorKind::ExecutableFileBusy && Instant::now() < until =>
-            {
-                thread::sleep(Duration::from_millis(10));
-            }
-            result => return result,
-        }
-    }
-}
-
 enum Ended {
     Exited(ExitStatus),
     TimedOut,
@@ -1081,14 +1108,16 @@ fn run(
     canceller: Option<&SetupCanceller>,
     on_line: &mut dyn FnMut(String),
 ) -> io::Result<Ended> {
-    let mut child = spawn(&mut command)?;
+    // The program and what it starts end with it, or with this process
+    // (`crate::process`).
+    let mut tree = process::start(&mut command)?;
     let (sender, lines) = mpsc::channel::<String>();
     let readers = [
-        child
+        tree.child
             .stdout
             .take()
             .map(|out| read_lines(out, sender.clone())),
-        child
+        tree.child
             .stderr
             .take()
             .map(|err| read_lines(err, sender.clone())),
@@ -1106,14 +1135,14 @@ fn run(
             }
         }
         if canceller.is_some_and(SetupCanceller::cancelled) {
-            stop(&mut child);
+            tree.stop();
             break Ended::Cancelled;
         }
         if timeout.is_some_and(|limit| started.elapsed() > limit) {
-            stop(&mut child);
+            tree.stop();
             break Ended::TimedOut;
         }
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = tree.child.try_wait()? {
             // Whatever is still in the pipes, for a moment (a process it
             // left behind may hold them open).
             let until = Instant::now() + Duration::from_millis(500);
@@ -1134,29 +1163,6 @@ fn run(
         }
     }
     Ok(ended)
-}
-
-/// Ends `child` and the processes it started (the launcher's Python, pip's
-/// helpers, whatever a script started), which `kill` alone would leave
-/// running: on Windows its process tree, elsewhere its session's process
-/// group (it leads one, see [`quiet_command`]). Call it before `child`
-/// has been waited for: until then its id cannot name anything else.
-pub(crate) fn stop(child: &mut Child) {
-    #[cfg(windows)]
-    {
-        let mut tree = quiet_command(OsStr::new("taskkill"));
-        tree.args(["/T", "/F", "/PID", &child.id().to_string()]);
-        let _ = tree.output();
-    }
-    #[cfg(unix)]
-    if let Ok(group) = libc::pid_t::try_from(child.id()) {
-        // SAFETY: a plain system call; a negative id names the group.
-        unsafe {
-            libc::kill(-group, libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 fn read_lines(

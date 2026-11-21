@@ -354,6 +354,12 @@
       >
     </header>
     <section class="run" data-run-details={run.id}>
+      {#if run.cancel_reason}
+        <!-- Not cancelled by the user (#124). -->
+        <p class="note" data-run-cancel-reason>
+          Cancelled: {run.cancel_reason}.
+        </p>
+      {/if}
       <div class="actions">
         {#if isRunning(run.id) && live}
           <button

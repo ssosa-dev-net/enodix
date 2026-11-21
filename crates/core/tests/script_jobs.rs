@@ -17,9 +17,10 @@ use netterm_core::job::results::{OutputRef, RunStore, OUTPUT_FOLDER};
 use netterm_core::job::script::{ScriptTargets, TARGETS_FORMAT};
 use netterm_core::job::{
     self, HostState, Job, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget, PlanError,
-    ScriptOptions, SkipReason, StartError, SCRIPT_OUTPUT,
+    RunningJobs, ScriptOptions, SkipReason, StartError, APP_CLOSED, APP_CLOSE_WAIT, SCRIPT_OUTPUT,
 };
 use netterm_core::workspace::{HostId, ScriptError, Workspace};
+use support::processes;
 use support::python::{real_python, FakePython};
 use tempfile::TempDir;
 
@@ -27,7 +28,12 @@ use tempfile::TempDir;
 /// production), one whose profile is not stored here, and some scripts
 /// among files that are not listed.
 fn workspace(temp: &TempDir) -> Workspace {
-    let root = temp.path().join("workspace");
+    workspace_in(temp.path())
+}
+
+/// [`workspace`], in `folder`.
+fn workspace_in(folder: &Path) -> Workspace {
+    let root = folder.join("workspace");
     let files = [
         (
             "Madrid/r1.yaml",
@@ -478,46 +484,251 @@ async fn output_streams_while_the_script_runs_and_cancel_stops_it_keeping_the_ou
     assert_eq!(result.output, "started\n");
 }
 
+/// This test binary run again as a helper process (see
+/// `support::processes`): a tree of processes, or [`JOB_OWNER`].
+#[test]
+fn helper() {
+    processes::play();
+    if processes::role().as_deref() == Some(JOB_OWNER) {
+        own_a_job();
+    }
+}
+
+/// A process that starts a script job running a [`tree`] and then goes
+/// away without cancelling it (killed by the test).
+const JOB_OWNER: &str = "job owner";
+
+/// A stand-in interpreter that runs a process tree (`support::processes`):
+/// the interpreter, its child and its grandchild.
+fn tree(folder: &Path) -> FakePython {
+    let line = processes::tree_line();
+    FakePython::running(folder, "tree", &line, &line)
+}
+
+/// Script options running `python` with what a tree needs to know.
+fn tree_options(python: &Path, pids: &Path) -> JobOptions {
+    let mut options = options(python);
+    if let Some(script) = options.script.as_mut() {
+        script.environment.extend(processes::tree_environment(pids));
+    }
+    options
+}
+
+/// The ids of a started tree's child and grandchild.
+fn tree_pids(pids: &Path) -> [u32; 2] {
+    let found = processes::wait_for_pids(
+        pids,
+        &[processes::CHILD, processes::GRANDCHILD],
+        Duration::from_secs(60),
+    )
+    .expect("the script started its child and grandchild");
+    [found[0], found[1]]
+}
+
+/// Asserts that every process in `pids` ends (waiting on them, not on a
+/// time: a busy machine only makes it slower).
+fn assert_gone(pids: &[u32], what: &str) {
+    let alive = processes::wait_gone(pids, Duration::from_secs(30));
+    assert!(
+        alive.is_empty(),
+        "{what}: still running {alive:?} of {pids:?}"
+    );
+}
+
+/// Until the cause was found (#124) this test watched for a file a
+/// process the script left behind wrote two seconds after it started:
+/// when cancelling took longer than that on a busy machine (taskkill had
+/// to start first), the file came in time and the test failed. It now
+/// waits for the processes themselves to be gone.
 #[tokio::test]
 async fn cancelling_also_ends_the_processes_the_script_started() {
     let temp = TempDir::new().unwrap();
     let workspace = workspace(&temp);
-    // The script leaves a process behind that writes a file two seconds
-    // later, unless it is ended with the script.
-    let marker = temp.path().join("left-behind");
+    let pids = temp.path().join("pids");
+    fs::create_dir(&pids).unwrap();
+    let python = tree(temp.path());
+    let plan = plan(&workspace, &script("top.py"));
+    let manager = support::manager();
+    let mut job = job::start(&manager, plan, tree_options(&python.path, &pids)).unwrap();
+    let started = tree_pids(&pids);
+    job.cancel();
+    let (_, report) = finish(&mut job).await;
+    assert_eq!(report.hosts[0].state, HostState::Cancelled);
+    assert_gone(&started, "the script's child and grandchild after a cancel");
+}
+
+/// A script that exits leaves nothing behind: what it started and left
+/// running ends with it (#124; it used to keep running).
+#[tokio::test]
+async fn the_processes_a_script_leaves_behind_end_when_it_exits() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let pids = temp.path().join("pids");
+    fs::create_dir(&pids).unwrap();
+    let line = processes::tree_line();
     let python = FakePython::running(
         temp.path(),
-        "parent",
+        "leaving",
         &format!(
-            "start \"\" /b cmd /c \"ping -n 3 127.0.0.1 > nul & echo late> {}\"\r\n\
-             echo started\r\nping -n 60 127.0.0.1 > nul",
-            marker.display()
+            "start \"\" /b {line}\r\n\
+             :wait\r\n\
+             if not exist \"%NETTERM_TEST_PIDS%\\{grandchild}\" (\r\n\
+             ping -n 2 127.0.0.1 > nul\r\n\
+             goto wait\r\n\
+             )\r\n\
+             echo leaving\r\n\
+             exit /b 0",
+            grandchild = processes::GRANDCHILD
         ),
         &format!(
-            "(sleep 2; touch '{}') &\necho started\nsleep 60",
-            marker.display()
+            "{line} &\n\
+             while [ ! -f \"$NETTERM_TEST_PIDS/{grandchild}\" ]; do sleep 0.05; done\n\
+             echo leaving\n\
+             exit 0",
+            grandchild = processes::GRANDCHILD
         ),
     );
     let plan = plan(&workspace, &script("top.py"));
     let manager = support::manager();
-    let mut job = job::start(&manager, plan, options(&python.path)).unwrap();
-    loop {
-        let event = tokio::time::timeout(Duration::from_secs(20), job.next())
-            .await
-            .expect("output arrives while it runs")
-            .unwrap();
-        if let JobEvent::Output { .. } = event {
-            break;
-        }
-    }
-    job.cancel();
+    let mut job = job::start(&manager, plan, tree_options(&python.path, &pids)).unwrap();
     let (_, report) = finish(&mut job).await;
-    assert_eq!(report.hosts[0].state, HostState::Cancelled);
-
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    assert!(!marker.exists(), "a process the script started lived on");
+    assert_eq!(report.hosts[0].state, HostState::Done, "{report:?}");
+    assert!(report.hosts[0].output.contains("leaving\n"));
+    let left = tree_pids(&pids);
+    assert_gone(&left, "what the script left behind after it exited");
 }
 
+/// Closing the app (#124): every running job is cancelled as Cancel does,
+/// the script's processes end, and the kept run says the app was closed.
+/// A run the user cancelled says nothing of the kind.
+#[tokio::test]
+async fn closing_the_app_cancels_a_running_script_and_its_kept_run_says_so() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp);
+    let ws = workspace.id().unwrap().to_string();
+    let store = RunStore::new(temp.path().join("data/jobs"));
+    let jobs = RunningJobs::new();
+    let manager = support::manager();
+    let python = tree(temp.path());
+
+    let follow = |pids: &Path| {
+        let plan = plan(&workspace, &script("top.py"));
+        let recorder = store.begin(&ws, &madrid(), &plan).unwrap();
+        let mut job = job::start(&manager, plan, tree_options(&python.path, pids)).unwrap();
+        let mut run = jobs.follow(job.canceller(), recorder);
+        let id = (run.id(), run.run().to_string());
+        let recording = tokio::spawn(async move {
+            while let Some(event) = job.next().await {
+                run.record(&event).unwrap();
+            }
+        });
+        (id, recording)
+    };
+
+    // One the user cancels.
+    let cancelled_pids = temp.path().join("cancelled");
+    fs::create_dir(&cancelled_pids).unwrap();
+    let ((id, cancelled), recording) = follow(&cancelled_pids);
+    let started = tree_pids(&cancelled_pids);
+    assert!(jobs.cancel(id));
+    recording.await.unwrap();
+    assert_gone(&started, "after Cancel");
+    let kept = store.run(&ws, &cancelled).unwrap();
+    assert!(kept.ended());
+    assert_eq!(kept.hosts[0].state, HostState::Cancelled);
+    assert_eq!(kept.cancel_reason, None);
+    assert!(!jobs.cancel(id), "an ended job is no longer running");
+
+    // One that runs when the app closes.
+    let pids = temp.path().join("pids");
+    fs::create_dir(&pids).unwrap();
+    let ((_, run), recording) = follow(&pids);
+    let started = tree_pids(&pids);
+    assert_eq!(jobs.count(), 1);
+    let closing = jobs.clone();
+    let left = tokio::task::spawn_blocking(move || closing.end_all(APP_CLOSED, APP_CLOSE_WAIT))
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "every job ended within the wait");
+    assert_eq!(jobs.count(), 0);
+    recording.await.unwrap();
+    assert_gone(&started, "after closing the app");
+
+    // Its kept run can be opened, ended, and says why.
+    let kept = store.run(&ws, &run).unwrap();
+    assert!(kept.ended());
+    assert_eq!(kept.cancel_reason.as_deref(), Some(APP_CLOSED));
+    assert_eq!(kept.hosts[0].state, HostState::Cancelled);
+    // Its output so far opens as ever.
+    store
+        .output(
+            &ws,
+            &OutputRef {
+                run: run.clone(),
+                host: HostId::new(SCRIPT_OUTPUT),
+            },
+        )
+        .unwrap();
+    let listed = store.list(&ws).unwrap();
+    assert_eq!(listed.runs[0].cancel_reason.as_deref(), Some(APP_CLOSED));
+
+    // Nothing runs: closing has nothing to wait for.
+    assert_eq!(jobs.end_all(APP_CLOSED, APP_CLOSE_WAIT), 0);
+}
+
+/// The app is killed, or crashes (#124): no exit hook runs, yet the
+/// script's processes end with it. The owner is this binary run again
+/// ([`JOB_OWNER`]), which starts the job and is then killed by the test.
+#[test]
+fn a_scripts_processes_end_when_the_app_is_killed() {
+    let temp = TempDir::new().unwrap();
+    let pids = temp.path().join("pids");
+    fs::create_dir(&pids).unwrap();
+    let mut owner = processes::helper(JOB_OWNER, &pids)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let found = processes::wait_for_pids(
+        &pids,
+        &[processes::CHILD, processes::GRANDCHILD],
+        Duration::from_secs(60),
+    );
+    let Some(started) = found else {
+        let _ = owner.kill();
+        panic!("the owner's script did not start: {:?}", owner.wait());
+    };
+    assert!(
+        owner.try_wait().unwrap().is_none(),
+        "the owner went away by itself"
+    );
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    assert_gone(&started, "after the job's owner was killed");
+}
+
+/// [`JOB_OWNER`]: starts a script job running a tree in a workspace of its
+/// own, and holds it without ever cancelling it until it is killed.
+fn own_a_job() -> ! {
+    let pids = std::path::PathBuf::from(std::env::var_os(processes::PIDS_VARIABLE).unwrap());
+    let folder = pids.parent().unwrap().join("owner");
+    fs::create_dir_all(&folder).unwrap();
+    let workspace = workspace_in(&folder);
+    let python = tree(&folder);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let plan = plan(&workspace, &script("top.py"));
+        let manager = support::manager();
+        let job = job::start(&manager, plan, tree_options(&python.path, &pids)).unwrap();
+        // Held, never cancelled: the test kills this process.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        drop(job);
+    });
+    std::process::exit(0)
+}
 #[tokio::test]
 async fn a_script_run_is_kept_with_its_targets_one_output_and_its_exit_status() {
     let temp = TempDir::new().unwrap();
