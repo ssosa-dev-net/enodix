@@ -107,6 +107,10 @@ pub enum AgentError {
     /// What serves there runs as another user: it is asked nothing.
     #[error("the program serving credentials at {0} runs as another user")]
     NotOurs(String),
+    /// What is there was not left by an agent of this user (Unix: not a
+    /// socket, or one others can open): it is asked nothing.
+    #[error("the credential agent is not used: {0}")]
+    NotAgent(String),
     #[error("the credential agent failed: {0}")]
     Io(String),
     /// The agent answered something this build does not understand.
@@ -562,8 +566,17 @@ mod listener {
                 }
                 fs::remove_file(&path)?;
             }
-            let listener = UnixListener::bind(&path)?;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            // Made under another name and given its mode there, then moved
+            // into place: a client never finds it open to others (it would
+            // refuse it).
+            let made = path.with_extension(format!("sock.{}", std::process::id()));
+            let _ = fs::remove_file(&made);
+            let listener = UnixListener::bind(&made)?;
+            fs::set_permissions(&made, fs::Permissions::from_mode(0o600))
+                .and_then(|()| fs::rename(&made, &path))
+                .inspect_err(|_| {
+                    let _ = fs::remove_file(&made);
+                })?;
             // The socket is ours: its owner is this process's user.
             let owner = fs::metadata(&path)?.uid();
             Ok(Self {
@@ -677,20 +690,92 @@ fn connect(endpoint: &AgentEndpoint) -> Result<Option<Stream>, AgentError> {
     Ok(Some(pipe))
 }
 
+/// Connects to the socket if it is one this user's agent made: a socket
+/// (not a file or a link), owned by this user and open to nobody else, as
+/// the agent leaves it, whose listener runs as this user. Anything else is
+/// refused rather than asked (a data folder shared with others could hold
+/// another user's socket).
 #[cfg(unix)]
 fn connect(endpoint: &AgentEndpoint) -> Result<Option<Stream>, AgentError> {
-    match std::os::unix::net::UnixStream::connect(endpoint.path()) {
-        Ok(stream) => Ok(Some(stream)),
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let path = endpoint.path();
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    // SAFETY: no arguments, cannot fail.
+    let user = unsafe { libc::geteuid() };
+    if !metadata.file_type().is_socket() {
+        return Err(AgentError::NotAgent(format!("{endpoint} is not a socket")));
+    }
+    if metadata.uid() != user {
+        return Err(AgentError::NotOurs(endpoint.to_string()));
+    }
+    let mode = metadata.mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(AgentError::NotAgent(format!(
+            "{endpoint} can be opened by other users (mode {mode:o})"
+        )));
+    }
+    let stream = match std::os::unix::net::UnixStream::connect(path) {
+        Ok(stream) => stream,
         Err(error)
             if matches!(
                 error.kind(),
                 io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
             ) =>
         {
-            Ok(None)
+            return Ok(None)
         }
-        Err(error) => Err(error.into()),
+        Err(error) => return Err(error.into()),
+    };
+    // The socket could have been swapped since it was looked at.
+    if peer_user(&stream)? != user {
+        return Err(AgentError::NotOurs(endpoint.to_string()));
     }
+    Ok(Some(stream))
+}
+
+/// The user id the other end of `stream` runs as.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn peer_user(stream: &std::os::unix::net::UnixStream) -> io::Result<u32> {
+    use std::os::fd::AsRawFd;
+
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: the buffer and its length are this function's own.
+    let done = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        )
+    };
+    if done != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(credentials.uid)
+}
+
+/// The user id the other end of `stream` runs as.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn peer_user(stream: &std::os::unix::net::UnixStream) -> io::Result<u32> {
+    use std::os::fd::AsRawFd;
+
+    let (mut user, mut group) = (0, 0);
+    // SAFETY: both out-parameters are this function's own.
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut user, &mut group) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(user)
 }
 
 /// The store a running agent serves, read over its pipe. Only reads

@@ -6,10 +6,13 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import re
 import subprocess
 import sys
+import threading
+import warnings
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Set
 
 try:
     from . import _build  # written into the wheel by scripts/build-wheel.mjs
@@ -25,6 +28,17 @@ CLI_NAME: str = getattr(_build, "CLI_NAME", "netterm-cli")
 PRODUCT_NAME: Optional[str] = getattr(_build, "PRODUCT_NAME", None)
 #: The version of the binary's JSON this package reads.
 FORMAT = 1
+#: This package's version as the wheel has it (``None`` in the source tree,
+#: which is never compared with the binary's).
+PACKAGE_VERSION: Optional[str] = getattr(_build, "VERSION", None)
+#: Ends the binary's options: what follows is a value even when it starts
+#: with ``-``. Passed only when a value needs it, so that a binary older
+#: than ``--`` still runs every command line it understood.
+END_OF_OPTIONS = "--"
+
+#: The binaries whose version was compared with the package's already.
+_COMPARED: Set[str] = set()
+_COMPARED_LOCK = threading.Lock()
 
 
 class NettermError(Exception):
@@ -34,6 +48,12 @@ class NettermError(Exception):
 
 class CliNotFound(NettermError):
     """The headless binary is in none of the places looked at."""
+
+
+class VersionWarning(UserWarning):
+    """The headless binary is another version than this package: it was
+    left behind when the app was upgraded (or the other way round). Things
+    may still work; the message says what to install."""
 
 
 class CliFailed(NettermError):
@@ -94,6 +114,74 @@ def find_cli() -> Path:
     )
 
 
+def python_version(version: str) -> str:
+    """An app version as Python writes it (PEP 440, as the wheel is named:
+    ``1.2.3-beta.1`` -> ``1.2.3b1``, build details dropped)."""
+    match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:-(alpha|beta|rc)\.(\d+))?(?:\+[0-9A-Za-z.-]+)?", version)
+    if not match:
+        return version
+    release, stage, number = match.groups()
+    short = {"alpha": "a", "beta": "b", "rc": "rc"}
+    return f"{release}{short[stage]}{number}" if stage else release
+
+
+def compare_version(cli: Path) -> None:
+    """Warns (:class:`VersionWarning`, once per binary and process) when the
+    binary's version (``--version``) is not this package's. Nothing is
+    refused: the JSON format is what decides whether they understand each
+    other. Says nothing when either version cannot be told (the source
+    tree, a binary that does not answer)."""
+    if PACKAGE_VERSION is None:
+        return
+    with _COMPARED_LOCK:
+        if str(cli) in _COMPARED:
+            return
+        _COMPARED.add(str(cli))
+    try:
+        done = subprocess.run(
+            [str(cli), "--version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    words = done.stdout.decode("utf-8", errors="replace").split()
+    if done.returncode != 0 or len(words) < 2:
+        return
+    binary = python_version(words[1])
+    if binary == PACKAGE_VERSION:
+        return
+    app = PRODUCT_NAME or "the app"
+    warnings.warn(
+        VersionWarning(
+            f"{cli} is version {binary} of {app}'s headless binary, and this netterm "
+            f"package is version {PACKAGE_VERSION}: install the package that ships with "
+            f"the app (pip install the wheel in the python folder beside it), or point "
+            f"{CLI_VARIABLE} at the binary of this package's version"
+        ),
+        stacklevel=4,
+    )
+
+
+def values(*given: str) -> List[str]:
+    """Values for the binary's command line (a workspace folder, a host id, a
+    secret's name), behind ``--`` if one of them starts with ``-``."""
+    if any(value.startswith("-") for value in given):
+        return [END_OF_OPTIONS, *given]
+    return list(given)
+
+
+def option(name: str, value: str) -> List[str]:
+    """An option and its value, as ``--name=<value>`` when the value starts
+    with ``-``."""
+    if value.startswith("-"):
+        return [f"{name}={value}"]
+    return [name, value]
+
+
 def run(args: Sequence[str]) -> Any:
     """Runs the binary with ``args`` and returns the JSON it printed.
 
@@ -101,6 +189,7 @@ def run(args: Sequence[str]) -> Any:
     it asks for the master password there, hidden, never through this
     process. What it prints goes nowhere but the returned value."""
     cli = find_cli()
+    compare_version(cli)
     try:
         done = subprocess.run(
             [str(cli), *args],

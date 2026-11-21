@@ -327,6 +327,54 @@ fn only_the_current_user_can_open_the_pipe() {
     assert_eq!(access, format!("D:P(A;;FA;;;{user})"));
 }
 
+/// Refused: a client that is not the current user cannot open the pipe,
+/// not even to read (a pipe's default access list lets everyone read). The
+/// other user is played by this user's own token with the user's SID made
+/// deny-only, so that only the groups it is in (Everyone, Users, the logon
+/// session...) can grant it anything; the current user still gets in.
+#[cfg(windows)]
+#[test]
+fn a_client_that_is_not_the_current_user_cannot_open_the_pipe() {
+    let temp = TempDir::new().unwrap();
+    let folder = data_folder(&temp);
+    let server = serve(&folder, memory_store());
+    let path = server.endpoint().path().to_owned();
+    // The control: a pipe with the default access list, which that user
+    // may read.
+    let default = windows::DefaultPipe::new();
+    let default_path = default.name.clone();
+    let (refused, control) = std::thread::spawn(move || {
+        windows::as_another_user(|| {
+            let open = |path: &Path, read: bool, write: bool| {
+                fs::OpenOptions::new()
+                    .read(read)
+                    .write(write)
+                    .open(path)
+                    .map(drop)
+                    .map_err(|error| error.kind())
+            };
+            (
+                [(true, true), (true, false)].map(|(read, write)| open(&path, read, write)),
+                open(Path::new(&default_path), true, false),
+            )
+        })
+    })
+    .join()
+    .unwrap();
+    assert_eq!(
+        control,
+        Ok(()),
+        "the stand-in user cannot even read a default pipe"
+    );
+    assert_eq!(
+        refused,
+        [Err(std::io::ErrorKind::PermissionDenied); 2],
+        "the pipe let another user in"
+    );
+    drop(default);
+    assert!(AgentStore::connect(server.endpoint()).unwrap().is_some());
+}
+
 #[cfg(windows)]
 mod windows {
     use std::ffi::c_void;
@@ -338,10 +386,107 @@ mod windows {
         GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
     };
     use windows_sys::Win32::Security::{
-        GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        TOKEN_QUERY, TOKEN_USER,
+        CreateRestrictedToken, GetTokenInformation, ImpersonateLoggedOnUser, RevertToSelf,
+        TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SID_AND_ATTRIBUTES,
+        TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    /// A named pipe made with the system's default access list.
+    pub struct DefaultPipe {
+        pub name: String,
+        handle: HANDLE,
+    }
+
+    impl DefaultPipe {
+        pub fn new() -> Self {
+            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+            use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+            use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE};
+
+            let suffix: u64 = rand::random();
+            let name = format!(r"\\.\pipe\netterm-test-default-{suffix:016x}");
+            let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+            // SAFETY: a valid name; no security attributes (the default).
+            let handle = unsafe {
+                CreateNamedPipeW(
+                    wide.as_ptr(),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE,
+                    4,
+                    4096,
+                    4096,
+                    0,
+                    ptr::null(),
+                )
+            };
+            assert_ne!(handle, INVALID_HANDLE_VALUE, "CreateNamedPipeW");
+            Self { name, handle }
+        }
+    }
+
+    impl Drop for DefaultPipe {
+        fn drop(&mut self) {
+            // SAFETY: the pipe's own handle.
+            unsafe { CloseHandle(self.handle) };
+        }
+    }
+
+    /// Runs `work` on this thread as this user's token with the user's own
+    /// SID deny-only: as a user who is in the same groups but is not this
+    /// one.
+    pub fn as_another_user<T>(work: impl FnOnce() -> T) -> T {
+        unsafe {
+            let mut token: HANDLE = ptr::null_mut();
+            assert_ne!(
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_ASSIGN_PRIMARY,
+                    &mut token,
+                ),
+                0
+            );
+            let mut buffer = vec![0u64; 128];
+            let mut length = 0;
+            assert_ne!(
+                GetTokenInformation(
+                    token,
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    (buffer.len() * 8) as u32,
+                    &mut length,
+                ),
+                0
+            );
+            let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
+            let disabled = [SID_AND_ATTRIBUTES {
+                Sid: user.User.Sid,
+                Attributes: 0,
+            }];
+            let mut restricted: HANDLE = ptr::null_mut();
+            assert_ne!(
+                CreateRestrictedToken(
+                    token,
+                    0,
+                    1,
+                    disabled.as_ptr(),
+                    0,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    &mut restricted,
+                ),
+                0,
+                "CreateRestrictedToken"
+            );
+            assert_ne!(ImpersonateLoggedOnUser(restricted), 0, "impersonation");
+            let result = work();
+            assert_ne!(RevertToSelf(), 0);
+            CloseHandle(restricted);
+            CloseHandle(token);
+            result
+        }
+    }
 
     unsafe fn take_string(text: *mut u16) -> String {
         let length = (0..).take_while(|&i| *text.add(i) != 0).count();
@@ -420,4 +565,40 @@ fn only_the_current_user_can_open_the_socket() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+}
+
+/// Refused: the client asks nothing of a socket others can open, of a path
+/// that is not a socket (a file, a link to an agent's socket), as a socket
+/// of another user would be refused (which a test cannot play).
+#[cfg(unix)]
+#[test]
+fn a_socket_others_can_open_or_a_path_that_is_no_socket_is_not_asked() {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn not_used(endpoint: &AgentEndpoint, expected: &str) {
+        match AgentStore::connect(endpoint) {
+            Err(AgentError::NotAgent(why)) => assert!(why.contains(expected), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let folder = data_folder(&temp);
+    let server = serve(&folder, memory_store());
+    let endpoint = server.endpoint().clone();
+    fs::set_permissions(endpoint.path(), fs::Permissions::from_mode(0o666)).unwrap();
+    not_used(&endpoint, "can be opened by other users (mode 666)");
+    fs::set_permissions(endpoint.path(), fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(AgentStore::connect(&endpoint).unwrap().is_some());
+    drop(server);
+
+    fs::write(endpoint.path(), "not a socket").unwrap();
+    not_used(&endpoint, "is not a socket");
+    fs::remove_file(endpoint.path()).unwrap();
+
+    let elsewhere = temp.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let other = serve(&elsewhere, memory_store());
+    std::os::unix::fs::symlink(other.endpoint().path(), endpoint.path()).unwrap();
+    not_used(&endpoint, "is not a socket");
 }

@@ -36,6 +36,8 @@ apt-get install build-essential pkg-config libudev-dev rsync \
 # for the app and its packages (Tauri on Linux):
 apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
   librsvg2-dev libxdo-dev libssl-dev patchelf file wget curl xdg-utils
+# to check what the packages hold (the release does):
+apt-get install rpm2cpio cpio squashfs-tools
 ```
 
 and as the user:
@@ -66,7 +68,10 @@ the first package build downloads the AppImage tools.
   opening one usually needs the user in the `dialout` group.
 - **Where things are.** The packages install `/usr/bin/netterm`,
   `/usr/bin/netterm-cli` (on the PATH, where the Python bridge finds it)
-  and the Python wheel in `/usr/lib/netterm/python/`. Settings, the vault,
+  and the Python wheel in `/usr/lib/netterm/python/`, and the licence (the
+  GPL) as `/usr/share/doc/netterm/copyright` (.deb) or
+  `/usr/share/licenses/netterm/LICENSE` (.rpm, and inside the AppImage);
+  the release checks each package holds those. Settings, the vault,
   known hosts, logs, job results and config backups live in
   `~/.local/share/dev.netterm.app` (`$XDG_DATA_HOME`). The AppImage carries
   the binary and the wheel inside it: scripts run outside the app need
@@ -79,8 +84,11 @@ the first package build downloads the AppImage tools.
 - `connection_errors::an_unreachable_network_is_reported`
   (ignored): it relies on Windows' handling of 240.0.0.0/4.
 - Pageant, the credential agent pipe's access list, and a vault file that
-  cannot be removed (Windows file sharing); the agent's Unix socket mode
-  and the binary's terminal prompt have Unix tests of their own.
+  cannot be removed (Windows file sharing), and the binary's check for a
+  console nobody sees (a window station); the agent's Unix socket mode,
+  the client's refusal of a socket others can open or of a path that is
+  not a socket, and the binary's terminal prompt have Unix tests of their
+  own.
 - The Python package's default install location of the headless binary
   is the Windows installer's; elsewhere it is found through `NETTERM_CLI`
   or `PATH`.

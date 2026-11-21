@@ -589,6 +589,25 @@ fn it_takes_the_inventory_s_limits() {
     let tunnel = setup.start(&["--host", "a/r1.yaml"]);
     assert_eq!(tunnel.answer["tunnels"][0]["host"], "a/r1.yaml");
     tunnel.end();
+    // As `--option=<value>` too, and the workspace after `--`.
+    let tunnel = setup.start(&["--host=a/r1.yaml", "--port=830"]);
+    assert_eq!(tunnel.answer["tunnels"][0]["host"], "a/r1.yaml");
+    tunnel.end();
+    let mut child = setup
+        .command(&["tunnel", "--folder=b", "--", setup.ws()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let answer: Value = serde_json::from_str(&line).expect("one line of JSON");
+    assert_eq!(answer["tunnels"][0]["host"], "b/r2.yaml");
+    drop(child.stdin.take());
+    assert!(child.wait().unwrap().success());
 }
 
 #[test]
@@ -624,6 +643,10 @@ fn a_command_line_it_does_not_understand() {
         vec!["tunnel", setup.ws(), "--folder", "a", "--filter", "b"],
         vec!["tunnel", setup.ws(), "--port", "0"],
         vec!["tunnel", setup.ws(), "--hosts", "1"],
+        vec!["tunnel", setup.ws(), "--port=0"],
+        vec!["tunnel", setup.ws(), "--port="],
+        // After `--` nothing is an option, `--port` neither.
+        vec!["tunnel", "--", setup.ws(), "--port", "830"],
     ] {
         let output = setup.command(&args).stdin(Stdio::null()).output().unwrap();
         assert_eq!(output.status.code(), Some(2), "{args:?}");

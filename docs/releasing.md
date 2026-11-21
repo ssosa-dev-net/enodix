@@ -195,7 +195,7 @@ Tauri generates the NSIS installer; `scripts/release.mjs` adds to it:
   uninstalling; installing removes the wheels of other versions from
   `python\`, uninstalling every wheel there, then `python\` and the program
   folder if empty; with "Delete the application data" ticked, the
-  uninstaller runs `netterm-cli clear-keychain` before removing files. It
+  uninstaller runs `netterm-cli clear-keychain --yes` before removing files. It
   also moves the remembered install folder from the vendor key of releases
   before the publisher was set (below).
 - `src-tauri/installer/English.nsh` (`customLanguageFiles`): the

@@ -74,14 +74,15 @@ VIAddVersionKey "Comments" "${NETTERM_DESCRIPTION}"
 ; (Tauri checks the app again right after: then nothing is running). With
 ; "Delete the application data" ticked, and only then (never in silent mode
 ; or on an update, which show no such box), the saved logins are removed
-; from Windows Credential Manager while the headless binary is still here.
+; from Windows Credential Manager while the headless binary is still here
+; (`--yes`: without it, the binary only says what it would remove).
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${NETTERM_CLI}" "${NETTERM_CLI}"
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     DetailPrint "$(nettermClearKeychain)"
-    nsExec::ExecToLog '"$INSTDIR\${NETTERM_CLI}" clear-keychain'
+    nsExec::ExecToLog '"$INSTDIR\${NETTERM_CLI}" clear-keychain --yes'
     Pop $0
     ${If} $0 != "0"
       DetailPrint "$(nettermKeychainNotCleared)"

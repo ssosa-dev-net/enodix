@@ -26,7 +26,17 @@ import os
 from os import PathLike, fspath
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from ._cli import CliFailed, CliNotFound, NettermError, default_location, find_cli, run
+from ._cli import (
+    CliFailed,
+    CliNotFound,
+    NettermError,
+    VersionWarning,
+    default_location,
+    find_cli,
+    option,
+    run,
+    values,
+)
 from ._tunnel import Endpoint, Tunnels, Unreachable, endpoint, host_key_options, ports_of
 
 try:
@@ -41,6 +51,7 @@ __all__ = [
     "NettermError",
     "Tunnels",
     "Unreachable",
+    "VersionWarning",
     "credentials",
     "default_location",
     "endpoint",
@@ -90,11 +101,28 @@ def inventory(
     of the saved filter ``filter``, or the host ids in ``hosts``. In a
     script job, only the job's hosts are ever given, and ``workspace``
     defaults to the job's."""
-    return run(["inventory", _workspace(workspace), *_limit(folder, filter, hosts)])
+    return run(["inventory", *_workspace_and_limit(workspace, folder, filter, hosts)])
+
+
+def _workspace_and_limit(
+    workspace: Optional[Folder],
+    folder: Optional[str],
+    filter: Optional[str],
+    hosts: Optional[Iterable[str]],
+) -> List[str]:
+    """``<workspace> [limit]`` for ``inventory`` and ``tunnel``; the limit
+    options first and the workspace after ``--`` when its name starts with
+    ``-``."""
+    root = _workspace(workspace)
+    limit = _limit(folder, filter, hosts)
+    if root.startswith("-"):
+        return [*limit, *values(root)]
+    return [root, *limit]
 
 
 def _limit(folder: Optional[str], filter: Optional[str], hosts: Optional[Iterable[str]]) -> List[str]:
-    """The binary's limit options."""
+    """The binary's limit options (``--folder=<value>`` for a value that
+    starts with ``-``)."""
     args: List[str] = []
     host_ids = [hosts] if isinstance(hosts, str) else list(hosts or [])
     given = [name for name, value in (("folder", folder), ("filter", filter)) if value is not None]
@@ -103,11 +131,11 @@ def _limit(folder: Optional[str], filter: Optional[str], hosts: Optional[Iterabl
     if len(given) > 1:
         raise ValueError(f"give only one of folder, filter and hosts, not {' and '.join(given)}")
     if folder is not None:
-        args += ["--folder", folder]
+        args += option("--folder", folder)
     if filter is not None:
-        args += ["--filter", filter]
+        args += option("--filter", filter)
     for host in host_ids:
-        args += ["--host", host]
+        args += option("--host", host)
     return args
 
 
@@ -132,7 +160,7 @@ def tunnels(
     :func:`endpoint` answers where to connect for any host and port. They
     stay open until closed or this process ends."""
     named = ports_of(ports)
-    return Tunnels([_workspace(workspace), *_limit(folder, filter, hosts)], named)
+    return Tunnels(_workspace_and_limit(workspace, folder, filter, hosts), named)
 
 
 def credentials(workspace: Optional[Folder], host: str) -> Dict[str, Any]:
@@ -143,10 +171,10 @@ def credentials(workspace: Optional[Folder], host: str) -> Dict[str, Any]:
     ``enable_secret``. From the running app, else the store itself (the
     vault asks for its master password on the terminal). ``None`` is the
     script job's workspace; a job hands over only its hosts' logins."""
-    return run(["credentials", _workspace(workspace), host])
+    return run(["credentials", *values(_workspace(workspace), host)])
 
 
 def secret(workspace: Optional[Folder], name: str) -> str:
     """The value of the workspace's named secret ``name``, from the
     running app or the store, as :func:`credentials`."""
-    return run(["secret", _workspace(workspace), name])["value"]
+    return run(["secret", *values(_workspace(workspace), name)])["value"]

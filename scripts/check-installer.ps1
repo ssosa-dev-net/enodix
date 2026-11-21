@@ -11,8 +11,9 @@
 # upgrades a copy of -Old in another folder in passive mode (as the updater
 # runs the installer) and uninstalls it. After each step it reports what is
 # left: the install folder, the uninstall entry, the vendor registry keys,
-# the shortcuts and the version details. At the end it puts the computer
-# back as it found it.
+# the shortcuts and the version details; after the fresh install, what the
+# installed binary's clear-keychain does with and without --yes on a keychain
+# prefix of its own. At the end it puts the computer back as it found it.
 #
 # It never starts the app, and never uses "Delete the application data": the
 # app's data folders are only looked at, and must not change. The headless
@@ -166,6 +167,28 @@ function StoppedCli([string]$folder) {
   } else { Write-Output "$cli in the install folder: gone" }
 }
 
+# The installed headless binary's clear-keychain, as the uninstaller runs it,
+# on a keychain prefix of this check's own (never the app's entries): without
+# --yes it removes nothing and fails, with it (what the uninstaller passes) it
+# succeeds.
+function CheckClearKeychain([string]$folder) {
+  foreach ($arguments in "clear-keychain", "clear-keychain --yes") {
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = Join-Path $folder $cli
+    $start.Arguments = $arguments
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.CreateNoWindow = $true
+    $start.EnvironmentVariables["NETTERM_DATA_DIR"] = Join-Path $scratch "data"
+    $start.EnvironmentVariables["NETTERM_KEYCHAIN_PREFIX"] = "netterm-test-installer-check-$PID"
+    $process = [System.Diagnostics.Process]::Start($start)
+    $said = ($process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()).Trim()
+    $process.WaitForExit()
+    Write-Output "$cli $arguments (test prefix): exit code $($process.ExitCode), it said: $said"
+  }
+}
+
 function ResetVendorKeys {
   foreach ($key in $vendorKeys) {
     if ((Test-Path $key) -and -not $keysBefore[$key]) { Remove-Item $key -Recurse -Force }
@@ -211,6 +234,7 @@ try {
   # 3. A fresh install of the new release.
   Run $New "/S" "install the new release fresh, silently"
   CheckUpgrade $install
+  CheckClearKeychain $install
   Run (Join-Path $install "uninstall.exe") "/S" "uninstall silently"
   Picture "after uninstalling the fresh copy"
 

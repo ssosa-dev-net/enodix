@@ -341,9 +341,14 @@ fn everything_under_the_prefix_is_removed_and_nothing_else() {
             .unwrap();
     }
 
+    // Counted first, removing nothing.
+    let counted = store.count_all().unwrap();
+    assert_eq!((counted.profiles, counted.secrets), (3, 1));
+    assert_eq!(store.contents().unwrap().profiles.len(), 3);
+
     let removed = store.remove_all().unwrap();
 
-    assert_eq!((removed.profiles, removed.secrets), (3, 1));
+    assert_eq!(removed, counted);
     assert!(store.contents().unwrap().is_empty());
     for kept in [&longer.store, &other.store] {
         assert_eq!(kept.list(SCOPE_A).unwrap().len(), 1);
@@ -352,4 +357,5 @@ fn everything_under_the_prefix_is_removed_and_nothing_else() {
     // Nothing left: nothing more to remove.
     let again = store.remove_all().unwrap();
     assert_eq!((again.profiles, again.secrets), (0, 0));
+    assert_eq!(store.count_all().unwrap(), again);
 }

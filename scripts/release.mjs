@@ -171,6 +171,15 @@ const tauriConfig = JSON.parse(
   readFileSync(join(ROOT, "src-tauri", "tauri.conf.json"), "utf8"),
 );
 const productName = tauriConfig.productName;
+/** Where each Linux package carries the licence (the GPL): Debian's
+ * copyright file, the licence folder of RPM-based systems, and the same in
+ * the AppImage (relative to its own root). The packages are named after the
+ * product. */
+const LINUX_LICENCE = {
+  deb: `/usr/share/doc/${productName}/copyright`,
+  rpm: `/usr/share/licenses/${productName}/LICENSE`,
+  appimage: `/usr/share/licenses/${productName}/LICENSE`,
+};
 const version = readFileSync(join(ROOT, "Cargo.toml"), "utf8").match(
   /\[workspace\.package\][^[]*?\nversion\s*=\s*"([^"]+)"/,
 )?.[1];
@@ -438,8 +447,13 @@ function linux() {
     rmSync(join(bundles, folder), { recursive: true, force: true });
   // The headless binary goes to /usr/bin, beside the app's own program
   // (where the app looks for it) and on the PATH (where the Python bridge
-  // finds it); the wheel to /usr/lib/<product>/python, the resource folder.
+  // finds it); the wheel to /usr/lib/<product>/python, the resource folder;
+  // the GPL where each kind of package keeps its licence (LINUX_LICENCE).
   const cli = { [`/usr/bin/${CLI_LINUX}`]: `../target/release/${CLI_LINUX}` };
+  const withLicence = (format) => ({
+    ...cli,
+    [LINUX_LICENCE[format]]: "../LICENSE",
+  });
   const configFile = writeConfig({
     bundle: {
       active: true,
@@ -448,9 +462,9 @@ function linux() {
         [`../target/release/python/${wheel}`]: `python/${wheel}`,
       },
       linux: {
-        deb: { files: cli },
-        rpm: { files: cli },
-        appimage: { files: cli },
+        deb: { files: withLicence("deb") },
+        rpm: { files: withLicence("rpm") },
+        appimage: { files: withLicence("appimage") },
       },
     },
     // Only the update check's address: off Windows the app never installs
@@ -470,8 +484,63 @@ function linux() {
       fail(
         `expected one .${extension} in ${join(bundles, folder)}, found ${made.length}`,
       );
+    checkLinuxPackage(folder, join(bundles, folder, made[0]));
     copyFileSync(join(bundles, folder, made[0]), join(dist, made[0]));
   }
+}
+
+/** The files a Linux package lists (paths without a leading `./`), read
+ * with the distribution's own tools. */
+function linuxPackageFiles(format, file) {
+  const output = (command, args) => {
+    const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8" });
+    if (result.error?.code === "ENOENT")
+      fail(
+        `${command} is needed to check the packages' contents: install it (docs/linux.md)`,
+      );
+    if (result.status !== 0)
+      fail(`${command} ${args.join(" ")} failed: ${result.stderr}`);
+    return result.stdout;
+  };
+  let listed;
+  if (format === "deb") {
+    // Lines like `-rw-r--r-- 0/0 1234 2026-11-19 20:27 ./usr/bin/netterm`.
+    listed = output("dpkg-deb", ["--contents", file])
+      .split("\n")
+      .map((line) => line.split(/\s+/).slice(5).join(" "));
+  } else if (format === "rpm") {
+    listed = output("sh", [
+      "-c",
+      'rpm2cpio "$1" | cpio --list --quiet',
+      "sh",
+      file,
+    ]).split("\n");
+  } else {
+    const offset = output(file, ["--appimage-offset"]).trim();
+    listed = output("unsquashfs", ["-l", "-o", offset, file])
+      .split("\n")
+      .map((line) => line.replace(/^squashfs-root/, ""));
+  }
+  return new Set(
+    listed
+      .map((path) => path.trim().replace(/^\.?\/?/, "/"))
+      .filter((path) => path !== "/"),
+  );
+}
+
+/** Fails unless the package holds the headless binary, the wheel and the
+ * licence where they are meant to be. */
+function checkLinuxPackage(format, file) {
+  const files = linuxPackageFiles(format, file);
+  const expected = [
+    `/usr/bin/${CLI_LINUX}`,
+    `/usr/lib/${productName}/python/${wheel}`,
+    LINUX_LICENCE[format],
+  ];
+  const missing = expected.filter((path) => !files.has(path));
+  if (missing.length)
+    fail(`${relative(ROOT, file)} lacks ${missing.join(", ")}`);
+  console.log(`release: ${relative(ROOT, file)} holds ${expected.join(", ")}`);
 }
 
 if (process.platform === "win32") windows();

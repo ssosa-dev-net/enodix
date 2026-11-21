@@ -23,7 +23,7 @@ use netterm_core::tunnel::{self, TunnelOptions, TunnelPlan, Tunnels};
 use netterm_core::workspace::HostId;
 
 use crate::credentials::{data_folder, open_store};
-use crate::{print, scoped_export, Failure, NAME};
+use crate::{option_and_value, print, scoped_export, Failure, END_OF_OPTIONS, NAME};
 
 /// The version of the JSON line's format.
 const FORMAT: u32 = 1;
@@ -74,22 +74,34 @@ pub fn run(args: &[String]) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Takes the `--port <number>` options out of `args`: the rest, and the
-/// ports in the order given. A value that is not a port (1 to 65535, in
-/// digits) is a usage error.
+/// Takes the `--port <number>` (or `--port=<number>`) options out of
+/// `args`, up to the end of the options (`--`): the rest, and the ports in
+/// the order given. A value that is not a port (1 to 65535, in digits) is a
+/// usage error.
 fn ports(args: &[String]) -> Result<(Vec<String>, Vec<u16>), Failure> {
     let mut rest = Vec::with_capacity(args.len());
     let mut ports = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        if arg != "--port" {
+        if arg == END_OF_OPTIONS {
+            rest.push(arg.clone());
+            rest.extend(args.by_ref().cloned());
+            break;
+        }
+        let (option, attached) = option_and_value(arg);
+        if option != "--port" {
             rest.push(arg.clone());
             continue;
         }
-        let value = args
-            .next()
-            .filter(|value| !value.starts_with('-'))
-            .ok_or_else(|| Failure::Usage("--port needs a value".into()))?;
+        let value = match attached {
+            // Checked as a port below, the empty value too.
+            Some(value) => value,
+            None => args
+                .next()
+                .map(String::as_str)
+                .filter(|value| !value.starts_with('-'))
+                .ok_or_else(|| Failure::Usage("--port needs a value".into()))?,
+        };
         let port = Some(value)
             .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
             .and_then(|value| value.parse::<u16>().ok())

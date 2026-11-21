@@ -18,7 +18,7 @@ use netterm_core::job::script::ScriptTargets;
 use netterm_core::workspace::{HostId, Workspace};
 use zeroize::Zeroize;
 
-use crate::{print, Failure};
+use crate::{print, unknown_option, Failure, END_OF_OPTIONS};
 
 /// The app's user-visible name, for messages.
 pub const PRODUCT: &str = env!("NETTERM_PRODUCT_NAME");
@@ -67,15 +67,22 @@ pub fn secret(args: &[String]) -> Result<(), Failure> {
     print_secret(&NamedSecret::new(name, value))
 }
 
-/// `clear-keychain`: removes every credential profile and named secret
-/// this app keeps in the system keychain, of every workspace, and says how
-/// many. The uninstaller runs it when the app's data is deleted. Neither the
-/// running app nor the vault is asked: the vault is a file in the data
-/// folder, which goes with it.
+/// `clear-keychain --yes`: removes every credential profile and named
+/// secret this app keeps in the system keychain, of every workspace, and
+/// says how many. Without `--yes` it says what it would remove, removes
+/// nothing and fails (status 1). The uninstaller runs it with `--yes` when
+/// the app's data is deleted. Neither the running app nor the vault is
+/// asked: the vault is a file in the data folder, which goes with it.
 pub fn clear_keychain(args: &[String]) -> Result<(), Failure> {
-    if let Some(extra) = args.first() {
-        return Err(Failure::Usage(format!("unexpected argument {extra:?}")));
-    }
+    let confirmed = match args {
+        [] => false,
+        [yes] if yes == "--yes" => true,
+        [yes, extra, ..] if yes == "--yes" => {
+            return Err(Failure::Usage(format!("unexpected argument {extra:?}")))
+        }
+        [option, ..] if option.starts_with('-') => return Err(unknown_option(option)),
+        [extra, ..] => return Err(Failure::Usage(format!("unexpected argument {extra:?}"))),
+    };
     if ScriptTargets::from_environment().is_some() {
         return Err(Failure::Error(
             "this runs for a script job, and removes no saved logins".into(),
@@ -86,7 +93,18 @@ pub fn clear_keychain(args: &[String]) -> Result<(), Failure> {
             "{PRODUCT} keeps nothing in a keychain on this system: nothing removed\n"
         ));
     }
-    let removed = keychain()
+    let store = keychain();
+    if !confirmed {
+        let found = store
+            .count_all()
+            .map_err(|error| Failure::Error(error.to_string()))?;
+        return Err(Failure::Error(format!(
+            "this would remove {} and {} from the keychain, of every workspace; nothing was removed: run it with --yes to remove them",
+            counted(found.profiles, "credential profile"),
+            counted(found.secrets, "named secret"),
+        )));
+    }
+    let removed = store
         .remove_all()
         .map_err(|error| Failure::Error(error.to_string()))?;
     print(&format!(
@@ -110,14 +128,24 @@ fn keychain() -> KeychainStore {
     KeychainStore::new(prefix)
 }
 
+/// `<workspace> <value>`; after `--`, an argument that starts with `-` is
+/// a value too.
 fn two_arguments<'a>(args: &'a [String], second: &str) -> Result<[&'a str; 2], Failure> {
-    if let Some(option) = args.iter().find(|arg| arg.starts_with('-')) {
-        return Err(Failure::Usage(format!("unknown option {option:?}")));
+    let mut values: Vec<&'a str> = Vec::with_capacity(2);
+    let mut options_ended = false;
+    for arg in args {
+        if !options_ended && arg == END_OF_OPTIONS {
+            options_ended = true;
+        } else if !options_ended && arg.starts_with('-') {
+            return Err(unknown_option(arg));
+        } else {
+            values.push(arg);
+        }
     }
-    match args {
+    match values.as_slice() {
         [] => Err(Failure::Usage("no workspace folder given".into())),
         [_] => Err(Failure::Usage(format!("{second} is needed"))),
-        [root, value] => Ok([root, value]),
+        [root, value] => Ok([*root, *value]),
         [_, _, extra, ..] => Err(Failure::Usage(format!("unexpected argument {extra:?}"))),
     }
 }
@@ -197,12 +225,15 @@ pub(crate) fn open_store() -> Result<Box<dyn CredentialStore>, Failure> {
 /// [`PASSWORD_ATTEMPTS`] times). Refused without a terminal.
 fn unlock(vault: &Path, app_locked: bool) -> Result<Vault, Failure> {
     if !has_terminal() {
-        return Err(no_terminal(app_locked));
+        return Err(no_terminal(app_locked, NO_TERMINAL));
+    }
+    if !seen_by_someone() {
+        return Err(no_terminal(app_locked, NOBODY_TO_TYPE));
     }
     let mut prompt = format!("Master password of {PRODUCT}'s vault: ");
     for _ in 0..PASSWORD_ATTEMPTS {
-        let mut password =
-            rpassword::prompt_password(&prompt).map_err(|_| no_terminal(app_locked))?;
+        let mut password = rpassword::prompt_password(&prompt)
+            .map_err(|_| no_terminal(app_locked, NO_TERMINAL))?;
         if password.is_empty() {
             return Err(Failure::Error("no master password given".into()));
         }
@@ -234,13 +265,81 @@ fn has_terminal() -> bool {
     std::fs::File::open("/dev/tty").is_ok()
 }
 
-fn no_terminal(app_locked: bool) -> Failure {
+/// Whether someone can type into the console: it is a pseudo console (a
+/// terminal program, Windows Terminal or an SSH server, shows it and types
+/// into it, wherever this runs), or its window can be on a screen at all:
+/// this process's window station is the interactive one. A scheduled task
+/// run "whether the user is logged on or not" (or a service) is on another,
+/// which no screen shows: its console has a window, and nobody will ever
+/// type into it.
+#[cfg(windows)]
+fn seen_by_someone() -> bool {
+    pseudo_console() || on_a_shown_window_station()
+}
+
+#[cfg(windows)]
+fn pseudo_console() -> bool {
+    use windows_sys::Win32::System::Console::GetConsoleWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
+
+    // SAFETY: no arguments.
+    let window = unsafe { GetConsoleWindow() };
+    let mut class = [0u16; 64];
+    // SAFETY: the buffer and its length are `class`'s.
+    let length = unsafe { GetClassNameW(window, class.as_mut_ptr(), class.len() as i32) };
+    // The class of the stand-in window a pseudo console gives its programs.
+    usize::try_from(length).is_ok_and(|length| {
+        String::from_utf16_lossy(&class[..length.min(class.len())]) == "PseudoConsoleWindow"
+    })
+}
+
+#[cfg(windows)]
+fn on_a_shown_window_station() -> bool {
+    use windows_sys::Win32::System::StationsAndDesktops::{
+        GetProcessWindowStation, GetUserObjectInformationW, UOI_FLAGS, USEROBJECTFLAGS,
+    };
+    /// WinUser.h: the window station has visible windows.
+    const WSF_VISIBLE: u32 = 1;
+
+    // SAFETY: no arguments; the handle is not to be closed.
+    let station = unsafe { GetProcessWindowStation() };
+    if station.is_null() {
+        return false;
+    }
+    let mut flags = USEROBJECTFLAGS::default();
+    let mut needed = 0;
+    // SAFETY: the buffer and its size are `flags`.
+    let read = unsafe {
+        GetUserObjectInformationW(
+            station,
+            UOI_FLAGS,
+            (&mut flags as *mut USEROBJECTFLAGS).cast(),
+            std::mem::size_of::<USEROBJECTFLAGS>() as u32,
+            &mut needed,
+        )
+    };
+    // Cannot tell: ask, as before this was checked.
+    read == 0 || flags.dwFlags & WSF_VISIBLE != 0
+}
+
+/// A terminal is someone's.
+#[cfg(not(windows))]
+fn seen_by_someone() -> bool {
+    true
+}
+
+/// Why nobody is asked: no terminal at all.
+const NO_TERMINAL: &str = "there is no terminal to ask for its master password on";
+/// Why nobody is asked: a console nobody sees.
+const NOBODY_TO_TYPE: &str = "nobody can type the vault's master password here (this runs where no screen shows it, as a scheduled task does while nobody is logged on)";
+
+fn no_terminal(app_locked: bool, why: &str) -> Failure {
     let how = if app_locked {
         format!("{PRODUCT} is running but its vault is locked: unlock it there")
     } else {
         format!("start {PRODUCT} and unlock it")
     };
     Failure::Error(format!(
-        "the credentials are in {PRODUCT}'s vault, and there is no terminal to ask for its master password on: {how}, or run this from a terminal"
+        "the credentials are in {PRODUCT}'s vault, and {why}: {how}, or run this from a terminal"
     ))
 }

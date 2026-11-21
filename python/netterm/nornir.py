@@ -61,7 +61,8 @@ and reached through loopback tunnels (:func:`netterm.tunnels`, opened by
 ``scrapli`` and ``napalm`` connection options make the library check the
 device's host key against the keys the app trusts. A host that cannot be
 tunnelled keeps its own address and gets ``netterm.tunnel_error``, and a
-warning names it.
+warning names it: a telnet host with a jump host too (only SSH is
+tunnelled), even when no tunnel is opened.
 """
 
 from __future__ import annotations
@@ -81,7 +82,15 @@ from nornir.core.inventory import (
 )
 
 from . import Folder, NettermError, Tunnels, credentials, inventory, tunnels
-from ._tunnel import Unreachable, answer, behind as _behind, host_key_options, ports_of
+from ._tunnel import (
+    TELNET_REASON,
+    Unreachable,
+    _behind_any,
+    answer,
+    behind as _behind,
+    host_key_options,
+    ports_of,
+)
 
 __all__ = ["NettermInventory", "build_inventory"]
 
@@ -220,9 +229,11 @@ def build_inventory(
     refused: List[str] = []
     for exported_host in exported["hosts"]:
         tunnel = dict(tunnelled.get(exported_host["id"]) or {})
-        if _behind(exported_host) and not tunnel:
-            tunnel = {"error": tunnel_failure or "it is not tunnelled"}
-        ports = _ports(exported_host, tunnel_ports, tunnelled.get(exported_host["id"]), tunnel_failure)
+        # Why a host behind jump hosts with no tunnel entry has none.
+        missing = TELNET_REASON if _telnet_behind(exported_host) else tunnel_failure or "it is not tunnelled"
+        if _behind_any(exported_host) and not tunnel:
+            tunnel = {"error": missing}
+        ports = _ports(exported_host, tunnel_ports, tunnelled.get(exported_host["id"]), missing)
         host = _host(exported_host, logins.get(exported_host["id"]), tunnel, ports, groups, defaults)
         hosts[host.name] = host
         error = host.data["netterm"]["tunnel_error"]
@@ -240,18 +251,25 @@ def build_inventory(
     return Inventory(hosts=hosts, groups=groups, defaults=defaults)
 
 
+def _telnet_behind(host: Mapping[str, Any]) -> bool:
+    """A telnet host with a jump host: the export gives it no chain, and only
+    SSH is tunnelled, so a script cannot reach it."""
+    return _behind_any(host) and not _behind(host)
+
+
 def _ports(
     exported: Mapping[str, Any],
     ports: Sequence[int],
     tunnel: Optional[Mapping[str, Any]],
-    tunnel_failure: Optional[str],
+    missing: str,
 ) -> Dict[int, Dict[str, Any]]:
     """For each port, where to connect (``address``, ``port``) or why not
-    (``error``): the answers of :func:`netterm.endpoint`."""
+    (``error``): the answers of :func:`netterm.endpoint`; ``missing`` says
+    why a host behind jump hosts with no tunnel entry is not tunnelled."""
     answers: Dict[int, Dict[str, Any]] = {}
     for port in ports:
         try:
-            address, loopback = answer(exported, port, tunnel, tunnel_failure or "it is not tunnelled")
+            address, loopback = answer(exported, port, tunnel, missing)
         except Unreachable as error:
             answers[port] = {"error": str(error)}
         else:
@@ -285,7 +303,7 @@ def _host(
         "login": login["auth"]["kind"] if login else None,
         "jump_hosts": jump_hosts,
         "jump_chain_error": exported["jump_chain_error"],
-        "behind_jump_host": _behind(exported),
+        "behind_jump_host": _behind_any(exported),
         "tunnel": (
             {key: tunnel[key] for key in ("address", "port", "known_hosts")} if listening else None
         ),

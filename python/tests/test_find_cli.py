@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -91,6 +92,51 @@ class FindCli(unittest.TestCase):
         for stage, short in (("-alpha.", "a"), ("-beta.", "b"), ("-rc.", "rc")):
             version = version.replace(stage, short)
         self.assertEqual(netterm.__version__, version)
+        self.assertEqual(_cli.python_version(printed[1]), netterm.__version__)
+
+    def test_app_versions_are_written_as_python_writes_them(self) -> None:
+        for app, python in (
+            ("0.4.1", "0.4.1"),
+            ("1.2.3-beta.1", "1.2.3b1"),
+            ("1.2.3-alpha.2", "1.2.3a2"),
+            ("1.2.3-rc.10", "1.2.3rc10"),
+            ("1.2.3+build.5", "1.2.3"),
+        ):
+            self.assertEqual(_cli.python_version(app), python)
+
+    def compared(self) -> "list[warnings.WarningMessage]":
+        """The version warnings of a first run of the binary, through
+        :func:`netterm.inventory` (which then fails: no workspace there)."""
+        with self.environment(NETTERM_CLI=self.cli), mock.patch.object(_cli, "_COMPARED", set()):
+            with warnings.catch_warnings(record=True) as seen:
+                warnings.simplefilter("always")
+                for _ in range(2):
+                    with self.assertRaises(netterm.CliFailed):
+                        netterm.inventory(self.temp / "nothing")
+        return [warning for warning in seen if issubclass(warning.category, netterm.VersionWarning)]
+
+    def test_a_binary_of_another_version_is_warned_about_once(self) -> None:
+        if _cli.PACKAGE_VERSION is None:
+            self.skipTest("the source tree has no version to compare")
+        with mock.patch.object(_cli, "PACKAGE_VERSION", "0.0.1"):
+            warned = self.compared()
+        self.assertEqual(len(warned), 1, warned)
+        message = str(warned[0].message)
+        self.assertIn("0.0.1", message)
+        self.assertIn(netterm.__version__, message)
+        self.assertIn(self.cli, message)
+        self.assertIn("install the package that ships with the app", message)
+
+    def test_the_binary_of_the_package_s_version_is_not_warned_about(self) -> None:
+        if _cli.PACKAGE_VERSION is None:
+            self.skipTest("the source tree has no version to compare")
+        self.assertEqual(self.compared(), [])
+
+    def test_values_that_start_with_a_dash_go_after_a_double_dash(self) -> None:
+        self.assertEqual(_cli.values("C:/ws", "netbox-token"), ["C:/ws", "netbox-token"])
+        self.assertEqual(_cli.values("C:/ws", "-ro"), ["--", "C:/ws", "-ro"])
+        self.assertEqual(_cli.option("--folder", "Madrid"), ["--folder", "Madrid"])
+        self.assertEqual(_cli.option("--folder", "-old"), ["--folder=-old"])
 
 
 if __name__ == "__main__":
