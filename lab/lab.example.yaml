@@ -23,8 +23,10 @@ jump_host:
 # ios, nxos, junos, other); every one can be overridden here: username,
 # prompt, setup, command, expect, large_command, large_min_bytes,
 # size_command, size_output, exit, telnet (true or a port), login_prompt,
-# password_prompt, and for the built-in platform checks definition (the
-# built-in platform jobs drive it with; "" for none), paging_command,
+# password_prompt, login_banner and motd (the banner texts the device
+# shows, as in lab/configs/ceos1.cfg and csr1-banner.cfg), and for the
+# built-in platform checks definition (the built-in platform jobs drive
+# it with; "" for none), paging_command,
 # privilege_check + privilege_expect, config_end, enable_secret_env, and
 # checks (the only checks made on the entry, by the names the suite
 # prints). A device logs in with `password_env` (default
@@ -44,6 +46,14 @@ devices:
     # directly.
     telnet: 2323
     telnet_address: 192.0.2.10 # replace with your containerlab server
+    # The banner of lab/configs/ceos1.cfg.
+    login_banner: &ceos_banner |
+      =================================================================
+        NETTERM LAB - ceos1 (Arista EOS) - authorised users only
+        Report problems in the lab channel #
+        Contact: Network Operations <noc@example.net>
+        The word Password: in this banner is not a question.
+      =================================================================
 
   - name: frr1
     platform: frr
@@ -62,6 +72,20 @@ devices:
     platform: ios
     address: 172.20.30.14
     password_env: NETTERM_LAB_CSR_PASSWORD
+    # lab/configs/csr1-banner.cfg, pasted after each deploy.
+    login_banner: &csr_banner |
+      ******************************************************************
+        NETTERM LAB - csr1 (IOS-XE) - authorised users only
+        All sessions are logged. Questions go to the NOC queue #
+        Contact: Network Operations <noc@example.net>
+        Never type your Password: into a chat window or a ticket.
+      ******************************************************************
+    motd: &csr_motd |
+      == csr1 maintenance notice ==
+      Quote the change ticket as CHG#
+      On call: lab engineer <oncall@example.net>
+      Your Password: does not expire in this lab.
+      == end of notice ==
 
   # Juniper cJunos Evolved: the image's own login (see containerlab's
   # juniper_cjunosevolved documentation).
@@ -83,6 +107,7 @@ devices:
     username: labuser
     password: labuser
     enable_secret: netterm-enable
+    login_banner: *ceos_banner
     checks: &enable_checks
       - privileged mode
       - paging off
@@ -95,6 +120,8 @@ devices:
     username: labuser
     password: labuser
     enable_secret: netterm-enable
+    login_banner: *csr_banner
+    motd: *csr_motd
     checks: *enable_checks
 
   # Cisco NX-OS (n9kv) is not in the topology (no image on the lab server

@@ -355,6 +355,11 @@ struct DeviceFile {
     privilege_expect: Option<String>,
     config_end: Option<String>,
     paging_command: Option<String>,
+    /// The SSH login banner the device sends (`banner login`), as text.
+    login_banner: Option<String>,
+    /// What the device shows in the shell after the login, before the
+    /// first prompt (`banner motd`), as text.
+    motd: Option<String>,
     /// The checks made on this entry, by name (default: all of them). For
     /// a second login to a device that is there for a few checks only.
     checks: Option<Vec<String>>,
@@ -435,6 +440,11 @@ pub struct Device {
     pub config_end: Option<Regex>,
     /// A command printing more lines than a job's terminal has rows.
     pub paging_command: Option<String>,
+    /// The lines of the SSH login banner the device sends ([`banner_lines`]);
+    /// `None`: the login banner check is not made.
+    pub login_banner: Option<Vec<String>>,
+    /// The lines the device shows in the shell before its first prompt.
+    pub motd: Option<Vec<String>>,
     /// The only checks made on this entry; `None`: all of them.
     pub only: Option<Vec<Check>>,
 }
@@ -683,7 +693,22 @@ impl Lab {
                         .collect::<Result<Vec<Check>, String>>()?,
                 ),
             };
+            let banner = |text: Option<String>, key: &str| match text {
+                None => Ok(None),
+                Some(text) => {
+                    let lines = banner_lines(&text);
+                    if lines.is_empty() {
+                        Err(format!("device {name}: `{key}` has no text"))
+                    } else {
+                        Ok(Some(lines))
+                    }
+                }
+            };
+            let login_banner = banner(device.login_banner, "login_banner")?;
+            let motd = banner(device.motd, "motd")?;
             devices.push(Device {
+                login_banner,
+                motd,
                 only,
                 paging_command,
                 definition,
@@ -1086,6 +1111,10 @@ pub enum Check {
     LargeOutput,
     /// The session log holds the command output as plain text.
     SessionLog,
+    /// The SSH login banner the entry names: shown before the first prompt
+    /// by a session opened with `login_banner`, not at all without it (the
+    /// entry's `motd` shown by both).
+    LoginBanner,
     /// Telnet login (typed in the terminal) and the command.
     Telnet,
     /// A job with the device's built-in platform definition turns paging
@@ -1114,6 +1143,7 @@ pub const ALL_CHECKS: &[Check] = &[
     Check::Resize,
     Check::LargeOutput,
     Check::SessionLog,
+    Check::LoginBanner,
     Check::Telnet,
     Check::Paging,
     Check::ConfigBackup,
@@ -1131,6 +1161,7 @@ impl Check {
             Check::Resize => "terminal size",
             Check::LargeOutput => "large output with flow control",
             Check::SessionLog => "session log",
+            Check::LoginBanner => "login banner",
             Check::Telnet => "telnet",
             Check::Paging => "paging off",
             Check::ConfigBackup => "config backup",
@@ -1161,6 +1192,12 @@ impl Check {
                 Some((command, least)) => large_output(run, device, command, *least).await.into(),
             },
             Check::SessionLog => session_log(run, device).await.into(),
+            Check::LoginBanner => match (&device.login_banner, &device.motd) {
+                (None, None) => {
+                    Outcome::NotApplicable("no login_banner (or motd) for this device".into())
+                }
+                _ => login_banner(run, device).await.into(),
+            },
             Check::Files => files::check(run, device).await,
             Check::Telnet => match device.telnet_port {
                 None => Outcome::NotApplicable("telnet is not enabled for this device".into()),
@@ -1280,6 +1317,26 @@ async fn config_backup(run: &LabRun, device: &Device) -> Result<String, String> 
                 "the configuration ({lines} lines) does not end as expected ({:?}); it ends: {:?}",
                 end.as_str(),
                 tail(&kept, 400)
+            ));
+        }
+    }
+    // The device's banners may be in its configuration (`banner login`
+    // holds the text), but what it showed at the login must not be kept.
+    for (what, banner) in [
+        ("login banner", &device.login_banner),
+        ("motd", &device.motd),
+    ] {
+        let Some(banner) = banner else { continue };
+        let first = shown_lines(&kept).first().copied().unwrap_or("");
+        if banner.iter().any(|line| line == first) {
+            return Err(format!(
+                "the backup starts with the {what}: {:?}",
+                kept.chars().take(400).collect::<String>()
+            ));
+        }
+        if let Some(line) = banner_line_repeated(&kept, banner) {
+            return Err(format!(
+                "the backup holds the {what}'s line {line:?} more often than the {what} does"
             ));
         }
     }
@@ -1669,6 +1726,154 @@ async fn session_log(run: &LabRun, device: &Device) -> Result<String, String> {
         ));
     }
     Ok(format!("{} bytes", text.len()))
+}
+
+/// The lines of a banner as a lab file gives it: each trimmed, blank lines
+/// left out (devices add and drop blank lines and leading blanks around
+/// their banners).
+pub fn banner_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Where `expected` is in `shown` (both trimmed lines, blank ones left
+/// out): the index of its first line, when every line is there in order
+/// with none other between them.
+fn find_lines(shown: &[&str], expected: &[String]) -> Option<usize> {
+    if expected.is_empty() || shown.len() < expected.len() {
+        return None;
+    }
+    (0..=shown.len() - expected.len()).find(|&start| {
+        expected
+            .iter()
+            .zip(&shown[start..])
+            .all(|(want, got)| want == got)
+    })
+}
+
+/// The trimmed, non-blank lines of `text`.
+fn shown_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+/// The login banner's lines that its motd does not also have: what must
+/// not show without the option.
+fn banner_only_lines<'a>(banner: &'a [String], motd: Option<&[String]>) -> Vec<&'a str> {
+    banner
+        .iter()
+        .filter(|line| !motd.is_some_and(|motd| motd.contains(line)))
+        .map(String::as_str)
+        .collect()
+}
+
+/// A banner line `kept` holds more often than the banner itself does (a
+/// configuration may hold the banner once, as `banner login` does).
+fn banner_line_repeated<'a>(kept: &str, banner: &'a [String]) -> Option<&'a str> {
+    let lines = shown_lines(kept);
+    banner.iter().map(String::as_str).find(|line| {
+        let in_banner = banner.iter().filter(|other| other == line).count();
+        lines.iter().filter(|other| *other == line).count() > in_banner
+    })
+}
+
+/// A session opened with `login_banner` shows the entry's login banner
+/// before the first prompt (and before the motd); one opened without it
+/// shows none of it. Both show the motd, which is the shell's output.
+async fn login_banner(run: &LabRun, device: &Device) -> Result<String, String> {
+    let mut notes = Vec::new();
+    for shown in [true, false] {
+        let manager = run.manager();
+        let target = run.ssh_target(device)?;
+        let password = match &target.auth {
+            SshAuth::Password(password) => password.clone(),
+            _ => String::new(),
+        };
+        let options = OpenOptions {
+            log: None,
+            when_connected: None,
+            login_banner: shown,
+        };
+        let which = if shown {
+            "with login_banner"
+        } else {
+            "without login_banner"
+        };
+        let mut session = Conversation::connect_with(
+            &manager,
+            SessionTarget::Ssh(target),
+            options,
+            run.timeout(),
+            &password,
+        )
+        .await
+        .map_err(|failure| format!("{which}: did not connect: {failure}"))?;
+        let before = session
+            .wait_for(&device.prompt)
+            .await
+            .map_err(|error| format!("{which}: no prompt after logging in: {error}"))?;
+        session.close().await?;
+        let lines = shown_lines(&before);
+        let motd_at = match &device.motd {
+            None => None,
+            Some(motd) => Some(find_lines(&lines, motd).ok_or_else(|| {
+                format!(
+                    "{which}: the motd is not shown before the first prompt; shown: {:?}",
+                    tail(&before, 1200)
+                )
+            })?),
+        };
+        let Some(banner) = &device.login_banner else {
+            notes.push(format!("{which}: motd shown"));
+            continue;
+        };
+        if shown {
+            let at = find_lines(&lines, banner).ok_or_else(|| {
+                format!(
+                    "{which}: the login banner is not shown whole before the first prompt; \
+                     shown: {:?}",
+                    tail(&before, 1200)
+                )
+            })?;
+            if motd_at.is_some_and(|motd| motd < at) {
+                return Err(format!(
+                    "{which}: the motd is shown before the login banner: {:?}",
+                    tail(&before, 1200)
+                ));
+            }
+            notes.push(format!(
+                "{which}: {} banner lines shown{}",
+                banner.len(),
+                if motd_at.is_some() {
+                    ", then the motd"
+                } else {
+                    ""
+                }
+            ));
+        } else {
+            let only = banner_only_lines(banner, device.motd.as_deref());
+            if let Some(line) = only.iter().find(|line| lines.contains(line)) {
+                return Err(format!(
+                    "{which}: the login banner's line {line:?} is shown: {:?}",
+                    tail(&before, 1200)
+                ));
+            }
+            notes.push(format!(
+                "{which}: none of it shown{}",
+                if motd_at.is_some() {
+                    ", the motd shown"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    Ok(notes.join("; "))
 }
 
 async fn telnet(
