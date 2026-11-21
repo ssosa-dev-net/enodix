@@ -14,6 +14,10 @@ cJunos Evolved 25.4R1.13-EVO (containerlab 0.83.0, through the containerlab
 server as the jump host), first run 2026-11-14 (the platform checks and the
 Cisco and Juniper nodes since #47, the files check since #108, first run
 2026-11-21). The README's tested-platforms list comes from these runs.
+Since #134 cEOS and the CSR 1000v have login banners (and the CSR a
+message of the day) all the time; the whole suite passed with them on
+2026-11-21. Both send `banner login` as the SSH authentication banner;
+cEOS also prints it before `Username: ` on telnet.
 
 ## What it checks, per device
 
@@ -25,6 +29,7 @@ Cisco and Juniper nodes since #47, the files check since #108, first run
 | terminal size                  | `size_command` prints the size the session opened with, and the new size after a resize (only where `size_command` is set)                       |
 | large output with flow control | `large_command` prints at least `large_min_bytes`; while the reader stalls for 3 s, no more than the flow-control window (256 KiB + a batch) arrives |
 | session log                    | The session's log file holds the command output as plain text (no control sequences)                                                             |
+| login banner                   | Only where the entry has `login_banner` (or `motd`): a session opened as the app's terminal opens it (`login_banner: true`) shows every line of the banner, in order, before the first prompt; one opened as jobs, backups and file connections open theirs (`login_banner: false`) shows none of its lines. The `motd` is shown by both, after the banner. The config backup check then also checks that the backup does not start with either text and holds none of their lines more often than the text itself does (a configuration may hold them once, in its `banner` commands) |
 | telnet                         | Log in by telnet (answers typed into the terminal), run `command`. Then a second session with a 2 s connect timeout is left quiet for 8 s, through four of the timing marks a quiet telnet session asks the device for (#133): the device shows nothing for them, and `command` still works afterwards (cEOS 4.36.0.1F: passed on 2026-11-21); only where `telnet` is set, and behind a jump host only with `telnet_address` (telnet is not tunnelled) |
 | paging off                     | A job driven by the device's built-in platform definition runs `paging_command` (more lines than a job's 100-row terminal): no pager (`--More--`, `---(more)---`, ...) shows and the job ends at the prompt |
 | config backup                  | A config backup job keeps the configuration without the prompt (its last line matches `config_end`); a second backup of the unchanged device keeps nothing new, so the definition's ignored lines cover what changes by itself |
@@ -107,6 +112,14 @@ start with `_` or be `clab-server` (the suite's own files).
    privilege 1 and an enable secret, then `write memory`). cEOS has the
    same in its startup configuration (`lab/configs/ceos1.cfg`).
 
+   For login banners (#134), csr1 also needs `lab/configs/csr1-banner.cfg`
+   pasted after each deploy (a `banner login` and a `banner motd`, then
+   `write memory`); cEOS has its `banner login` in its startup
+   configuration. The texts are awkward on purpose, as real banners often
+   are (several lines, a line ending in `#`, one ending in `>`, the word
+   `Password:` inside a sentence), and the lab file's `login_banner` and
+   `motd` must say the same lines (the example file does).
+
    Docker inside a Proxmox LXC container needs two entries in the
    container's `/etc/pve/lxc/<id>.conf` on the Proxmox host (besides
    `features: nesting=1` and `lxc.apparmor.profile: unconfined`), then a
@@ -148,7 +161,8 @@ start with `_` or be `clab-server` (the suite's own files).
    `cargo test -p netterm-core --test containerlab -- --ignored --nocapture --test-threads=1`.
    Add a test name (`lab_ssh_login_and_command`, `lab_host_keys`,
    `lab_wrong_password`, `lab_terminal_size`,
-   `lab_large_output_with_flow_control`, `lab_session_log`, `lab_telnet`,
+   `lab_large_output_with_flow_control`, `lab_session_log`,
+   `lab_login_banner`, `lab_telnet`,
    `lab_paging`, `lab_config_backup`, `lab_privilege`,
    `lab_second_channel`, `lab_files`, `lab_enrichment`, `lab_tunnel_ports`) after `--test containerlab` to run one check.
 
@@ -187,7 +201,10 @@ control sequences removed), `setup` (lines sent after login), `command`,
 `telnet` (`true` or a port), `telnet_address` (where telnet is reached
 directly, not through the jump host: for the topology's cEOS, the
 containerlab server's address with `telnet: 2323`), `login_prompt`,
-`password_prompt`. For the platform checks: `definition` (the built-in
+`password_prompt`, `login_banner` (the text of the SSH login banner the
+device sends, as a YAML block, `|`) and `motd` (the text the device shows
+in the shell before its first prompt); both are compared line by line,
+each line trimmed, blank lines left out. For the platform checks: `definition` (the built-in
 platform definition jobs drive the device with, written as the host's
 `platform`; `""` for none, which skips those checks), `paging_command`,
 `privilege_check` with `privilege_expect`, `config_end` (a regular

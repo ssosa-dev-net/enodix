@@ -127,6 +127,14 @@ async fn lab_second_channel() {
     lab_check(Check::SecondChannel).await;
 }
 
+/// The login banner: shown before the first prompt with the option, not at
+/// all without it; the motd shown either way.
+#[tokio::test]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+async fn lab_login_banner() {
+    lab_check(Check::LoginBanner).await;
+}
+
 /// Files: each device with what `docs/containerlab.md` says it offers (SFTP:
 /// list, upload, download and compare, rename, delete; SCP on the device
 /// without SFTP: send, fetch and compare), through the jump host.
@@ -303,6 +311,46 @@ fn the_example_lab_file_parses_with_the_passwords_in_the_environment() {
             Some("ios")
         ]
     );
+    // cEOS and the CSR have the lab's login banners (both logins), the CSR
+    // a motd too; the banner texts are the lab configs' (six lines each).
+    let banners: Vec<(Option<usize>, Option<usize>)> = lab
+        .devices
+        .iter()
+        .map(|d| {
+            (
+                d.login_banner.as_ref().map(Vec::len),
+                d.motd.as_ref().map(Vec::len),
+            )
+        })
+        .collect();
+    assert_eq!(
+        banners,
+        [
+            (None, None),
+            (Some(6), None),
+            (None, None),
+            (None, None),
+            (Some(6), Some(5)),
+            (None, None),
+            (Some(6), None),
+            (Some(6), Some(5)),
+        ]
+    );
+    for (device, config) in [(1, "ceos1.cfg"), (4, "csr1-banner.cfg")] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../lab/configs")
+            .join(config);
+        let config = std::fs::read_to_string(path).unwrap();
+        let config = lab::banner_lines(&config);
+        let banner = lab.devices[device].login_banner.as_ref().unwrap();
+        assert!(
+            config
+                .windows(banner.len())
+                .any(|lines| lines == &banner[..]),
+            "the example's banner of {} is not the one in its config",
+            lab.devices[device].name
+        );
+    }
     // The server logs in with this computer's SSH agent.
     let jump = lab.jump_host.unwrap();
     assert!(matches!(jump.auth, ProfileAuth::Agent));
@@ -822,4 +870,144 @@ async fn checks_an_entry_does_not_name_are_not_made_on_it() {
         matches!(&outcome, Outcome::NotApplicable(why) if why.contains("`checks`")),
         "{outcome:?}"
     );
+}
+
+/// A login banner as awkward as the lab's: several lines, one ending in
+/// `#`, one in `>`, "Password:" inside a sentence.
+const AWKWARD_BANNER: &str = "\
+*******************************************
+  LAB - authorised users only
+  Questions go to the NOC queue #
+  Contact: Network Operations <noc@example.net>
+  Never type your Password: into a chat window.
+*******************************************
+";
+
+/// A message of the day the shell shows before its prompt.
+const MOTD: &str = "== notice ==\r\nQuote the change ticket as CHG#\r\n";
+
+/// `lab` with the awkward banner and the motd expected of its device.
+fn with_banners(mut lab: Lab, motd: bool) -> Lab {
+    lab.devices[0].login_banner = Some(lab::banner_lines(AWKWARD_BANNER));
+    if motd {
+        lab.devices[0].motd = Some(lab::banner_lines(MOTD));
+    }
+    lab
+}
+
+#[test]
+fn a_lab_entry_states_its_banners_as_text() {
+    let text = "devices:
+  - name: r1
+    platform: ios
+    address: 192.0.2.1
+    password: p
+    login_banner: |
+      ****
+        Ask the NOC #
+
+      ****
+    motd: \"notice\\n\"
+";
+    let lab = Lab::parse(text, &env_with(&[])).unwrap();
+    assert_eq!(
+        lab.devices[0].login_banner.as_deref(),
+        Some(&["****".to_owned(), "Ask the NOC #".into(), "****".into()][..])
+    );
+    assert_eq!(
+        lab.devices[0].motd.as_deref(),
+        Some(&["notice".to_owned()][..])
+    );
+    let error = Lab::parse(
+        &text.replace("motd: \"notice\\n\"", "motd: \"  \""),
+        &env_with(&[]),
+    )
+    .unwrap_err();
+    assert!(error.contains("`motd` has no text"), "{error}");
+}
+
+#[tokio::test]
+async fn the_login_banner_check_sees_the_banner_only_with_the_option() {
+    let ssh = TestSshServer::start().await;
+    ssh.quirks().auth_banner(AWKWARD_BANNER);
+    ssh.quirks().output_before_shell(MOTD.as_bytes());
+    let run = LabRun::new(with_banners(loopback_lab(ssh.port(), None, None), true)).unwrap();
+
+    let outcome = Check::LoginBanner.run(&run, &run.lab.devices[0]).await;
+
+    let Outcome::Passed(note) = &outcome else {
+        panic!("{outcome:?}");
+    };
+    for said in [
+        "with login_banner: 6 banner lines shown, then the motd",
+        "without login_banner: none of it shown, the motd shown",
+    ] {
+        assert!(note.contains(said), "{note}");
+    }
+}
+
+#[tokio::test]
+async fn the_login_banner_check_passes_through_a_jump_host() {
+    let server = TestSshServer::start().await;
+    let device = TestSshServer::start().await;
+    device.quirks().auth_banner(AWKWARD_BANNER);
+    let run = LabRun::new(with_banners(
+        loopback_lab(device.port(), None, Some(server.port())),
+        false,
+    ))
+    .unwrap();
+    let outcome = Check::LoginBanner.run(&run, &run.lab.devices[0]).await;
+    assert!(matches!(outcome, Outcome::Passed(_)), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn a_device_without_the_expected_banner_fails_the_login_banner_check() {
+    let ssh = TestSshServer::start().await;
+    let mut lab = with_banners(loopback_lab(ssh.port(), None, None), false);
+    lab.timeout = Duration::from_secs(5);
+    let run = LabRun::new(lab).unwrap();
+    let outcome = Check::LoginBanner.run(&run, &run.lab.devices[0]).await;
+    assert!(
+        matches!(&outcome, Outcome::Failed(why) if why.contains("not shown whole")),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_banner_shown_without_the_option_fails_the_login_banner_check() {
+    // The banner's text in the shell's output, as a device printing it
+    // there: a session without the option shows it, which the check is
+    // there to catch.
+    let ssh = TestSshServer::start().await;
+    ssh.quirks().auth_banner(AWKWARD_BANNER);
+    ssh.quirks()
+        .output_before_shell(AWKWARD_BANNER.replace('\n', "\r\n").as_bytes());
+    let run = LabRun::new(with_banners(loopback_lab(ssh.port(), None, None), false)).unwrap();
+    let outcome = Check::LoginBanner.run(&run, &run.lab.devices[0]).await;
+    assert!(
+        matches!(&outcome, Outcome::Failed(why) if why.contains("without login_banner")),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_entry_without_banners_is_not_checked_for_one() {
+    let ssh = TestSshServer::start().await;
+    let run = LabRun::new(loopback_lab(ssh.port(), None, None)).unwrap();
+    let outcome = Check::LoginBanner.run(&run, &run.lab.devices[0]).await;
+    assert!(
+        matches!(&outcome, Outcome::NotApplicable(why) if why.contains("login_banner")),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_config_backup_check_passes_with_a_login_banner_and_keeps_none() {
+    let device = TestSshServer::start_unprivileged_device("r1").await;
+    device.quirks().auth_banner(AWKWARD_BANNER);
+    let mut lab = device_lab(device.port());
+    lab.devices[0].login_banner = Some(lab::banner_lines(AWKWARD_BANNER));
+    let run = LabRun::new(lab).unwrap();
+    let outcome = Check::ConfigBackup.run(&run, &run.lab.devices[0]).await;
+    assert!(matches!(outcome, Outcome::Passed(_)), "{outcome:?}");
 }
