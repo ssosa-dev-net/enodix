@@ -60,6 +60,30 @@ Checked on the lab's devices through its jump host: SFTP on Nokia SR Linux
 24.10.1, Arista cEOS 4.36.0.1F, FRR 10.2.1 and Juniper cJunos Evolved
 25.4R1.13, SCP on Cisco IOS-XE 17.03.08 (CSR 1000v).
 
+### Windows installer
+
+- Upgrading removes the Python wheel of the version it replaces, and
+  uninstalling removes every wheel and then the program folder [111].
+  Before, each upgrade left the old wheel behind, and the uninstaller the
+  folder with it.
+- A running `netterm-cli.exe` (a script using it) is closed like the app
+  before an upgrade or an uninstall, asked about first when the installer
+  has a window [111]. Before, an upgrade kept the old one beside the new
+  app, and an uninstall left it.
+- The uninstaller's data box says what it deletes ("Also delete settings,
+  saved logins and the vault, config backups, kept job results, session
+  logs and the Python environment") and now removes the saved logins from
+  Windows Credential Manager too, with the new `netterm-cli clear-keychain`
+  [111]. Workspace folders are never touched.
+- The licence is installed beside the program and shown as a page of the
+  installer. The installer, both programs and the Installed apps entry name
+  the publisher and carry a copyright line; `netterm-cli.exe` has version
+  details [111]. The installer remembers its folder under
+  `HKCU\Software\Sergio Sosa\netterm`; upgrading moves it from
+  `HKCU\Software\netterm`.
+- The README says how to uninstall, what stays, and the installer's silent
+  switches [111].
+
 ## 0.4.1
 
 A pre-release: not code-signed, and without automatic updates (install it

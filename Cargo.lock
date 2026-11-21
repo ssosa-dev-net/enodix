@@ -2956,6 +2956,7 @@ dependencies = [
  "russh",
  "serde",
  "serde_json",
+ "tauri-winres",
  "tempfile",
  "tokio",
  "windows-sys 0.61.2",

@@ -185,6 +185,12 @@ if (npmVersion !== version) {
 }
 /** The Python bridge's wheel, of the same version. */
 const wheel = wheelName(version);
+/** The publisher, who is also the copyright holder: set once, as
+ * `bundle.publisher` in tauri.conf.json (the headless binary's build.rs
+ * makes the same copyright line for netterm-cli.exe). */
+const publisher = tauriConfig.bundle?.publisher;
+if (!publisher) fail("tauri.conf.json has no bundle.publisher");
+const copyright = `Copyright (C) 2026 ${publisher}`;
 
 /** A pre-release without the updater (see the top of this file). */
 const unsigned = process.argv.includes("--unsigned");
@@ -255,6 +261,36 @@ function signing() {
   return { pubkey, pub, base, page };
 }
 
+/** A text for an NSIS `!define`: `$` is NSIS's own, `"` would end it. */
+function nsisText(text) {
+  if (/["\r\n]/.test(text))
+    fail(`cannot put ${JSON.stringify(text)} in the installer`);
+  return text.replaceAll("$", "$$$$");
+}
+
+/** Writes the installer hooks Tauri is given: netterm's values, then
+ * src-tauri/installer/hooks.nsh (which explains them); returns the path. */
+function writeInstallerHooks() {
+  const defines = {
+    NETTERM_PRODUCT: productName,
+    NETTERM_PUBLISHER: publisher,
+    NETTERM_DESCRIPTION: tauriConfig.bundle?.shortDescription ?? productName,
+    // Tauri's MANUFACTURER when no publisher is set: the vendor key of the
+    // releases made before one was.
+    NETTERM_OLD_VENDOR: tauriConfig.identifier.split(".")[1],
+    NETTERM_CLI: CLI_EXE,
+    NETTERM_WHEEL: wheel,
+  };
+  const file = join(ROOT, "target", "installer-hooks.nsh");
+  const lines = Object.entries(defines).map(
+    ([name, value]) => `!define ${name} "${nsisText(value)}"`,
+  );
+  lines.push(`!include "${join(ROOT, "src-tauri", "installer", "hooks.nsh")}"`);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${lines.join("\r\n")}\r\n`);
+  return file;
+}
+
 function windows() {
   const signed = unsigned ? null : signing();
   // The updater exists only in a signed build: its key and the release
@@ -264,13 +300,30 @@ function windows() {
       active: true,
       targets: ["nsis"],
       createUpdaterArtifacts: !unsigned,
+      copyright,
+      // The installer's licence page.
+      licenseFile: join(ROOT, "LICENSE"),
       // The headless binary and the Python bridge's wheel (both built by
-      // `beforeBuildCommand`), installed beside the app.
+      // `beforeBuildCommand`) and the licence, installed beside the app.
       resources: {
         [`../target/release/${CLI_EXE}`]: CLI_EXE,
         [`../target/release/python/${wheel}`]: `python/${wheel}`,
+        "../LICENSE": "LICENSE",
       },
-      windows: { nsis: { installMode: "currentUser" } },
+      windows: {
+        nsis: {
+          installMode: "currentUser",
+          // Old wheels, the headless binary in use, saved logins and the
+          // old vendor key (src-tauri/installer/hooks.nsh).
+          installerHooks: writeInstallerHooks(),
+          // What "Delete the application data" deletes, and the hooks'
+          // messages.
+          languages: ["English"],
+          customLanguageFiles: {
+            English: join(ROOT, "src-tauri", "installer", "English.nsh"),
+          },
+        },
+      },
     },
     ...(signed && {
       plugins: {

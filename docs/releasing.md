@@ -25,7 +25,7 @@ Versions 0.1.0 to 0.4.1 were made this way and published on the tracker's
 release page as pre-releases. The first signed release starts the updater:
 copies of a pre-release cannot update themselves to it.
 
-Steps 1, 2 and 4 of "Each release" below apply as they are; step 3 is the
+Steps 1, 2, 4 and 5 of "Each release" below apply as they are; step 3 is the
 two commands above, and there is no `latest.json` to publish.
 
 ## What a release contains
@@ -34,7 +34,7 @@ two commands above, and there is no `latest.json` to publish.
 
 | File                                 | Purpose                                                                          |
 | ------------------------------------ | -------------------------------------------------------------------------------- |
-| `netterm_<version>_x64-setup.exe`    | NSIS installer, per user (no administrator rights); installs `netterm-cli.exe` beside the app and the Python wheel in `python\`. |
+| `netterm_<version>_x64-setup.exe`    | NSIS installer, per user (no administrator rights); installs `netterm-cli.exe` and `LICENSE` beside the app and the Python wheel in `python\` (see "The installer" below). |
 | `netterm_<version>_x64-setup.exe.sig`| The updater signature of the installer (made with the release key).              |
 | `netterm_<version>_x64-portable.zip` | `netterm.exe`, `netterm-cli.exe`, `python\netterm-<version>-py3-none-any.whl` (the Python bridge), `portable.txt` (makes the copy portable: it only notifies), README.|
 | `latest.json`                        | The update manifest the app checks (Tauri updater format, plus `page`).          |
@@ -151,17 +151,70 @@ equivalent, or publish the file at a fixed address yourself.
    `npm run release` there instead. The first build downloads the AppImage
    tools into Tauri's cache.
 
-4. Publish by hand: create the release (tag `v<version>`), upload every file
+4. Check the installer, on a Windows computer where netterm is not
+   installed for your user (the script stops otherwise), with the previous
+   release's installer:
+
+   ```
+   npm run test:installer -- -Old <folder>\netterm_<previous>_x64-setup.exe
+   ```
+
+   `scripts/check-installer.ps1` installs the previous release, upgrades it
+   to this one while the installed `netterm-cli.exe` runs, uninstalls
+   (again with it running), installs this one fresh and uninstalls it, and
+   upgrades a copy in another folder in passive mode, all silently or
+   passively. After each step it lists the install folder, the uninstall
+   entry, the vendor registry keys, the shortcuts and the version details,
+   then puts the computer back. Check that each upgrade leaves one wheel,
+   `LICENSE` and the new `netterm-cli.exe`, that the running one was
+   closed (Windows takes about 30 seconds to end it), that each uninstall
+   leaves no install folder, entry or shortcut, and that the last lines say
+   the data folders are as they were. It never
+   starts the app and never ticks the data box: the wizard's pages, the box
+   and the updater's own install are not exercised. Paste its output into
+   the release's ticket.
+
+5. Publish by hand: create the release (tag `v<version>`), upload every file
    from `target/dist/<version>/`, and paste the version's section of
    `CHANGELOG.md` and `SHA256SUMS.txt` into the release notes. Make `latest.json` reachable at `NETTERM_UPDATE_ENDPOINT` **last**,
    once the installer can be downloaded.
 
-5. Check: an installed copy of the previous version shows the notice
+6. Check: an installed copy of the previous version shows the notice
    (**Check now** in Preferences), and installing works. On Linux, check the
    packages on a real desktop with the list in `docs/linux.md`.
 
 The release build replaces `target/release/netterm.exe` with one that
 has the updater; run `npm run app:build` again before the smoke test.
+
+## The installer
+
+Tauri generates the NSIS installer; `scripts/release.mjs` adds to it:
+
+- `src-tauri/installer/hooks.nsh` (Tauri's `installerHooks`): a running
+  `netterm-cli.exe` is closed like the app before installing or
+  uninstalling; installing removes the wheels of other versions from
+  `python\`, uninstalling every wheel there, then `python\` and the program
+  folder if empty; with "Delete the application data" ticked, the
+  uninstaller runs `netterm-cli clear-keychain` before removing files. It
+  also moves the remembered install folder from the vendor key of releases
+  before the publisher was set (below).
+- `src-tauri/installer/English.nsh` (`customLanguageFiles`): the
+  installer's English text, Tauri's own with the data box's wording
+  changed. It replaces Tauri's file whole: after a Tauri update, compare it
+  with the `English.nsh` Tauri writes to `target/release/nsis/x64/`.
+- `LICENSE` as the licence page and beside the program; the copyright line.
+
+The publisher, who is also the copyright holder, is set once:
+`bundle.publisher` in `src-tauri/tauri.conf.json`. It is the installed entry's
+publisher, the programs' company name and the copyright line ("Copyright
+(C) 2026 <publisher>", made by `release.mjs` and by `crates/cli/build.rs`).
+Tauri also names the installer's vendor registry key after it
+(`HKCU\Software\<publisher>\netterm`, where the install folder is
+remembered): changing it moves that key. Releases up to 0.4.1 had no
+publisher and used `HKCU\Software\netterm`; an upgrade from them takes the
+folder over from there in its window and in passive mode, and removes the
+old key. A silent upgrade (`/S`) of a copy installed elsewhere than
+`%LOCALAPPDATA%\netterm` needs `/D=`.
 
 ## How the update check behaves
 

@@ -127,6 +127,51 @@ The app sends no telemetry and has no crash reporting. The update check is a
 plain request for the release manifest (`latest.json`) and sends nothing
 about you, your machine or your inventory.
 
+## Uninstalling
+
+Uninstall netterm from **Settings, Apps, Installed apps** (or run
+`uninstall.exe` in its folder, `%LOCALAPPDATA%\netterm`). It closes netterm,
+and `netterm-cli.exe` if a script is using it, then removes the program
+folder (the app, `netterm-cli.exe`, the Python wheel, the licence), the
+Start menu and desktop shortcuts and the entry in Installed apps. Files you
+put in the program folder yourself are left there.
+
+Your data stays, so a later install finds it again, unless you tick
+**Also delete settings, saved logins and the vault, ...** on the uninstall
+page. That deletes:
+
+- `%APPDATA%\dev.netterm.app`: settings, the vault, known host keys, config
+  backups, kept job results and the Python environment;
+- `%LOCALAPPDATA%\dev.netterm.app`: session logs (in their default folder)
+  and the window's web view data;
+- the saved logins (credential profiles and named secrets) in Windows
+  Credential Manager, the entries whose names start with `dev.netterm.app`;
+- the registry key `HKCU\Software\Sergio Sosa\netterm`, where the installer
+  remembers the program folder.
+
+What always stays: your workspace folders, session logs written to a folder
+you chose, files you downloaded from devices, and a Python bridge you
+installed with `pip`. To remove the data by hand after an uninstall without
+the box, delete the two folders above and the Credential Manager entries
+(**Control Panel, Credential Manager, Windows Credentials**), or run
+`netterm-cli clear-keychain` before uninstalling.
+
+### Installing and uninstalling silently
+
+The installer takes these switches (`uninstall.exe` takes `/S` and `/P`):
+
+| Switch      | What it does                                                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------- |
+| `/S`        | Silent: no window, no questions. A silent install also makes a desktop shortcut, unless `/NS`.    |
+| `/P`        | Passive: shows progress only, asks nothing (the mode updates use). Also makes a desktop shortcut. |
+| `/NS`       | No shortcuts: neither the Start menu one nor the desktop one.                                     |
+| `/D=<path>` | Installs into `<path>` instead of `%LOCALAPPDATA%\netterm`. It must come last, without quotes.    |
+
+A running netterm or `netterm-cli.exe` is closed without asking in silent
+and passive mode. A silent uninstall (`uninstall.exe /S`) never deletes your
+data or saved logins. It returns at once, while a copy of it carries on from
+the temp folder for a few seconds.
+
 ## The headless binary
 
 `netterm-cli.exe` is installed beside `netterm.exe` (and is in the portable
@@ -174,6 +219,11 @@ netterm-cli tunnel C:\Work\inventory --folder Europe/Madrid --port 830 --port 44
   device listens there: a connection to a closed port is closed, with the
   reason on standard error. The app does not check a device's TLS
   certificate through a tunnel; the script decides how to.
+
+`netterm-cli clear-keychain` removes every saved login (credential profiles
+and named secrets, of every workspace) netterm keeps in Windows Credential
+Manager, and says how many. The vault is not touched. The uninstaller runs
+it when you tick the data box (see "Uninstalling").
 
 ## Python and Nornir
 

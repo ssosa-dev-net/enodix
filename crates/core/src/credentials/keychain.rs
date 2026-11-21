@@ -55,6 +55,34 @@ impl KeychainStore {
     fn secret_filter(&self, scope: &str) -> String {
         format!("{}.secret:{scope}:*", self.prefix)
     }
+
+    /// Removes every entry under the prefix: the profiles and named secrets
+    /// of every scope (every workspace), readable or not. Entries under any
+    /// other name are not touched. What an uninstall that deletes the app's
+    /// data runs (`netterm-cli clear-keychain`).
+    pub fn remove_all(&self) -> Result<RemovedEntries, StoreError> {
+        let mut removed = RemovedEntries::default();
+        for target in os::targets(&format!("{}:*", self.prefix))? {
+            if os::delete(&target)? {
+                removed.profiles += 1;
+            }
+        }
+        for target in os::targets(&format!("{}.secret:*", self.prefix))? {
+            if os::delete(&target)? {
+                removed.secrets += 1;
+            }
+        }
+        Ok(removed)
+    }
+}
+
+/// How many entries [`KeychainStore::remove_all`] removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RemovedEntries {
+    /// Credential profiles.
+    pub profiles: usize,
+    /// Named secrets.
+    pub secrets: usize,
 }
 
 /// What kind of entry is written: its comment in Credential Manager and
@@ -265,6 +293,40 @@ mod os {
         Ok(blobs)
     }
 
+    /// The names of the generic credentials matching `filter`.
+    pub fn targets(filter: &str) -> Result<Vec<String>, StoreError> {
+        let filter = wide(filter);
+        let mut count = 0;
+        let mut credentials: *mut *mut CREDENTIALW = ptr::null_mut();
+        // SAFETY: as in `list`.
+        let found = unsafe { CredEnumerateW(filter.as_ptr(), 0, &mut count, &mut credentials) };
+        if found == 0 {
+            return match failure("list") {
+                Some(error) => Err(error),
+                None => Ok(Vec::new()),
+            };
+        }
+        // SAFETY: Windows returned `count` credential pointers, each with a
+        // NUL-terminated name.
+        let names = unsafe {
+            std::slice::from_raw_parts(credentials, count as usize)
+                .iter()
+                .map(|&credential| &*credential)
+                .filter(|credential| {
+                    credential.Type == CRED_TYPE_GENERIC && !credential.TargetName.is_null()
+                })
+                .map(|credential| {
+                    let name = credential.TargetName;
+                    let length = (0..).take_while(|&i| *name.add(i) != 0).count();
+                    String::from_utf16_lossy(std::slice::from_raw_parts(name, length))
+                })
+                .collect()
+        };
+        // SAFETY: allocated by CredEnumerateW.
+        unsafe { CredFree(credentials.cast()) };
+        Ok(names)
+    }
+
     pub fn read(target: &str) -> Result<Option<Vec<u8>>, StoreError> {
         let target = wide(target);
         let mut credential: *mut CREDENTIALW = ptr::null_mut();
@@ -347,6 +409,10 @@ mod os {
     }
 
     pub fn list(_filter: &str) -> Result<Vec<Vec<u8>>, StoreError> {
+        Err(unsupported())
+    }
+
+    pub fn targets(_filter: &str) -> Result<Vec<String>, StoreError> {
         Err(unsupported())
     }
 
