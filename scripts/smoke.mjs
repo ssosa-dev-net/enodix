@@ -8202,10 +8202,12 @@ async function fileTransfers({
     );
     await clickOn(`${tabOf(otp)} [data-files-action=send]`);
     await codeAsked("the send's login");
-    if ((await transferAt(otp, 0)())?.state !== "connecting")
-      fail(
-        `the send asking its code is ${json(await transferAt(otp, 0)())}, not connecting`,
-      );
+    // The row follows the transfer at most every 200 ms: it may still
+    // read Waiting when the question appears.
+    await until(
+      "the send asking its code shown as connecting",
+      async () => (await transferAt(otp, 0)())?.state === "connecting",
+    );
     if ((await filesState(otp)) !== "transfer-only")
       fail("the send's question is not over the SCP form");
     await screenshot("files-scp-code");
