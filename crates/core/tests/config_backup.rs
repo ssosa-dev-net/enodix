@@ -832,3 +832,328 @@ fn the_store_lists_the_hosts_backed_up_with_what_their_last_backup_did() {
         Err(ConfigError::BadHostId(_))
     ));
 }
+
+// --- Hosts whose files share a stem (#127) --------------------------------
+
+/// The versions kept for `host`, newest first.
+fn kept(configs: &ConfigStore, workspace: &Workspace, host: &str) -> Vec<String> {
+    configs
+        .versions(id(workspace), &HostId::new(host))
+        .unwrap()
+        .into_iter()
+        .map(|version| version.id)
+        .collect()
+}
+
+/// History as an older version of the app left it: `files` (name, text) in
+/// `folder` under the workspace's part of the store.
+fn left_by_an_older_app(
+    configs: &ConfigStore,
+    workspace: &Workspace,
+    folder: &str,
+    files: &[(&str, &str)],
+) -> std::path::PathBuf {
+    let folder = configs.root().join(id(workspace)).join(folder);
+    fs::create_dir_all(&folder).unwrap();
+    for (name, text) in files {
+        fs::write(folder.join(name), text).unwrap();
+    }
+    folder
+}
+
+fn version_file(name: &str) -> String {
+    format!("{name}.{VERSION_EXTENSION}")
+}
+
+/// Two devices whose host files differ only in their extension keep a
+/// history each: each version is its own device's, and a second backup of
+/// both finds each unchanged (with one history between them, each backup
+/// compared one device with the other and kept a version every time).
+#[tokio::test]
+async fn hosts_whose_files_differ_only_in_the_extension_keep_a_history_each() {
+    let alpha = TestSshServer::start_device("alpha").await;
+    let bravo = TestSshServer::start_device("bravo").await;
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(
+        &temp,
+        &[
+            ("Site/_folder.yaml", "credential_profile: lab\n".into()),
+            ("Site/r1.yaml", host(&alpha, "eos")),
+            ("Site/r1.yml", host(&bravo, "eos")),
+        ],
+    );
+    let store = store(&workspace);
+    let configs = ConfigStore::new(temp.path().join("configs"));
+    assert_eq!(configs.claim_history(&workspace), Default::default());
+
+    let first = back_up(plan(&workspace, &store, &site()), &configs).await;
+    for (host, device) in [("Site/r1.yaml", "alpha"), ("Site/r1.yml", "bravo")] {
+        assert!(matches!(outcome(&first, host), SaveOutcome::Saved { .. }));
+        let versions = kept(&configs, &workspace, host);
+        assert_eq!(versions.len(), 1, "{host}: {versions:?}");
+        let text = configs
+            .read(id(&workspace), &HostId::new(host), &versions[0])
+            .unwrap();
+        assert!(
+            text.contains(&format!("hostname {device}")),
+            "{host}: {text}"
+        );
+    }
+    let second = back_up(plan(&workspace, &store, &site()), &configs).await;
+    for host in ["Site/r1.yaml", "Site/r1.yml"] {
+        assert_eq!(
+            outcome(&second, host),
+            SaveOutcome::Unchanged {
+                version: kept(&configs, &workspace, host)[0].clone()
+            },
+            "{host}"
+        );
+    }
+    let listed = configs
+        .backed_up(
+            id(&workspace),
+            &[HostId::new("Site/r1.yaml"), HostId::new("Site/r1.yml")],
+        )
+        .unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|host| (host.host.as_str(), host.versions, host.last))
+            .collect::<Vec<_>>(),
+        [
+            ("Site/r1.yaml", 1, LastBackup::Unchanged),
+            ("Site/r1.yml", 1, LastBackup::Unchanged)
+        ]
+    );
+    // A `.yaml` host keeps its folder of before; the other has its own.
+    let site_folder = configs.root().join(id(&workspace)).join("Site");
+    assert!(site_folder.join("r1").is_dir());
+    assert!(site_folder.join("r1.yml").is_dir());
+}
+
+/// What an older version kept for hosts that never shared a name is theirs
+/// after the change: a `.yaml` host's folder is the same as before, and a
+/// host of another extension is given what was kept under its stem once
+/// its workspace is opened (`claim_history`), the note of its last
+/// unchanged backup included. A tree folder named like a host's stem keeps
+/// its hosts' folders. Claiming again changes nothing.
+#[test]
+fn history_kept_before_for_hosts_that_never_shared_a_name_stays_theirs() {
+    let temp = TempDir::new().unwrap();
+    let address = "address: 192.0.2.1\n".to_string();
+    let workspace = workspace(
+        &temp,
+        &[
+            ("Site/r1.yaml", address.clone()),
+            ("Site/r2.yml", address.clone()),
+            ("Lab.YAML", address.clone()),
+            ("Lab/r3.yaml", address),
+        ],
+    );
+    let configs = ConfigStore::new(temp.path().join("configs"));
+    let old = "2026-01-01_10-00-00";
+    let older = "2026-01-02_10-00-00";
+    left_by_an_older_app(
+        &configs,
+        &workspace,
+        "Site/r1",
+        &[(&version_file(old), "hostname r1\n")],
+    );
+    let r2_before = left_by_an_older_app(
+        &configs,
+        &workspace,
+        "Site/r2",
+        &[
+            (&version_file(old), "hostname r2\n"),
+            (&version_file(older), "hostname r2\nchanged\n"),
+            (".unchanged", "2026-01-03_10-00-00"),
+        ],
+    );
+    // The versions of `Lab.YAML` were kept in `Lab/`, beside the folder of
+    // `Lab/r3.yaml`.
+    left_by_an_older_app(
+        &configs,
+        &workspace,
+        "Lab",
+        &[(&version_file(old), "hostname lab\n")],
+    );
+    left_by_an_older_app(
+        &configs,
+        &workspace,
+        "Lab/r3",
+        &[(&version_file(old), "hostname r3\n")],
+    );
+    // Before the workspace is opened by this version, only `.yaml` hosts
+    // see their history.
+    assert_eq!(kept(&configs, &workspace, "Site/r1.yaml"), [old]);
+    assert!(kept(&configs, &workspace, "Site/r2.yml").is_empty());
+
+    assert_eq!(configs.claim_history(&workspace), Default::default());
+    assert_eq!(kept(&configs, &workspace, "Site/r1.yaml"), [old]);
+    assert_eq!(kept(&configs, &workspace, "Site/r2.yml"), [older, old]);
+    assert_eq!(
+        configs
+            .read(id(&workspace), &HostId::new("Site/r2.yml"), older)
+            .unwrap(),
+        "hostname r2\nchanged\n"
+    );
+    let r2 = &configs
+        .backed_up(id(&workspace), &[HostId::new("Site/r2.yml")])
+        .unwrap()[0];
+    assert_eq!(
+        (r2.last, r2.last_backup.as_str()),
+        (LastBackup::Unchanged, "2026-01-03_10-00-00")
+    );
+    assert!(!r2_before.exists(), "the stem's folder is left behind");
+    assert_eq!(kept(&configs, &workspace, "Lab.YAML"), [old]);
+    assert_eq!(kept(&configs, &workspace, "Lab/r3.yaml"), [old]);
+
+    let before = files(configs.root());
+    assert_eq!(configs.claim_history(&workspace), Default::default());
+    assert_eq!(files(configs.root()), before);
+}
+
+/// History two hosts already shared (`r1.yaml` and `r1.yml` kept their
+/// versions in one folder) cannot be split: nothing of it is moved, copied
+/// or deleted. It stays the `.yaml` host's, as it always showed, and is
+/// reported; the other host starts a history of its own. With no `.yaml`
+/// host among them it stays where it was, in no host's history.
+#[test]
+fn history_two_hosts_already_shared_stays_where_it_was_and_is_reported() {
+    let temp = TempDir::new().unwrap();
+    let address = "address: 192.0.2.1\n".to_string();
+    let workspace = workspace(
+        &temp,
+        &[
+            ("Site/r1.yaml", address.clone()),
+            ("Site/r1.yml", address.clone()),
+            ("Lab/r2.yml", address.clone()),
+            ("Lab/r2.YAML", address),
+        ],
+    );
+    let configs = ConfigStore::new(temp.path().join("configs"));
+    let (old, older) = ("2026-01-01_10-00-00", "2026-01-02_10-00-00");
+    let (old_file, older_file) = (version_file(old), version_file(older));
+    let shared = [
+        (old_file.as_str(), "hostname alpha\n"),
+        (older_file.as_str(), "hostname bravo\n"),
+    ];
+    let site = left_by_an_older_app(&configs, &workspace, "Site/r1", &shared);
+    let lab = left_by_an_older_app(&configs, &workspace, "Lab/r2", &shared);
+    let before = files(configs.root());
+
+    let claimed = configs.claim_history(&workspace);
+    assert!(claimed.left.is_empty(), "{:?}", claimed.left);
+    assert_eq!(
+        claimed
+            .shared
+            .iter()
+            .map(|s| (
+                s.folder.clone(),
+                s.hosts.iter().map(HostId::as_str).collect::<Vec<_>>(),
+                s.kept_by.as_ref().map(HostId::as_str),
+                s.versions
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (lab, vec!["Lab/r2.YAML", "Lab/r2.yml"], None, 2),
+            (
+                site,
+                vec!["Site/r1.yaml", "Site/r1.yml"],
+                Some("Site/r1.yaml"),
+                2
+            ),
+        ]
+    );
+    let said = claimed.shared[1].to_string();
+    assert!(
+        said.contains("Site/r1.yaml and Site/r1.yml") && said.contains("Site/r1.yaml's history"),
+        "{said}"
+    );
+    assert!(claimed.shared[0]
+        .to_string()
+        .contains("in neither host's history"));
+    assert_eq!(files(configs.root()), before, "shared history was changed");
+    assert_eq!(kept(&configs, &workspace, "Site/r1.yaml"), [older, old]);
+    for host in ["Site/r1.yml", "Lab/r2.yml", "Lab/r2.YAML"] {
+        assert!(kept(&configs, &workspace, host).is_empty(), "{host}");
+    }
+
+    // From now on each keeps its own; the shared folder stays as it was.
+    configs
+        .save(
+            id(&workspace),
+            &HostId::new("Site/r1.yml"),
+            "hostname bravo\n",
+            None,
+        )
+        .unwrap();
+    assert_eq!(kept(&configs, &workspace, "Site/r1.yml").len(), 1);
+    assert_eq!(kept(&configs, &workspace, "Site/r1.yaml"), [older, old]);
+    // It is reported again at every opening, and still not touched.
+    assert_eq!(configs.claim_history(&workspace).shared.len(), 2);
+    assert_eq!(kept(&configs, &workspace, "Site/r1.yaml"), [older, old]);
+}
+
+/// A claim cut short (the app closed after moving some versions) goes on
+/// the next time; a version of the same name already in the host's folder
+/// is never written over: it stays under the stem, reported.
+#[test]
+fn a_history_claim_cut_short_goes_on_and_writes_over_nothing() {
+    let temp = TempDir::new().unwrap();
+    let workspace = workspace(&temp, &[("r2.yml", "address: 192.0.2.1\n".into())]);
+    let configs = ConfigStore::new(temp.path().join("configs"));
+    let names = [
+        "2026-01-01_10-00-00",
+        "2026-01-02_10-00-00",
+        "2026-01-03_10-00-00",
+        "2026-01-04_10-00-00",
+    ];
+    // The first was moved before the app closed; the last is in both, as
+    // no move of the app leaves it (a copy put there by hand).
+    left_by_an_older_app(
+        &configs,
+        &workspace,
+        "r2",
+        &[
+            (&version_file(names[1]), "second\n"),
+            (&version_file(names[2]), "third\n"),
+            (&version_file(names[3]), "fourth, under the stem\n"),
+        ],
+    );
+    left_by_an_older_app(
+        &configs,
+        &workspace,
+        "r2.yml",
+        &[
+            (&version_file(names[0]), "first\n"),
+            (&version_file(names[3]), "fourth, the host's own\n"),
+        ],
+    );
+    let claimed = configs.claim_history(&workspace);
+    assert!(claimed.shared.is_empty());
+    assert_eq!(claimed.left.len(), 1, "{:?}", claimed.left);
+    assert_eq!(claimed.left[0].0.as_str(), "r2.yml");
+    assert!(
+        claimed.left[0].1.contains(&version_file(names[3])),
+        "{}",
+        claimed.left[0].1
+    );
+    let mut expected = names.to_vec();
+    expected.reverse();
+    assert_eq!(kept(&configs, &workspace, "r2.yml"), expected);
+    let host = HostId::new("r2.yml");
+    assert_eq!(
+        configs.read(id(&workspace), &host, names[3]).unwrap(),
+        "fourth, the host's own\n"
+    );
+    assert_eq!(
+        configs.read(id(&workspace), &host, names[1]).unwrap(),
+        "second\n"
+    );
+    let stem = configs.root().join(id(&workspace)).join("r2");
+    assert_eq!(
+        fs::read_to_string(stem.join(version_file(names[3]))).unwrap(),
+        "fourth, under the stem\n"
+    );
+}

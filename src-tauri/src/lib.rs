@@ -170,6 +170,12 @@ impl Shell {
         // folder if it has none yet). Without one they stay under its path;
         // the interface shows why with the files that could not be loaded.
         let unprepared = prepare_workspace(&*self.credentials, &mut workspace).err();
+        // Hosts whose config history changed folder (#127) get theirs
+        // before anything reads it; what stays is said on stderr.
+        let claimed = app
+            .try_state::<Configs>()
+            .map(|configs| configs.0.claim_history(&workspace))
+            .unwrap_or_default();
         let root = workspace.root().to_path_buf();
         *self.workspace() = Some(workspace);
         // The plans on screen were the other workspace's (#121).
@@ -200,6 +206,12 @@ impl Shell {
                 file: WORKSPACE_FILE.into(),
                 message: error.to_string(),
             });
+        }
+        for shared in &claimed.shared {
+            eprintln!("{shared}");
+        }
+        for (host, message) in &claimed.left {
+            eprintln!("{host}: {message}");
         }
         view
     }

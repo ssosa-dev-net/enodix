@@ -30,6 +30,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -3397,6 +3398,30 @@ async function vault({ app, devtools, evaluate, step }) {
     "after a restart the unlock screen came first and refused a wrong password",
   );
 
+  // A file that cannot be the vault (#127: untested until then) is said to
+  // be damaged, whatever the password; the vault is put back after.
+  const sealed = readFileSync(vaultFile);
+  writeFileSync(vaultFile, "this is not a vault file\n");
+  try {
+    await unlock(MASTER_PASSWORD);
+    await until("the damaged vault reported", () =>
+      shown("[data-unlock-error=damaged]"),
+    );
+    const said = await again(
+      `document.querySelector("[data-unlock-error=damaged]")?.textContent ?? ""`,
+    );
+    if (!said.includes("cannot be opened with any password"))
+      fail(`the damaged vault is said as ${JSON.stringify(said)}`);
+    if (await shown("nav [data-host]")) {
+      fail("a damaged vault opened the workspace");
+    }
+  } finally {
+    writeFileSync(vaultFile, sealed);
+  }
+  step(
+    "a vault file that is not a vault was said to be damaged, nothing opened",
+  );
+
   // Unlocked, the workspace opens and the profile logs in from the vault.
   await unlock(MASTER_PASSWORD);
   await until(
@@ -3519,6 +3544,31 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
   await until("the old password refused", () =>
     shown("[data-unlock-error=wrongPassword]"),
   );
+  // Quit on the unlock screen ends the app (#127: untested until then);
+  // it is started again. Clicked from a timer: the page goes with the app.
+  await ev(
+    `(setTimeout(() => document.querySelector("[data-unlock=quit]").click(), 200), true)`,
+  );
+  const quitting = page.app;
+  await until(
+    "the app ended by Quit on the unlock screen",
+    async () => quitting.exitCode !== null || quitting.signalCode !== null,
+  );
+  try {
+    page.devtools.close();
+  } catch {
+    // Gone with the app.
+  }
+  await sleep(1500);
+  {
+    const app = startApp();
+    const devtools = await connectDevTools();
+    page = { app, devtools, evaluate: evaluateIn(devtools) };
+  }
+  await until("the unlock screen after Quit", () =>
+    shown("[data-unlock-screen]"),
+  );
+  step("Quit on the unlock screen ended the app");
   await unlockWith(NEW_MASTER_PASSWORD);
   await until("the workspace after unlocking", () => shown(hostRow));
   step("the master password was changed: afterwards only the new one unlocked");
@@ -7661,6 +7711,44 @@ async function jobs({
     );
     step(
       "the history's window refreshed when the backup on login kept a version",
+    );
+    // A backup on login that fails says why in a quiet bar (#127: untested
+    // until then): the host's history folder is a file for a moment.
+    const historyFolder = readdirSync(join(appData, "configs"))
+      .map((id) => join(appData, "configs", id, "Jobs", "jobs-b1"))
+      .find((folder) => existsSync(folder));
+    if (!historyFolder) fail("jobs-b1 has no history folder");
+    const failedBar = `${SHOWN_SESSION} [data-login-backup-failed]`;
+    renameSync(historyFolder, `${historyFolder}.aside`);
+    writeFileSync(historyFolder, "not a folder\n");
+    try {
+      await type("exit\r");
+      await until("the session ended", () =>
+        exists(`${SHOWN_SESSION} [data-session-ended]`),
+      );
+      await type("\r");
+      await until(
+        "the failed backup on login",
+        async () => (await backupMarker())?.kind === "failed",
+      );
+      await until("the failure's bar", () => exists(failedBar));
+      const said = await evaluate(
+        `document.querySelector(${json(`${failedBar} .reason`)})?.textContent ?? ""`,
+      );
+      if (!said.startsWith("The backup on login failed: ") || said.length < 40)
+        fail(`the failure's bar says ${json(said)}`);
+      await screenshot("backup-on-login-failed");
+      await clickOn(`${failedBar} [data-login-backup-dismiss]`);
+      await until(
+        "the failure's bar dismissed",
+        async () => !(await exists(failedBar)),
+      );
+    } finally {
+      rmSync(historyFolder, { force: true });
+      renameSync(`${historyFolder}.aside`, historyFolder);
+    }
+    step(
+      "a backup on login that failed said why in a bar, which Dismiss closed",
     );
     await sessionAction(evaluate, "disconnect");
     await until(
@@ -12024,6 +12112,34 @@ async function searchAndFilter({
   await until("the filter applied again", async () => !(await exists(odd)));
   step(
     "a filter was saved from the chips row; its chip applies it and clears it",
+  );
+
+  // The filter bar runs a snippet and backs up the configs of the hosts it
+  // shows (#127: untested until then): each opens its job tab for them.
+  for (const [button, title, what] of [
+    [
+      "[data-filter-run-snippet]",
+      "Run a snippet on the hosts of Lab routers",
+      "Run snippet",
+    ],
+    [
+      "[data-filter-back-up]",
+      "Back up configs of the hosts of Lab routers",
+      "Back up configs",
+    ],
+  ]) {
+    await clickOn(button);
+    await until(`the job tab of the filter bar's ${what}`, async () =>
+      (
+        await evaluate(
+          `document.querySelector(${JSON.stringify(`${JOB_TAB} h2`)})?.textContent ?? ""`,
+        )
+      ).includes(title),
+    );
+    await closeTabOf(evaluate, JOB_TAB);
+  }
+  step(
+    "the filter bar's Run snippet and Back up configs opened a job tab for the filter's hosts",
   );
 
   await clickOn("[data-filter-delete]");
