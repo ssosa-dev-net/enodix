@@ -111,6 +111,52 @@ folder, and what stalled it was fixed [116].
 Found by deliberately hostile use of the inventory and the stored logins
 [117], and by a review of the 0.2.0 work against its specs [112].
 
+- Start in a job tab runs exactly the plan that tab shows [121]. Before,
+  the app kept only the plan made last, so with two job tabs at pre-flight
+  Start in one could run the other's job: on production hosts too, with no
+  question asked for them. The app itself now also refuses to start a plan
+  whose production hosts were not confirmed for it. A pre-flight that is
+  no longer current says so and offers "Plan again".
+- A job whose `enable` is answered with a message and leaves the device
+  at the same prompt (IOS's "% No password set") fails the host with the
+  device's words [122]. Before, it carried on unprivileged, and a config
+  backup could keep the device's error message as the configuration. A
+  backup that shows nothing but an error is never kept.
+- A job's command timeout counts from the device's last output, so a long
+  configuration that is still printing after 60 seconds is waited for; a
+  command whose output never stops is ended after 30 minutes [122].
+- A device that asks "Password:" again right after the login fails the
+  host as a login question. Before, a job typed `enable` and then the
+  enable secret into it [122].
+- Closing netterm while jobs run asks first and names them, then cancels
+  them as Cancel does. A script job's processes and the tunnels they hold
+  end with the app, also when it crashes or is killed, and so does a Python
+  setup in progress. Before, a script went on working against devices
+  with nothing left to stop it. The kept run says "Cancelled: the app was
+  closed while the job ran." [124]
+- A script job no longer leaves running what it started once it exits
+  [124].
+- A session whose output was held back when its window went away ends
+  and lets go of the device (and of a serial port). Before, it stayed
+  connected for ever [118].
+- A device that hangs up during the login is no longer reported as a
+  refused password: the message says the device closed the connection, or
+  why the connection broke, and names the jump host when it was a jump
+  host's connection that ended [118].
+- Telnet: a device that negotiates options without end can no longer make
+  the app's memory grow, or keep it answering the same refused option
+  [118].
+- Session logs and job output: a control sequence that never ends no
+  longer makes memory grow [118].
+- Reconnecting a session in place sends the terminal's size once the new
+  connection is up. Before, a resize at that moment could reach the old
+  connection, and the device kept the wrong size.
+- On Linux, the AppImage found no Python: its runtime's `PYTHONHOME` and
+  library paths reached the system's Python. Programs the app starts no
+  longer inherit them [114].
+- On Linux, a copy installed from the .deb or the .rpm is told to update
+  with the package manager, not to unpack the new version over itself.
+  The packages' menu entry has a category [114].
 - Saving a host in the app no longer writes over a change made to its file
   outside the app (a pull, an editor) that the app had not loaded yet, and
   no longer brings back a host deleted outside. The edit is refused with
