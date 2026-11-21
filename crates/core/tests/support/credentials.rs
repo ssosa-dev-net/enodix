@@ -1,13 +1,18 @@
 //! A credential store that stands in for a keychain that fails: an
 //! in-memory store whose listing, or whose deletes after a number of them,
 //! fail as a real keychain can, or whose puts fail after a number of them
-//! (or just one of them), or whose every read is refused.
+//! (or just one of them), or whose every read is refused; whose deletes
+//! say done and keep the entry; which refuses to hold a password longer
+//! than a limit (as a Windows credential refuses a large entry); and whose
+//! listing can stop at a [`Gate`] until the test opens it.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use netterm_core::credentials::{
-    CredentialProfile, CredentialStore, MemoryStore, SecretValue, StoreContents, StoreError,
+    CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, SecretValue, StoreContents,
+    StoreError,
 };
 
 /// How a [`FailingStore`] fails.
@@ -25,10 +30,65 @@ pub struct Failures {
     /// Every read (list, get, secret names, a secret, everything) fails
     /// with [`READ_REFUSED`], as a keychain that denies access does.
     pub reads: bool,
+    /// Deletes say they removed the entry and keep it.
+    pub deletes_kept: bool,
+    /// [`CredentialStore::check_fits`] refuses a profile whose password is
+    /// longer than this, with [`TOO_LARGE`].
+    pub largest_password: Option<usize>,
 }
 
 /// What a [`FailingStore`] with [`Failures::reads`] says to every read.
 pub const READ_REFUSED: &str = "access to the keychain was denied";
+/// What a [`FailingStore`] with [`Failures::largest_password`] says.
+pub const TOO_LARGE: &str = "the stand-in keychain cannot hold that profile";
+
+/// A point where a [`FailingStore`]'s listing ([`CredentialStore::contents`])
+/// stops until the test opens it: the test knows a move is under way and
+/// holds it there. Once open, listings go through.
+#[derive(Clone, Default)]
+pub struct Gate {
+    state: Arc<(Mutex<GateState>, Condvar)>,
+}
+
+#[derive(Default)]
+struct GateState {
+    reached: bool,
+    open: bool,
+}
+
+impl Gate {
+    /// Waits until a listing reached the gate; whether one did `within`.
+    pub fn wait_reached(&self, within: Duration) -> bool {
+        let (state, changed) = &*self.state;
+        let until = Instant::now() + within;
+        let mut held = state.lock().unwrap();
+        while !held.reached {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            held = changed.wait_timeout(held, left).unwrap().0;
+        }
+        true
+    }
+
+    /// Lets the listing waiting at the gate, and every later one, go on.
+    pub fn open(&self) {
+        let (state, changed) = &*self.state;
+        state.lock().unwrap().open = true;
+        changed.notify_all();
+    }
+
+    fn pass(&self) {
+        let (state, changed) = &*self.state;
+        let mut held = state.lock().unwrap();
+        held.reached = true;
+        changed.notify_all();
+        while !held.open {
+            held = changed.wait(held).unwrap();
+        }
+    }
+}
 
 /// Clones share one store, so a test keeps a handle to look inside after
 /// giving one away.
@@ -38,6 +98,7 @@ pub struct FailingStore {
     failures: Failures,
     deletes: Arc<AtomicUsize>,
     puts: Arc<AtomicUsize>,
+    gate: Option<Gate>,
 }
 
 impl FailingStore {
@@ -47,12 +108,26 @@ impl FailingStore {
             failures,
             deletes: Arc::default(),
             puts: Arc::default(),
+            gate: None,
+        }
+    }
+
+    /// A store whose listings stop at `gate` until it is opened.
+    pub fn gated(failures: Failures, gate: Gate) -> Self {
+        Self {
+            gate: Some(gate),
+            ..Self::new(failures)
         }
     }
 
     /// What it holds, read past the failures.
     pub fn held(&self) -> StoreContents {
         self.inner.contents().unwrap().sorted()
+    }
+
+    /// How many puts (profiles and secrets) were asked of it so far.
+    pub fn puts_made(&self) -> usize {
+        self.puts.load(Ordering::SeqCst)
     }
 
     fn deleting(&self) -> Result<(), StoreError> {
@@ -103,6 +178,9 @@ impl CredentialStore for FailingStore {
 
     fn delete(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
         self.deleting()?;
+        if self.failures.deletes_kept {
+            return Ok(self.inner.get(scope, name)?.is_some());
+        }
         self.inner.delete(scope, name)
     }
 
@@ -123,14 +201,38 @@ impl CredentialStore for FailingStore {
 
     fn delete_secret(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
         self.deleting()?;
+        if self.failures.deletes_kept {
+            return Ok(self.inner.get_secret(scope, name)?.is_some());
+        }
         self.inner.delete_secret(scope, name)
     }
 
+    /// Stops at the gate, if any, once the listing is taken: what is put
+    /// while it waits is not in it.
     fn contents(&self) -> Result<StoreContents, StoreError> {
-        self.reading()?;
-        if self.failures.contents {
-            return Err(StoreError("the keychain cannot be listed".into()));
+        let listed = (|| {
+            self.reading()?;
+            if self.failures.contents {
+                return Err(StoreError("the keychain cannot be listed".into()));
+            }
+            self.inner.contents()
+        })();
+        if let Some(gate) = &self.gate {
+            gate.pass();
         }
-        self.inner.contents()
+        listed
+    }
+
+    fn check_fits(&self, contents: &StoreContents) -> Result<(), StoreError> {
+        let Some(largest) = self.failures.largest_password else {
+            return Ok(());
+        };
+        let too_large = contents.profiles.iter().any(|entry| {
+            matches!(&entry.profile.auth, ProfileAuth::Password { password } if password.len() > largest)
+        });
+        if too_large {
+            return Err(StoreError(TOO_LARGE.into()));
+        }
+        Ok(())
     }
 }

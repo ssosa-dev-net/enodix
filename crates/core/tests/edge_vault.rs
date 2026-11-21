@@ -6,7 +6,10 @@
 //! app (two stores on the same files, each with its own threads, as two
 //! processes would be) writing at once, turning the vault on or off and
 //! changing the master password while the other holds it; the command line
-//! reading the file while the app writes it.
+//! reading the file while the app writes it. Since #125, the lock between
+//! copies: two turning the vault on at once, a save or a start while
+//! another turns it on, and real second processes (this binary run again
+//! as a writer), one of them killed while it writes.
 //!
 //! What must hold: a damaged vault is named as damaged (never a wrong
 //! password, never an empty vault), is never written over, and a readable
@@ -16,18 +19,22 @@
 mod support;
 
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use netterm_core::credentials::{
     vault_file, ActiveStore, CredentialProfile, CredentialStore, KdfParams, ProfileAuth,
     ScopedProfile, ScopedSecret, SecretValue, StoreContents, Vault, VaultError, VaultStatus,
+    VAULT_LOCK_FILE,
 };
 use sha2::{Digest, Sha256};
-use support::credentials::{FailingStore, Failures};
+use support::credentials::{FailingStore, Failures, Gate};
+use support::processes;
 use tempfile::TempDir;
 
 const MASTER: &str = "correct horse battery staple";
@@ -378,7 +385,7 @@ fn a_write_cut_before_its_rename_leaves_the_old_vault_whole_and_its_leftover_is_
     store.put(SCOPE, &profile("after", "a")).unwrap();
     assert_eq!(
         data.files(),
-        ["credentials.vault"],
+        ["credentials.vault", VAULT_LOCK_FILE],
         "the leftovers were cleared at the start"
     );
     drop(store);
@@ -519,16 +526,13 @@ fn two_copies_writing_at_once_never_leave_a_damaged_vault() {
         assert!(reopened.is_ok(), "{:?}", reopened.err());
         assert_eq!(
             data.files(),
-            ["credentials.vault"],
+            ["credentials.vault", VAULT_LOCK_FILE],
             "no temporary file left"
         );
     }
 }
 
 #[test]
-#[ignore = "two copies writing at once can lose a change each was told was saved: \
-            the vault has no lock between processes (ticket proposed in #117's report); \
-            run with --ignored"]
 fn two_copies_writing_at_once_keep_every_change_they_were_told_was_saved() {
     let data = DataFolder::new();
     data.with_vault();
@@ -658,4 +662,285 @@ fn changing_the_password_or_turning_off_takes_what_another_copy_wrote_meanwhile(
     first.turn_off("second").unwrap();
     assert!(keychain.get(SCOPE, "theirs").unwrap().is_some());
     assert!(keychain.get(SCOPE, "theirs-too").unwrap().is_some());
+}
+
+// The lock between copies (#125): every write of the vault, and every save
+// to the keychain while the vault is off, holds `credentials.vault.lock`.
+
+#[test]
+fn two_copies_turning_the_vault_on_at_once_make_one_vault_and_lose_nothing() {
+    let data = DataFolder::new();
+    let (first, second, keychain) = two_copies(&data);
+    first.put(SCOPE, &profile("core", "pw")).unwrap();
+    let passwords = ["first master", "second master"];
+    let barrier = Barrier::new(2);
+    let results: Vec<Result<(), VaultError>> = thread::scope(|scope| {
+        let turning_on: Vec<_> = [&first, &second]
+            .into_iter()
+            .zip(passwords)
+            .map(|(store, password)| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    store.turn_on(password, password)
+                })
+            })
+            .collect();
+        turning_on
+            .into_iter()
+            .map(|copy| copy.join().unwrap())
+            .collect()
+    });
+
+    let winners: Vec<usize> = (0..2).filter(|&copy| results[copy].is_ok()).collect();
+    assert_eq!(winners.len(), 1, "one vault, one turn on: {results:?}");
+    let winner = winners[0];
+    assert_eq!(results[1 - winner], Err(VaultError::AlreadyExists));
+    // The vault is the winner's, whole, with what the keychain had.
+    let vault = Vault::unlock(&data.vault(), passwords[winner]).unwrap();
+    assert!(vault.get(SCOPE, "core").unwrap().is_some());
+    assert!(keychain.held().is_empty());
+    let loser = [&first, &second][1 - winner];
+    assert_eq!(loser.status(), VaultStatus::Locked);
+    loser.unlock(passwords[winner]).unwrap();
+}
+
+#[test]
+fn a_copy_saving_to_the_keychain_while_another_turns_the_vault_on_is_told_it_was_not_saved() {
+    let data = DataFolder::new();
+    let gate = Gate::default();
+    let keychain = FailingStore::gated(Failures::default(), gate.clone());
+    keychain.put(SCOPE, &profile("core", "pw")).unwrap();
+    let first = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+    let second = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+
+    let saved = thread::scope(|scope| {
+        let turning_on = scope.spawn(|| first.turn_on(MASTER, MASTER));
+        // The first copy has listed the keychain and is moving it.
+        assert!(gate.wait_reached(Duration::from_secs(30)));
+        let (sent, received) = mpsc::channel();
+        let second = &second;
+        scope.spawn(move || sent.send(second.put(SCOPE, &profile("late", "l"))));
+        // Saved to the keychain now, it would be left out of the move.
+        let early = received.recv_timeout(Duration::from_millis(300));
+        gate.open();
+        turning_on.join().unwrap().unwrap();
+        early.unwrap_or_else(|_| received.recv().unwrap())
+    });
+
+    let in_vault = Vault::unlock(&data.vault(), MASTER)
+        .unwrap()
+        .get(SCOPE, "late")
+        .unwrap()
+        .is_some();
+    match saved {
+        Ok(()) => assert!(in_vault, "told it was saved, and it is not in the vault"),
+        Err(refused) => {
+            assert!(refused.0.contains("locked"), "{refused}");
+            assert!(!in_vault);
+        }
+    }
+    assert!(keychain.held().is_empty(), "{:?}", keychain.held());
+}
+
+#[test]
+fn a_copy_starting_while_another_turns_the_vault_on_finds_it_locked() {
+    let data = DataFolder::new();
+    let gate = Gate::default();
+    let keychain = FailingStore::gated(Failures::default(), gate.clone());
+    keychain.put(SCOPE, &profile("core", "pw")).unwrap();
+    let first = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+
+    let status = thread::scope(|scope| {
+        let turning_on = scope.spawn(|| first.turn_on(MASTER, MASTER));
+        assert!(gate.wait_reached(Duration::from_secs(30)));
+        // No vault file yet, but one is being written: a copy starting now
+        // must not conclude there is none (and use the keychain).
+        let (sent, received) = mpsc::channel();
+        let vault = data.vault();
+        let keychain = keychain.clone();
+        scope.spawn(move || {
+            let starting = ActiveStore::new(Box::new(keychain), vault);
+            sent.send(starting.status())
+        });
+        let early = received.recv_timeout(Duration::from_millis(300));
+        gate.open();
+        turning_on.join().unwrap().unwrap();
+        early.unwrap_or_else(|_| received.recv().unwrap())
+    });
+    assert_eq!(status, VaultStatus::Locked);
+}
+
+/// Windows: a program that opens the vault file without letting it be
+/// replaced (an antivirus scanner can) makes a rename over it fail for as
+/// long as it holds it. A save waits for it a moment rather than failing.
+#[cfg(windows)]
+#[test]
+fn a_scanner_holding_the_vault_file_for_a_moment_only_delays_a_save() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let data = DataFolder::new();
+    data.with_vault();
+    let writer = Vault::unlock(&data.vault(), MASTER).unwrap();
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1) // FILE_SHARE_READ only
+        .open(data.vault())
+        .unwrap();
+    let scanner = thread::spawn(move || {
+        // The scanner's moment.
+        thread::sleep(Duration::from_millis(300));
+        drop(held);
+    });
+    writer.put(SCOPE, &profile("during-scan", "s")).unwrap();
+    scanner.join().unwrap();
+    let reopened = Vault::unlock(&data.vault(), MASTER).unwrap();
+    assert!(reopened.get(SCOPE, "during-scan").unwrap().is_some());
+}
+
+// Real second processes: this test binary run again as a helper that
+// writes the vault ([`WRITER`]).
+
+/// A helper that puts profiles named `<copy><n>` into the vault in the
+/// folder [`processes::PIDS_VARIABLE`] names, once the file `go` is
+/// there, printing `saved <name>` after each save it was told was done:
+/// [`WRITES_VARIABLE`] of them, or until it is killed (0).
+const WRITER: &str = "vault writer";
+const WRITES_VARIABLE: &str = "NETTERM_TEST_WRITES";
+const COPY_VARIABLE: &str = "NETTERM_TEST_COPY";
+
+#[test]
+fn helper() {
+    processes::play();
+    if processes::role().as_deref() == Some(WRITER) {
+        write_as_a_helper();
+    }
+}
+
+fn write_as_a_helper() -> ! {
+    let folder = PathBuf::from(std::env::var_os(processes::PIDS_VARIABLE).unwrap());
+    let writes: usize = std::env::var(WRITES_VARIABLE).unwrap().parse().unwrap();
+    let copy = std::env::var(COPY_VARIABLE).unwrap();
+    let until = Instant::now() + Duration::from_secs(60);
+    while !folder.join("go").exists() {
+        assert!(Instant::now() < until, "never told to go");
+        thread::sleep(Duration::from_millis(1));
+    }
+    let vault = Vault::unlock(&vault_file(&folder), MASTER).unwrap();
+    let mut out = std::io::stdout().lock();
+    let mut index = 0;
+    while (writes == 0 || index < writes) && Instant::now() < until {
+        let name = format!("{copy}{index}");
+        if vault.put(SCOPE, &profile(&name, "x")).is_ok() {
+            writeln!(out, "saved {name}").unwrap();
+            out.flush().unwrap();
+        }
+        index += 1;
+    }
+    std::process::exit(0)
+}
+
+fn writer_process(data: &DataFolder, copy: &str, writes: usize) -> std::process::Child {
+    processes::helper(WRITER, data.temp.path())
+        .env(WRITES_VARIABLE, writes.to_string())
+        .env(COPY_VARIABLE, copy)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+fn saved_names(output: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .filter_map(|line| line.strip_prefix("saved "))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn two_processes_writing_at_once_keep_every_change_they_were_told_was_saved() {
+    let data = DataFolder::new();
+    data.with_vault();
+    let writers = [
+        writer_process(&data, "a", 40),
+        writer_process(&data, "b", 40),
+    ];
+    fs::write(data.path("go"), "").unwrap();
+    let saved: Vec<String> = writers
+        .into_iter()
+        .flat_map(|writer| saved_names(&writer.wait_with_output().unwrap().stdout))
+        .collect();
+
+    assert_eq!(saved.len(), 80, "every save was done: {saved:?}");
+    let reopened = Vault::unlock(&data.vault(), MASTER).unwrap();
+    let lost: Vec<&String> = saved
+        .iter()
+        .filter(|name| reopened.get(SCOPE, name).unwrap().is_none())
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "{} saved changes lost: {lost:?}",
+        lost.len()
+    );
+}
+
+#[test]
+fn a_process_killed_while_writing_blocks_nobody_and_loses_nothing_it_saved() {
+    let data = DataFolder::new();
+    data.with_vault();
+    let mut writer = writer_process(&data, "killed", 0);
+    let output = writer.stdout.take().unwrap();
+    let (lines, received) = mpsc::channel();
+    let reading = thread::spawn(move || {
+        for line in BufReader::new(output).lines() {
+            let Ok(line) = line else { break };
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    fs::write(data.path("go"), "").unwrap();
+    // Killed in the middle of its writes: almost all of its time is spent
+    // holding the lock.
+    let mut saved = Vec::new();
+    while saved.len() < 20 {
+        let line = received
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the writer saves");
+        saved.extend(saved_names(line.as_bytes()));
+    }
+    writer.kill().unwrap();
+    writer.wait().unwrap();
+    reading.join().unwrap();
+    saved.extend(
+        received
+            .try_iter()
+            .flat_map(|line| saved_names(line.as_bytes())),
+    );
+
+    // The lock it may have held went with it, and its lock file, left
+    // behind, is no lock: this copy saves at once.
+    assert!(data.path(VAULT_LOCK_FILE).exists());
+    let (sent, done) = mpsc::channel();
+    let path = data.vault();
+    thread::spawn(move || {
+        let vault = Vault::unlock(&path, MASTER).unwrap();
+        sent.send(vault.put(SCOPE, &profile("after", "a"))).unwrap();
+    });
+    done.recv_timeout(Duration::from_secs(10))
+        .expect("a save after the writer died is not blocked")
+        .unwrap();
+
+    let reopened = Vault::unlock(&data.vault(), MASTER).unwrap();
+    assert!(reopened.get(SCOPE, "after").unwrap().is_some());
+    let lost: Vec<&String> = saved
+        .iter()
+        .filter(|name| reopened.get(SCOPE, name).unwrap().is_none())
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "{} saved changes lost: {lost:?}",
+        lost.len()
+    );
 }

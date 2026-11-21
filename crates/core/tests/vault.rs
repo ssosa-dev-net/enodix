@@ -12,16 +12,20 @@ use std::path::{Path, PathBuf};
 
 use netterm_core::credentials::{
     prepare_workspace, vault_file, ActiveStore, AuthDraft, CredentialProfile, CredentialStore,
-    KdfParams, MemoryStore, ProfileAuth, ProfileDraft, ProfileError, Profiles, SecretValue,
-    Secrets, StoreContents, Vault, VaultError, VaultStatus, VAULT_FILE,
+    KdfParams, MemoryStore, ProfileAuth, ProfileDraft, ProfileError, Profiles, ScopedProfile,
+    ScopedSecret, SecretValue, Secrets, StoreContents, Vault, VaultError, VaultStatus, VAULT_FILE,
+    VAULT_LOCK_FILE,
 };
 use netterm_core::session::{SessionState, SessionTarget, TerminalSize};
 use netterm_core::workspace::{HostId, Workspace};
-use support::credentials::{FailingStore, Failures};
+use support::credentials::{FailingStore, Failures, TOO_LARGE};
 use support::{next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT, USERNAME};
 use tempfile::TempDir;
 
 const MASTER: &str = "correct horse battery staple";
+/// The lock beside the vault, which stays once made (a lock file left
+/// behind is no lock: the lock is the system's, held by a process).
+const LOCK_FILE: &str = VAULT_LOCK_FILE;
 const SCOPE_A: &str = "workspace-a";
 const SCOPE_B: &str = "workspace-b";
 
@@ -233,7 +237,7 @@ fn a_vault_passes_the_store_checks_and_keeps_everything_when_reopened() {
     assert_eq!(reopened.kdf(), KdfParams::default());
     assert_eq!(
         data.files(),
-        ["credentials.vault"],
+        ["credentials.vault", LOCK_FILE],
         "no temporary file left"
     );
 }
@@ -244,7 +248,11 @@ fn the_active_store_passes_the_store_checks_with_and_without_a_vault() {
     let keychain = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
     assert_eq!(keychain.status(), VaultStatus::Off);
     behaves_as_a_store(&keychain);
-    assert!(data.files().is_empty(), "no vault without turning it on");
+    assert_eq!(
+        data.files(),
+        [LOCK_FILE],
+        "no vault without turning it on, only the lock its saves take"
+    );
 
     let data = DataFolder::new();
     let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
@@ -422,6 +430,28 @@ fn creating_over_an_existing_vault_or_with_an_empty_password_is_refused() {
 }
 
 #[test]
+fn a_vault_is_made_in_a_data_folder_not_made_yet() {
+    let data = DataFolder::new();
+    let folder = data.temp.path().join("first run");
+    drop(
+        Vault::create_with(
+            &vault_file(&folder),
+            MASTER,
+            cheap(),
+            StoreContents::default(),
+        )
+        .unwrap(),
+    );
+    let store = ActiveStore::new(
+        Box::new(MemoryStore::new()),
+        vault_file(&data.temp.path().join("second")),
+    );
+    store.turn_on(MASTER, MASTER).unwrap();
+    assert!(vault_file(&folder).exists());
+    assert!(vault_file(&data.temp.path().join("second")).exists());
+}
+
+#[test]
 fn a_change_through_one_handle_keeps_a_change_made_through_another() {
     let data = DataFolder::new();
     drop(Vault::create(&data.vault(), MASTER).unwrap());
@@ -491,6 +521,190 @@ fn the_keychain_is_empty_after_turning_on() {
 }
 
 #[test]
+fn a_keychain_that_keeps_what_it_was_told_to_remove_is_said_and_the_vault_not_turned_on() {
+    // Every delete says done; the entries stay. Emptying looks afterwards.
+    let data = DataFolder::new();
+    let keychain = FailingStore::new(Failures {
+        deletes_kept: true,
+        ..Failures::default()
+    });
+    let everything = filled_keychain(&keychain);
+    let store = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+
+    let error = store.turn_on(MASTER, MASTER).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("3 profiles and 2 secrets are still there"),
+        "{error}"
+    );
+    nothing_moved(&data, &store, &keychain, &everything);
+}
+
+/// What a crash between writing the vault and emptying the keychain
+/// leaves: the vault holding `vault`, the keychain holding `keychain`.
+fn crashed_while_turning_on(
+    data: &DataFolder,
+    vault: StoreContents,
+    keychain: &FailingStore,
+    copies: &StoreContents,
+) {
+    drop(Vault::create_with(&data.vault(), MASTER, cheap(), vault).unwrap());
+    for entry in &copies.profiles {
+        keychain.put(&entry.scope, &entry.profile).unwrap();
+    }
+    for entry in &copies.secrets {
+        keychain
+            .put_secret(&entry.scope, &entry.name, &entry.value)
+            .unwrap();
+    }
+}
+
+fn cheap() -> KdfParams {
+    KdfParams {
+        memory_kib: 8 * 1024,
+        iterations: 1,
+        parallelism: 1,
+    }
+}
+
+#[test]
+fn copies_a_crash_left_in_the_keychain_are_removed_when_the_vault_is_next_unlocked() {
+    let data = DataFolder::new();
+    let keychain = FailingStore::new(Failures::default());
+    let everything = filled_keychain(&MemoryStore::new());
+    crashed_while_turning_on(&data, everything.clone(), &keychain, &everything);
+
+    // The next start: locked, so the copies cannot be told from the vault
+    // yet; unlocking (the first thing the app asks) puts it right.
+    let store = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+    assert_eq!(store.status(), VaultStatus::Locked);
+    store.unlock(MASTER).unwrap();
+    assert!(keychain.held().is_empty(), "{:?}", keychain.held());
+    assert_eq!(store.contents().unwrap().sorted(), everything);
+    assert_eq!(
+        unlocked(&data.vault()).contents().unwrap().sorted(),
+        everything
+    );
+}
+
+#[test]
+fn a_keychain_entry_the_vault_lacks_is_moved_into_it_and_the_vaults_own_kept() {
+    let data = DataFolder::new();
+    let keychain = FailingStore::new(Failures::default());
+    let vault = StoreContents {
+        profiles: vec![ScopedProfile {
+            scope: SCOPE_A.into(),
+            profile: password_profile("core", "changed in the vault"),
+        }],
+        secrets: Vec::new(),
+    };
+    let copies = StoreContents {
+        profiles: vec![
+            ScopedProfile {
+                scope: SCOPE_A.into(),
+                profile: password_profile("core", "the old copy"),
+            },
+            ScopedProfile {
+                scope: SCOPE_B.into(),
+                profile: password_profile("only-here", "o"),
+            },
+        ],
+        secrets: vec![ScopedSecret {
+            scope: SCOPE_B.into(),
+            name: "Token".into(),
+            value: secret("t"),
+        }],
+    };
+    crashed_while_turning_on(&data, vault, &keychain, &copies);
+
+    let store = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+    store.unlock(MASTER).unwrap();
+    assert!(keychain.held().is_empty(), "{:?}", keychain.held());
+    let reopened = unlocked(&data.vault());
+    assert_eq!(
+        reopened.get(SCOPE_A, "core").unwrap(),
+        Some(password_profile("core", "changed in the vault"))
+    );
+    assert!(reopened.get(SCOPE_B, "only-here").unwrap().is_some());
+    assert_eq!(value(&reopened, SCOPE_B, "token").as_deref(), Some("t"));
+}
+
+#[test]
+fn copies_the_keychain_cannot_give_up_do_not_stop_the_unlock() {
+    let data = DataFolder::new();
+    let keychain = FailingStore::new(Failures {
+        deletes_after: Some(0),
+        ..Failures::default()
+    });
+    let everything = filled_keychain(&MemoryStore::new());
+    crashed_while_turning_on(&data, everything.clone(), &keychain, &everything);
+    let store = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+    store.unlock(MASTER).unwrap();
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert_eq!(store.contents().unwrap().sorted(), everything);
+}
+
+#[test]
+fn starting_over_removes_what_the_keychain_still_holds() {
+    let data = DataFolder::new();
+    let keychain = FailingStore::new(Failures::default());
+    let everything = filled_keychain(&MemoryStore::new());
+    crashed_while_turning_on(&data, everything.clone(), &keychain, &everything);
+
+    let store = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+    store.start_over().unwrap();
+    assert_eq!(store.status(), VaultStatus::Off);
+    // The warning said every profile and secret goes: none comes back.
+    assert!(keychain.held().is_empty(), "{:?}", keychain.held());
+    assert!(store.contents().unwrap().is_empty());
+    assert_eq!(data.files(), [LOCK_FILE]);
+}
+
+#[test]
+fn starting_over_keeps_the_vault_when_the_keychain_cannot_be_emptied() {
+    let data = DataFolder::new();
+    let keychain = FailingStore::new(Failures {
+        deletes_kept: true,
+        ..Failures::default()
+    });
+    let everything = filled_keychain(&MemoryStore::new());
+    crashed_while_turning_on(&data, everything.clone(), &keychain, &everything);
+
+    let store = ActiveStore::new(Box::new(keychain.clone()), data.vault());
+    let error = store.start_over().unwrap_err();
+    assert!(error.to_string().contains("keychain"), "{error}");
+    assert_eq!(store.status(), VaultStatus::Locked);
+    assert!(data.vault().exists(), "nothing was started over");
+}
+
+#[test]
+fn turning_off_with_an_entry_the_keychain_cannot_hold_says_so_before_moving_anything() {
+    let data = DataFolder::new();
+    let (store, keychain, everything) = vault_on(
+        &data,
+        Failures {
+            largest_password: Some(100),
+            ..Failures::default()
+        },
+    );
+    store
+        .put(SCOPE_B, &password_profile("huge", &"x".repeat(4000)))
+        .unwrap();
+    let puts = keychain.puts_made();
+
+    let error = store.turn_off(MASTER).unwrap_err();
+    assert!(error.to_string().contains(TOO_LARGE), "{error}");
+    assert_eq!(keychain.puts_made(), puts, "nothing was moved");
+    assert!(keychain.held().is_empty());
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert_eq!(
+        unlocked(&data.vault()).contents().unwrap().profiles.len(),
+        everything.profiles.len() + 1
+    );
+}
+
+#[test]
 fn turning_on_needs_the_same_password_twice_and_not_an_empty_one() {
     let data = DataFolder::new();
     let keychain = MemoryStore::new();
@@ -526,7 +740,7 @@ fn nothing_moved(
     everything: &StoreContents,
 ) {
     assert_eq!(store.status(), VaultStatus::Off);
-    assert!(data.files().is_empty(), "{:?}", data.files());
+    assert_eq!(data.files(), [LOCK_FILE]);
     assert_eq!(&keychain.held(), everything);
     assert_eq!(&store.contents().unwrap().sorted(), everything);
 }
@@ -584,7 +798,7 @@ fn a_keychain_that_cannot_be_listed_moves_nothing() {
     let store = ActiveStore::new(Box::new(keychain.clone()), data.vault());
     assert!(store.turn_on(MASTER, MASTER).is_err());
     assert_eq!(store.status(), VaultStatus::Off);
-    assert!(data.files().is_empty());
+    assert_eq!(data.files(), [LOCK_FILE]);
     assert_eq!(keychain.held(), everything);
 }
 
@@ -790,7 +1004,7 @@ fn changing_the_password_needs_the_current_one_and_then_only_the_new_one_unlocks
     assert_eq!(value(&reopened, SCOPE_A, "after").as_deref(), Some("v"));
     assert_eq!(
         data.files(),
-        ["credentials.vault"],
+        ["credentials.vault", LOCK_FILE],
         "no temporary file left"
     );
     drop(store);
@@ -872,7 +1086,7 @@ fn turning_the_vault_off_moves_everything_back_and_removes_the_file() {
     store.turn_off(MASTER).unwrap();
 
     assert_eq!(store.status(), VaultStatus::Off);
-    assert!(data.files().is_empty(), "{:?}", data.files());
+    assert_eq!(data.files(), [LOCK_FILE]);
     assert_eq!(keychain.held(), everything);
     assert_eq!(store.contents().unwrap().sorted(), everything);
     // Changes now go to the keychain.
@@ -979,7 +1193,7 @@ fn a_locked_or_missing_vault_cannot_be_turned_off() {
     drop(Vault::create(&data.vault(), MASTER).unwrap());
     let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
     assert_eq!(store.turn_off(MASTER).unwrap_err(), VaultError::Locked);
-    assert_eq!(data.files(), ["credentials.vault"]);
+    assert_eq!(data.files(), ["credentials.vault", LOCK_FILE]);
 }
 
 #[test]
@@ -994,7 +1208,7 @@ fn starting_over_deletes_a_locked_vault_and_returns_to_an_empty_keychain() {
     store.start_over().unwrap();
 
     assert_eq!(store.status(), VaultStatus::Off);
-    assert!(data.files().is_empty(), "{:?}", data.files());
+    assert_eq!(data.files(), [LOCK_FILE]);
     assert!(store.contents().unwrap().is_empty());
     store.put(SCOPE_A, &password_profile("fresh", "f")).unwrap();
     assert!(store.get(SCOPE_A, "fresh").unwrap().is_some());
@@ -1013,7 +1227,7 @@ fn a_damaged_vault_can_be_started_over() {
     ));
     store.start_over().unwrap();
     assert_eq!(store.status(), VaultStatus::Off);
-    assert!(data.files().is_empty());
+    assert_eq!(data.files(), [LOCK_FILE]);
 }
 
 #[test]
@@ -1095,7 +1309,7 @@ fn without_a_keychain_the_vault_cannot_be_turned_off() {
     // Even before the password is checked: there is nothing to try.
     assert_eq!(store.turn_off("wrong").unwrap_err(), VaultError::NoKeychain);
     assert_eq!(store.status(), VaultStatus::Unlocked);
-    assert_eq!(data.files(), [VAULT_FILE]);
+    assert_eq!(data.files(), [VAULT_FILE, LOCK_FILE]);
     assert!(store.get(SCOPE_A, "core").unwrap().is_some());
 }
 
@@ -1110,7 +1324,7 @@ fn without_a_keychain_starting_over_needs_the_vault_again() {
     next_launch.start_over().unwrap();
     assert_eq!(next_launch.status(), VaultStatus::Off);
     assert!(next_launch.needs_vault());
-    assert!(data.files().is_empty());
+    assert_eq!(data.files(), [LOCK_FILE]);
 }
 
 #[test]

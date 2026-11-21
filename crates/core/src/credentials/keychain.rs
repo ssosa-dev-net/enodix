@@ -137,12 +137,57 @@ fn decode(blob: &[u8], scope: &str) -> Option<CredentialProfile> {
     (entry.scope == scope).then_some(entry.profile)
 }
 
-fn encode(scope: &str, profile: &CredentialProfile) -> Result<Vec<u8>, StoreError> {
-    let entry = Entry {
-        scope: scope.to_owned(),
-        profile: profile.clone(),
-    };
-    serde_json::to_vec(&entry).map_err(|error| StoreError(format!("cannot encode: {error}")))
+/// A credential's secret as read or written here: JSON with passwords in
+/// it, wiped when dropped.
+type Blob = zeroize::Zeroizing<Vec<u8>>;
+
+/// What [`Entry`] is written from, borrowed: no copy of the profile.
+#[derive(serde::Serialize)]
+struct EntryRef<'a> {
+    scope: &'a str,
+    profile: &'a CredentialProfile,
+}
+
+/// What [`SecretEntry`] is written from, borrowed.
+#[derive(serde::Serialize)]
+struct SecretEntryRef<'a> {
+    scope: &'a str,
+    name: &'a str,
+    value: &'a SecretValue,
+}
+
+/// The most a Windows credential's secret holds
+/// (`CRED_MAX_CREDENTIAL_BLOB_SIZE`, 5 × 512 bytes).
+const MAX_SECRET_BYTES: usize = 2560;
+/// The longest user name a Windows credential holds
+/// (`CRED_MAX_USERNAME_LENGTH`, in UTF-16 units).
+const MAX_USERNAME: usize = 513;
+
+/// The entry's JSON, wiped when dropped.
+fn encoded(value: &impl serde::Serialize) -> Result<zeroize::Zeroizing<Vec<u8>>, StoreError> {
+    super::encoded_exactly(value).map_err(|error| StoreError(format!("cannot encode: {error}")))
+}
+
+fn encode(
+    scope: &str,
+    profile: &CredentialProfile,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, StoreError> {
+    encoded(&EntryRef { scope, profile })
+}
+
+/// Refuses an entry too large for a Windows credential, naming it.
+fn fits(what: &str, secret: usize, username: &str) -> Result<(), StoreError> {
+    if secret > MAX_SECRET_BYTES {
+        return Err(StoreError(format!(
+            "{what} is too large for a Windows credential ({secret} bytes; at most {MAX_SECRET_BYTES}): shorten what it keeps, or delete it"
+        )));
+    }
+    if username.encode_utf16().count() > MAX_USERNAME {
+        return Err(StoreError(format!(
+            "{what} has a user name too long for a Windows credential (at most {MAX_USERNAME} characters)"
+        )));
+    }
+    Ok(())
 }
 
 impl CredentialStore for KeychainStore {
@@ -186,13 +231,7 @@ impl CredentialStore for KeychainStore {
     }
 
     fn put_secret(&self, scope: &str, name: &str, value: &SecretValue) -> Result<(), StoreError> {
-        let entry = SecretEntry {
-            scope: scope.to_owned(),
-            name: name.to_owned(),
-            value: value.clone(),
-        };
-        let blob = serde_json::to_vec(&entry)
-            .map_err(|error| StoreError(format!("cannot encode: {error}")))?;
+        let blob = encoded(&SecretEntryRef { scope, name, value })?;
         os::write(&self.secret_target(scope, name), name, &SECRET, &blob)
     }
 
@@ -226,6 +265,43 @@ impl CredentialStore for KeychainStore {
             .map_err(|_| unreadable("secret"))?;
         Ok(StoreContents { profiles, secrets })
     }
+
+    /// Each entry as it would be written, against what a Windows
+    /// credential holds.
+    fn check_fits(&self, contents: &StoreContents) -> Result<(), StoreError> {
+        for entry in &contents.profiles {
+            let blob = encode(&entry.scope, &entry.profile)?;
+            let what = format!(
+                "the profile \"{}\" (workspace {})",
+                entry.profile.name, entry.scope
+            );
+            fits(&what, blob.len(), &entry.profile.username)?;
+        }
+        for entry in &contents.secrets {
+            let blob = encoded(&SecretEntryRef {
+                scope: &entry.scope,
+                name: &entry.name,
+                value: &entry.value,
+            })?;
+            let what = format!("the secret \"{}\" (workspace {})", entry.name, entry.scope);
+            fits(&what, blob.len(), &entry.name)?;
+        }
+        Ok(())
+    }
+
+    /// [`remove_all`](Self::remove_all), readable entries or not, then
+    /// counted again: nothing may be left.
+    fn remove_everything(&self) -> Result<(), StoreError> {
+        self.remove_all()?;
+        let left = self.count_all()?;
+        if left.profiles + left.secrets > 0 {
+            return Err(StoreError(format!(
+                "{} are still there after being removed",
+                super::counted(left.profiles, left.secrets)
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn unreadable(what: &str) -> StoreError {
@@ -246,7 +322,7 @@ mod os {
         CRED_MAX_CREDENTIAL_BLOB_SIZE, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
     };
 
-    use super::{EntryKind, StoreError};
+    use super::{Blob, EntryKind, StoreError};
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(Some(0)).collect()
@@ -266,19 +342,21 @@ mod os {
     ///
     /// # Safety
     /// `credential` must point to a credential Windows returned.
-    unsafe fn blob(credential: *const CREDENTIALW) -> Vec<u8> {
+    unsafe fn blob(credential: *const CREDENTIALW) -> Blob {
         let credential = &*credential;
         if credential.CredentialBlob.is_null() {
-            return Vec::new();
+            return Blob::default();
         }
-        std::slice::from_raw_parts(
-            credential.CredentialBlob,
-            credential.CredentialBlobSize as usize,
+        Blob::new(
+            std::slice::from_raw_parts(
+                credential.CredentialBlob,
+                credential.CredentialBlobSize as usize,
+            )
+            .to_vec(),
         )
-        .to_vec()
     }
 
-    pub fn list(filter: &str) -> Result<Vec<Vec<u8>>, StoreError> {
+    pub fn list(filter: &str) -> Result<Vec<Blob>, StoreError> {
         let filter = wide(filter);
         let mut count = 0;
         let mut credentials: *mut *mut CREDENTIALW = ptr::null_mut();
@@ -337,7 +415,7 @@ mod os {
         Ok(names)
     }
 
-    pub fn read(target: &str) -> Result<Option<Vec<u8>>, StoreError> {
+    pub fn read(target: &str) -> Result<Option<Blob>, StoreError> {
         let target = wide(target);
         let mut credential: *mut CREDENTIALW = ptr::null_mut();
         // SAFETY: the target is NUL-terminated; Windows allocates the
@@ -372,7 +450,7 @@ mod os {
         let mut username = wide(username);
         let mut comment = wide(kind.comment);
         // The struct takes mutable pointers; Windows only reads them.
-        let mut secret = secret.to_vec();
+        let mut secret = Blob::new(secret.to_vec());
         let credential = CREDENTIALW {
             Type: CRED_TYPE_GENERIC,
             TargetName: target.as_mut_ptr(),
@@ -412,13 +490,13 @@ mod os {
 
 #[cfg(not(windows))]
 mod os {
-    use super::{EntryKind, StoreError};
+    use super::{Blob, EntryKind, StoreError};
 
     fn unsupported() -> StoreError {
         StoreError("this system's keychain is not supported yet".into())
     }
 
-    pub fn list(_filter: &str) -> Result<Vec<Vec<u8>>, StoreError> {
+    pub fn list(_filter: &str) -> Result<Vec<Blob>, StoreError> {
         Err(unsupported())
     }
 
@@ -426,7 +504,7 @@ mod os {
         Err(unsupported())
     }
 
-    pub fn read(_target: &str) -> Result<Option<Vec<u8>>, StoreError> {
+    pub fn read(_target: &str) -> Result<Option<Blob>, StoreError> {
         Err(unsupported())
     }
 

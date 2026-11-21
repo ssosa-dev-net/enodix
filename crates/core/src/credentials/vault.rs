@@ -19,6 +19,24 @@
 //! [`ActiveStore`] is the store the app uses: the keychain while there is no
 //! vault file, the vault (locked until [`ActiveStore::unlock`]) while there
 //! is one. Which one follows from the file existing, never from a setting.
+//!
+//! Copies of the app (and the command line) share the file. Every write of
+//! it (a change, turning on, changing the master password, turning off,
+//! starting over), and every save to the keychain while the vault is off,
+//! holds an exclusive lock on [`VAULT_LOCK_FILE`] beside it, from reading
+//! the file (or the keychain) to the end of the write: two copies saving at
+//! once take turns, and each change is made to what the other wrote. The
+//! lock is the system's (`File::lock`: `LockFileEx` on Windows, `flock` on
+//! Linux), held by an open file: a process that dies lets go of it with its
+//! handles, and the lock file it leaves is no lock. The file stays (removing
+//! it while another copy waits on it would let a third take a lock of its
+//! own). Holders keep it for milliseconds: the slow key derivation is done
+//! before it is taken. Readers take no lock while the file is there (a
+//! rename replaces it whole, so they see the old file or the new one); only
+//! a reader that finds no file, or is refused it, waits for a writer
+//! holding the lock and looks again before it concludes anything, since
+//! Windows can leave the name missing, or the old file refusing to open,
+//! for a moment (tens of milliseconds, measured) while it is replaced.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -43,6 +61,8 @@ use super::{
 
 /// The vault's file name in the data folder.
 pub const VAULT_FILE: &str = "credentials.vault";
+/// The name of the vault's lock file, beside it.
+pub const VAULT_LOCK_FILE: &str = "credentials.vault.lock";
 
 /// Where the vault lives in the per-user data folder `data_folder`.
 pub fn vault_file(data_folder: &Path) -> PathBuf {
@@ -219,10 +239,9 @@ impl Drop for Body {
 
 /// An unlocked vault: a [`CredentialStore`] kept in its file.
 ///
-/// Every change reads the file again first (so a change written by another
-/// handle on the same file is kept), applies itself and writes the whole
-/// file; changes are serialised within the vault. Two app instances
-/// writing at once can still lose one change.
+/// Every change takes the lock between copies, reads the file again (so a
+/// change written by another handle on the same file, in this process or
+/// another, is kept), applies itself and writes the whole file.
 pub struct Vault {
     path: PathBuf,
     key: Zeroizing<[u8; 32]>,
@@ -241,9 +260,27 @@ impl fmt::Debug for Vault {
 }
 
 impl Vault {
-    /// Whether there is a vault file at `path`.
+    /// Whether there is a vault file at `path`. A name missing (or
+    /// refused) while another copy writes the vault is looked at again once
+    /// it is done, never taken for no vault at once.
     pub fn exists(path: &Path) -> bool {
-        fs::symlink_metadata(path).is_ok()
+        use std::io::ErrorKind::{NotFound, PermissionDenied};
+        match fs::symlink_metadata(path) {
+            Ok(_) => true,
+            Err(error) if matches!(error.kind(), NotFound | PermissionDenied) => {
+                wait_for_writer(path);
+                present(path)
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Checks the file at `path` as far as it can be without the master
+    /// password: [`VaultError::Damaged`] for a file that cannot be the
+    /// vault (cut short, altered, from a newer version), before anyone is
+    /// asked for a password that would not help.
+    pub fn check(path: &Path) -> Result<(), VaultError> {
+        read_sealed(path, None).map(drop)
     }
 
     /// Creates an empty vault at `path` protected by `password`, with the
@@ -265,44 +302,49 @@ impl Vault {
         kdf: KdfParams,
         contents: StoreContents,
     ) -> Result<Self, VaultError> {
+        // Held as a body first, so its secrets are wiped on any failure.
+        let body = Body::from_contents(contents);
         usable_password(password)?;
         if Self::exists(path) {
             return Err(VaultError::AlreadyExists);
         }
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(parent).map_err(|error| VaultError::Io(error.to_string()))?;
-        }
-        Self::seal_new(path, password, kdf, contents)
+        make_folder(path)?;
+        let vault = Self::keyed(path, password, kdf)?;
+        *vault.body() = body;
+        let lock = WriteLock::take(path)?;
+        vault.write_new(&lock)?;
+        Ok(vault)
     }
 
-    /// Writes `contents` to `path` under `password` with a new salt,
-    /// replacing whatever file is there (atomically: on a failure the old
-    /// file stays as it was).
-    fn seal_new(
-        path: &Path,
-        password: &str,
-        kdf: KdfParams,
-        contents: StoreContents,
-    ) -> Result<Self, VaultError> {
-        // Held as a body first, so its secrets are wiped on any failure.
-        let body = Body::from_contents(contents);
+    /// A vault for `path` with a new salt and the key `password` derives
+    /// for it (the slow part, done before any lock is taken), holding
+    /// nothing yet and written nowhere.
+    fn keyed(path: &Path, password: &str, kdf: KdfParams) -> Result<Self, VaultError> {
         usable_password(password)?;
         let salt = Key::generate().to_vec();
         let key = derive_key(password, &kdf, &salt)?;
-        let vault = Self {
+        Ok(Self {
             path: path.to_path_buf(),
             key,
             kdf,
             salt,
-            body: Mutex::new(body),
-        };
-        vault.write(&vault.body())?;
-        Ok(vault)
+            body: Mutex::new(Body::default()),
+        })
+    }
+
+    /// Writes this vault's file where there is none: refused if one is
+    /// there (another copy turned the vault on first). Under `lock`, so no
+    /// other copy can create one between the look and the write.
+    fn write_new(&self, lock: &WriteLock) -> Result<(), VaultError> {
+        if present(&self.path) {
+            return Err(VaultError::AlreadyExists);
+        }
+        self.write(lock, &self.body())
     }
 
     /// Opens the vault at `path` with `password`.
     pub fn unlock(path: &Path, password: &str) -> Result<Self, VaultError> {
-        let (sealed, salt) = read_sealed(path)?;
+        let (sealed, salt) = read_sealed(path, None)?;
         let kdf = sealed.kdf.params;
         let key = derive_key(password, &kdf, &salt)?;
         let body = open(&sealed, &key)?;
@@ -328,8 +370,10 @@ impl Vault {
     /// file sealed under another key (its master password changed, perhaps
     /// by another copy of the app) is [`VaultError::Invalid`] with
     /// [`REPLACED`], not damage: it opens with its own password.
-    fn reread(&self) -> Result<Body, VaultError> {
-        let (sealed, salt) = read_sealed(&self.path)?;
+    /// Read under `lock`, so that no write of another copy comes between
+    /// this and the write that follows it.
+    fn reread(&self, lock: &WriteLock) -> Result<Body, VaultError> {
+        let (sealed, salt) = read_sealed(&self.path, Some(lock))?;
         if salt != self.salt || sealed.kdf.params != self.kdf {
             return Err(VaultError::Invalid(REPLACED.into()));
         }
@@ -339,25 +383,35 @@ impl Vault {
         })
     }
 
-    /// Applies `edit` to the file's current contents and writes them.
+    /// Applies `edit` to the file's current contents and writes them,
+    /// holding the lock between copies from the read to the write.
     fn change<T>(&self, edit: impl FnOnce(&mut Body) -> T) -> Result<T, StoreError> {
         let mut held = self.body();
-        let mut fresh = self.reread().map_err(|error| match error {
+        let lock = WriteLock::take(&self.path).map_err(store_error)?;
+        let fresh = self.change_under(&lock, edit)?;
+        *held = fresh.1;
+        Ok(fresh.0)
+    }
+
+    /// [`change`](Self::change) under a lock already taken; the new body.
+    fn change_under<T>(
+        &self,
+        lock: &WriteLock,
+        edit: impl FnOnce(&mut Body) -> T,
+    ) -> Result<(T, Body), StoreError> {
+        let mut fresh = self.reread(lock).map_err(|error| match error {
             VaultError::NoVault => StoreError(TURNED_OFF.into()),
             other => store_error(other),
         })?;
         let result = edit(&mut fresh);
-        self.write(&fresh).map_err(store_error)?;
-        *held = fresh;
-        Ok(result)
+        self.write(lock, &fresh).map_err(store_error)?;
+        Ok((result, fresh))
     }
 
-    /// Seals `body` and replaces the file with it.
-    fn write(&self, body: &Body) -> Result<(), VaultError> {
-        let plain = Zeroizing::new(
-            serde_json::to_vec(&body.contents())
-                .map_err(|error| VaultError::Io(format!("cannot encode the contents: {error}")))?,
-        );
+    /// Seals `body` and replaces the file with it. Only under the lock.
+    fn write(&self, _lock: &WriteLock, body: &Body) -> Result<(), VaultError> {
+        let plain = super::encoded_exactly(&Wiping(body.contents()).0)
+            .map_err(|error| VaultError::Io(format!("cannot encode the contents: {error}")))?;
         let mut sealed = Sealed {
             format: FORMAT.into(),
             version: VERSION,
@@ -470,15 +524,97 @@ fn derive_key(
     Ok(key)
 }
 
-/// Reads and checks the file at `path`: everything but what needs the key.
-fn read_sealed(path: &Path) -> Result<(Sealed, Vec<u8>), VaultError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(VaultError::NoVault)
+/// The lock taken around every write of the vault at a path (see the
+/// module's documentation): an exclusive lock on [`lock_file`], released
+/// when dropped, and by the system if the process dies.
+struct WriteLock(fs::File);
+
+impl WriteLock {
+    /// Waits for the lock of the vault at `vault` (holders keep it for
+    /// milliseconds), making its lock file if there is none.
+    fn take(vault: &Path) -> Result<Self, VaultError> {
+        let path = lock_file(vault);
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| {
+                VaultError::Io(format!("cannot open the vault's lock file: {error}"))
+            })?;
+        file.lock()
+            .map_err(|error| VaultError::Io(format!("cannot lock the vault: {error}")))?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        // Closing the file lets go too; Windows may take a moment for that.
+        let _ = self.0.unlock();
+    }
+}
+
+/// The lock file of the vault at `vault`: [`VAULT_LOCK_FILE`] for the
+/// app's.
+fn lock_file(vault: &Path) -> PathBuf {
+    let mut path = vault.as_os_str().to_owned();
+    path.push(".lock");
+    PathBuf::from(path)
+}
+
+/// Makes the folder the vault at `path` goes in.
+fn make_folder(path: &Path) -> Result<(), VaultError> {
+    match path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        Some(parent) => {
+            fs::create_dir_all(parent).map_err(|error| VaultError::Io(error.to_string()))
         }
-        Err(error) => return Err(VaultError::Io(error.to_string())),
+        None => Ok(()),
+    }
+}
+
+/// Whether the name `path` is there now (under the lock, nobody renames
+/// over it).
+fn present(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+/// Waits until no copy of the app holds the lock of the vault at `vault`
+/// (it is writing it), taking it shared for a moment; returns at once if
+/// nobody does, or if there is no lock file (nothing of this version ever
+/// wrote there). Never called while holding the lock: it would wait for
+/// itself.
+fn wait_for_writer(vault: &Path) {
+    if let Ok(file) = fs::File::open(lock_file(vault)) {
+        if file.lock_shared().is_ok() {
+            let _ = file.unlock();
+        }
+    }
+}
+
+/// Reads and checks the file at `path`: everything but what needs the key.
+/// Under `held` (the lock), what is there is what is read; else a file
+/// found missing (or refused) is read again once a writer is done.
+fn read_sealed(path: &Path, held: Option<&WriteLock>) -> Result<(Sealed, Vec<u8>), VaultError> {
+    use std::io::ErrorKind::{NotFound, PermissionDenied};
+    let bytes = match (fs::read(path), held) {
+        // Windows, while another copy renames over the file: the name
+        // missing, or the old file going away ("access denied") for a
+        // moment.
+        (Err(error), None) if matches!(error.kind(), NotFound | PermissionDenied) => {
+            wait_for_writer(path);
+            fs::read(path)
+        }
+        (read, _) => read,
     };
+    let bytes = bytes.map_err(|error| match error.kind() {
+        NotFound => VaultError::NoVault,
+        _ => VaultError::Io(error.to_string()),
+    })?;
     let sealed: Sealed = serde_json::from_slice(&bytes).map_err(|_| {
         VaultError::Damaged("it cannot be read (cut short, or not a vault file)".into())
     })?;
@@ -562,7 +698,7 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&temporary, path)?;
+        rename_over(&temporary, path)?;
         sync_folder(path);
         Ok(())
     })();
@@ -570,6 +706,38 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let _ = fs::remove_file(&temporary);
     }
     written
+}
+
+/// How long a rename over the vault waits for a program that holds the
+/// file without letting it be replaced (Windows: an antivirus scanner
+/// looking at it) before the write fails.
+#[cfg(windows)]
+const HELD_BY_ANOTHER: Duration = Duration::from_secs(3);
+
+/// Renames `from` over `to`. On Windows a rename over a file another
+/// program holds open without sharing its deletion is refused (access
+/// denied, or a sharing violation) for as long as it holds it: tried again
+/// until it lets go, for [`HELD_BY_ANOTHER`].
+fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        let until = std::time::Instant::now() + HELD_BY_ANOTHER;
+        loop {
+            match fs::rename(from, to) {
+                Err(error)
+                    if (error.kind() == std::io::ErrorKind::PermissionDenied
+                        || error.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+                        && std::time::Instant::now() < until =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                other => return other,
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    fs::rename(from, to)
 }
 
 /// Flushes the rename of `path` to the disk where the system needs it
@@ -884,12 +1052,17 @@ impl ActiveStore {
     /// turned the vault on and moved the keychain's entries into it, so this
     /// store is locked from now on rather than writing to (and reading from)
     /// a keychain nobody else uses. Whether it changed to locked now.
+    ///
+    /// A plain look, as it is made at every call while off (a planned job
+    /// asks for each host's login): a name missing for the moment of
+    /// another copy's write is only noticed at the next call, and a change
+    /// looks again under the lock ([`with_change`](Self::with_change)).
     fn notice_vault_turned_on(&self) -> bool {
-        if !matches!(*self.state(), State::Off) || !Vault::exists(&self.vault_file) {
+        if !matches!(*self.state(), State::Off) || !present(&self.vault_file) {
             return false;
         }
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-        if !matches!(*state, State::Off) || !Vault::exists(&self.vault_file) {
+        if !matches!(*state, State::Off) || !present(&self.vault_file) {
             // This store's own turn on (or the file gone again) came first.
             return false;
         }
@@ -901,16 +1074,61 @@ impl ActiveStore {
     /// store lives. On an unlocked vault the password is still checked, and
     /// the file opened again with it (after another copy of the app changed
     /// the master password, the new one unlocks it here too).
+    ///
+    /// Then puts right what a turn on cut short left in the keychain (see
+    /// [`ActiveStore::turn_on`]): with the vault on, the keychain holds
+    /// nothing. An entry the vault has too is the vault's (the copy is the
+    /// older); one it lacks is moved into it. Only what the keychain could
+    /// not give up stays there (said on the standard error; the unlock
+    /// stands), to be tried again at the next unlock.
     pub fn unlock(&self, password: &str) -> Result<(), VaultError> {
         self.notice_vault_turned_on();
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         match *state {
             State::Off => Err(VaultError::NoVault),
             State::Unlocked(_) | State::Locked => {
-                *state = State::Unlocked(Vault::unlock(&self.vault_file, password)?);
+                let vault = Vault::unlock(&self.vault_file, password)?;
+                if let Err(error) = self.take_back_keychain_copies(&vault) {
+                    eprintln!("the vault is unlocked, but the keychain still holds copies of profiles or secrets: {error}");
+                }
+                *state = State::Unlocked(vault);
                 Ok(())
             }
         }
+    }
+
+    /// Moves into `vault` whatever the keychain holds that it lacks, and
+    /// empties the keychain: all under the lock, so that no other copy
+    /// turns the vault off (filling the keychain) in between.
+    fn take_back_keychain_copies(&self, vault: &Vault) -> Result<(), StoreError> {
+        if !self.has_keychain {
+            return Ok(());
+        }
+        let lock = WriteLock::take(&self.vault_file).map_err(store_error)?;
+        let copies = Wiping(self.keychain.contents()?);
+        if copies.0.is_empty() {
+            return Ok(());
+        }
+        let ((), fresh) = vault.change_under(&lock, |body| {
+            for entry in &copies.0.profiles {
+                body.profiles
+                    .entry(key(&entry.scope, &entry.profile.name))
+                    .or_insert_with(|| entry.profile.clone());
+            }
+            for entry in &copies.0.secrets {
+                body.secrets
+                    .entry(key(&entry.scope, &entry.name))
+                    .or_insert_with(|| (entry.name.clone(), entry.value.clone()));
+            }
+        })?;
+        *vault.body() = fresh;
+        for entry in &copies.0.profiles {
+            self.keychain.delete(&entry.scope, &entry.profile.name)?;
+        }
+        for entry in &copies.0.secrets {
+            self.keychain.delete_secret(&entry.scope, &entry.name)?;
+        }
+        super::left_over(&Wiping(self.keychain.contents()?).0)
     }
 
     /// Turns the vault on: creates it with `password` (typed twice, the
@@ -921,30 +1139,45 @@ impl ActiveStore {
     /// can neither remove nor take back its entries is the vault kept (and
     /// used), as the one place that has them all. The vault is unlocked
     /// afterwards.
+    ///
+    /// The order, and what a crash at each point leaves: the vault file is
+    /// written whole beside its place, flushed to the disk and renamed into
+    /// it, read back, and only then is anything removed from the keychain;
+    /// afterwards the keychain is listed again and must be empty. A crash
+    /// before the rename leaves the keychain in use with everything (and a
+    /// temporary file, removed at a later start); after it, the vault with
+    /// everything and copies still in the keychain, which the next unlock
+    /// takes back ([`ActiveStore::unlock`]). The keychain is never emptied
+    /// before the vault holding its entries is on the disk.
+    ///
+    /// Two copies turning it on at once make one vault: the second is
+    /// refused with [`VaultError::AlreadyExists`] (and is locked).
     pub fn turn_on(&self, password: &str, repeated: &str) -> Result<(), VaultError> {
         check_new_password(password, repeated)?;
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         if !matches!(*state, State::Off) {
             return Err(VaultError::AlreadyExists);
         }
-        let contents = self.keychain.contents()?.sorted();
-        let vault = Vault::create_with(
-            &self.vault_file,
-            password,
-            KdfParams::default(),
-            contents.clone(),
-        )?;
+        make_folder(&self.vault_file)?;
+        let vault = Vault::keyed(&self.vault_file, password, KdfParams::default())?;
+        let lock = WriteLock::take(&self.vault_file)?;
+        if present(&self.vault_file) {
+            return Err(VaultError::AlreadyExists);
+        }
+        let contents = Wiping(self.keychain.contents()?.sorted());
+        *vault.body() = Body::from_contents(contents.0.clone());
+        vault.write_new(&lock)?;
         let undo = |error: VaultError| {
             let _ = fs::remove_file(&self.vault_file);
             error
         };
-        let read_back = vault.reread().map_err(undo)?.contents().sorted();
-        if read_back != contents {
+        let read_back = Wiping(vault.reread(&lock).map_err(undo)?.contents().sorted());
+        if read_back.0 != contents.0 {
             return Err(undo(VaultError::Io(
                 "what was read back from the vault differs from what was written".into(),
             )));
         }
-        match self.empty_keychain(&contents) {
+        match self.empty_keychain(&contents.0) {
             Emptied::All => {}
             Emptied::Restored(error) => {
                 return Err(undo(VaultError::Store(StoreError(format!(
@@ -962,25 +1195,28 @@ impl ActiveStore {
         Ok(())
     }
 
-    /// Removes `contents` from the keychain; on a failure puts back what
-    /// was already removed, so that the keychain is complete again.
+    /// Removes `contents` from the keychain and lists it again: it must be
+    /// empty (a delete that says done is not taken at its word). On a
+    /// failure puts back what was already removed, so that the keychain is
+    /// complete again.
     fn empty_keychain(&self, contents: &StoreContents) -> Emptied {
         let keychain = self.keychain.as_ref();
-        let mut removed = StoreContents::default();
+        let mut removed = Wiping::default();
         let mut remove = || -> Result<(), StoreError> {
             for entry in &contents.profiles {
                 keychain.delete(&entry.scope, &entry.profile.name)?;
-                removed.profiles.push(entry.clone());
+                removed.0.profiles.push(entry.clone());
             }
             for entry in &contents.secrets {
                 keychain.delete_secret(&entry.scope, &entry.name)?;
-                removed.secrets.push(entry.clone());
+                removed.0.secrets.push(entry.clone());
             }
-            Ok(())
+            super::left_over(&Wiping(keychain.contents()?).0)
         };
         let Err(error) = remove() else {
             return Emptied::All;
         };
+        let removed = &removed.0;
         let mut restored = true;
         for entry in &removed.profiles {
             restored &= keychain.put(&entry.scope, &entry.profile).is_ok();
@@ -1011,8 +1247,15 @@ impl ActiveStore {
         check_new_password(password, repeated)?;
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         let kdf = unlocked_vault(&state)?.kdf();
-        let contents = Vault::unlock(&self.vault_file, current)?.body().contents();
-        let renewed = Vault::seal_new(&self.vault_file, password, kdf, contents)?;
+        // The keys first (the slow part), then the lock: what is sealed
+        // again is the file as it is then, other copies' changes included.
+        let opened = Vault::unlock(&self.vault_file, current)?;
+        let renewed = Vault::keyed(&self.vault_file, password, kdf)?;
+        let lock = WriteLock::take(&self.vault_file)?;
+        let fresh = opened.reread(&lock)?;
+        renewed.write(&lock, &fresh)?;
+        drop(lock);
+        *renewed.body() = fresh;
         *state = State::Unlocked(renewed);
         Ok(())
     }
@@ -1023,14 +1266,29 @@ impl ActiveStore {
     /// the keychain, read back, and only then is the vault file removed.
     /// On a failure the vault stays, unlocked and in use, and the keychain
     /// is put back as it was (what it had of its own under the same names
-    /// included); the error says if that could not be done in full.
+    /// included); the error says if that could not be done in full. An
+    /// entry the keychain cannot hold (a Windows credential holds 2,560
+    /// bytes) is named before anything is moved.
+    ///
+    /// The order, and what a crash at each point leaves: the keychain is
+    /// filled and read back, then the vault file removed. A crash before
+    /// the removal leaves the vault on, with everything, and copies in the
+    /// keychain, which the next unlock takes back; after it, the keychain
+    /// with everything.
     pub fn turn_off(&self, password: &str) -> Result<(), VaultError> {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         unlocked_vault(&state)?;
         if !self.has_keychain {
             return Err(VaultError::NoKeychain);
         }
-        let contents = Wiping(Vault::unlock(&self.vault_file, password)?.body().contents());
+        let opened = Vault::unlock(&self.vault_file, password)?;
+        let lock = WriteLock::take(&self.vault_file)?;
+        let contents = Wiping(opened.reread(&lock)?.contents());
+        self.keychain.check_fits(&contents.0).map_err(|error| {
+            VaultError::Store(StoreError(format!(
+                "{error}; nothing was moved, and the vault stays on"
+            )))
+        })?;
         let before = Wiping(self.keychain.contents()?);
         let mut undo = Wiping::default();
         let mut added = Wiping::default();
@@ -1089,15 +1347,15 @@ impl ActiveStore {
             }
             keychain.put_secret(&entry.scope, &entry.name, &entry.value)?;
         }
-        let now = keychain.contents()?;
+        let now = Wiping(keychain.contents()?);
         let all_there = contents
             .profiles
             .iter()
-            .all(|entry| now.profiles.contains(entry))
+            .all(|entry| now.0.profiles.contains(entry))
             && contents
                 .secrets
                 .iter()
-                .all(|entry| now.secrets.contains(entry));
+                .all(|entry| now.0.secrets.contains(entry));
         if !all_there {
             return Err(StoreError(
                 "what was read back from the keychain differs from what was written".into(),
@@ -1131,7 +1389,10 @@ impl ActiveStore {
     /// Starts over after a forgotten master password: deletes the locked
     /// vault, with every profile and secret in it, and goes back to the
     /// keychain. Refused while the vault is unlocked (turning it off keeps
-    /// what it holds).
+    /// what it holds). Whatever the keychain still holds (copies a turn on
+    /// cut short left) goes first, so that none comes back after a start
+    /// over whose warning calls them all gone; if it cannot all go, the
+    /// vault is not deleted either.
     pub fn start_over(&self) -> Result<(), VaultError> {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         match &*state {
@@ -1142,6 +1403,12 @@ impl ActiveStore {
             )),
             State::Locked => {}
         }
+        let _lock = WriteLock::take(&self.vault_file)?;
+        self.keychain.remove_everything().map_err(|error| {
+            VaultError::Store(StoreError(format!(
+                "cannot remove the copies of profiles and secrets the keychain still holds ({error}), so the vault was not deleted"
+            )))
+        })?;
         match fs::remove_file(&self.vault_file) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1164,6 +1431,33 @@ impl ActiveStore {
             State::Unlocked(vault) => use_store(vault),
         }
     }
+
+    /// [`with`](Self::with) for a change. While off, the keychain is
+    /// changed under the vault's lock, the vault file looked for again
+    /// first: another copy turning the vault on holds the lock from listing
+    /// the keychain to emptying it, so a save in between would be left out
+    /// of its move. (Where no lock file can be made, no vault can be
+    /// written either, and the save goes ahead.)
+    fn with_change<T>(
+        &self,
+        change: impl FnOnce(&dyn CredentialStore) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        if self.notice_vault_turned_on() {
+            return Err(StoreError(TURNED_ON.into()));
+        }
+        match &*self.state() {
+            State::Off if self.has_keychain => {
+                let _lock = WriteLock::take(&self.vault_file).ok();
+                if present(&self.vault_file) {
+                    return Err(StoreError(TURNED_ON.into()));
+                }
+                change(self.keychain.as_ref())
+            }
+            State::Off => change(self.keychain.as_ref()),
+            State::Locked => Err(StoreError(VaultError::Locked.to_string())),
+            State::Unlocked(vault) => change(vault),
+        }
+    }
 }
 
 impl CredentialStore for ActiveStore {
@@ -1176,11 +1470,11 @@ impl CredentialStore for ActiveStore {
     }
 
     fn put(&self, scope: &str, profile: &CredentialProfile) -> Result<(), StoreError> {
-        self.with(|store| store.put(scope, profile))
+        self.with_change(|store| store.put(scope, profile))
     }
 
     fn delete(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
-        self.with(|store| store.delete(scope, name))
+        self.with_change(|store| store.delete(scope, name))
     }
 
     fn secret_names(&self, scope: &str) -> Result<Vec<String>, StoreError> {
@@ -1192,11 +1486,11 @@ impl CredentialStore for ActiveStore {
     }
 
     fn put_secret(&self, scope: &str, name: &str, value: &SecretValue) -> Result<(), StoreError> {
-        self.with(|store| store.put_secret(scope, name, value))
+        self.with_change(|store| store.put_secret(scope, name, value))
     }
 
     fn delete_secret(&self, scope: &str, name: &str) -> Result<bool, StoreError> {
-        self.with(|store| store.delete_secret(scope, name))
+        self.with_change(|store| store.delete_secret(scope, name))
     }
 
     fn contents(&self) -> Result<StoreContents, StoreError> {

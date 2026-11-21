@@ -7,8 +7,9 @@
 use std::path::PathBuf;
 
 use netterm_core::credentials::{
-    AuthDraft, CredentialProfile, CredentialStore, KeychainStore, ProfileAuth, ProfileDraft,
-    Profiles, SecretValue, Secrets,
+    vault_file, ActiveStore, AuthDraft, CredentialProfile, CredentialStore, KeychainStore,
+    ProfileAuth, ProfileDraft, Profiles, RemovedEntries, SecretValue, Secrets, StoreContents,
+    Vault, VaultStatus,
 };
 use netterm_core::workspace::Workspace;
 
@@ -316,6 +317,100 @@ fn everything_is_listed_across_scopes_and_only_under_the_prefix() {
         .map(|s| (s.scope.as_str(), s.name.as_str(), s.value.expose()))
         .collect();
     assert_eq!(secrets, [(SCOPE_B, "Token", "t0ken")]);
+}
+
+// The vault's moves over the real Credential Manager (#125): what was only
+// tested on the memory stand-in.
+
+const MASTER: &str = "correct horse battery staple";
+
+/// Two profiles and a secret in two scopes; what the keychain then holds.
+fn fill(store: &KeychainStore) -> StoreContents {
+    store
+        .put(SCOPE_A, &password_profile("core", "pw-a"))
+        .unwrap();
+    store
+        .put(SCOPE_B, &password_profile("core", "pw-b"))
+        .unwrap();
+    store
+        .put_secret(SCOPE_B, "Token", &SecretValue::new("t0ken"))
+        .unwrap();
+    store.contents().unwrap().sorted()
+}
+
+fn nothing_left(store: &KeychainStore) {
+    assert_eq!(store.count_all().unwrap(), RemovedEntries::default());
+}
+
+#[test]
+fn the_vault_moves_everything_out_of_the_real_keychain_and_back() {
+    let keychain = TestKeychain::new();
+    let everything = fill(&keychain.store);
+    let data = tempfile::TempDir::new().unwrap();
+    let store = ActiveStore::new(Box::new(keychain.store.clone()), vault_file(data.path()));
+
+    store.turn_on(MASTER, MASTER).unwrap();
+    nothing_left(&keychain.store);
+    assert_eq!(store.contents().unwrap().sorted(), everything);
+    let vault = Vault::unlock(&vault_file(data.path()), MASTER).unwrap();
+    assert_eq!(vault.contents().unwrap().sorted(), everything);
+
+    store.turn_off(MASTER).unwrap();
+    assert!(!vault_file(data.path()).exists());
+    assert_eq!(keychain.store.contents().unwrap().sorted(), everything);
+}
+
+#[test]
+fn turning_off_with_a_profile_too_large_for_a_windows_credential_names_it_and_moves_nothing() {
+    let keychain = TestKeychain::new();
+    let data = tempfile::TempDir::new().unwrap();
+    let store = ActiveStore::new(Box::new(keychain.store.clone()), vault_file(data.path()));
+    store.turn_on(MASTER, MASTER).unwrap();
+    store
+        .put(SCOPE_A, &password_profile("core", "pw-a"))
+        .unwrap();
+    // A pasted private key, say: more than a credential's 2,560 bytes.
+    store
+        .put(SCOPE_B, &password_profile("Huge Key", &"k".repeat(3000)))
+        .unwrap();
+
+    let error = store.turn_off(MASTER).unwrap_err().to_string();
+    assert!(error.contains("\"Huge Key\""), "{error}");
+    assert!(error.contains("2560"), "{error}");
+    assert!(error.contains("nothing was moved"), "{error}");
+    nothing_left(&keychain.store);
+    assert_eq!(store.status(), VaultStatus::Unlocked);
+    assert_eq!(store.contents().unwrap().profiles.len(), 2);
+}
+
+#[test]
+fn copies_left_in_the_real_keychain_go_at_the_next_unlock_and_with_a_start_over() {
+    let keychain = TestKeychain::new();
+    let everything = fill(&keychain.store);
+    let data = tempfile::TempDir::new().unwrap();
+    let path = vault_file(data.path());
+    // A turn on cut short after its vault was written.
+    drop(Vault::create(&path, MASTER).unwrap());
+    let vault = Vault::unlock(&path, MASTER).unwrap();
+    for entry in &everything.profiles {
+        vault.put(&entry.scope, &entry.profile).unwrap();
+    }
+    drop(vault);
+
+    let store = ActiveStore::new(Box::new(keychain.store.clone()), &path);
+    store.unlock(MASTER).unwrap();
+    nothing_left(&keychain.store);
+    // The secret only the keychain had is in the vault now.
+    assert_eq!(store.contents().unwrap().sorted(), everything);
+    drop(store);
+
+    // Copies again, and the master password forgotten: starting over
+    // leaves no profile to come back.
+    fill(&keychain.store);
+    let store = ActiveStore::new(Box::new(keychain.store.clone()), &path);
+    store.start_over().unwrap();
+    nothing_left(&keychain.store);
+    assert!(store.contents().unwrap().is_empty());
 }
 
 #[test]

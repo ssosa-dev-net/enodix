@@ -69,9 +69,20 @@ box.
 **Preferences, Security** turns the vault on. The app then moves every
 profile and secret out of Credential Manager into one file,
 `<data folder>\credentials.vault`, and deletes them from Credential
-Manager once the file has been read back and compared. While that file
-exists the vault is the only store; turning the vault off moves everything
-back.
+Manager once the file has been read back and compared; then it lists
+Credential Manager again, and if anything is still there it says so and
+does not turn the vault on. If the app stops between writing the file and
+deleting the entries (a crash, a power cut), the copies left in Credential
+Manager are taken into the vault and deleted the next time you unlock it.
+While that file exists the vault is the only store; turning the vault off
+moves everything back (an entry too large for Credential Manager, which
+holds 2,560 bytes per entry, is named before anything is moved).
+
+Beside the vault is `credentials.vault.lock`, an empty file: copies of the
+app take turns through it when they save a profile or secret, so that two
+copies saving at the same moment both keep their changes. It holds
+nothing, and is made the first time something is saved, with the vault on
+or off.
 
 - **Key:** derived from the master password with Argon2id (version 1.3),
   64 MiB of memory, 3 passes, 4 lanes, a 32-byte key, and a random 32-byte
@@ -90,7 +101,8 @@ back.
   body.
 - **The master password** is not written anywhere. If you forget it, the
   vault cannot be opened: there is no recovery. **Start over** on the
-  unlock screen deletes the file.
+  unlock screen deletes the file, and any copies of profiles or secrets
+  still in Credential Manager with it.
 - **While unlocked:** you type the master password at start. From then
   until the app is closed, the key and the opened profiles and secrets stay
   in the app's memory; they are wiped when the vault is closed. The app

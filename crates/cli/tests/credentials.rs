@@ -294,6 +294,27 @@ fn with_a_vault_no_app_and_no_terminal_it_is_refused() {
     }
 }
 
+/// A damaged vault is said to be damaged before any master password is
+/// asked for (#117): typing one would not help.
+#[test]
+fn a_damaged_vault_is_called_damaged_before_any_password_is_asked() {
+    let setup = Setup::new();
+    setup.create_vault();
+    let path = vault_file(&setup.data);
+    let good = fs::read(&path).unwrap();
+    fs::write(&path, &good[..good.len() / 2]).unwrap();
+    let output = setup.run(&["credentials", setup.ws(), "site/r1.yaml"]);
+    refused(&output, "the vault file is damaged");
+    assert!(!stderr(&output).contains("terminal"), "{}", stderr(&output));
+
+    let mut terminal = Terminal::start(&setup, &["secret", setup.ws(), "netbox-token"]);
+    terminal.wait_for("the vault file is damaged", 1);
+    assert_eq!(terminal.exit_code(), 1);
+    let screen = terminal.text();
+    assert!(screen.contains("the vault file is damaged"), "{screen}");
+    assert!(!screen.contains("Master password"), "asked: {screen}");
+}
+
 #[test]
 fn it_says_what_is_missing() {
     let setup = Setup::new();
