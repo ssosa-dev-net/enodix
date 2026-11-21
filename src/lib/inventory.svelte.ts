@@ -5,8 +5,8 @@
 
 import {
   planSavedJob,
-  type JobPlan,
   type JobStep,
+  type ShownPlan,
   type JobTarget,
   type SavedJob,
 } from "./jobs";
@@ -124,7 +124,7 @@ export function onHostsMoved(listener: HostsMovedListener): () => void {
 export function openJob(
   target: JobTarget,
   label: string,
-  planned: JobPlan | null = null,
+  planned: ShownPlan | null = null,
 ) {
   openJobTab({
     kind: planned ? kindOf(planned) : "snippet",

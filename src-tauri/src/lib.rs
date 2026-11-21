@@ -25,8 +25,8 @@ use netterm_core::import::nornir::{NornirImport, NornirInventory, NornirPreview}
 use netterm_core::import::ImportReport;
 use netterm_core::job::results::{OutputRef, RunList, RunStore, SearchHit, StoredRun};
 use netterm_core::job::{
-    self, JobCanceller, JobEvent, JobOptions, JobPlan, JobStep, JobTarget, LiveJob, LiveJobs,
-    LoginBackup, LoginBackupOutcome, NewLiveJob, SessionLogin,
+    self, JobCanceller, JobEvent, JobOptions, JobPlan, JobStep, JobTarget, KeptPlan, KeptPlans,
+    LiveJob, LiveJobs, LoginBackup, LoginBackupOutcome, NewLiveJob, PlanId, SessionLogin,
 };
 use netterm_core::known_hosts::KnownHosts;
 use netterm_core::layout::{
@@ -153,6 +153,10 @@ impl Shell {
         let unprepared = prepare_workspace(&*self.credentials, &mut workspace).err();
         let root = workspace.root().to_path_buf();
         *self.workspace() = Some(workspace);
+        // The plans on screen were the other workspace's (#121).
+        if let Some(plans) = app.try_state::<JobPlans>() {
+            plans.lock().clear();
+        }
         let app = app.clone();
         let watched = root.clone();
         let watcher = WorkspaceWatcher::start(&root, WatchOptions::default(), move |_| {
@@ -1313,16 +1317,25 @@ fn nornir_import_run(
     })
 }
 
-/// The job plan last shown in pre-flight: starting runs exactly what the
-/// user saw and confirmed, even if the workspace changes meanwhile.
-struct JobPlans(Mutex<Option<PlannedJob>>);
+/// The job plans on screen (#121), each under the id its pre-flight shows:
+/// a start names one and runs exactly it, as the user saw and confirmed it,
+/// even if the workspace changes meanwhile. Forgotten when its job starts,
+/// its tab closes (`job_plan_forget`) or another workspace opens.
+#[derive(Default)]
+struct JobPlans(Mutex<KeptPlans>);
 
-/// A plan, with what it was made for: the workspace (by id, `None` if it
-/// has none) and the target, both kept with the run.
-#[derive(Clone)]
-struct PlannedJob {
-    workspace: Option<String>,
-    target: JobTarget,
+impl JobPlans {
+    fn lock(&self) -> MutexGuard<'_, KeptPlans> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A plan as a pre-flight gets it: with the id to start it by.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShownPlan {
+    id: PlanId,
+    #[serde(flatten)]
     plan: JobPlan,
 }
 
@@ -1364,41 +1377,48 @@ fn workspace_id(shell: &Shell) -> Result<String, String> {
         .ok_or_else(no_workspace_id)
 }
 
-/// Plans in the open workspace and keeps the plan for `job_start`.
+/// Plans in the open workspace and keeps the plan for `job_start`, under
+/// the id it is shown with.
 fn keep_plan(
     shell: &Shell,
     plans: &JobPlans,
     target: JobTarget,
     plan: impl FnOnce(&Workspace, &Profiles<'_>) -> Result<JobPlan, String>,
-) -> Result<JobPlan, String> {
-    let planned = {
+) -> Result<ShownPlan, String> {
+    let kept = {
         let guard = shell.workspace();
         let workspace = guard.as_ref().ok_or("no workspace is open")?;
-        PlannedJob {
+        KeptPlan {
             workspace: workspace.id().map(str::to_string),
             plan: plan(workspace, &Profiles::new(&*shell.credentials, workspace))?,
             target,
         }
     };
-    let plan = planned.plan.clone();
-    *plans.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(planned);
-    Ok(plan)
+    let plan = kept.plan.clone();
+    let id = plans.lock().keep(kept);
+    Ok(ShownPlan { id, plan })
 }
 
 /// The pre-flight list of running `step` on `target` in the open
 /// workspace: who runs, who is skipped and why, the production hosts, and
 /// the snippet variables still to ask for. Connects to nothing; kept for
-/// `job_start`.
+/// `job_start` under the id it carries.
 #[tauri::command]
 fn job_plan(
     shell: State<'_, Shell>,
     plans: State<'_, JobPlans>,
     target: JobTarget,
     step: JobStep,
-) -> Result<JobPlan, String> {
+) -> Result<ShownPlan, String> {
     keep_plan(&shell, &plans, target.clone(), |workspace, profiles| {
         job::plan(workspace, profiles, &target, &step).map_err(|error| error.to_string())
     })
+}
+
+/// Forgets the kept plan `plan` (its tab closed, or planned again).
+#[tauri::command]
+fn job_plan_forget(plans: State<'_, JobPlans>, plan: PlanId) {
+    plans.lock().forget(plan);
 }
 
 /// A kept run planned again for "Run again".
@@ -1406,7 +1426,7 @@ fn job_plan(
 #[serde(rename_all = "camelCase")]
 struct PlannedAgain {
     target: JobTarget,
-    plan: JobPlan,
+    plan: ShownPlan,
 }
 
 /// Plans the kept run `run` again on its target, as the open workspace is
@@ -1519,11 +1539,14 @@ fn jobs_forget_finished(live: State<'_, Arc<Live>>, keep: Option<String>) {
     live.lock().forget_finished(keep.as_deref());
 }
 
-/// Starts the job last planned, with its own sessions (never logged, never
-/// a terminal's), at most `parallel` hosts at once (default: the plan's), keeping
-/// its run on disk. It is recorded in `Live` (`label` = what it runs on)
-/// and announced to every window (`job-started`), and its progress is
-/// broadcast (`job-event`) until `finished`, whoever listens.
+/// Starts the kept plan `plan` (the one its pre-flight showed), with its
+/// own sessions (never logged, never a terminal's), at most `parallel`
+/// hosts at once (default: the plan's), keeping its run on disk. Refused
+/// if the plan is no longer kept (plan again), or if it has production
+/// hosts that `confirmed_production` (the production hosts its pre-flight's
+/// user confirmed) does not all name. It is recorded in `Live` (`label` =
+/// what it runs on) and announced to every window (`job-started`), and its
+/// progress is broadcast (`job-event`) until `finished`, whoever listens.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn job_start(
@@ -1536,6 +1559,8 @@ async fn job_start(
     jobs: State<'_, Arc<RunningJobs>>,
     live: State<'_, Arc<Live>>,
     python: State<'_, Arc<python::PythonSetup>>,
+    plan: PlanId,
+    confirmed_production: Vec<HostId>,
     parallel: Option<usize>,
     label: String,
 ) -> Result<StartedJob, String> {
@@ -1544,14 +1569,12 @@ async fn job_start(
         .as_ref()
         .map(|workspace| workspace.root().display().to_string())
         .ok_or("no workspace is open")?;
-    let peeked = {
-        let plans = plans.0.lock().unwrap_or_else(PoisonError::into_inner);
-        plans
-            .as_ref()
-            .ok_or("no job has been planned")?
-            .plan
-            .clone()
-    };
+    let peeked = plans
+        .lock()
+        .ready(plan, &confirmed_production)
+        .map_err(|refused| refused.to_string())?
+        .plan
+        .clone();
     // A script job runs with the interpreter as it is now (checked here,
     // which takes a moment, before the plan is taken).
     let script = match peeked.step {
@@ -1565,11 +1588,13 @@ async fn job_start(
         }
         _ => None,
     };
-    let mut plans = plans.0.lock().unwrap_or_else(PoisonError::into_inner);
-    let planned = plans.as_ref().ok_or("no job has been planned")?.clone();
-    if planned.plan != peeked {
-        return Err("another job was planned meanwhile: start it again".into());
-    }
+    let mut plans = plans.lock();
+    // Kept since the look before the interpreter check (a plan under an
+    // id never changes).
+    let planned = plans
+        .ready(plan, &confirmed_production)
+        .map_err(|refused| refused.to_string())?
+        .clone();
     let workspace = planned.workspace.clone().ok_or_else(no_workspace_id)?;
     let options = JobOptions {
         parallel: parallel.unwrap_or(planned.plan.default_parallel),
@@ -1583,11 +1608,12 @@ async fn job_start(
         .0
         .begin(&workspace, &planned.target, &planned.plan)
         .map_err(|error| format!("the run cannot be kept, so the job did not start: {error}"))?;
-    let plan = planned.plan.clone();
+    let started = planned.plan.clone();
     let mut job = job::start(&manager, planned.plan, options).map_err(|e| e.to_string())?;
     // Started: the plan is used up (a refused start keeps it).
-    plans.take();
+    plans.forget(plan);
     drop(plans);
+    let plan = started;
     let id = jobs.next.fetch_add(1, Ordering::Relaxed);
     let run = recorder.id().to_string();
     jobs.cancellers().insert(id, job.canceller());
@@ -3061,7 +3087,7 @@ pub fn run() {
             app.manage(SessionRecords::new());
             app.manage(CsvFile(Mutex::new(None)));
             app.manage(NornirFiles(Mutex::new(None)));
-            app.manage(JobPlans(Mutex::new(None)));
+            app.manage(JobPlans::default());
             app.manage(EnrichPreviews(Mutex::new(None)));
             // Job runs are per user, beside the app state, keyed by
             // workspace id.
@@ -3225,6 +3251,7 @@ pub fn run() {
             snippet_expand,
             snippet_expand_group,
             job_plan,
+            job_plan_forget,
             workspace_scripts,
             job_start,
             job_cancel,

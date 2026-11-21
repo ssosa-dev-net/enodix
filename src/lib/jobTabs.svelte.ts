@@ -4,7 +4,13 @@
 // runs on and what it runs. Once started, the draft knows its run. A past
 // run's tab has the run id as its subject. `views.ts` opens both kinds.
 
-import { stepTitle, type JobPlan, type JobTarget } from "./jobs";
+import {
+  forgetPlan,
+  stepTitle,
+  type JobPlan,
+  type JobTarget,
+  type ShownPlan,
+} from "./jobs";
 
 /** What a job tab runs. */
 export type JobKind = "snippet" | "script" | "backup" | "enrich" | "file";
@@ -17,7 +23,10 @@ export interface JobDraft {
   /** What the target is called (a folder, a saved filter, a host). */
   label: string;
   /** A plan already made (Run again, a saved job): starts at pre-flight. */
-  planned: JobPlan | null;
+  planned: ShownPlan | null;
+  /** The id of the plan its pre-flight shows now, which the shell keeps
+   * until the job starts or the tab closes (#121). */
+  shown: number | null;
   /** The run it keeps, once started. */
   run: string | null;
   /** Whether its tab has been seen in the layout (so a missing tab means
@@ -35,10 +44,41 @@ export const runTitles = $state<Record<string, string>>({});
 let next = 1;
 
 /** Keeps `draft` under a new subject, which it returns. */
-export function addDraft(draft: Omit<JobDraft, "run" | "opened">): string {
+export function addDraft(
+  draft: Omit<JobDraft, "run" | "opened" | "shown">,
+): string {
   const key = `new-${next++}`;
-  jobDrafts[key] = { ...draft, run: null, opened: false };
+  jobDrafts[key] = {
+    ...draft,
+    shown: draft.planned?.id ?? null,
+    run: null,
+    opened: false,
+  };
   return key;
+}
+
+/**
+ * Notes that the job tab `subject` shows the plan `plan` now: the one it
+ * showed before (planned again) is forgotten by the shell.
+ */
+export function showPlan(subject: string, plan: number) {
+  const draft = jobDrafts[subject];
+  if (!draft) {
+    void forgetPlan(plan);
+    return;
+  }
+  if (draft.shown !== null && draft.shown !== plan)
+    void forgetPlan(draft.shown);
+  draft.shown = plan;
+}
+
+/** Notes that the job tab `subject` started its plan (the shell forgot
+ * it), keeping `run`. */
+export function started(subject: string, run: string) {
+  const draft = jobDrafts[subject];
+  if (!draft) return;
+  draft.run = run;
+  draft.shown = null;
 }
 
 /** The kind of job `plan` runs. */
@@ -88,11 +128,15 @@ export function draftOfRun(run: string): string | null {
 /**
  * Forgets the drafts of job tabs no longer open; `open` = the subjects of
  * the job tabs in the layout. A draft whose tab is not there yet (opening)
- * is kept.
+ * is kept. The shell forgets the plan a closed tab still showed.
  */
 export function forgetClosedDrafts(open: Set<string>) {
   for (const key of Object.keys(jobDrafts)) {
     if (open.has(key)) jobDrafts[key].opened = true;
-    else if (jobDrafts[key].opened) delete jobDrafts[key];
+    else if (jobDrafts[key].opened) {
+      const shown = jobDrafts[key].shown;
+      if (shown !== null) void forgetPlan(shown);
+      delete jobDrafts[key];
+    }
   }
 }

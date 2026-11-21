@@ -19,9 +19,10 @@
     type JobPlan,
     type JobStep,
     type SaveOutcome,
+    type ShownPlan,
   } from "./jobs";
   import { forgetFinished, launchJob, type LiveJob } from "./jobs.svelte";
-  import { jobDrafts } from "./jobTabs.svelte";
+  import { jobDrafts, showPlan, started } from "./jobTabs.svelte";
   import { inventory } from "./inventory.svelte";
   import SaveJobForm from "./SaveJobForm.svelte";
   import { openView } from "./views";
@@ -122,8 +123,13 @@
       (initial?.missingVariables ?? []).map((name) => [name, ""]),
     ),
   });
-  let plan = $state<JobPlan | null>(initial);
+  /** The plan the pre-flight shows: the shell keeps it under its id, and
+   * Start runs exactly it (#121). */
+  let plan = $state<ShownPlan | null>(initial);
   let productionConfirmed = $state(false);
+  /** Whether the shell refused to start the plan shown (then it can be
+   * planned again from here). */
+  let refused = $state(false);
   /** How many hosts run at once. */
   let parallel = $state<number | null>(
     initial?.defaultParallel ?? DEFAULT_PARALLEL,
@@ -199,12 +205,15 @@
   function preflight() {
     return attempt(async () => {
       const planned = await planJob(target, jobStep());
+      // The plan shown before is forgotten by the shell.
+      showPlan(subject, planned.id);
       // A number the user changed is kept when planning again.
       if (plan === null || parallel === plan.defaultParallel) {
         parallel = planned.defaultParallel;
       }
       plan = planned;
       productionConfirmed = false;
+      refused = false;
       if (planned.missingVariables.length > 0) {
         for (const name of planned.missingVariables) answers[name] ??= "";
         step = "variables";
@@ -217,13 +226,21 @@
   function start() {
     return attempt(async () => {
       if (!plan) return;
-      live = await launchJob(
-        plan,
-        target,
-        label,
-        parallel ?? plan.defaultParallel,
-      );
-      if (jobDrafts[subject]) jobDrafts[subject].run = live.run;
+      try {
+        live = await launchJob(
+          plan,
+          // What this pre-flight's question confirmed: the shell refuses a
+          // plan whose production hosts are not all named.
+          productionConfirmed ? [...plan.production] : [],
+          target,
+          label,
+          parallel ?? plan.defaultParallel,
+        );
+      } catch (reason) {
+        refused = true;
+        throw reason;
+      }
+      started(subject, live.run);
       step = "running";
     });
   }
@@ -280,6 +297,7 @@
   aria-labelledby="job-title-{subject}"
   data-view="job"
   data-step={step}
+  data-plan={plan?.id}
 >
   <h2 id="job-title-{subject}">
     {backingUp
@@ -636,6 +654,14 @@
     <div class="actions">
       {#if !backingUp && !enriching}
         <button type="button" onclick={() => (step = firstStep)}>Back</button>
+      {/if}
+      {#if refused}
+        <button
+          type="button"
+          data-job="replan"
+          disabled={busy}
+          onclick={preflight}>Plan again</button
+        >
       {/if}
       <button
         type="button"

@@ -2584,6 +2584,8 @@ async function main() {
 
   await savedJobs({ evaluate, fillForm, text, screenshot, step });
 
+  await twoPreflights({ evaluate, screenshot, step });
+
   await hostSelection({ evaluate, devtools, fillForm, screenshot, step });
 
   await filesTab({
@@ -8933,6 +8935,199 @@ async function hostSelection({
  * the panel, saved from a past run, renamed and deleted; an entry whose
  * filter is gone says so instead of running, and a bad one is a problem.
  */
+/**
+ * Two job tabs at pre-flight at once (#121, after `jobs` and `savedJobs`:
+ * the device's key is trusted, the profile `jobs-login` exists): one on
+ * the production host `jobs-r1`, planned first, one on a lab host of a
+ * folder of its own, planned last. Each Start runs its own tab's plan (the
+ * production one still asks first), the shell refuses to start the
+ * production plan without the confirmation, and a plan that started cannot
+ * start again.
+ */
+async function twoPreflights({ evaluate, screenshot, step }) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector) => mouseClick(evaluate, selector);
+  const dialog = JOB_TAB;
+  const folder = join(workspace, "TwoJobs");
+  const snippetsFile = join(workspace, "_snippets.yaml");
+  const savedSnippets = existsSync(snippetsFile)
+    ? readFileSync(snippetsFile, "utf8")
+    : null;
+  const prodHost = "Jobs/jobs-r1.yaml";
+  const labHost = "TwoJobs/two-lab.yaml";
+  /** The tab id and plan id of the job tab shown. */
+  const shown = () =>
+    evaluate(`(() => {
+      const view = document.querySelector(${json(dialog)});
+      return view ? { tab: view.closest(".slot").dataset.tab, plan: view.dataset.plan ?? null } : null;
+    })()`);
+  /** Brings the tab `tab` to the front by its header. */
+  const showTab = async (tab) => {
+    await clickOn(`[data-tab-bar] [data-tab="${tab}"]`);
+    await until(`the job tab ${tab} in front`, async () => {
+      const now = await shown();
+      return now?.tab === tab;
+    });
+  };
+  /** Opens a folder's run-snippet tab and plans `snippet` to pre-flight. */
+  const plan = async (path, snippet) => {
+    await showSideView(evaluate, "hosts");
+    await clickOn(`nav button[data-item=folder][data-path=${json(path)}]`);
+    await showDetails(evaluate);
+    await until(`the ${path} folder's side panel`, () =>
+      exists(".side [data-folder-run-snippet]"),
+    );
+    const before = (await shown())?.tab ?? null;
+    await clickOn(".side [data-folder-run-snippet]");
+    await until(`a new run-snippet tab for ${path}`, async () => {
+      const now = await shown();
+      return (
+        now !== null &&
+        now.tab !== before &&
+        (await exists(`${dialog}[data-step=snippet]`))
+      );
+    });
+    await evaluate(`(() => {
+      const select = document.querySelector("${dialog} [name=job-snippet]");
+      select.value = ${json(snippet)};
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await clickOn(`${dialog} [data-job=plan]`);
+    await until(`the pre-flight of ${snippet}`, () =>
+      exists(`${dialog}[data-step=preflight][data-plan]`),
+    );
+    return shown();
+  };
+  /** What the shell answers a start of `plan` sent straight to it. */
+  const startDirectly = async (plan, confirmedProduction) => {
+    await evaluate(`(() => {
+      window.__smokeStart = null;
+      window.__TAURI_INTERNALS__
+        .invoke("job_start", ${json({ plan: Number(plan), confirmedProduction, parallel: 1, label: "smoke" })})
+        .then((value) => (window.__smokeStart = { value }), (error) => (window.__smokeStart = { error: String(error) }));
+    })()`);
+    return until("the shell's answer to the start", () =>
+      evaluate("window.__smokeStart"),
+    );
+  };
+  const result = async (host) => {
+    await until("the job finished", () =>
+      exists(`${dialog} [data-job-progress][data-finished]`),
+    );
+    return evaluate(`(() => {
+      const rows = [...document.querySelectorAll("${dialog} [data-job-result]")];
+      const row = rows.find((r) => r.dataset.jobResult === ${json(host)});
+      return {
+        hosts: rows.map((r) => r.dataset.jobResult),
+        state: row?.dataset.hostState ?? null,
+        output: row?.querySelector("[data-job-output]")?.textContent ?? "",
+      };
+    })()`);
+  };
+
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(
+    join(folder, "_folder.yaml"),
+    `platform: frr\ncredential_profile: jobs-login\nport: ${DEVICE_PORT}\n`,
+  );
+  writeFileSync(
+    join(folder, "two-lab.yaml"),
+    "address: 127.0.0.1\nenvironment: lab\n",
+  );
+  writeFileSync(
+    snippetsFile,
+    `${savedSnippets ?? ""}Two prod: echo prod-plan\nTwo lab: echo lab-plan\n`,
+  );
+  try {
+    await until("the TwoJobs folder in the tree", () =>
+      exists('nav button[data-item=folder][data-path="TwoJobs"]'),
+    );
+    await showSideView(evaluate, "snippets");
+    await until("the two snippets loaded", () =>
+      exists('[data-snippet="Two lab"]'),
+    );
+
+    // The production tab plans first, the lab tab last.
+    const prod = await plan("Jobs", "Two prod");
+    if (!(await exists(`${dialog} [data-job-production]`))) {
+      fail("the production pre-flight did not ask about jobs-r1");
+    }
+    const lab = await plan("TwoJobs", "Two lab");
+    if (await exists(`${dialog} [data-job-production]`)) {
+      fail("the lab pre-flight asked about production");
+    }
+    if (prod.plan === lab.plan) fail(`one plan id for both tabs: ${prod.plan}`);
+    await screenshot("two-preflights");
+
+    // Back in the production tab: it still asks, and the shell refuses a
+    // start of its plan that does not say production was confirmed.
+    await showTab(prod.tab);
+    const startDisabled = await evaluate(
+      `document.querySelector("${dialog} [data-job=start]").disabled`,
+    );
+    if (!startDisabled) fail("the production tab's Start did not wait");
+    const unconfirmed = await startDirectly(prod.plan, []);
+    if (!unconfirmed.error?.includes("jobs-r1 was not confirmed")) {
+      fail(`the shell's answer to an unconfirmed start: ${json(unconfirmed)}`);
+    }
+    // Confirming the lab tab's (no) production confirms nothing here.
+    const labConfirmation = await startDirectly(prod.plan, [labHost]);
+    if (!labConfirmation.error?.includes("not confirmed")) {
+      fail(`another plan's confirmation counted: ${json(labConfirmation)}`);
+    }
+    await clickOn(`${dialog} [name=job-confirm-production]`);
+    await until(
+      "the production tab's Start enabled",
+      async () =>
+        !(await evaluate(
+          `document.querySelector("${dialog} [data-job=start]").disabled`,
+        )),
+    );
+    await clickOn(`${dialog} [data-job=start]`);
+    const ranProd = await result(prodHost);
+    if (
+      json(ranProd.hosts) !== json([prodHost]) ||
+      ranProd.state !== "done" ||
+      !ranProd.output.includes("lab-r1# echo prod-plan")
+    ) {
+      fail(`the production tab ran: ${json(ranProd)}`);
+    }
+    step(
+      "with two job tabs at pre-flight, Start in the one planned first ran its own plan, after its production question",
+    );
+
+    // The lab tab runs its own plan too.
+    await showTab(lab.tab);
+    await clickOn(`${dialog} [data-job=start]`);
+    const ranLab = await result(labHost);
+    if (
+      json(ranLab.hosts) !== json([labHost]) ||
+      ranLab.state !== "done" ||
+      !ranLab.output.includes("lab-r1# echo lab-plan")
+    ) {
+      fail(`the lab tab ran: ${json(ranLab)}`);
+    }
+    // A plan that started is used up.
+    const again = await startDirectly(prod.plan, [prodHost]);
+    if (!again.error?.includes("plan the job again")) {
+      fail(`a started plan started again: ${json(again)}`);
+    }
+    step(
+      "the other tab ran its own plan, and the shell refuses an unconfirmed production plan and a plan already started",
+    );
+    await clickOn(`${dialog} [data-job=close]`);
+    await showTab(prod.tab);
+    await clickOn(`${dialog} [data-job=close]`);
+    await until("both job tabs closed", async () => !(await exists(dialog)));
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+    if (savedSnippets === null) rmSync(snippetsFile, { force: true });
+    else writeFileSync(snippetsFile, savedSnippets);
+  }
+}
+
 async function savedJobs({ evaluate, fillForm, text, screenshot, step }) {
   const json = (value) => JSON.stringify(value);
   const exists = (selector) =>

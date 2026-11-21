@@ -171,9 +171,23 @@ export type JobEvent =
   | { kind: "progress"; host: string; done: number; total: number | null }
   | { kind: "finished"; hosts: HostResult[]; file?: SentFile };
 
+/**
+ * A plan as a pre-flight shows it: the shell keeps it under `id` until its
+ * job starts or it is forgotten, and a Start names it (#121).
+ */
+export interface ShownPlan extends JobPlan {
+  id: number;
+}
+
 /** Works out the pre-flight list (connects to nothing). */
 export function planJob(target: JobTarget, step: JobStep) {
-  return invoke<JobPlan>("job_plan", { target, step });
+  return invoke<ShownPlan>("job_plan", { target, step });
+}
+
+/** Lets the shell forget a plan no tab shows any more (closed, or planned
+ * again). */
+export function forgetPlan(plan: number) {
+  return invoke<void>("job_plan_forget", { plan });
 }
 
 /** How many hosts a job runs at once unless the user says otherwise (a
@@ -189,12 +203,25 @@ export interface StartedJob {
 }
 
 /**
- * Starts the job last planned, at most `parallel` hosts at once (1 to
- * `MAX_PARALLEL`), keeping its run on disk; `label` = what it runs on. Its
- * progress reaches every window as events (`jobs.svelte.ts`).
+ * Starts the kept plan `plan` (its pre-flight's), at most `parallel` hosts
+ * at once (1 to `MAX_PARALLEL`), keeping its run on disk; `label` = what
+ * it runs on. `confirmedProduction`: the production hosts the user
+ * confirmed in that pre-flight (the shell refuses a plan whose production
+ * hosts are not all there, and a plan it no longer keeps). Its progress
+ * reaches every window as events (`jobs.svelte.ts`).
  */
-export function startJob(parallel: number, label: string) {
-  return invoke<StartedJob>("job_start", { parallel, label });
+export function startJob(
+  plan: number,
+  confirmedProduction: string[],
+  parallel: number,
+  label: string,
+) {
+  return invoke<StartedJob>("job_start", {
+    plan,
+    confirmedProduction,
+    parallel,
+    label,
+  });
 }
 
 /** A host of a kept run. */
@@ -295,7 +322,7 @@ export function deleteRun(run: string) {
 
 /** Plans a kept run again on its target, as the workspace is now. */
 export function planAgain(run: string) {
-  return invoke<{ target: JobTarget; plan: JobPlan }>("job_run_again", {
+  return invoke<{ target: JobTarget; plan: ShownPlan }>("job_run_again", {
     run,
   });
 }
@@ -387,7 +414,7 @@ export function unsaveable(step: JobStep, target: JobTarget): string | null {
 
 /** Plans the saved job `name` as the workspace is now; kept for `startJob`. */
 export function planSavedJob(name: string) {
-  return invoke<{ target: JobTarget; plan: JobPlan }>("saved_job_plan", {
+  return invoke<{ target: JobTarget; plan: ShownPlan }>("saved_job_plan", {
     name,
   });
 }

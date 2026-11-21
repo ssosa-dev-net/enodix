@@ -21,6 +21,7 @@ import {
   type JobTarget,
   type SaveOutcome,
   type SentFile,
+  type ShownPlan,
 } from "./jobs";
 
 /** A job started in this app run, and what it has reported so far. */
@@ -179,18 +180,20 @@ export function startLiveJobs(): Promise<void> {
 }
 
 /**
- * Starts the job last planned (`plan`, on `target`), at most `parallel`
- * hosts at once; its progress is kept here, as in every window. Errors
- * propagate.
+ * Starts the kept plan `plan` (on `target`), at most `parallel` hosts at
+ * once; `confirmedProduction` = the production hosts its pre-flight's user
+ * confirmed. Its progress is kept here, as in every window. Errors (a plan
+ * no longer kept, production not confirmed) propagate.
  */
 export async function launchJob(
-  plan: JobPlan,
+  plan: ShownPlan,
+  confirmedProduction: string[],
   target: JobTarget,
   label: string,
   parallel: number,
 ): Promise<LiveJob> {
   void startLiveJobs();
-  const begun = await startJob(parallel, label);
+  const begun = await startJob(plan.id, confirmedProduction, parallel, label);
   // Its announcement can come after the answer.
   let job = liveJobs.jobs.find((entry) => entry.id === begun.id);
   if (!job) {
