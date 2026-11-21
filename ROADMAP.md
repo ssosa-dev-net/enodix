@@ -7,7 +7,7 @@ What comes after v1. The order and the decisions below were settled in a design 
 - **Daily use drives the order.** Features are built in the order they are needed in real work, since that is what can be verified without users.
 - **Small releases.** Each numbered item below ships on its own. The exception is 0.5.0, which holds the last two together (see "Next: 0.5.0").
 - **Python is optional.** Everything except script jobs and host enrichment works without it.
-- **Local and trusted.** The app holds some of the most sensitive passwords an organisation has, so it stays on the user's computer: no telemetry, no accounts, no cloud. The only connection it makes on its own is the update check, which can be turned off; every other connection is one the user started (a session, a web link, a script, a Python setup they confirmed). Nothing is added that breaks this.
+- **Local and trusted.** The app holds some of the most sensitive passwords an organisation has, so it stays on the user's computer: no telemetry, no accounts, no cloud. The only connection it makes on its own is the update check, which can be turned off; every other connection is one the user started (a session, a Files tab or a file job, a web link, a script, a Python setup they confirmed). Nothing is added that breaks this.
 - **Solid before wide.** Hardening what exists comes before showing it to anyone, and before most new features.
 - **Windows first, then Linux.** The core keeps no Windows-only assumptions. macOS is not planned for now.
 
@@ -16,19 +16,19 @@ What comes after v1. The order and the decisions below were settled in a design 
 1. Multi-send (built)
 2. Vault and master password, with named secrets (built)
 3. Platform definitions, jobs and config backup (built)
-4. SFTP/SCP browser
+4. SFTP/SCP browser (built; not released)
 5. Headless binary, Python bridge and script jobs (built)
 6. Host enrichment (built)
 7. Linux release (built; not yet checked on a Linux desktop)
 8. NetBox sync (set aside, see "Later, undated")
-9. Tunnel ports for scripts
+9. Tunnel ports for scripts (built)
 
 ## Next: 0.5.0
 
 Settled on 2026-11-18. The two items left are built in the order 9, 4:
 
 1. **Tunnel ports for scripts** (9): built on 2026-11-18 (spec #91, tickets #92 and #93).
-2. **SFTP/SCP browser** (4): the most use day to day. Designed (spec #95) and prototyped against the lab (#96); to build: #101 to #108.
+2. **SFTP/SCP browser** (4): the most use day to day. Designed (spec #95), prototyped against the lab (#96) and built on 2026-11-19 to 2026-11-21 (#101 to #108). Its sweep (#108) walked every user story in the built app and on the lab's devices; not released yet.
 
 These are the last features before the app goes into daily use. Nothing was to be released in between; on 2026-11-19 0.4.1 was released all the same, with the tunnel ports, the mouse fixes (#94) and what a renamed host keeps (#99). Each feature ends with a sweep of its spec's user stories; then comes a second pass over Hardening, reordered by what has been found by then; then one release, 0.5.0, still an unsigned pre-release. That release is installed and run on Windows before it is published (the check owed since 0.3.0), and daily use starts with it.
 
@@ -36,12 +36,13 @@ Alongside, outside the two features: the end-to-end test clicks with the mouse, 
 
 ## Status
 
-As of 2026-11-18, items 1, 2, 3, 5, 6 and 7 are built; they were released in 0.2.0. Items 4 and 9 are what 0.5.0 will hold (above); item 9 is built and released in 0.4.1, item 4 is not. Item 8 was set aside. Two releases since came from Hardening, not from the list above: 0.3.0 (the redesigned interface) and 0.4.0 (the app's own window frame, and terminals in windows of their own). 0.4.1 holds item 9 and fixes. Every release so far is an unsigned pre-release. What was built but not verified:
+As of 2026-11-21, every item but 8 is built. Items 1, 2, 3, 5, 6 and 7 were released in 0.2.0 and item 9 in 0.4.1. Item 4 is built and not released: it is what 0.5.0 adds. Item 8 was set aside. Two releases since came from Hardening, not from the list above: 0.3.0 (the redesigned interface) and 0.4.0 (the app's own window frame, and terminals in windows of their own). 0.4.1 holds item 9 and fixes. Every release so far is an unsigned pre-release. What was built but not verified:
 
 - **The release files themselves:** the installer, the portable zip and the Linux packages of 0.3.0 and 0.4.0 were built and checksummed, not installed and run as part of the release. The end-to-end test runs the same code built without the installer.
 - **Linux desktop:** the packages build and the core, the headless binary and the Python bridge pass their tests under WSL. The app itself has not been run on a real Linux desktop; the check list is in `docs/linux.md`.
 - **NX-OS:** its built-in platform definition has not been run against a device (no image in the lab). The other five are verified in the containerlab suite.
 - **Privilege password:** no lab account asks for an enable password, so that question has only been exercised against the test device.
+- **Files:** checked on the five lab devices, which are virtual. Not verified: NX-OS, the name of flash on physical Catalyst switches, speeds on real hardware, a jump host that needs a typed login, a real Explorer drag and the real file dialog (the end-to-end test plays both), Linux. The list is in [docs/files.md](docs/files.md).
 
 ## Hardening
 
@@ -156,7 +157,7 @@ Move images and configs to and from devices without a separate tool.
 - SFTP and SCP file browser for a host, opened from the side panel.
 - Push a file to a device from the inventory.
 - SFTP uses `russh-sftp`; SCP has no library support and runs over a remote command.
-- Designed on 2026-11-18 (spec #95). The prototype against the lab devices (#96) reported the same day, and the build tickets were written from it on 2026-11-19 (#101 to #108). None is built yet.
+- Designed on 2026-11-18 (spec #95). The prototype against the lab devices (#96) reported the same day, and the build tickets were written from it on 2026-11-19 (#101 to #108). **Built** by 2026-11-21; not released yet. [docs/files.md](docs/files.md) is the user's page.
   - A Files tab per host, beside the terminals. It logs in with the host's credential profile through its jump hosts, on a connection of its own, so the terminal is never slowed. A login that must be typed and an unknown host key are asked in the tab.
   - Devices with SFTP get a browser: list, upload, download, rename, delete, new folder. Devices with SCP only (IOS, IOS-XE) get transfer by path; the app falls back by itself.
   - The local side is the operating system: a file dialog, files dropped from Explorer, a folder to download into.
@@ -170,6 +171,10 @@ Move images and configs to and from devices without a separate tool.
   - SR Linux, cEOS and FRR offer SFTP as they come; cJunos offers it once its SFTP server is turned on, and SCP before that; IOS-XE offers SCP only, and only once `ip scp server enable` is set.
   - IOS-XE closes the connection after each SCP transfer and has five lines in all, so on a device with SCP only the app connects per file and holds no connection in between.
 - Decided from it: the app runs no commands on a device to make up for what SCP lacks. So on a device with SCP only there is no listing, an existing file is replaced without a question (the form says so), a wrong folder fails only once the whole file has been sent, and the file job cannot tell that the file is already there: such a host fails unless "overwrite" is ticked.
+- The closing sweep (#108, 2026-11-21) walked the spec's user stories in the built app, against the example server and the lab's devices through its jump host, and added a files check to the containerlab suite (`lab_files`: SFTP on SR Linux, cEOS, FRR and cJunos; SCP on the CSR 1000v).
+  - On cEOS a 400 MB upload ran at about 100 MB/s while a terminal on the same device answered as quickly as before it. The same file went as a job to cEOS, cJunos and the CSR (about 2.7 MB/s over SCP there), and each device's own checksum matched the MD5 the run shows.
+  - It found one fault, fixed there: IOS-XE ends the whole connection when it closes the SFTP channel it has no server for, and a file job took that for a lost connection instead of falling back to SCP. The app now goes by the channel the device closed in order.
+  - One difference from the design, kept: on a device with SCP only a login typed in the tab is kept while the tab is open and used for each file, not asked again per file. A login that asks a question each time (a one-time code) still fails each transfer, since nobody is asked.
 
 ## 5. Headless binary, Python bridge and script jobs
 
@@ -251,4 +256,4 @@ Let scripts reach more than a host's SSH port through the app's jump hosts.
 - **Linux:** the check on a real desktop (Ubuntu and Fedora, X11 and Wayland), before Linux is claimed as supported.
 - **Script tunnels:** job pre-flight does not know host keys, so a host whose device or jump-host key is not trusted yet is refused only when the job runs.
 - **Tunnel ports:** the app checks no TLS certificate (eAPI, RESTCONF, NX-API through a tunnel are only as safe as the script's own check beyond the last jump host); whether certificates should ever be learned or pinned like host keys is undecided. ncclient fails to negotiate with a device for which the app trusts only an RSA key and that offers RSA only as `rsa-sha2-*` (an ncclient limit). scrapli-netconf's `system` transport, gNMI, RESTCONF and NX-API were not tried; the ports were tried on Windows only.
-- **SFTP/SCP browser:** the lab is virtual, so speeds on real hardware are unknown (the lab's CSR is held to 1 Mbit/s). Not verified: NX-OS (no image), the name of flash on physical Catalyst switches, a jump host that needs a typed login. Whether the file job should be able to ask an IOS device if the file is already there, which needs a command per platform, is left until it is missed.
+- **SFTP/SCP browser:** the lab is virtual, so speeds on real hardware are unknown (the lab's CSR is held to 1 Mbit/s). Not verified: NX-OS (no image), the name of flash on physical Catalyst switches, a jump host that needs a typed login. Whether the file job should be able to ask an IOS device if the file is already there, which needs a command per platform, is left until it is missed. A job takes a folder, a saved filter or one host: the tree has no selection of several hosts, for the file job as for every job. On a device with SCP only, nobody is asked during a transfer, so a login that asks a question each time (a one-time code) or a host key trusted once fails every transfer there, although the tab itself opened; the design had the question asked per file. No lab device asks a question at login, so this could only be built against the test server.

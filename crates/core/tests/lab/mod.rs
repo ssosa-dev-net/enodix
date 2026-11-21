@@ -21,6 +21,7 @@
 #![allow(dead_code)]
 
 pub mod enrichment;
+pub mod files;
 pub mod scripts;
 pub mod tunnel_ports;
 
@@ -1032,6 +1033,10 @@ pub enum Check {
     /// Whether the device accepts a second shell channel on the session's
     /// connection, and the backup on login works either way.
     SecondChannel,
+    /// Files, as the lab's documentation says the device offers them:
+    /// SFTP (list, upload, download and compare, rename, delete) or, on a
+    /// device without it, SCP by the fall back (send, fetch and compare).
+    Files,
 }
 
 pub const ALL_CHECKS: &[Check] = &[
@@ -1046,6 +1051,7 @@ pub const ALL_CHECKS: &[Check] = &[
     Check::ConfigBackup,
     Check::Privilege,
     Check::SecondChannel,
+    Check::Files,
 ];
 
 impl Check {
@@ -1062,6 +1068,7 @@ impl Check {
             Check::ConfigBackup => "config backup",
             Check::Privilege => "privileged mode",
             Check::SecondChannel => "second channel and backup on login",
+            Check::Files => "files",
         }
     }
 
@@ -1079,6 +1086,7 @@ impl Check {
                 Some((command, least)) => large_output(run, device, command, *least).await.into(),
             },
             Check::SessionLog => session_log(run, device).await.into(),
+            Check::Files => files::check(run, device).await,
             Check::Telnet => match device.telnet_port {
                 None => Outcome::NotApplicable("telnet is not enabled for this device".into()),
                 Some(_) if run.lab.jump_host.is_some() && device.telnet_address.is_none() => {

@@ -24,6 +24,7 @@ use netterm_core::known_hosts::KnownHosts;
 use netterm_core::session::SessionManager;
 use netterm_core::workspace::{HostId, Protocol, SavedJob, Workspace};
 use sha2::Digest;
+use support::scp::ScpQuirk;
 use support::{TestSshServer, CODE_QUESTION, OTP_USERNAME, PASSWORD, USERNAME, WAIT};
 use tempfile::TempDir;
 
@@ -560,6 +561,10 @@ async fn a_device_that_offers_only_scp_fails_without_overwrite_and_is_sent_to_wi
     let remote = TempDir::new().unwrap();
     fs::create_dir(remote.path().join("images")).unwrap();
     server.serve_scp(remote.path());
+    // As IOS-XE on the lab's CSR 1000v (#108): the SFTP channel is closed
+    // and the whole connection with it, and again after each SCP transfer.
+    server.close_sftp_and_hang_up();
+    server.scp_quirk(ScpQuirk::CloseConnectionAfter);
     let workspace = workspace(&temp, &[("scp.yaml", host(&server, "imaging", ""))]);
     let store = store(&workspace);
     let manager = support::manager();

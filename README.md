@@ -18,6 +18,12 @@ git). Free and open source under the GPL-3.0.
   mid-run, and a list beforehand shows which hosts will be skipped and why.
 - **Config backup:** as a job or each time you log in, kept as versions
   with a diff between any two.
+- **Files** (built, not released yet): a device's files in a tab, over
+  SFTP, or SCP on devices that have nothing else, with the host's login and
+  jump hosts; upload, download, rename and delete, with progress, checked
+  sizes and the uploaded file's MD5 and SHA-256. One file can be sent to a
+  folder of devices as a job. [docs/files.md](docs/files.md) says what
+  each platform needs and what the limits are.
 - **Python:** the inventory and logins as a Nornir inventory for your own
   Netmiko, scrapli and NAPALM scripts, run from the app or from a shell,
   with hosts behind jump hosts reached through the app's own jump chains.
@@ -37,7 +43,8 @@ describes the window, lists the shortcuts and says where everything is.
 Releases up to 0.1.2 have the sessions and the inventory only; everything
 else in the list came with 0.2.0, the redesigned interface with 0.3.0, and
 terminals in windows of their own with 0.4.0, and script tunnel ports with
-0.4.1. Releases so far are pre-releases: not
+0.4.1. Files is built and comes with the next release. Releases so far are
+pre-releases: not
 code-signed, and without the automatic updates described below (install
 the next version over the old one by hand). [CHANGELOG.md](CHANGELOG.md) lists what
 each release added, and [ROADMAP.md](ROADMAP.md) says what is built, what
@@ -110,7 +117,8 @@ project's release key.
 
 Open **Preferences** (the gear at the foot of the rail, or Ctrl+,) and clear **Check for
 a new version at start**. With it off, the app makes no network connection
-that you did not start (sessions, web links, **Check now**). The setting is
+that you did not start (sessions, file transfers, jobs, web links, **Check
+now**). The setting is
 kept per user in the app's data folder (`preferences.yaml`, key
 `check_for_updates`).
 
@@ -196,19 +204,22 @@ netterm claims support only for the device platforms below, each verified by the
 containerlab device suite ([docs/containerlab.md](docs/containerlab.md))
 at the version shown. Other platforms may work but have not been tested.
 
-| Platform                 | Version       | SSH | Telnet     | Verified   |
-| ------------------------ | ------------- | --- | ---------- | ---------- |
-| Nokia SR Linux           | 24.10.1       | yes | not tested | 2026-11-14 |
-| Arista cEOS              | 4.36.0.1F     | yes | yes        | 2026-11-14 |
-| FRRouting                | 10.2.1        | yes | not tested | 2026-11-14 |
-| Cisco IOS-XE (CSR 1000v) | 17.03.08      | yes | not tested | 2026-11-14 |
-| Juniper cJunos Evolved   | 25.4R1.13-EVO | yes | not tested | 2026-11-14 |
+| Platform                 | Version       | SSH | Telnet     | Files                             | Verified                     |
+| ------------------------ | ------------- | --- | ---------- | --------------------------------- | ---------------------------- |
+| Nokia SR Linux           | 24.10.1       | yes | not tested | SFTP                              | 2026-11-14, files 2026-11-21 |
+| Arista cEOS              | 4.36.0.1F     | yes | yes        | SFTP                              | 2026-11-14, files 2026-11-21 |
+| FRRouting                | 10.2.1        | yes | not tested | SFTP                              | 2026-11-14, files 2026-11-21 |
+| Cisco IOS-XE (CSR 1000v) | 17.03.08      | yes | not tested | SCP only (`ip scp server enable`) | 2026-11-14, files 2026-11-21 |
+| Juniper cJunos Evolved   | 25.4R1.13-EVO | yes | not tested | SFTP once its server is on; SCP   | 2026-11-14, files 2026-11-21 |
 
 SSH covers login with a password, a command and its output, host-key
 checking, a refused password, resizing, large output with flow control and
 session logs, each through an SSH jump host, and jobs and config backups
 with the built-in platform definition (paging off, privileged mode, the
-whole configuration, backup on login). Cisco NX-OS has not been tested.
+whole configuration, backup on login). Files covers, through the lab's
+jump host: over SFTP a listing, an upload, a download compared byte for
+byte, a rename and a delete; over SCP a file sent, fetched and compared.
+Cisco NX-OS has not been tested.
 
 ## Building from source
 

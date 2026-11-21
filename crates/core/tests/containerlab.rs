@@ -20,8 +20,10 @@ mod support;
 use std::path::Path;
 use std::time::Duration;
 
+use lab::Platform;
 use lab::{Check, Lab, LabRun, Outcome, ALL_CHECKS};
 use netterm_core::credentials::ProfileAuth;
+use support::scp::ScpQuirk;
 use support::telnet::TestTelnetServer;
 use support::TestSshServer;
 
@@ -123,6 +125,15 @@ async fn lab_privilege() {
 #[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
 async fn lab_second_channel() {
     lab_check(Check::SecondChannel).await;
+}
+
+/// Files: each device with what `docs/containerlab.md` says it offers (SFTP:
+/// list, upload, download and compare, rename, delete; SCP on the device
+/// without SFTP: send, fetch and compare), through the jump host.
+#[tokio::test]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+async fn lab_files() {
+    lab_check(Check::Files).await;
 }
 
 /// Host enrichment: the shipped script fetches the facts of the devices
@@ -416,6 +427,8 @@ fn loopback_lab(ssh_port: u16, telnet_port: Option<u16>, jump_port: Option<u16>)
 #[tokio::test]
 async fn every_check_passes_against_the_in_process_servers() {
     let ssh = TestSshServer::start().await;
+    let files = tempfile::TempDir::new().unwrap();
+    ssh.serve_sftp(files.path());
     let telnet = TestTelnetServer::start().await;
     let run = LabRun::new(loopback_lab(ssh.port(), Some(telnet.port()), None)).unwrap();
     let failures = lab::run_checks(&run, ALL_CHECKS).await.failures;
@@ -426,6 +439,8 @@ async fn every_check_passes_against_the_in_process_servers() {
 async fn every_check_passes_through_a_jump_host() {
     let server = TestSshServer::start().await;
     let device = TestSshServer::start().await;
+    let files = tempfile::TempDir::new().unwrap();
+    device.serve_sftp(files.path());
     // Telnet is asked for, but it is not tunnelled, so it is not checked.
     let telnet_port = support::closed_port().await;
     let run = LabRun::new(loopback_lab(
@@ -493,6 +508,153 @@ async fn an_unreachable_lab_device_fails_rather_than_passing() {
         .await
         .failures;
     assert_eq!(failures.len(), 2, "{failures:#?}");
+}
+
+/// What a folder holds, by name.
+fn names_in(folder: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn the_files_check_moves_a_file_over_sftp_and_leaves_nothing_behind() {
+    let ssh = TestSshServer::start().await;
+    let files = tempfile::TempDir::new().unwrap();
+    std::fs::write(files.path().join("startup-config"), "hostname r1\n").unwrap();
+    // What an earlier run that failed half way left behind is cleared.
+    std::fs::write(files.path().join(lab::files::NAME), "old").unwrap();
+    ssh.serve_sftp(files.path());
+    let run = LabRun::new(loopback_lab(ssh.port(), None, None)).unwrap();
+
+    let outcome = Check::Files.run(&run, &run.lab.devices[0]).await;
+
+    let Outcome::Passed(note) = &outcome else {
+        panic!("{outcome:?}");
+    };
+    for said in ["SFTP", "uploaded", "downloaded", "renamed", "deleted"] {
+        assert!(note.contains(said), "{note}");
+    }
+    assert_eq!(names_in(files.path()), ["startup-config"]);
+}
+
+/// A lab of one device as the built-in definition `definition` drives it
+/// (its file folder, its hints), checked as lab platform `platform`.
+fn files_lab(port: u16, platform: Platform, definition: &str) -> Lab {
+    let mut lab = loopback_lab(port, None, None);
+    lab.devices[0].platform = platform;
+    lab.devices[0].definition = Some(definition.into());
+    lab
+}
+
+#[tokio::test]
+async fn the_files_check_falls_back_to_scp_on_a_device_without_sftp() {
+    // As IOS-XE: the SFTP subsystem is accepted, its channel closed and
+    // the connection with it; SCP serves `flash:` (the built-in
+    // definition's file folder).
+    let ssh = TestSshServer::start().await;
+    let files = tempfile::TempDir::new().unwrap();
+    ssh.close_sftp_and_hang_up();
+    ssh.serve_scp(files.path());
+    let run = LabRun::new(files_lab(ssh.port(), Platform::Ios, "ios")).unwrap();
+
+    let outcome = Check::Files.run(&run, &run.lab.devices[0]).await;
+
+    let Outcome::Passed(note) = &outcome else {
+        panic!("{outcome:?}");
+    };
+    for said in ["no SFTP", "SCP", "flash:", "fetched"] {
+        assert!(note.contains(said), "{note}");
+    }
+    // SCP cannot delete: the one small file stays, under a fixed name.
+    assert_eq!(names_in(files.path()), [lab::files::NAME]);
+    let kept = std::fs::metadata(files.path().join(lab::files::NAME)).unwrap();
+    assert_eq!(kept.len(), lab::files::SIZE as u64);
+}
+
+#[tokio::test]
+async fn a_device_with_scp_turned_off_is_not_checked_and_names_what_to_paste() {
+    // IOS before `ip scp server enable`.
+    let ssh = TestSshServer::start().await;
+    let files = tempfile::TempDir::new().unwrap();
+    ssh.close_sftp_and_hang_up();
+    ssh.serve_scp(files.path());
+    ssh.scp_quirk(ScpQuirk::AdministrativelyDisabled);
+    let run = LabRun::new(files_lab(ssh.port(), Platform::Ios, "ios")).unwrap();
+
+    let outcome = Check::Files.run(&run, &run.lab.devices[0]).await;
+
+    let Outcome::NotApplicable(why) = &outcome else {
+        panic!("{outcome:?}");
+    };
+    for said in [
+        "Administratively disabled",
+        "ip scp server enable",
+        "lab/configs/csr1-files.cfg",
+    ] {
+        assert!(why.contains(said), "{why}");
+    }
+}
+
+#[tokio::test]
+async fn a_junos_device_without_its_sftp_server_is_not_checked_and_names_what_to_paste() {
+    // A stock Junos: the SFTP subsystem is refused, SCP works.
+    let ssh = TestSshServer::start().await;
+    let files = tempfile::TempDir::new().unwrap();
+    ssh.refuse_sftp();
+    ssh.serve_scp(files.path());
+    let run = LabRun::new(files_lab(ssh.port(), Platform::Junos, "junos")).unwrap();
+
+    let outcome = Check::Files.run(&run, &run.lab.devices[0]).await;
+
+    let Outcome::NotApplicable(why) = &outcome else {
+        panic!("{outcome:?}");
+    };
+    for said in [
+        "set system services ssh sftp-server",
+        "lab/configs/cjunos1-files.set",
+    ] {
+        assert!(why.contains(said), "{why}");
+    }
+    assert_eq!(names_in(files.path()), [] as [&str; 0], "nothing was sent");
+}
+
+#[tokio::test]
+async fn a_device_that_should_offer_sftp_and_offers_none_fails_the_files_check() {
+    let ssh = TestSshServer::start().await;
+    let files = tempfile::TempDir::new().unwrap();
+    ssh.close_sftp_at_once();
+    ssh.serve_scp(files.path());
+    let run = LabRun::new(files_lab(ssh.port(), Platform::Ceos, "eos")).unwrap();
+
+    let outcome = Check::Files.run(&run, &run.lab.devices[0]).await;
+
+    assert!(
+        matches!(&outcome, Outcome::Failed(why) if why.contains("SFTP")),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_device_that_refuses_scp_in_its_own_words_fails_the_files_check_with_them() {
+    // cEOS below privilege 15: no SFTP for the account, and SCP answers a
+    // plain line. Not a setting the lab's files turn on: a failure.
+    let ssh = TestSshServer::start().await;
+    let files = tempfile::TempDir::new().unwrap();
+    ssh.close_sftp_at_once();
+    ssh.serve_scp(files.path());
+    ssh.scp_quirk(ScpQuirk::PlainText);
+    let run = LabRun::new(files_lab(ssh.port(), Platform::Ios, "ios")).unwrap();
+
+    let outcome = Check::Files.run(&run, &run.lab.devices[0]).await;
+
+    assert!(
+        matches!(&outcome, Outcome::Failed(why) if why.contains(support::scp::PLAIN_TEXT_REFUSAL.trim())),
+        "{outcome:?}"
+    );
 }
 
 /// A lab of one device-mode server (`r1`, unprivileged until `enable`),

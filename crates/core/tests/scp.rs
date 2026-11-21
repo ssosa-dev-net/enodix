@@ -170,6 +170,26 @@ async fn a_device_that_accepts_sftp_then_closes_falls_back_to_scp() {
 }
 
 #[tokio::test]
+async fn a_device_that_closes_sftp_and_then_the_connection_falls_back_to_scp() {
+    // IOS-XE as it really behaves (#108, seen on the lab's CSR 1000v in a
+    // file job): it ends the whole connection when the SFTP channel ends,
+    // so the connection is gone by the time the client asks why SFTP did
+    // not start. That is still a device without SFTP, not a lost
+    // connection: the device closed the channel in order first.
+    let (server, folder) = scp_server().await;
+    server.close_sftp_and_hang_up();
+    for _ in 0..10 {
+        let scp = fallen_back(&server).await;
+        assert_eq!(scp.no_sftp(), NoSftp::ClosedBeforeReply);
+    }
+    let scp = fallen_back(&server).await;
+    scp.send("/a.txt", 5, &b"hello"[..], std::future::pending::<()>())
+        .await
+        .unwrap();
+    assert_eq!(fs::read(folder.path().join("a.txt")).unwrap(), b"hello");
+}
+
+#[tokio::test]
 async fn a_device_with_sftp_keeps_sftp_and_its_connection() {
     let (server, folder) = scp_server().await;
     server.serve_sftp(folder.path());

@@ -336,6 +336,17 @@ async fn a_device_that_accepts_the_subsystem_and_closes_at_once_has_no_sftp() {
 }
 
 #[tokio::test]
+async fn a_device_that_closes_the_channel_and_then_the_connection_has_no_sftp() {
+    // IOS-XE: the connection ends with the channel, yet the channel was
+    // closed in order first, which is the device saying it has no SFTP.
+    let server = TestSshServer::start().await;
+    server.close_sftp_and_hang_up();
+    for _ in 0..10 {
+        assert_eq!(no_sftp(&server).await, NoSftp::ClosedBeforeReply);
+    }
+}
+
+#[tokio::test]
 async fn sftp_can_start_again_after_a_device_without_it_said_no() {
     let server = TestSshServer::start().await;
     server.close_sftp_at_once();

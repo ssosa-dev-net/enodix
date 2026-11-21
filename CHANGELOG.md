@@ -5,7 +5,50 @@ in the project's tracker.
 
 ## Unreleased
 
-Nothing yet.
+### New
+
+- A device's files, in the app [95]. **Files** on an SSH host (its details
+  sheet, the tree's context menu, a session's menu) opens a tab that logs
+  in with the host's credential profile, through its jump hosts, on a
+  connection of its own: an open terminal on the device is not slowed. A
+  login that must be typed and an unknown or changed host key are asked in
+  the tab. [docs/files.md](docs/files.md) describes it, what each platform
+  needs and its limits.
+  - A device with SFTP gets a browser: folders and files with size, time
+    and permissions, a path box, upload (a file dialog or files dropped
+    from Explorer), download into a folder you pick, rename, delete and
+    new folder. It starts in the folder where files belong on the host's
+    platform.
+  - A device with SCP only (IOS and IOS-XE; a Junos device whose SFTP
+    server is off) gets a form: send a file to a path, fetch a path. The
+    app tries SFTP and falls back by itself, connects for each file and
+    holds no connection in between, so the tab does not take one of an IOS
+    device's few lines. A refusal is shown in the device's own words, with
+    the command that turns the feature on where the app knows it.
+  - Transfers show progress and speed and can be cancelled, one at a time
+    per host with the rest waiting. Sizes are checked where the protocol
+    allows, a cancelled or failed upload removes its partial file where it
+    can and says so where it cannot, a transfer that stops moving fails
+    with a reason, and an upload's MD5 and SHA-256 are shown to compare
+    with the device's own verify command.
+  - On a production host, uploading, deleting and renaming ask first.
+    Replacing a file asks wherever the device can say the file is there;
+    the SCP form says that it cannot.
+- **Send file…** on a folder, a saved filter or a host sends one file to
+  many devices as a job [107]: a list beforehand of the hosts it will skip
+  and why, three devices at once unless changed, each device's progress,
+  and a kept run with the file's name, size, MD5 and SHA-256 and what
+  happened on each device. A device that already has the file (same name,
+  same size) counts as done; one with another size, or one that cannot say
+  (SCP only), fails unless **Overwrite** is ticked.
+- A platform definition has a seventh value, the folder where files belong
+  on that platform [102]: `flash:` for IOS, `/mnt/flash` for EOS,
+  `/var/tmp` for Junos, `bootflash:` for NX-OS (not verified), none for SR
+  Linux and FRR. The Files tab starts there and the file job sends there.
+
+Checked on the lab's devices through its jump host: SFTP on Nokia SR Linux
+24.10.1, Arista cEOS 4.36.0.1F, FRR 10.2.1 and Juniper cJunos Evolved
+25.4R1.13, SCP on Cisco IOS-XE 17.03.08 (CSR 1000v).
 
 ## 0.4.1
 

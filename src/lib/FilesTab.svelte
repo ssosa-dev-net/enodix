@@ -301,6 +301,15 @@
       case "transferOnly":
         typed = trying;
         if (!fetchInto && downloadFolder) fetchInto = downloadFolder;
+        // The send's path starts as the platform's file folder (a chosen
+        // file adds its name); a path typed by hand stays.
+        if (
+          event.folder &&
+          (!sendRemote.trim() || sendRemote === filledRemote)
+        ) {
+          sendRemote = joinPath(event.folder, "");
+          filledRemote = sendRemote;
+        }
         phase = {
           kind: "transferOnly",
           reason: event.reason,
@@ -637,7 +646,7 @@
     if (sendRemote.trim() && sendRemote !== filledRemote) return;
     const folder = phase.kind === "transferOnly" ? phase.folder : null;
     const file = baseName(local.trim());
-    sendRemote = file ? (folder ? joinPath(folder, file) : file) : "";
+    sendRemote = folder ? joinPath(folder, file) : file;
     filledRemote = sendRemote;
   }
 
