@@ -5,11 +5,14 @@
   import RoleIcon from "./RoleIcon.svelte";
   import TreeFolder from "./TreeFolder.svelte";
   import {
+    clickHost,
     folderShown,
     hostRole,
     hostSafety,
     hostShown,
     inventory,
+    isHostSelected,
+    select,
     type Item,
   } from "./inventory.svelte";
   import type { Folder, Host } from "./workspace";
@@ -26,16 +29,14 @@
 
   const indent = $derived(`${0.6 + depth * 0.9}rem`);
 
-  function isSelected(kind: "host" | "folder", path: string) {
+  function folderSelected(path: string) {
     const selected = inventory.selected;
-    return (
-      selected?.kind === kind &&
-      (selected.kind === "host" ? selected.id : selected.path) === path
-    );
+    return selected?.kind === "folder" && selected.path === path;
   }
 
+  /** Ctrl or Shift on a folder does what a plain click does (#110). */
   function clickFolder(child: Folder) {
-    inventory.selected = { kind: "folder", path: child.path };
+    select({ kind: "folder", path: child.path });
     inventory.expanded[child.path] = !inventory.expanded[child.path];
   }
 
@@ -70,7 +71,7 @@
     <li>
       <button
         class="folder"
-        class:selected={isSelected("folder", child.path)}
+        class:selected={folderSelected(child.path)}
         class:drop-target={inventory.dropTarget === child.path}
         aria-expanded={!!inventory.expanded[child.path]}
         style:padding-left={indent}
@@ -104,8 +105,8 @@
     <li>
       <button
         class="host"
-        aria-pressed={isSelected("host", host.id)}
-        class:selected={isSelected("host", host.id)}
+        aria-pressed={isHostSelected(host.id)}
+        class:selected={isHostSelected(host.id)}
         style:padding-left={indent}
         data-host={host.id}
         data-item="host"
@@ -116,7 +117,11 @@
         title={[host.address, role?.name, environment]
           .filter(Boolean)
           .join(" · ")}
-        onclick={() => (inventory.selected = { kind: "host", id: host.id })}
+        onclick={(event) =>
+          clickHost(host.id, {
+            toggle: event.ctrlKey || event.metaKey,
+            range: event.shiftKey,
+          })}
         ondblclick={() => onconnect(host)}
         onkeydown={(event) => onkeydown(event, host)}
       >

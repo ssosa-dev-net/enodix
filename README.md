@@ -13,7 +13,8 @@ git). Free and open source under the GPL-3.0.
   in the app's own encrypted vault behind a master password (your choice;
   on Linux the vault is the only store). Workspace files hold only a
   profile's name.
-- **Jobs:** run a snippet on a folder, a saved filter or one host, with
+- **Jobs:** run a snippet on a folder, a saved filter, one host or a
+  few hosts selected in the tree, with
   per-device output you can search, compare and save; nothing is asked
   mid-run, and a list beforehand shows which hosts will be skipped and why.
 - **Config backup:** as a job or each time you log in, kept as versions

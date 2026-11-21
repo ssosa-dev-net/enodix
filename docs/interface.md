@@ -30,7 +30,19 @@ everything 0.2.0 could do, the app still does, reached differently.
   (the row's details control, the tree's context menu, Ctrl+Shift+D, or
   Details in a session's menu), over the lower part of the Hosts view. It
   follows the selection and goes back to the tree with "Back to the tree"
-  or Escape.
+  or Escape. It shows one item only: it closes when several hosts are
+  selected.
+- **Several hosts** (#110): Ctrl+click in the Hosts view's tree adds a
+  host to the selection or takes it out; Shift+click selects the hosts
+  between the last one clicked and this one, as the tree shows them (open
+  folders only, and under a filter only the hosts shown). The foot of the
+  Hosts view says how many are selected, with a button to clear them;
+  Escape in the tree clears them too. The context menu on one of them
+  offers only the jobs (Run snippet…, Run script…, Send file…, Back up
+  configs, Fill in from devices), each on exactly those hosts. A plain
+  click, a drag, a right-click on another row or another workspace ends
+  the selection; a host removed from the workspace leaves it. Folders are
+  not part of it: Ctrl or Shift on a folder is a plain click.
 - **Terminal area**: tabs and split panes. A tab holds a session or a view.
   Each session has one header line (role, name, address, jump host,
   protocol, markers, status) and a menu with its actions; the same menu is
@@ -245,6 +257,7 @@ else. Each of its features, and where it is now:
 | Update check and install                         | Notice in the corner; Preferences tab                                              |
 | Platform definitions                             | Platforms tab (Hosts view header, details sheet, palette)                          |
 | Run snippet, run script on folder/filter/host    | Tree context menu, details sheet, filter actions; job tab                          |
+| A job on several selected hosts (new, #110)      | Ctrl+click or Shift+click in the tree, then its context menu; job tab              |
 | Send a file to many hosts (new, #107)            | "Send file…" in the tree context menu, details sheet, filter actions; job tab      |
 | Back up configs                                  | Tree context menu, details sheet, filter actions, Config backups view; job tab     |
 | Fill in from devices and its review              | Tree context menu, details sheet; job tab, then the review tab                     |

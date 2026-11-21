@@ -951,12 +951,13 @@ function hitOf(evaluate, element) {
  * sends a second click that the page sees as a double-click; `button`
  * "right" opens a context menu. `mayClose`: the click may close the page
  * (a window's Close), so a send it no longer answers is not a failure
- * (whether the control was reachable is checked before).
+ * (whether the control was reachable is checked before). `modifiers`: the
+ * keys held, as DevTools counts them (`CTRL` 2, `SHIFT` 8).
  */
 async function mouseAt(
   evaluate,
   { x, y },
-  { button = "left", double = false, mayClose = false } = {},
+  { button = "left", double = false, mayClose = false, modifiers = 0 } = {},
 ) {
   const send = (type, clickCount) =>
     evaluate.devtools.send("Input.dispatchMouseEvent", {
@@ -965,6 +966,7 @@ async function mouseAt(
       y,
       button: type === "mouseMoved" ? "none" : button,
       clickCount,
+      modifiers,
     });
   try {
     await send("mouseMoved", 0);
@@ -2523,6 +2525,8 @@ async function main() {
   });
 
   await savedJobs({ evaluate, fillForm, text, screenshot, step });
+
+  await hostSelection({ evaluate, devtools, fillForm, screenshot, step });
 
   await filesTab({
     evaluate,
@@ -8461,12 +8465,366 @@ async function fileJob({ evaluate, fillForm, screenshot, step }) {
     await clickOn(`${JOB_TAB} [data-job=close]`);
     await until("the job tab closed", async () => !(await exists(JOB_TAB)));
     await closeTabOf(evaluate, RUN_TAB);
+
+    // Two hosts selected with Ctrl held (#110): Send file… from the menu
+    // reaches pre-flight with exactly those two, in the tree's order.
+    const hostRow = (id) => `nav button[data-host=${json(id)}]`;
+    await expandFolder(evaluate, folderRow);
+    await clickOn(hostRow(r1));
+    await mouseClick(evaluate, hostRow(prod), { modifiers: CTRL });
+    await until("two Staging hosts selected", () =>
+      exists("[data-selection='2']"),
+    );
+    await mouseClick(evaluate, hostRow(r1), { button: "right" });
+    await until("the selection's menu", () =>
+      exists("[role=menu][data-menu-hosts='2'] [data-menu=send-file]"),
+    );
+    await clickOn("[role=menu] [data-menu=send-file]");
+    await until("the send-file tab on the selection", () => atStep("file"));
+    const tabs = await evaluate(
+      `[...document.querySelectorAll("[data-tab-view=job]")].map((t) => t.textContent.trim()).join(" | ")`,
+    );
+    if (!tabs.includes("Send file to 2 hosts"))
+      fail(`the job tab is called ${json(tabs)}`);
+    await fillForm({ "job-file": localFile }, `${JOB_TAB} form`);
+    await until("the selection's pre-flight", () => atStep("preflight"));
+    const chosen = await evaluate(`(() => {
+      const d = document.querySelector(${json(JOB_TAB)});
+      return {
+        runs: [...d.querySelectorAll("[data-job-host]")].map((r) => r.dataset.jobHost),
+        skipped: [...d.querySelectorAll("[data-job-skipped]")].map((r) => r.dataset.jobSkipped),
+      };
+    })()`);
+    if (json(chosen) !== json({ runs: [prod, r1], skipped: [] }))
+      fail(`the file job on the selection plans ${json(chosen)}`);
+    await screenshot("file-job-selection");
+    step(
+      "Send file… on two hosts selected with Ctrl+click reached pre-flight with exactly those two, in the tree's order",
+    );
+    await clickOn(`${JOB_TAB} [data-job=dismiss]`);
+    await until("the job tab closed", async () => !(await exists(JOB_TAB)));
+    await clickOn("[data-selection-clear]");
   } finally {
     if (savedPlatforms === null) rmSync(platformsFile, { force: true });
     else writeFileSync(platformsFile, savedPlatforms);
     rmSync(folder, { recursive: true, force: true });
     rmSync(localFolder, { recursive: true, force: true });
   }
+}
+
+/** The keys held during a click, as DevTools counts them. */
+const CTRL = 2;
+const SHIFT = 8;
+
+/**
+ * A selection of several hosts (#110), in the Jobs folder `jobs` leaves
+ * (jobs-r1 trusted with its profile, jobs-odd of an unknown platform,
+ * jobs-telnet): Ctrl+click and Shift+click with the mouse, the count and
+ * its clear button, Escape, the details sheet closing, the context menu's
+ * five job entries and nothing else, a snippet job on exactly the
+ * selected hosts that runs (and is not saveable), a right-click outside
+ * the selection, Ctrl on a folder, a drag, Shift+click under the filter
+ * field, and selected hosts deleted on disk leaving the selection.
+ */
+async function hostSelection({
+  evaluate,
+  devtools,
+  fillForm,
+  screenshot,
+  step,
+}) {
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
+  const clickOn = (selector, options) =>
+    mouseClick(evaluate, selector, options);
+  const dialog = JOB_TAB;
+  const atStep = (name) => exists(`${dialog}[data-step=${name}]`);
+  const r1 = "Jobs/jobs-r1.yaml";
+  const odd = "Jobs/jobs-odd.yaml";
+  const telnet = "Jobs/jobs-telnet.yaml";
+  const fileOf = (id) => join(workspace, ...id.split("/"));
+  const originals = Object.fromEntries(
+    [odd, telnet].map((id) => [id, readFileSync(fileOf(id), "utf8")]),
+  );
+  const row = (id) => `nav button[data-host=${json(id)}]`;
+  const folderRow = 'nav button[data-item=folder][data-path="Jobs"]';
+  const menu = "[role=menu]";
+  const snippetsFile = join(workspace, "_snippets.yaml");
+  const savedSnippets = existsSync(snippetsFile)
+    ? readFileSync(snippetsFile, "utf8")
+    : null;
+  /** The hosts marked selected, in the order the tree shows them. */
+  const chosen = () =>
+    evaluate(
+      `[...document.querySelectorAll("nav button[data-host][aria-pressed=true]")].map((b) => b.dataset.host)`,
+    );
+  /** The count the Hosts view shows, or null when it shows none. */
+  const count = () =>
+    evaluate(
+      `document.querySelector("[data-selection]")?.dataset.selection ?? null`,
+    );
+  const selectionIs = async (ids, shown, what) => {
+    await until(
+      what,
+      async () =>
+        json(await chosen()) === json(ids) && (await count()) === shown,
+    );
+  };
+  const entries = () =>
+    evaluate(
+      `[...document.querySelectorAll(${json(`${menu} [data-menu]`)})].map((b) => b.dataset.menu)`,
+    );
+  const key = async (spec) => {
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyDown", ...spec });
+    await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...spec });
+  };
+  const escape = { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 };
+  const filterWords = (words) =>
+    evaluate(`(() => {
+      const input = document.querySelector("input[name=host-filter]");
+      input.value = ${json(words)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+  /** Selects `first` alone, then adds `more` with Ctrl held. */
+  const pick = async (first, ...more) => {
+    await clickOn(row(first));
+    for (const id of more) await clickOn(row(id), { modifiers: CTRL });
+  };
+
+  // Words for the filter field to find jobs-odd and jobs-telnet only, and
+  // the snippet; written first, so that no reload of half-written files
+  // takes a row away under the mouse later.
+  for (const id of [odd, telnet])
+    writeFileSync(fileOf(id), `${originals[id]}custom:\n  pick: zebrafish\n`);
+  writeFileSync(
+    snippetsFile,
+    `${savedSnippets ?? ""}Selection check: show hostname\n`,
+  );
+  try {
+    await showSideView(evaluate, "snippets");
+    await until("the selection's snippet", () =>
+      exists('[data-snippet="Selection check"]'),
+    );
+    await showSideView(evaluate, "hosts");
+    await until("the Jobs folder in the tree", () => exists(folderRow));
+    await expandFolder(evaluate, folderRow);
+    await until("the Jobs hosts", () => exists(row(telnet)));
+    await filterWords("zebrafish");
+    await until(
+      "the filter field showing jobs-odd and jobs-telnet only",
+      async () =>
+        (await exists(row(odd))) &&
+        (await exists(row(telnet))) &&
+        !(await exists(row(r1))),
+    );
+    await filterWords("");
+    await until("every host back", () => exists(row(r1)));
+    const order = await evaluate(
+      `[...document.querySelectorAll('nav button[data-host^="Jobs/"]')].map((b) => b.dataset.host)`,
+    );
+    if (json(order) !== json([odd, r1, telnet]))
+      fail(`the Jobs folder shows ${json(order)}`);
+
+    // Ctrl+click adds and takes out; the count shows; the details sheet,
+    // which follows one item, closes.
+    await clickOn(row(r1));
+    await showDetails(evaluate);
+    await clickOn(row(odd), { modifiers: CTRL });
+    await selectionIs([odd, r1], "2", "jobs-odd and jobs-r1 selected");
+    await until(
+      "the details sheet closed",
+      async () => !(await exists("[data-details-sheet]")),
+    );
+    await clickOn(row(telnet), { modifiers: CTRL });
+    await selectionIs([odd, r1, telnet], "3", "three hosts selected");
+    await clickOn(row(telnet), { modifiers: CTRL });
+    await selectionIs([odd, r1], "2", "jobs-telnet taken out again");
+    await screenshot("host-selection");
+    step(
+      "Ctrl+click added hosts to the selection and took one out; the Hosts view counted them and the details sheet closed",
+    );
+
+    // The menu on a selected row: the five job entries, nothing else.
+    await clickOn(row(r1), { button: "right" });
+    await until("the selection's menu", () =>
+      exists(`${menu}[data-menu-hosts="2"]`),
+    );
+    const offered = await entries();
+    if (
+      json(offered) !==
+      json(["run-snippet", "run-script", "send-file", "back-up", "enrich"])
+    )
+      fail(`the menu on two hosts offers ${json(offered)}`);
+    if (json(await chosen()) !== json([odd, r1]))
+      fail("the right-click changed the selection");
+    await screenshot("host-selection-menu");
+    step(
+      "the context menu on a selected row offered only Run snippet, Run script, Send file, Back up configs and Fill in from devices",
+    );
+
+    // Run snippet… on exactly those two: one runs, the other is skipped.
+    await clickOn(`${menu} [data-menu=run-snippet]`);
+    await until("the run-snippet tab", () => atStep("snippet"));
+    const title = await evaluate(
+      `[...document.querySelectorAll("[data-tab-view=job]")].map((t) => t.textContent.trim()).join(" | ")`,
+    );
+    if (!title.includes("Snippet on 2 hosts"))
+      fail(`the job tab is called ${json(title)}`);
+    await evaluate(`(() => {
+      const select = document.querySelector("${dialog} [name=job-snippet]");
+      select.value = "Selection check";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+    await clickOn(`${dialog} [data-job=plan]`);
+    await until("the pre-flight list", () => atStep("preflight"));
+    const plan = await evaluate(`(() => {
+      const d = document.querySelector("${dialog}");
+      return {
+        runs: [...d.querySelectorAll("[data-job-host]")].map((r) => r.dataset.jobHost),
+        skipped: Object.fromEntries([...d.querySelectorAll("[data-job-skipped]")].map(
+          (r) => [r.dataset.jobSkipped, r.dataset.skipReason])),
+        saveable: !!d.querySelector("[data-save-job=open]:not(:disabled)"),
+      };
+    })()`);
+    if (json(plan.runs) !== json([r1]))
+      fail(`the job on the selection would run on ${json(plan.runs)}`);
+    if (json(plan.skipped) !== json({ [odd]: "noPlatform" }))
+      fail(`the job on the selection skips ${json(plan.skipped)}`);
+    if (plan.saveable) fail("a job on two hosts can be saved as a job");
+    await clickOn(`${dialog} [name=job-confirm-production]`);
+    await until("the start button enabled", () =>
+      evaluate(
+        `!document.querySelector("${dialog} [data-job=start]").disabled`,
+      ),
+    );
+    await clickOn(`${dialog} [data-job=start]`);
+    await until("the job on the selection finished", () =>
+      exists(`${dialog} [data-job-progress][data-finished]`),
+    );
+    const result = await evaluate(`(() => {
+      const row = document.querySelector('${dialog} [data-job-result="${r1}"]');
+      return { state: row?.dataset.hostState, output: row?.querySelector("[data-job-output]")?.textContent ?? "" };
+    })()`);
+    if (
+      result.state !== "done" ||
+      !result.output.includes("lab-r1# show hostname")
+    )
+      fail(`the job on the selection ended ${json(result)}`);
+    await clickOn(`${dialog} [data-job=close]`);
+    await until("the job tab closed", async () => !(await exists(dialog)));
+    if ((await count()) !== "2") fail("the job ended the selection");
+    step(
+      "Run snippet… on the two selected hosts planned exactly those (one skipped for its platform), ran on the other and cannot be saved as a job",
+    );
+
+    // The clear button, then a Shift+click range and Escape.
+    await clickOn("[data-selection-clear]");
+    await selectionIs([], null, "the selection cleared");
+    await clickOn(row(odd));
+    await clickOn(row(telnet), { modifiers: SHIFT });
+    await selectionIs([odd, r1, telnet], "3", "the range selected");
+    await key(escape);
+    await selectionIs([], null, "the selection cleared by Escape");
+    step(
+      "the clear button ended the selection; Shift+click selected the hosts between; Escape in the tree cleared them",
+    );
+
+    // A right-click outside the selection selects that row alone, with
+    // its own menu.
+    await pick(odd, r1);
+    await clickOn(row(telnet), { button: "right" });
+    await selectionIs([telnet], null, "jobs-telnet selected alone");
+    const own = await entries();
+    if (!own.includes("connect") || (await exists(`${menu}[data-menu-hosts]`)))
+      fail(`a row outside the selection got the menu ${json(own)}`);
+    await key(escape);
+    await until("the menu closed", async () => !(await exists(menu)));
+    step("a right-click outside the selection selected that row alone");
+
+    // Ctrl on a folder is a plain click; a drag ends the selection and
+    // moves nothing (dropped back on its own folder).
+    await pick(odd, r1);
+    await clickOn(folderRow, { modifiers: CTRL });
+    await selectionIs([], null, "the folder selected instead");
+    if (
+      !(await evaluate(
+        `document.querySelector(${json(folderRow)}).classList.contains("selected")`,
+      ))
+    )
+      fail("Ctrl+click on a folder did not select it");
+    await expandFolder(evaluate, folderRow);
+    await pick(odd, r1);
+    const from = await reachable(evaluate, row(r1));
+    const send = (type, at, extra = {}) =>
+      devtools.send("Input.dispatchMouseEvent", {
+        type,
+        x: at.x,
+        y: at.y,
+        button: "left",
+        ...extra,
+      });
+    await send("mousePressed", from, { clickCount: 1 });
+    for (let i = 1; i <= 5; i++) {
+      await send(
+        "mouseMoved",
+        { x: from.x + i * 8, y: from.y },
+        { buttons: 1 },
+      );
+    }
+    await send(
+      "mouseReleased",
+      { x: from.x + 40, y: from.y },
+      { clickCount: 1 },
+    );
+    await selectionIs([], null, "the drag ended the selection");
+    if (!existsSync(fileOf(r1))) fail("the drag moved jobs-r1");
+    step(
+      "Ctrl+click on a folder selected the folder alone; a drag ended the selection",
+    );
+
+    // Under the filter field, Shift+click selects only the hosts shown.
+    await filterWords("zebrafish");
+    await until(
+      "the filter showing jobs-odd and jobs-telnet only",
+      async () =>
+        (await exists(row(odd))) &&
+        (await exists(row(telnet))) &&
+        !(await exists(row(r1))),
+    );
+    await clickOn(row(odd));
+    await clickOn(row(telnet), { modifiers: SHIFT });
+    await selectionIs([odd, telnet], "2", "the shown range selected");
+    await filterWords("");
+    await until("every host back", () => exists(row(r1)));
+    await selectionIs([odd, telnet], "2", "the selection kept");
+    step(
+      "under the filter field, Shift+click selected only the hosts it shows",
+    );
+
+    // Selected hosts deleted on disk leave the selection.
+    await clickOn(row(odd));
+    await clickOn(row(telnet), { modifiers: SHIFT });
+    await selectionIs([odd, r1, telnet], "3", "all three selected");
+    rmSync(fileOf(telnet));
+    await selectionIs([odd, r1], "2", "jobs-telnet gone from the selection");
+    if (await exists(row(telnet))) fail("the deleted host is still shown");
+    rmSync(fileOf(odd));
+    await selectionIs([r1], null, "jobs-r1 left selected alone");
+    await screenshot("host-selection-reload");
+    step(
+      "selected hosts deleted on disk left the selection (the last one stays selected alone)",
+    );
+  } finally {
+    for (const [id, text] of Object.entries(originals))
+      writeFileSync(fileOf(id), text);
+    if (savedSnippets === null) rmSync(snippetsFile, { force: true });
+    else writeFileSync(snippetsFile, savedSnippets);
+  }
+  await until(
+    "jobs-odd and jobs-telnet back",
+    async () => (await exists(row(odd))) && (await exists(row(telnet))),
+  );
 }
 
 /**

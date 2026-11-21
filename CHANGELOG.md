@@ -44,6 +44,13 @@ in the project's tracker.
   happened on each device. A device that already has the file (same name,
   same size) counts as done; one with another size, or one that cannot say
   (SCP only), fails unless **Overwrite** is ticked.
+- Several hosts can be selected in the Hosts view and a job run on them
+  [110]: Ctrl+click adds a host or takes it out, Shift+click selects the
+  hosts between, as the tree shows them. The view counts them, with a
+  button to clear them (Escape too), and the context menu on one of them
+  offers the jobs only: Run snippet…, Run script…, Send file…, Back up
+  configs and Fill in from devices, each on exactly those hosts. Such a
+  job cannot be saved as a job, as before for more than one host.
 - A platform definition has a seventh value, the folder where files belong
   on that platform [102]: `flash:` for IOS, `/mnt/flash` for EOS,
   `/var/tmp` for Junos, `bootflash:` for NX-OS (not verified), none for SR
