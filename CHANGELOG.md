@@ -202,10 +202,26 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
 - A second copy of netterm notices when the first turns the vault on or
   off or changes its master password, and says so. Before, it went on
   saving to a keychain nobody read, or called the vault damaged [117].
-- Two copies writing the vault at once no longer share one temporary file,
-  and a temporary file left by a write that was cut is removed at the
-  next start [117]. Still open: two copies saving at the same moment can
-  lose one of the changes.
+- Two copies of netterm saving to the vault at the same moment both keep
+  every change: they take turns through a lock file beside the vault, and
+  two turning the vault on at once make one vault [125]. Before, about
+  half of such changes were lost without a word. A temporary file left by
+  a write that was cut is removed at a later start [117].
+- Turning the vault on checks that Windows Credential Manager is empty
+  afterwards and says so if it is not. Copies a crash in the middle left
+  there are taken into the vault and removed at the next unlock, and Start
+  over removes them too, so no profile comes back after it [125].
+- Turning the vault off names an entry too large for Credential Manager
+  before anything is moved [125].
+- A copy starting, or `netterm-cli` reading, while another copy writes the
+  vault no longer takes the vault for missing: on Windows the file's name
+  can be gone for tens of milliseconds while it is replaced. A save waits
+  for a program that holds the file for a moment (an antivirus scanner)
+  and no longer fails [125].
+- The vault's plain contents are wiped from memory after turning on,
+  after each write and after turning off, where copies were left before
+  [125]. `netterm-cli` says a damaged vault is damaged before it asks for
+  the master password [125].
 - A host or settings file that starts with a byte order mark, as some
   Windows editors write it, loads [117].
 - More names Windows reserves are refused for hosts and folders: `COM0`,
