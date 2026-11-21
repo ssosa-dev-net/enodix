@@ -45,6 +45,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 serde_json = "1"
 
 # The program's version details on Windows (the crate Tauri uses for the
-# app's).
+# app's), and the VC++ runtime linked in, as Tauri does for the app: a clean
+# Windows has no vcruntime140.dll (#139).
 [target.'cfg(windows)'.build-dependencies]
+static_vcruntime = "3"
 tauri-winres = "0.3"

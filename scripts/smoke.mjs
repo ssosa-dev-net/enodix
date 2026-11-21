@@ -5,6 +5,21 @@
 //   npm run app:build && npm run smoke
 //
 // Windows only for now: it relies on WebView2's remote-debugging switch.
+//
+// Where it finds what it runs, for a computer with no Rust toolchain
+// (`npm run smoke:sandbox`, scripts/sandbox.mjs, #139); none set, it builds
+// and runs everything from this checkout as always:
+//
+//   SMOKE_APP_FOLDER   the folder of netterm.exe, netterm-cli.exe and
+//                      python\ (default target/release); written to (the
+//                      installed and portable markers)
+//   SMOKE_TEST_SERVER  a test_ssh_server.exe built beforehand: run as it
+//                      is, with no cargo build (default: built here)
+//   SMOKE_PYTHON       the Python the test itself asks first (the app looks
+//                      for one on its own, through py -3, python3, python)
+//   SMOKE_WEBVIEW2_POLICY  set: WebView2's arguments also go in the
+//                      machine's WebView2 policy (`webviewPolicy`; an
+//                      elevated app ignores the environment variable)
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -29,6 +44,8 @@ import {
   watchConnections,
 } from "./connections.mjs";
 
+/** The built app's folder (see the top). */
+const APP_FOLDER = process.env.SMOKE_APP_FOLDER || join("target", "release");
 const SSH_PORT = 22722;
 // A second test server, restricted to an old device's algorithms.
 const OLD_DEVICE_PORT = 22723;
@@ -146,8 +163,8 @@ const scpFolder = join(userData, "scp");
 // installer writes its uninstaller there; the smoke's is an empty file,
 // never run), the second a portable one (the release script puts it in the
 // portable zip). The first launch is "installed", the restart "portable".
-const INSTALLED_MARKER = "target/release/uninstall.exe";
-const PORTABLE_MARKER = "target/release/portable.txt";
+const INSTALLED_MARKER = join(APP_FOLDER, "uninstall.exe");
+const PORTABLE_MARKER = join(APP_FOLDER, "portable.txt");
 // The release the smoke's own release server announces.
 const NEWER_VERSION = "99.0.0";
 const RELEASE_PAGE = `https://example.invalid/netterm/releases/tag/v${NEWER_VERSION}`;
@@ -216,7 +233,7 @@ function createWorkspace() {
  * workspace's inventory, its problem reported but not fatal. */
 function headlessInventory() {
   const result = spawnSync(
-    "target/release/netterm-cli.exe",
+    join(APP_FOLDER, "netterm-cli.exe"),
     ["inventory", workspace, "--folder", "Lab"],
     { encoding: "utf8" },
   );
@@ -244,7 +261,7 @@ function headlessInventory() {
  * (`windowsHide`). */
 function headlessCredentials(host) {
   return spawnSync(
-    "target/release/netterm-cli.exe",
+    join(APP_FOLDER, "netterm-cli.exe"),
     ["credentials", workspace, host],
     {
       encoding: "utf8",
@@ -1216,14 +1233,19 @@ async function checkHeaderLine(evaluate, session, expected = []) {
 }
 
 function startServer() {
-  const build = spawnSync(
-    "cargo",
-    ["build", "-p", "netterm-core", "--example", "test_ssh_server"],
-    { stdio: "inherit" },
-  );
-  if (build.status !== 0) fail("could not build the test SSH server");
+  // One built beforehand (SMOKE_TEST_SERVER) runs as it is.
+  let program = process.env.SMOKE_TEST_SERVER;
+  if (!program) {
+    const build = spawnSync(
+      "cargo",
+      ["build", "-p", "netterm-core", "--example", "test_ssh_server"],
+      { stdio: "inherit" },
+    );
+    if (build.status !== 0) fail("could not build the test SSH server");
+    program = "target/debug/examples/test_ssh_server.exe";
+  }
   const server = spawn(
-    "target/debug/examples/test_ssh_server.exe",
+    program,
     [
       String(SSH_PORT),
       "--agent",
@@ -1251,6 +1273,31 @@ function startServer() {
   });
 }
 
+/**
+ * WebView2 (runtime 150 and later) ignores WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+ * in an elevated process, and in Windows Sandbox every process is elevated
+ * (no UAC): there the arguments go in the machine's WebView2 policy for
+ * netterm.exe instead (SMOKE_WEBVIEW2_POLICY, set by the sandbox run only;
+ * it needs administrator rights, which only the sandbox's account has).
+ */
+function webviewPolicy(browserArguments) {
+  const done = spawnSync(
+    "reg",
+    [
+      "add",
+      String.raw`HKLM\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments`,
+      "/v",
+      "netterm.exe",
+      "/d",
+      browserArguments,
+      "/f",
+    ],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (done.status !== 0)
+    fail(`the WebView2 policy could not be set: ${done.stderr}`);
+}
+
 /** Starts the app; `env` adds to (or overrides) its usual environment. */
 function startApp(env = {}) {
   // WebView2 logs its requests and the names it looks up. Every copy
@@ -1264,11 +1311,13 @@ function startApp(env = {}) {
   );
   harvestNetLog();
   netLogs.copies += 1;
-  const app = spawn("target/release/netterm.exe", [], {
+  const browserArguments = `--remote-debugging-port=${DEVTOOLS_PORT} ${netLogArguments(netLogs.file)}`;
+  if (process.env.SMOKE_WEBVIEW2_POLICY) webviewPolicy(browserArguments);
+  const app = spawn(join(APP_FOLDER, "netterm.exe"), [], {
     stdio: "inherit",
     env: {
       ...process.env,
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEVTOOLS_PORT} ${netLogArguments(netLogs.file)}`,
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArguments,
       WEBVIEW2_USER_DATA_FOLDER: userData,
       NETTERM_DATA_DIR: appData,
       // Credential profiles stay in memory: the smoke test never touches
@@ -1873,6 +1922,13 @@ async function main() {
   // Types into a side-panel field and commits it, as leaving the field does.
   const changeField = async (selector, value) => {
     await showDetails(evaluate);
+    // The panel's fields are drawn a moment after it shows (#139: slower in
+    // Windows Sandbox).
+    await until(`the side panel's ${selector}`, () =>
+      evaluate(
+        `!!document.querySelector(".side " + ${JSON.stringify(selector)})`,
+      ),
+    );
     await evaluate(`(() => {
       const input = document.querySelector(".side " + ${JSON.stringify(selector)});
       input.value = ${JSON.stringify(value)};
@@ -4189,7 +4245,13 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
 
 /** A Python 3.10 or newer of this machine ({ executable, version }), or null. */
 function systemPython() {
-  for (const [command, ...args] of [["py", "-3"], ["python3"], ["python"]]) {
+  const told = process.env.SMOKE_PYTHON ? [[process.env.SMOKE_PYTHON]] : [];
+  for (const [command, ...args] of [
+    ...told,
+    ["py", "-3"],
+    ["python3"],
+    ["python"],
+  ]) {
     const done = spawnSync(
       command,
       [
@@ -6691,8 +6753,11 @@ async function jobs({
     // the tab beside and that window show it at once; the terminal still
     // takes the keys.
     await showSideView(evaluate, "jobs");
-    if (!(await exists(`${JOBS_SIDE} [data-run-cancel="${hangRun}"]`)))
-      fail("the Jobs view offers no cancel for the running job");
+    // Its runs are listed a moment after the view shows (in Windows Sandbox,
+    // #139, the check made at once failed).
+    await until("the Jobs view's cancel for the running job", () =>
+      exists(`${JOBS_SIDE} [data-run-cancel="${hangRun}"]`),
+    ).catch(() => fail("the Jobs view offers no cancel for the running job"));
     await evaluate(
       `window.__TAURI_INTERNALS__.invoke("window_detach_run", { run: ${json(hangRun)} })`,
     );
