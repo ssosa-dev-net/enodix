@@ -40,7 +40,7 @@ As of 2026-11-21, every item but 8 is built. Items 1, 2, 3, 5, 6 and 7 were rele
 
 - **The release files themselves:** the installer, the portable zip and the Linux packages of 0.3.0 and 0.4.0 were built and checksummed, not installed and run as part of the release. The end-to-end test runs the same code built without the installer.
 - **Linux desktop:** the packages build and the core, the headless binary and the Python bridge pass their tests under WSL. The app itself has not been run on a real Linux desktop; the check list is in `docs/linux.md`.
-- **NX-OS:** its built-in platform definition has not been run against a device (no image in the lab). The other five are verified in the containerlab suite.
+- **NX-OS:** its built-in platform definition has not been run against a device (no image in the lab). The other five are verified in the containerlab suite. Settled on 2026-11-21: this is not a check owed. NX-OS is a platform definition like the others, a handful of values the user can correct in the app, and everything else it uses is the same code the five verified platforms use.
 - **Privilege password:** no lab account asks for an enable password, so that question has only been exercised against the test device.
 - **Files:** checked on the five lab devices, which are virtual. Not verified: NX-OS, the name of flash on physical Catalyst switches, speeds on real hardware, a jump host that needs a typed login, a real Explorer drag and the real file dialog (the end-to-end test plays both), Linux. The list is in [docs/files.md](docs/files.md).
 
@@ -126,7 +126,7 @@ Act on many devices at once, with config backup as the proving use case.
 - A definition has seven values: prompt pattern, disable-paging command, privilege command, privilege password prompt, show-config command, a pattern for lines to ignore when comparing configs, and the file folder (where files belong on the device, such as `flash:` or `/mnt/flash`; #102). All but the prompt are optional.
 - Stored in `_platforms.yaml` at the workspace root and shared through git, but created and edited only in the app.
 - A definition is matched to a host by its `platform` field, ignoring case. The field becomes a dropdown of defined platforms that still accepts typed text, and it can be set on a folder so a folder of identical devices needs one assignment.
-- Built in: SR Linux, EOS, FRR, IOS, NX-OS and Junos, each verified in the containerlab suite before it ships (NX-OS is still to verify).
+- Built in: SR Linux, EOS, FRR, IOS, NX-OS and Junos, each verified in the containerlab suite before it ships (all but NX-OS, which has no lab image).
 - The engine sends the credential profile's enable secret at the privilege prompt.
 
 **Jobs**
@@ -174,7 +174,7 @@ Move images and configs to and from devices without a separate tool.
 - The closing sweep (#108, 2026-11-21) walked the spec's user stories in the built app, against the example server and the lab's devices through its jump host, and added a files check to the containerlab suite (`lab_files`: SFTP on SR Linux, cEOS, FRR and cJunos; SCP on the CSR 1000v).
   - On cEOS a 400 MB upload ran at about 100 MB/s while a terminal on the same device answered as quickly as before it. The same file went as a job to cEOS, cJunos and the CSR (about 2.7 MB/s over SCP there), and each device's own checksum matched the MD5 the run shows.
   - It found one fault, fixed there: IOS-XE ends the whole connection when it closes the SFTP channel it has no server for, and a file job took that for a lost connection instead of falling back to SCP. The app now goes by the channel the device closed in order.
-  - One difference from the design, kept: on a device with SCP only a login typed in the tab is kept while the tab is open and used for each file, not asked again per file. A login that asks a question each time (a one-time code) still fails each transfer, since nobody is asked.
+  - One difference from the design, kept: on a device with SCP only a login typed in the tab is kept while the tab is open and used for each file, not asked again per file. A login that asks a question each time (a one-time code) failed each transfer at the time of the sweep, since nobody was asked; since #109 the tab asks it for each file, and a host key trusted only once likewise.
 
 ## 5. Headless binary, Python bridge and script jobs
 
