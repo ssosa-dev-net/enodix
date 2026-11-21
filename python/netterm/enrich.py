@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
@@ -46,6 +47,9 @@ FORMAT = 1
 FACTS = ("vendor", "model", "serial_number", "os_version")
 #: How many devices are asked at once.
 PARALLEL = 10
+#: How often the facts file is tried again when it cannot be replaced (50 ms
+#: apart).
+REPLACE_TRIES = 40
 
 DriverFinder = Callable[[str], Any]
 
@@ -140,7 +144,18 @@ def _write(path: Path, hosts: List[Dict[str, Any]]) -> None:
     handle, temporary = tempfile.mkstemp(prefix=".facts-", dir=path.parent)
     with os.fdopen(handle, "w", encoding="utf-8") as out:
         out.write(text)
-    os.replace(temporary, path)
+    # On Windows a file cannot be replaced while something reads it (a
+    # virus scanner, an indexer): try again for a moment rather than lose
+    # every host's facts (#119).
+    for attempt in range(REPLACE_TRIES):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt + 1 == REPLACE_TRIES:
+                os.remove(temporary)
+                raise
+            time.sleep(0.05)
 
 
 def collect(

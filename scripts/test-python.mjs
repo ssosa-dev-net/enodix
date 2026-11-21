@@ -77,15 +77,10 @@ if (!found) {
 const python = found.executable;
 console.log(`test:python: using Python ${found.version}, ${python}`);
 
-run("cargo", [
-  "build",
-  "-p",
-  cliName(),
-  "-p",
-  "netterm-core",
-  "--example",
-  "test_ssh_server",
-]);
+// Two builds: with `--example`, cargo builds only that example of every
+// package named, so the binary was built only when something else had.
+run("cargo", ["build", "-p", cliName()]);
+run("cargo", ["build", "-p", "netterm-core", "--example", "test_ssh_server"]);
 const debug = join(ROOT, "target", "debug");
 const cli = join(debug, `${cliName()}${EXE}`);
 const server = join(debug, "examples", `test_ssh_server${EXE}`);

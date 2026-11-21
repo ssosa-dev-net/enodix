@@ -18,11 +18,12 @@
 //! `output/script.txt`, its exit status), and its `targets` the hosts it
 //! ran for.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -305,7 +306,7 @@ impl RunStore {
             step: plan.step.clone(),
             started: now(),
             ended: None,
-            hosts,
+            hosts: with_files_of_their_own(hosts),
             skipped: plan
                 .skipped
                 .iter()
@@ -324,11 +325,16 @@ impl RunStore {
             }),
             cancel_reason: None,
         };
-        let recorder = RunRecorder {
+        let mut recorder = RunRecorder {
             folder,
             run,
             active: Some(self.active.clone()),
             reason: None,
+            saved: Instant::now(),
+            unsaved: false,
+            pending: BTreeMap::new(),
+            pending_bytes: 0,
+            files: BTreeMap::new(),
         };
         for host in &recorder.run.hosts {
             let path = recorder.folder.join(&host.file);
@@ -518,10 +524,45 @@ pub struct RunRecorder {
     active: Option<Active>,
     /// Why it is being cancelled, if not by the user.
     reason: Option<String>,
+    /// When the description was last written, and whether it has changed
+    /// since: it is written at most every [`SAVE_EVERY`] while the run
+    /// goes on.
+    saved: Instant,
+    unsaved: bool,
+    /// Output not written yet, by output file, and how much of it.
+    pending: BTreeMap<String, String>,
+    pending_bytes: usize,
+    /// The output files of the hosts still running, kept open while they
+    /// run (at most as many as run at once), and how much each was given.
+    files: BTreeMap<String, OutputFile>,
 }
+
+/// A host's output file while its run is recorded.
+#[derive(Debug, Default)]
+struct OutputFile {
+    /// Open for appending while the host runs.
+    open: Option<fs::File>,
+    /// The bytes appended to it.
+    written: usize,
+    /// A write failed: the file is written whole at the end.
+    failed: bool,
+}
+
+/// How often a running run's files are written at most: its description
+/// (the hosts' states) and the output that came meanwhile. Written for
+/// every event, a run of 500 hosts spent most of its time on it (#119):
+/// 2 000 rewrites of a description that grows with the hosts, and a file
+/// opened for every piece of output. A crash loses at most this much of
+/// what happened; the end is always written.
+pub const SAVE_EVERY: Duration = Duration::from_millis(250);
+/// How much output may wait to be written before it is, whatever the
+/// time.
+pub const PENDING_OUTPUT: usize = 1024 * 1024;
 
 impl Drop for RunRecorder {
     fn drop(&mut self) {
+        // The latest states, for a run that will not be recorded further.
+        let _ = self.flush();
         self.release();
     }
 }
@@ -550,32 +591,56 @@ impl RunRecorder {
     pub fn record(&mut self, event: &JobEvent) -> Result<(), ResultsError> {
         match event {
             JobEvent::State { host, state } => {
+                let mut ended = None;
                 if let Some(entry) = self.run.hosts.iter_mut().find(|h| &h.id == host) {
                     entry.state = state.clone();
+                    self.unsaved = true;
+                    if state.is_final() {
+                        ended = Some(entry.file.clone());
+                    }
                 }
-                self.save()
+                // A host that has ended writes its last output and lets
+                // its file go.
+                let written = match ended {
+                    Some(file) => {
+                        let written = self.write_pending(&file);
+                        if let Some(output) = self.files.get_mut(&file) {
+                            output.open = None;
+                        }
+                        written
+                    }
+                    None => Ok(()),
+                };
+                written.and(self.save_now_and_then())
             }
             JobEvent::Backup { host, outcome } => {
                 if let Some(entry) = self.run.hosts.iter_mut().find(|h| &h.id == host) {
                     entry.backup = Some(outcome.clone());
+                    self.unsaved = true;
                 }
-                self.save()
+                self.save_now_and_then()
             }
             // Progress is live only.
-            JobEvent::Progress { .. } => Ok(()),
+            JobEvent::Progress { .. } => self.save_now_and_then(),
             JobEvent::Output { host, text } => {
                 let Some(entry) = self.run.host(host) else {
                     return Ok(());
                 };
-                let path = self.folder.join(&entry.file);
-                OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(&path)
-                    .and_then(|mut file| file.write_all(text.as_bytes()))
-                    .map_err(io_error(&path))
+                self.pending_bytes += text.len();
+                self.pending
+                    .entry(entry.file.clone())
+                    .or_default()
+                    .push_str(text);
+                self.save_now_and_then()
             }
             JobEvent::Finished(report) => {
+                // What came in pieces first; a file that missed one is
+                // written whole below.
+                let pending: Vec<String> = self.pending.keys().cloned().collect();
+                for file in pending {
+                    let _ = self.write_pending(&file);
+                }
+                let files = std::mem::take(&mut self.files);
                 let mut first_error = None;
                 for result in &report.hosts {
                     let Some(entry) = self.run.hosts.iter_mut().find(|h| h.id == result.id) else {
@@ -588,12 +653,20 @@ impl RunRecorder {
                     if result.facts.is_some() {
                         self.run.facts.clone_from(&result.facts);
                     }
-                    // The whole output again, in case a piece was not kept.
+                    let whole = files
+                        .get(&entry.file)
+                        .is_some_and(|file| !file.failed && file.written == result.output.len())
+                        || (result.output.is_empty() && !files.contains_key(&entry.file));
+                    if whole {
+                        continue;
+                    }
+                    // The whole output again: a piece was not kept.
                     let path = self.folder.join(&entry.file);
                     if let Err(error) = fs::write(&path, &result.output) {
                         first_error.get_or_insert(io_error(&path)(error));
                     }
                 }
+                drop(files);
                 if report.file.is_some() {
                     self.run.file.clone_from(&report.file);
                 }
@@ -615,6 +688,67 @@ impl RunRecorder {
         }
     }
 
+    /// Writes what changed if nothing was written for [`SAVE_EVERY`] (or
+    /// [`PENDING_OUTPUT`] bytes of output wait).
+    fn save_now_and_then(&mut self) -> Result<(), ResultsError> {
+        if self.saved.elapsed() < SAVE_EVERY && self.pending_bytes < PENDING_OUTPUT {
+            return Ok(());
+        }
+        self.flush()
+    }
+
+    /// Writes at once what is not written yet: the output that came since,
+    /// and the description if a host's state changed. For a caller that
+    /// has no event to record for a while.
+    pub fn flush(&mut self) -> Result<(), ResultsError> {
+        let mut first_error = None;
+        let pending: Vec<String> = self.pending.keys().cloned().collect();
+        for file in pending {
+            if let Err(error) = self.write_pending(&file) {
+                first_error.get_or_insert(error);
+            }
+        }
+        self.pending_bytes = 0;
+        self.saved = Instant::now();
+        if self.unsaved {
+            self.save()?;
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Appends the output waiting for `file` to it.
+    fn write_pending(&mut self, file: &str) -> Result<(), ResultsError> {
+        let Some(text) = self.pending.remove(file) else {
+            return Ok(());
+        };
+        self.pending_bytes = self.pending_bytes.saturating_sub(text.len());
+        let path = self.folder.join(file);
+        let output = self.files.entry(file.to_string()).or_default();
+        let written = match &mut output.open {
+            Some(open) => open.write_all(text.as_bytes()),
+            None => OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)
+                .and_then(|mut open| {
+                    open.write_all(text.as_bytes())?;
+                    output.open = Some(open);
+                    Ok(())
+                }),
+        };
+        match written {
+            Ok(()) => {
+                output.written += text.len();
+                Ok(())
+            }
+            Err(error) => {
+                output.failed = true;
+                output.open = None;
+                Err(io_error(&path)(error))
+            }
+        }
+    }
+
     /// No longer running.
     fn release(&mut self) {
         if let Some(active) = self.active.take() {
@@ -624,7 +758,9 @@ impl RunRecorder {
 
     /// Writes the description (whole, so that it is never read half
     /// written).
-    fn save(&self) -> Result<(), ResultsError> {
+    fn save(&mut self) -> Result<(), ResultsError> {
+        self.saved = Instant::now();
+        self.unsaved = false;
         let text = serde_norway::to_string(&self.run).map_err(|error| ResultsError::Damaged {
             run: self.run.id.clone(),
             reason: error.to_string(),
@@ -697,6 +833,28 @@ fn output_file(id: &HostId) -> String {
     out.push_str(&stem);
     out.push_str(".txt");
     out
+}
+
+/// `hosts` with an output file each: two hosts whose ids differ only in
+/// their extension (`r1.yaml`, `r1.yml`) or in case would share one, so
+/// the later gets `<stem>_2.txt` (`_3`...).
+fn with_files_of_their_own(mut hosts: Vec<RunHost>) -> Vec<RunHost> {
+    let mut taken = BTreeSet::new();
+    for host in &mut hosts {
+        let base = host
+            .file
+            .strip_suffix(".txt")
+            .unwrap_or(&host.file)
+            .to_string();
+        let mut file = host.file.clone();
+        let mut n = 1;
+        while !taken.insert(file.to_lowercase()) {
+            n += 1;
+            file = format!("{base}_{n}.txt");
+        }
+        host.file = file;
+    }
+    hosts
 }
 
 /// Creates the folder `<parent>/<base>`, or `<base>_2`, `_3`... if taken;

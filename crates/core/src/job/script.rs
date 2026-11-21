@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 
-use super::run::{HostResult, HostState, JobEvent, JobReport};
+use super::run::{HostResult, HostState, JobEvent, JobReport, KeptOutput};
 use super::{JobPlan, JobStep, PlannedScript, ScriptRun};
 use crate::enrich::{CollectedFacts, ENRICH_TITLE, FACTS_VARIABLE};
 use crate::logging::PlainText;
@@ -124,6 +124,10 @@ impl ScriptTargets {
     }
 }
 
+/// How many pieces of a script's output (8 KiB each at most) may wait to
+/// be taken.
+const PIECES_IN_FLIGHT: usize = 64;
+
 /// How the process ended.
 enum Ended {
     Exited(ExitStatus),
@@ -135,6 +139,7 @@ pub(super) fn spawn(
     plan: &JobPlan,
     script: &PlannedScript,
     options: &ScriptOptions,
+    output_limit: usize,
     events: mpsc::UnboundedSender<JobEvent>,
     cancel: watch::Receiver<bool>,
 ) {
@@ -151,7 +156,7 @@ pub(super) fn spawn(
         }),
         events,
         text: PlainText::new(),
-        output: String::new(),
+        output: KeptOutput::new(output_limit),
     };
     let targets = ScriptTargets {
         format: TARGETS_FORMAT,
@@ -189,7 +194,8 @@ struct Runner {
     /// The text of stdout and stderr, which share one pipe, so their
     /// lines come in the order the script wrote them (as in a terminal).
     text: PlainText,
-    output: String,
+    /// Up to the output limit: a flood is not held whole.
+    output: KeptOutput,
 }
 
 impl Runner {
@@ -224,7 +230,7 @@ impl Runner {
                 id: self.id.clone(),
                 name: self.name.clone(),
                 state,
-                output: std::mem::take(&mut self.output),
+                output: std::mem::take(&mut self.output.text),
                 backup: None,
                 exit_status,
                 facts,
@@ -297,7 +303,9 @@ impl Runner {
         let mut tree = started.map_err(not_started)?;
         self.state(HostState::Running);
 
-        let (sender, pieces) = std_mpsc::channel();
+        // Bounded: a script writing faster than its output is taken waits
+        // on its pipe, rather than its output piling up here.
+        let (sender, pieces) = std_mpsc::sync_channel(PIECES_IN_FLIGHT);
         read_pipe(output, sender);
 
         loop {
@@ -351,7 +359,9 @@ impl Runner {
         if text.is_empty() {
             return;
         }
-        self.output.push_str(&text);
+        let Some(text) = self.output.add(text) else {
+            return;
+        };
         let _ = self.events.send(JobEvent::Output {
             host: self.id.clone(),
             text,
@@ -379,7 +389,7 @@ fn exited(status: ExitStatus) -> HostState {
     }
 }
 
-fn read_pipe(mut stream: impl Read + Send + 'static, sender: std_mpsc::Sender<Vec<u8>>) {
+fn read_pipe(mut stream: impl Read + Send + 'static, sender: std_mpsc::SyncSender<Vec<u8>>) {
     thread::spawn(move || {
         let mut buffer = vec![0; 8192];
         // Returning drops the sender: the receiver then sees the end.
