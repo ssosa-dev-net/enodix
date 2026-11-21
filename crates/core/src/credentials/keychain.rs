@@ -380,7 +380,7 @@ mod os {
                     unsafe { CloseHandle(mutex) };
                     Err(StoreError(if waited == WAIT_TIMEOUT {
                         format!(
-                            "the Windows credentials are held by another copy of the app for more than {} s",
+                            "the Windows credentials are held by another netterm program (the app, netterm-cli or a script) for more than {} s",
                             TURN_WAIT_MS / 1000
                         )
                     } else {
