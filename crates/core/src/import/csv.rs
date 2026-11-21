@@ -87,7 +87,8 @@ pub enum CsvError {
 impl CsvTable {
     /// Reads the CSV file at `path`.
     pub fn read(path: impl AsRef<Path>) -> Result<Self, CsvError> {
-        let bytes = std::fs::read(path).map_err(|error| CsvError::Io(error.to_string()))?;
+        let bytes =
+            std::fs::read(path).map_err(|error| CsvError::Io(super::read_reason(&error)))?;
         Self::parse(&bytes)
     }
 
@@ -413,8 +414,16 @@ pub fn suggest_mapping(headers: &[String]) -> Vec<ColumnTarget> {
 pub enum MappingError {
     #[error("the file has {columns} columns but {mapping} are mapped")]
     ColumnCount { columns: usize, mapping: usize },
-    #[error("no column is mapped to the management address")]
-    NoAddress,
+    /// No column fills the address. `first_row_is_a_device`: a column is
+    /// named by an IP address, so the file most likely has no row of
+    /// column names (a first export's mistake, #116).
+    #[error("{}", if *.first_row_is_a_device {
+        "no column fills the management address, and the first row looks like a device: \
+         the first row must name the columns, so add one such as name,address at the top of the file"
+    } else {
+        "no column fills the management address: choose Management address for the column that holds it"
+    })]
+    NoAddress { first_row_is_a_device: bool },
     #[error("more than one column is mapped to {0}")]
     FieldTwice(HostField),
     #[error("more than one column is mapped to the folder path")]
@@ -551,7 +560,11 @@ impl<'a> Planner<'a> {
             }
         }
         if !fields.contains(&HostField::Address) {
-            return Err(MappingError::NoAddress);
+            return Err(MappingError::NoAddress {
+                first_row_is_a_device: headers
+                    .iter()
+                    .any(|header| header.parse::<std::net::IpAddr>().is_ok()),
+            });
         }
         if workspace.folder(&import.target).is_none() {
             return Err(MappingError::NoSuchFolder(import.target.clone()));

@@ -150,6 +150,10 @@
       set: (s, v) => ({ ...s, credential_profile: toText(v) }),
       effective: (e) => e.credential_profile,
       unset: "none",
+      note:
+        "The login to use: the name of a profile in the Credentials view, or " +
+        "a new name, set up the first time you connect. Without one, the " +
+        "login is asked at each connection.",
     },
     {
       key: "jump_host",
@@ -159,6 +163,9 @@
       set: (s, v) => ({ ...s, jump_host: toText(v) }),
       effective: (e) => e.jump_host,
       unset: "none (direct)",
+      note:
+        "Another host of the workspace, named by its id (folder and file, " +
+        "as the list offers).",
     },
     {
       key: "legacy_crypto",

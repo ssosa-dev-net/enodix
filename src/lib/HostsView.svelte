@@ -769,8 +769,8 @@
     {/if}
   {:else if !inventory.openError}
     <p class="hint" data-needs-workspace>
-      No workspace is open. Open or create one from the welcome view, or by the
-      name above, to see its hosts here.
+      No workspace is open. Open or create one from the welcome view, or from
+      “No workspace” above, to see its hosts here.
     </p>
   {/if}
 </div>

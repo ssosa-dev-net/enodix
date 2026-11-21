@@ -110,6 +110,12 @@
           <button type="button" onclick={oncancel}>Cancel</button>
         </div>
       </form>
+      {#if missingProfile === null && !fallback}
+        <p class="hint" data-credentials-hint>
+          Asked at each connection: to keep a login, name a credential profile
+          in the Credential profile setting of this host's details.
+        </p>
+      {/if}
     {/if}
   </div>
 </main>
@@ -143,6 +149,11 @@
   p {
     margin: calc(-1 * var(--space-2)) 0 var(--space-1-5);
     color: var(--muted);
+  }
+
+  p.hint {
+    margin: 0;
+    font-size: var(--text-xs);
   }
 
   p.notice {

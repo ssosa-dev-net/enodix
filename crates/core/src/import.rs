@@ -96,6 +96,17 @@ pub struct FieldValue {
 /// Why a password is not imported.
 pub(crate) const PASSWORDS_SKIPPED: &str = "passwords are never written to the workspace";
 
+/// Why a file to import could not be read, in the user's words: a file
+/// that is not there says so and what to do, not the system's "os error 2"
+/// (#116).
+pub(crate) fn read_reason(error: &std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        "there is no such file; check the path".into()
+    } else {
+        error.to_string()
+    }
+}
+
 /// Whether a field called `name` holds a password or another secret (a
 /// token, a key, an SNMP community, credentials), which an import never
 /// writes to the workspace. Judged by the name alone, erring on the side of

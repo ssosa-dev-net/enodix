@@ -407,6 +407,14 @@
           </p>
         {/if}
       </div>
+      {#if report.created.length > 0}
+        <p class="note" data-report-next>
+          Double-click a host to connect. So that they log in without asking
+          each time, name a credential profile in the Credential profile setting
+          of their folder (its details), or in Workspace settings at the top of
+          the Hosts view.
+        </p>
+      {/if}
       <div class="actions">
         <button type="button" class="primary" data-csv="close" onclick={onclose}
           >Close</button

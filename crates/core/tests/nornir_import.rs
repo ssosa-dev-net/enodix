@@ -642,11 +642,10 @@ fn inventories_are_read_from_files() {
             ..
         }
     ));
-    assert!(
-        error
-            .to_string()
-            .starts_with("cannot read the defaults file"),
-        "{error}"
+    // In the user's words, not the system's "os error 2" (#116).
+    assert_eq!(
+        error.to_string(),
+        "cannot read the defaults file: there is no such file; check the path"
     );
 }
 

@@ -473,6 +473,33 @@ async fn a_device_the_jump_host_cannot_reach_is_reported() {
 }
 
 #[test]
+fn a_jump_host_named_by_its_host_name_is_reported_with_its_id() {
+    // As a newcomer writes it: the bastion's name, not its id (#116).
+    let (_temp, workspace) = workspace(&[
+        ("Site/bastion.yaml", host(22, "")),
+        ("Site/router.yaml", host(22, "jump_host: bastion\n")),
+    ]);
+    let router = workspace
+        .resolve_host(&HostId::new("Site/router.yaml"))
+        .unwrap();
+
+    let error = workspace.jump_chain(&router).unwrap_err();
+
+    assert_eq!(
+        error,
+        JumpChainError::Missing {
+            from: HostId::new("Site/router.yaml"),
+            jump_host: "bastion".into(),
+            named: Some(HostId::new("Site/bastion.yaml")),
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the jump host bastion of Site/router.yaml is named by its host name; name it by its id, Site/bastion.yaml, as the Jump host setting lists it"
+    );
+}
+
+#[test]
 fn a_jump_host_missing_from_the_workspace_is_reported() {
     let (_temp, workspace) = workspace(&[
         ("Site/_folder.yaml", "jump_host: Site/gone.yaml\n".into()),
@@ -488,11 +515,12 @@ fn a_jump_host_missing_from_the_workspace_is_reported() {
         JumpChainError::Missing {
             from: HostId::new("Site/router.yaml"),
             jump_host: "Site/gone.yaml".into(),
+            named: None,
         }
     );
     assert_eq!(
         error.to_string(),
-        "the jump host Site/gone.yaml of Site/router.yaml is not in the workspace"
+        "the jump host Site/gone.yaml of Site/router.yaml is not in the workspace; choose one the Jump host setting lists"
     );
 
     let store = MemoryStore::new();

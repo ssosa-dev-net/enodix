@@ -110,7 +110,7 @@ impl NornirInventory {
         let text = |path: &Path, file| {
             std::fs::read_to_string(path).map_err(|error| NornirError::Io {
                 file,
-                reason: error.to_string(),
+                reason: super::read_reason(&error),
             })
         };
         let hosts = text(hosts, NornirFile::Hosts)?;

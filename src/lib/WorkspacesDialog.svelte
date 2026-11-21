@@ -247,7 +247,7 @@
         if (folder) void run(() => openWorkspace(folder));
       }}
     >
-      <label for="workspace-add-folder">Add an existing folder</label>
+      <label for="workspace-add-folder">Open an existing folder</label>
       <div class="row">
         <input
           id="workspace-add-folder"
@@ -258,7 +258,7 @@
           spellcheck="false"
         />
         <button type="button" onclick={() => browse("add")}>Browse…</button>
-        <button type="submit" disabled={busy || !addFolder.trim()}>Add</button>
+        <button type="submit" disabled={busy || !addFolder.trim()}>Open</button>
       </div>
     </form>
 
