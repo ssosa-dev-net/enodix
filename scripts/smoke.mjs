@@ -5914,14 +5914,19 @@ async function quittingWithLiveSessions({ app, evaluate, devtools, step }) {
     : null;
   writeFileSync(snippetsFile, `${savedSnippets ?? ""}Close check: hang\n`);
   // Planned once the app has read the snippet (a refusal is tried again).
-  await until("the job to close on planned", async () => {
+  const planned = await until("the job to close on planned", async () => {
     const plan = await invokeIn(evaluate, "job_plan", {
       target: { kind: "hosts", ids: ["Jobs/jobs-r1.yaml"] },
       step: { kind: "snippet", name: "Close check", answers: {} },
     });
-    return plan.hosts.length === 1;
+    return plan.hosts.length === 1 && plan;
   });
-  const started = await invokeIn(evaluate, "job_start", { label: "jobs-r1" });
+  // Start names its plan and the production hosts confirmed for it (#121).
+  const started = await invokeIn(evaluate, "job_start", {
+    plan: planned.id,
+    confirmedProduction: planned.production,
+    label: "jobs-r1",
+  });
   const hangRunning = async () => {
     const live = (await invokeIn(evaluate, "jobs_live")).find(
       (job) => job.run === started.run,
