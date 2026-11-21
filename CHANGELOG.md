@@ -140,6 +140,18 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   question asked for them. The app itself now also refuses to start a plan
   whose production hosts were not confirmed for it. A pre-flight that is
   no longer current says so and offers "Plan again".
+- Multi-send: a paste or a snippet begun in a tab outside the group stays
+  in that tab, even if the tab joins the group while it is asked about or
+  still being sent [123]. Before, its remaining lines went to every
+  member, production ones included, without the group's question.
+- Multi-send: a group paste goes to the group as it is when you press
+  Send. If the group changes while you are asked, in any window, the
+  question closes, nothing is pasted and the window says so; a member that
+  leaves or closes during a paste gets no more of it; a paste from a tab
+  whose group was ended elsewhere is called off and said, no longer
+  dropped silently [123].
+- Multi-send: the app itself, not only the window, refuses to add a
+  production session to the group without its question [123].
 - A job whose `enable` is answered with a message and leaves the device
   at the same prompt (IOS's "% No password set") fails the host with the
   device's words [122]. Before, it carried on unprivileged, and a config
