@@ -300,7 +300,17 @@
     backup = null;
     backupNoticeDismissed = false;
     markReconnect();
-    reconnecting.reconnect(currentSize()).catch(
+    const requested = currentSize();
+    reconnecting.reconnect(requested).then(
+      () => {
+        // The terminal may have changed size while the shell was
+        // reconnecting (the closed notice goes away at once): a resize
+        // sent before the new connection existed reached the old one.
+        const now = currentSize();
+        if (now.cols !== requested.cols || now.rows !== requested.rows) {
+          reconnecting.resize(now);
+        }
+      },
       (error) =>
         (status = {
           state: "closed",

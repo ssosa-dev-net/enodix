@@ -12527,6 +12527,11 @@ async function editInventory({
   }
   await click("Delete 2 hosts");
   await until("the folder with hosts deleted", () => !existsSync(file("Lab")));
+  // The files go before the dialog does: the next part clicks the tabs.
+  await until(
+    "the delete confirmation closed",
+    async () => !(await evaluate(`!!document.querySelector("[role=dialog]")`)),
+  );
   step("deleting a folder with hosts asked for confirmation first");
 }
 
