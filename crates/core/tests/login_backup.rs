@@ -299,6 +299,39 @@ async fn a_configuration_shown_slowly_is_backed_up_whole() {
     );
 }
 
+/// As in a job (#136): a configured line that ends like a prompt, and a
+/// pause right after it, do not end the configuration: it is kept whole.
+#[tokio::test]
+async fn a_pause_after_a_configuration_line_like_a_prompt_is_backed_up_whole() {
+    let server = TestSshServer::start_device("r1").await;
+    for line in ["banner motd ^C", "core-7#", "^C", "interface Loopback1"] {
+        server.configure(line);
+    }
+    server.set_config_stall("core-7#", std::time::Duration::from_millis(1500));
+    let site = Site::new(&server);
+    let manager = support::manager();
+    let backup = site
+        .backup(SessionLogin::Profile)
+        .expect("the backup applies");
+    let (_id, mut events) = manager.open_with(
+        SessionTarget::Ssh(site.target(SessionLogin::Profile)),
+        SIZE,
+        OpenOptions {
+            when_connected: Some(Arc::new(backup)),
+            ..OpenOptions::default()
+        },
+    );
+    let mut seen = Seen::default();
+    connected(&mut events, &server, &mut seen).await;
+    let LoginBackupOutcome::Saved { version } = backup_outcome(&mut events, &mut seen).await else {
+        panic!("the configuration was not saved");
+    };
+    assert_eq!(
+        site.configs.read(site.id(), &r1(), &version).unwrap(),
+        server.running_config(1)
+    );
+}
+
 #[tokio::test]
 async fn it_runs_again_after_a_reconnect() {
     let server = TestSshServer::start_device("r1").await;

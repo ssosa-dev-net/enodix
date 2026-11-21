@@ -73,7 +73,7 @@ pub use run::{
     check, output_cut, start, HostResult, HostState, Job, JobCanceller, JobEvent, JobOptions,
     JobReport, SentFile, StartError, DEFAULT_COMMAND_LIMIT, DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_OUTPUT_LIMIT, DEFAULT_PARALLEL, HIDDEN_SECRET, JOB_TERMINAL_SIZE, MAX_PARALLEL,
-    PROGRESS_EVERY, PROMPT_SETTLE,
+    PROGRESS_EVERY, PROMPT_CHANGE_SETTLE, PROMPT_DOUBT_SETTLE, PROMPT_SETTLE,
 };
 /// The reasons an unattended file connection gives for a refused question.
 pub(crate) use run::{host_key_refused, login_question_refused};

@@ -425,6 +425,101 @@ async fn a_configuration_shown_slowly_is_kept_whole() {
     );
 }
 
+/// A configured line that ends like a prompt (a banner's text, `core-7#`),
+/// and the device pausing right after it for longer than a prompt must stay
+/// quiet: the configuration is kept whole, not cut there (#136).
+#[tokio::test]
+async fn a_configuration_line_like_a_prompt_and_a_pause_after_it_are_kept_whole() {
+    let server = TestSshServer::start_device("r1").await;
+    for line in ["banner motd ^C", "core-7#", "^C", "interface Loopback1"] {
+        server.configure(line);
+    }
+    server.set_config_stall("core-7#", std::time::Duration::from_millis(1500));
+    let temp = TempDir::new().unwrap();
+    let (workspace, store) = one_device(&temp, &server);
+    let configs = ConfigStore::new(temp.path().join("configs"));
+
+    let report = back_up(plan(&workspace, &store, &site()), &configs).await;
+    let saved = outcome(&report, "Site/r1.yaml");
+    assert_eq!(
+        configs
+            .read(id(&workspace), &r1(), saved.version())
+            .unwrap(),
+        server.running_config(1)
+    );
+}
+
+/// A long configuration that pauses half way, after a line ending like a
+/// prompt (a description), is kept whole (#136).
+#[tokio::test]
+async fn a_pause_in_the_middle_of_a_long_configuration_keeps_it_whole() {
+    let server = TestSshServer::start_device("r1").await;
+    for n in 1..=400 {
+        server.configure(&format!("interface Ethernet{n}"));
+        if n == 200 {
+            server.configure(" description uplink to core-2#");
+        }
+    }
+    server.set_config_stall(
+        " description uplink to core-2#",
+        std::time::Duration::from_millis(1500),
+    );
+    let temp = TempDir::new().unwrap();
+    let (workspace, store) = one_device(&temp, &server);
+    let configs = ConfigStore::new(temp.path().join("configs"));
+
+    let report = back_up(plan(&workspace, &store, &site()), &configs).await;
+    let saved = outcome(&report, "Site/r1.yaml");
+    let kept = configs
+        .read(id(&workspace), &r1(), saved.version())
+        .unwrap();
+    assert_eq!(kept, server.running_config(1));
+    assert!(kept.ends_with("interface Ethernet400\nend\n"), "{kept}");
+}
+
+/// The show-config command never changes the prompt: a configuration that
+/// seems to stop at another prompt-like line is not kept, and the reason
+/// says why (#136).
+#[tokio::test]
+async fn a_configuration_ending_at_another_prompt_is_not_kept() {
+    let server = TestSshServer::start_device("r1").await;
+    server.configure("core-7#");
+    // Longer than the command timeout: the device seems to have stopped.
+    server.set_config_stall("core-7#", std::time::Duration::from_secs(5));
+    let temp = TempDir::new().unwrap();
+    let (workspace, store) = one_device(&temp, &server);
+    let configs = ConfigStore::new(temp.path().join("configs"));
+    let options = JobOptions {
+        command_timeout: std::time::Duration::from_secs(2),
+        ..options(&configs)
+    };
+    let mut job = job::start(
+        &support::manager(),
+        plan(&workspace, &store, &site()),
+        options,
+    )
+    .unwrap();
+    let report = tokio::time::timeout(WAIT * 3, async {
+        loop {
+            if let JobEvent::Finished(report) = job.next().await.expect("no report") {
+                return report;
+            }
+        }
+    })
+    .await
+    .expect("the job did not finish");
+    let host = result(&report, "Site/r1.yaml");
+    let HostState::Failed { reason } = &host.state else {
+        panic!("the backup did not fail: {:?}\n{}", host.state, host.output);
+    };
+    assert_eq!(
+        reason,
+        "no prompt after \"show running-config\": the device showed nothing more for 2 s, and its last line \"core-7#\" is not the prompt \"show running-config\" was typed at (r1#); nothing was backed up"
+    );
+    assert_eq!(host.backup, None);
+    assert!(configs.versions(id(&workspace), &r1()).unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn hosts_whose_definition_has_no_show_config_command_are_skipped() {
     let temp = TempDir::new().unwrap();
