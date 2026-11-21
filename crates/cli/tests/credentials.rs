@@ -24,6 +24,11 @@ use netterm_core::credentials::{
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
+/// The sweep of what killed test processes left in Credential Manager.
+#[cfg(windows)]
+#[path = "../../core/tests/support/keychain.rs"]
+mod keychain_support;
+
 const BINARY: &str = env!("CARGO_BIN_EXE_netterm-cli");
 const SCOPE: &str = "cli-credentials-test";
 const PASSWORD: &str = "correct horse battery";
@@ -468,6 +473,7 @@ fn with_the_app_closed_it_reads_the_keychain() {
         }
     }
 
+    keychain_support::sweep_leftovers();
     let setup = Setup::new();
     let keychain = Cleanup(KeychainStore::new(setup.keychain_prefix.clone()));
     fill(&keychain.0);
@@ -494,6 +500,7 @@ fn clear_keychain_removes_every_saved_login_and_only_those() {
         }
     }
 
+    keychain_support::sweep_leftovers();
     let setup = Setup::new();
     let keychain = Cleanup(KeychainStore::new(setup.keychain_prefix.clone()));
     let other = Cleanup(KeychainStore::new(format!("{}x", setup.keychain_prefix)));

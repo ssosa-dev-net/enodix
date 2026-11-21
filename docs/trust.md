@@ -63,6 +63,15 @@ to other computers with a roaming profile. Windows protects them with your
 logon, so another Windows user cannot read them, but any program running
 as you can.
 
+Credential Manager can lose a change, or hand back the value before it,
+when two programs change it at the same moment. Copies of the app and
+`netterm-cli` therefore take turns at it (through a named mutex, which
+holds nothing), and the app reads every save back before calling it done:
+a change Credential Manager did not keep is an error, and nothing is
+reported saved. Another program writing Credential Manager at the same
+moment can still undo a change a moment later, and the app cannot see
+or prevent that.
+
 `netterm-cli clear-keychain` removes every entry named `dev.netterm.app:*` or
 `dev.netterm.app.secret:*`; the uninstaller runs it when you tick its data
 box.

@@ -35,9 +35,11 @@ tokio = { workspace = true }
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 
-# A process on a window station nobody sees (tests/no_desktop.rs).
+# A process on a window station nobody sees (tests/no_desktop.rs); the
+# sweep of leftover test entries in Credential Manager (the core's
+# tests/support/keychain.rs).
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_StationsAndDesktops", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Credentials", "Win32_System_StationsAndDesktops", "Win32_System_Threading"] }
 
 [build-dependencies]
 serde_json = "1"

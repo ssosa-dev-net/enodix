@@ -2,9 +2,17 @@
 //! Manager. Every entry these tests write is named with a throwaway
 //! `netterm-test-<random>` prefix and deleted when the test ends, pass or
 //! fail; nothing else in the user's keychain is read or changed.
+//!
+//! Several processes using the keychain at once (#138) are played by this
+//! test binary run again as helpers (`support/processes.rs`); what killed
+//! test processes left is swept at the start (`support/keychain.rs`).
 #![cfg(windows)]
 
+mod support;
+
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Instant;
 
 use netterm_core::credentials::{
     vault_file, ActiveStore, AuthDraft, CredentialProfile, CredentialStore, KeychainStore,
@@ -12,6 +20,8 @@ use netterm_core::credentials::{
     Vault, VaultStatus,
 };
 use netterm_core::workspace::Workspace;
+use support::keychain::{prefix_of, sweep_leftovers, LEFTOVER_AGE, TEST_PREFIX};
+use support::processes;
 
 const SCOPE_A: &str = r"C:\netterm-test\customer-a";
 const SCOPE_B: &str = r"C:\netterm-test\customer-b";
@@ -20,18 +30,21 @@ const SCOPE_B: &str = r"C:\netterm-test\customer-b";
 /// (profiles and secrets) of the test scopes when dropped.
 struct TestKeychain {
     store: KeychainStore,
+    prefix: String,
 }
 
 impl TestKeychain {
     fn new() -> Self {
         let suffix: u64 = rand::random();
-        Self::with_prefix(format!("netterm-test-{suffix:016x}"))
+        Self::with_prefix(format!("{TEST_PREFIX}{suffix:016x}"))
     }
 
     fn with_prefix(prefix: String) -> Self {
-        assert!(prefix.starts_with("netterm-test-"));
+        assert!(prefix.starts_with(TEST_PREFIX));
+        sweep_leftovers();
         Self {
-            store: KeychainStore::new(prefix),
+            store: KeychainStore::new(prefix.clone()),
+            prefix,
         }
     }
 }
@@ -457,4 +470,275 @@ fn everything_under_the_prefix_is_removed_and_nothing_else() {
     let again = store.remove_all().unwrap();
     assert_eq!((again.profiles, again.secrets), (0, 0));
     assert_eq!(store.count_all().unwrap(), again);
+}
+
+// What killed test processes leave (#138).
+
+#[test]
+fn a_test_entry_is_named_after_its_prefix_and_nothing_else_is_one() {
+    assert_eq!(
+        prefix_of(r"netterm-test-0a1b:C:\ws:core"),
+        Some("netterm-test-0a1b")
+    );
+    assert_eq!(
+        prefix_of("netterm-test-0a1b.secret:ws:token"),
+        Some("netterm-test-0a1b")
+    );
+    assert_eq!(
+        prefix_of("netterm-test-0a1bx:ws:core"),
+        Some("netterm-test-0a1bx")
+    );
+    for other in [
+        "dev.netterm.app:ws:core",
+        "dev.netterm.app.secret:ws:token",
+        "NETTERM-TEST-0a1b:ws:core",
+        "netterm-test-:ws:core",
+        "netterm-test-no-colon",
+        "x-netterm-test-0a1b:ws:core",
+    ] {
+        assert_eq!(prefix_of(other), None, "{other}");
+    }
+}
+
+#[test]
+fn the_sweep_keeps_what_a_running_test_wrote() {
+    let keychain = TestKeychain::new();
+    keychain
+        .store
+        .put(SCOPE_A, &password_profile("core", "pw"))
+        .unwrap();
+    keychain
+        .store
+        .put_secret(SCOPE_A, "Token", &SecretValue::new("t0ken"))
+        .unwrap();
+
+    support::keychain::sweep(LEFTOVER_AGE).unwrap();
+
+    assert_eq!(
+        keychain.store.count_all().unwrap(),
+        RemovedEntries {
+            profiles: 1,
+            secrets: 1
+        }
+    );
+}
+
+// Several processes using the keychain at once (#138).
+
+/// The role of a helper that uses the keychain under its own prefix.
+const KEYCHAIN_USER: &str = "keychain-user";
+/// The helper's prefix and how many rounds it plays.
+const PREFIX_VARIABLE: &str = "NETTERM_TEST_KEYCHAIN_PREFIX";
+const ROUNDS_VARIABLE: &str = "NETTERM_TEST_KEYCHAIN_ROUNDS";
+/// What a helper prints for each answer that is not what it just did, and
+/// at the end.
+const INCONSISTENT: &str = "inconsistent";
+const REFUSED: &str = "refused";
+const FINISHED: &str = "finished";
+
+#[test]
+fn helper() {
+    processes::play();
+    if processes::role().as_deref() == Some(KEYCHAIN_USER) {
+        let prefix = std::env::var(PREFIX_VARIABLE).unwrap();
+        let rounds = std::env::var(ROUNDS_VARIABLE).unwrap().parse().unwrap();
+        let keychain = TestKeychain::with_prefix(prefix);
+        use_the_keychain(&keychain.store, rounds);
+        drop(keychain);
+        std::process::exit(0);
+    }
+}
+
+/// Rounds of what the app does with a profile and a secret: saved, read
+/// back, changed, read back, listed, deleted, looked for, listed. Every
+/// answer that is not what this process itself just did is printed
+/// (`inconsistent <what>: expected …, got …`), and every call that failed
+/// (`refused <what>: <error>`).
+fn use_the_keychain(store: &KeychainStore, rounds: usize) {
+    let mut inconsistent = 0;
+    let mut refused = 0;
+    let mut check = |what: &str, expected: String, got: Result<String, String>| match got {
+        Ok(got) if got == expected => {}
+        Ok(got) => {
+            inconsistent += 1;
+            println!("{INCONSISTENT} {what}: expected {expected}, got {got}");
+        }
+        Err(error) => {
+            refused += 1;
+            println!("{REFUSED} {what}: {error}");
+        }
+    };
+    let password = |profile: Option<CredentialProfile>| match profile.map(|p| p.auth) {
+        Some(ProfileAuth::Password { password }) => password,
+        Some(_) => "another kind of login".into(),
+        None => "nothing".into(),
+    };
+    let done = |result: Result<(), _>| result.map(|()| "done".to_owned());
+    for round in 0..rounds {
+        let first = format!("first-{round}");
+        let second = format!("second-{round}");
+        let token = format!("token-{round}");
+        check(
+            "save",
+            "done".into(),
+            done(
+                store
+                    .put(SCOPE_A, &password_profile("core", &first))
+                    .map_err(|e| e.to_string()),
+            ),
+        );
+        check(
+            "read after saving",
+            first,
+            store
+                .get(SCOPE_A, "core")
+                .map(password)
+                .map_err(|e| e.to_string()),
+        );
+        check(
+            "change",
+            "done".into(),
+            done(
+                store
+                    .put(SCOPE_A, &password_profile("core", &second))
+                    .map_err(|e| e.to_string()),
+            ),
+        );
+        check(
+            "read after changing",
+            second.clone(),
+            store
+                .get(SCOPE_A, "core")
+                .map(password)
+                .map_err(|e| e.to_string()),
+        );
+        check(
+            "secret saved",
+            "done".into(),
+            done(
+                store
+                    .put_secret(SCOPE_B, "Token", &SecretValue::new(token.clone()))
+                    .map_err(|e| e.to_string()),
+            ),
+        );
+        check(
+            "everything listed",
+            format!("[{second}] [{token}]"),
+            store
+                .contents()
+                .map(|everything| {
+                    let passwords: Vec<String> = everything
+                        .profiles
+                        .into_iter()
+                        .map(|entry| password(Some(entry.profile)))
+                        .collect();
+                    let values: Vec<String> = everything
+                        .secrets
+                        .iter()
+                        .map(|entry| entry.value.expose().to_owned())
+                        .collect();
+                    format!("[{}] [{}]", passwords.join(", "), values.join(", "))
+                })
+                .map_err(|e| e.to_string()),
+        );
+        check(
+            "delete",
+            "true true".into(),
+            store
+                .delete(SCOPE_A, "core")
+                .and_then(|profile| Ok((profile, store.delete_secret(SCOPE_B, "Token")?)))
+                .map(|(profile, secret)| format!("{profile} {secret}"))
+                .map_err(|e| e.to_string()),
+        );
+        check(
+            "read after deleting",
+            "nothing".into(),
+            store
+                .get(SCOPE_A, "core")
+                .map(password)
+                .map_err(|e| e.to_string()),
+        );
+        check(
+            "listed after deleting",
+            "0 0".into(),
+            store
+                .count_all()
+                .map(|left| format!("{} {}", left.profiles, left.secrets))
+                .map_err(|e| e.to_string()),
+        );
+    }
+    println!("{FINISHED} {rounds} rounds, {inconsistent} inconsistent, {refused} refused");
+}
+
+/// `processes` helpers at once, each [`use_the_keychain`] for `rounds`
+/// under a prefix of its own; every line they printed about an answer
+/// that was not what they had just done.
+fn several_processes_use_the_keychain(processes: usize, rounds: usize) -> Vec<String> {
+    let pids = tempfile::TempDir::new().unwrap();
+    let keychains: Vec<TestKeychain> = (0..processes).map(|_| TestKeychain::new()).collect();
+    let started = Instant::now();
+    let children: Vec<_> = keychains
+        .iter()
+        .map(|keychain| {
+            processes::helper(KEYCHAIN_USER, pids.path())
+                .env(PREFIX_VARIABLE, &keychain.prefix)
+                .env(ROUNDS_VARIABLE, rounds.to_string())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    let mut problems = Vec::new();
+    let mut finished = 0;
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        let printed = String::from_utf8_lossy(&output.stdout);
+        for line in printed.lines() {
+            if line.starts_with(INCONSISTENT) || line.starts_with(REFUSED) {
+                problems.push(line.to_owned());
+            } else if line.starts_with(FINISHED) {
+                finished += 1;
+                eprintln!("{line}");
+            }
+        }
+        assert!(output.status.success(), "a helper failed: {printed}");
+    }
+    assert_eq!(finished, processes, "every helper played every round");
+    eprintln!(
+        "{processes} processes x {rounds} rounds in {:.1} s",
+        started.elapsed().as_secs_f64()
+    );
+    problems
+}
+
+#[test]
+fn several_processes_using_the_keychain_at_once_each_read_back_what_they_wrote() {
+    let problems = several_processes_use_the_keychain(4, 10);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// The reproduction of #138, minutes of load on Credential Manager: run
+/// by hand (`cargo test -p netterm-core --test keychain under_load --
+/// --ignored --nocapture`; `NETTERM_TEST_KEYCHAIN_PROCESSES` and
+/// `NETTERM_TEST_KEYCHAIN_STRESS_ROUNDS` change its 16 processes and 100
+/// rounds). Before every call took turns, 16 processes saw old values,
+/// missing entries and lost changes in about one round in a hundred.
+#[test]
+#[ignore = "minutes of load on Credential Manager: run by hand"]
+fn several_processes_using_the_keychain_at_once_each_read_back_what_they_wrote_under_load() {
+    let number = |name: &str, default: usize| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    let problems = several_processes_use_the_keychain(
+        number("NETTERM_TEST_KEYCHAIN_PROCESSES", 16),
+        number("NETTERM_TEST_KEYCHAIN_STRESS_ROUNDS", 100),
+    );
+    assert!(
+        problems.is_empty(),
+        "{} problems: {problems:#?}",
+        problems.len()
+    );
 }
