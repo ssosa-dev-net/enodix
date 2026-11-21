@@ -21,11 +21,13 @@
 //! Telnet has no login of its own: the device asks for a username and
 //! password in its output, and the user answers in the terminal.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 use super::{tcp, CloseReason, Command, Link, SessionState, TelnetTarget, TerminalSize, TERM};
 
@@ -58,6 +60,18 @@ const READ_SIZE: usize = 16 * 1024;
 /// How long closing waits for input still queued to go out.
 const CLOSE_FLUSH: Duration = Duration::from_secs(2);
 
+/// How many bytes of answers to the device's requests may wait to be sent
+/// before the session stops reading: a device that sends requests without
+/// end and never reads the answers cannot make them pile up (#118). Typed
+/// input does not count: a device may not read it until its own output has
+/// been read.
+const MAX_PENDING_REPLIES: usize = 64 * 1024;
+
+/// How many times the session refuses the same option before it stops
+/// answering it: a device that asks again after every refusal would keep
+/// the two answering each other for ever (#118).
+const MAX_REFUSALS: u8 = 3;
+
 /// Runs one telnet session over `link` until it ends.
 pub(super) async fn run(target: TelnetTarget, link: &mut Link) -> CloseReason {
     let (_prompter, _asker, replies) = link.askers();
@@ -76,10 +90,14 @@ pub(super) async fn run(target: TelnetTarget, link: &mut Link) -> CloseReason {
     // Input is written by its own task, so reading goes on while the
     // device is slow to take input, and the other way round.
     let (to_device, queued) = mpsc::unbounded_channel();
-    let mut writing = tokio::spawn(write_out(writer, queued));
+    let replies = Arc::new(PendingReplies::default());
+    let mut writing = tokio::spawn(write_out(writer, queued, replies.clone()));
+    let send = |bytes: Vec<u8>| {
+        let _ = to_device.send(Out { bytes, reply: 0 });
+    };
 
     let mut telnet = Telnet::new(link.size);
-    let _ = to_device.send(telnet.opening());
+    send(telnet.opening());
     link.state(SessionState::Connected);
 
     let flow = link.flow();
@@ -91,14 +109,14 @@ pub(super) async fn run(target: TelnetTarget, link: &mut Link) -> CloseReason {
             command = link.command() => match command {
                 Command::Write(bytes) => {
                     let (encoded, echo) = telnet.input(&bytes);
-                    let _ = to_device.send(encoded);
+                    send(encoded);
                     if !echo.is_empty() && !link.output(echo) {
                         break CloseReason::ClosedLocally;
                     }
                 }
                 Command::Resize(size) => {
                     if let Some(report) = telnet.resize(size) {
-                        let _ = to_device.send(report);
+                        send(report);
                     }
                 }
                 // Nothing asks for these over telnet; the manager sends
@@ -107,16 +125,22 @@ pub(super) async fn run(target: TelnetTarget, link: &mut Link) -> CloseReason {
                 Command::Close => break CloseReason::ClosedLocally,
             },
             // Output is read only while the consumer is less than a window
-            // behind (flow control); commands are taken regardless.
+            // behind (flow control), and the device takes the answers to
+            // its requests; commands are taken regardless.
             read = async {
                 flow.room_to_read().await;
+                replies.room().await;
                 reader.read(&mut buffer).await
             } => match read {
                 Ok(0) => break CloseReason::RemoteExited { exit_status: None },
                 Ok(count) => {
-                    let Received { data, replies } = telnet.receive(&buffer[..count]);
-                    if !replies.is_empty() {
-                        let _ = to_device.send(replies);
+                    let Received { data, replies: answers } = telnet.receive(&buffer[..count]);
+                    if !answers.is_empty() {
+                        replies.queued(answers.len());
+                        let _ = to_device.send(Out {
+                            reply: answers.len(),
+                            bytes: answers,
+                        });
                     }
                     if !data.is_empty() && !link.output(data) {
                         break CloseReason::ClosedLocally;
@@ -137,15 +161,54 @@ pub(super) async fn run(target: TelnetTarget, link: &mut Link) -> CloseReason {
     reason
 }
 
+/// Something to send the device: input, or answers to its requests
+/// (`reply` bytes of it, counted in [`PendingReplies`]).
+struct Out {
+    bytes: Vec<u8>,
+    reply: usize,
+}
+
+/// The answers to the device's requests not yet sent; the session reads
+/// only while there are fewer than [`MAX_PENDING_REPLIES`].
+#[derive(Default)]
+struct PendingReplies {
+    bytes: AtomicUsize,
+    sent: Notify,
+}
+
+impl PendingReplies {
+    fn queued(&self, bytes: usize) {
+        self.bytes.fetch_add(bytes, Ordering::AcqRel);
+    }
+
+    fn sent(&self, bytes: usize) {
+        self.bytes.fetch_sub(bytes, Ordering::AcqRel);
+        self.sent.notify_one();
+    }
+
+    /// Resolves once few enough answers wait. Only the session's reading
+    /// waits here, so `notify_one`'s stored permit covers an answer sent
+    /// between the check and the wait.
+    async fn room(&self) {
+        while self.bytes.load(Ordering::Acquire) >= MAX_PENDING_REPLIES {
+            self.sent.notified().await;
+        }
+    }
+}
+
 /// Writes what is queued to the device, in order, then ends the connection
 /// once the queue closes. Returns early only if writing failed.
 async fn write_out(
     mut writer: OwnedWriteHalf,
-    mut queued: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut queued: mpsc::UnboundedReceiver<Out>,
+    replies: Arc<PendingReplies>,
 ) -> std::io::Result<()> {
-    while let Some(bytes) = queued.recv().await {
+    while let Some(Out { bytes, reply }) = queued.recv().await {
         if !bytes.is_empty() {
             writer.write_all(&bytes).await?;
+        }
+        if reply > 0 {
+            replies.sent(reply);
         }
     }
     writer.shutdown().await
@@ -199,6 +262,9 @@ struct Telnet {
     /// The last input ended with a CR sent as CR LF: a LF right after it
     /// was part of the same Enter.
     after_carriage_return: bool,
+    /// How many times each option the session does not take was refused,
+    /// for the device's side (`WILL`) and the session's (`DO`).
+    refused: [[u8; 256]; 2],
 }
 
 impl Telnet {
@@ -214,6 +280,7 @@ impl Telnet {
             size,
             in_escape: Escape::None,
             after_carriage_return: false,
+            refused: [[0; 256]; 2],
         }
     }
 
@@ -341,7 +408,12 @@ impl Telnet {
         };
         let Some(state) = state else {
             if verb == WILL || verb == DO {
-                replies.extend_from_slice(&[IAC, refuse, option]);
+                // `WILL` asks about the device's side, `DO` about ours.
+                let refused = &mut self.refused[usize::from(verb == DO)][usize::from(option)];
+                if *refused < MAX_REFUSALS {
+                    *refused += 1;
+                    replies.extend_from_slice(&[IAC, refuse, option]);
+                }
             }
             return;
         };

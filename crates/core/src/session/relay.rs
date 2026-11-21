@@ -22,8 +22,8 @@
 //! (or is paused by flow control on its account) stays attached until its
 //! owner calls [`Relay::release`]. Dropping every handle to the relay drops
 //! the session's events at once, whoever is shown it, which closes the
-//! session as dropping [`SessionEvents`] does: when it next has something
-//! to report.
+//! session as dropping [`SessionEvents`] does: at once, even while it is
+//! paused by flow control (#118).
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};

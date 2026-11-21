@@ -1111,9 +1111,14 @@ struct Link {
 }
 
 impl Link {
-    /// The next command. Losing the session's owner counts as `Close`.
+    /// The next command. Losing the session's owner counts as `Close`, and
+    /// so does losing its events' reader: a session whose output is paused
+    /// (flow control) sends nothing that would tell it otherwise (#118).
     async fn command(&mut self) -> Command {
-        self.commands.recv().await.unwrap_or(Command::Close)
+        tokio::select! {
+            command = self.commands.recv() => command.unwrap_or(Command::Close),
+            () = self.events.closed() => Command::Close,
+        }
     }
 
     /// Resolves when the session should be abandoned while it is still being
