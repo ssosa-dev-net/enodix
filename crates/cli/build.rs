@@ -3,7 +3,8 @@
 //! app's data folder and keychain entries, and the name for its messages.
 //! On Windows the program also gets the app's version details: its name,
 //! publisher and copyright line (as `scripts/release.mjs` makes it for the
-//! app and the installer), a description and the version.
+//! app and the installer), a description and the version, and the VC++
+//! runtime linked in.
 
 use std::path::Path;
 
@@ -28,8 +29,21 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let publisher = text_of(&config["bundle"]["publisher"], "bundle.publisher");
         version_details(&product, &publisher);
+        static_runtime();
     }
 }
+
+/// The VC++ runtime linked into the program (the Universal CRT stays a
+/// part of Windows), as Tauri does for the app: a clean Windows has no
+/// `vcruntime140.dll`, and the program would not start there (seen in
+/// Windows Sandbox, #139).
+#[cfg(windows)]
+fn static_runtime() {
+    static_vcruntime::metabuild();
+}
+
+#[cfg(not(windows))]
+fn static_runtime() {}
 
 /// The version details Windows shows in the program's properties.
 #[cfg(windows)]

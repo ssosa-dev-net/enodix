@@ -174,6 +174,26 @@ equivalent, or publish the file at a fixed address yourself.
    and the updater's own install are not exercised. Paste its output into
    the release's ticket.
 
+   Then the install-and-run check, on a clean Windows: in Windows Sandbox
+   (the feature turned on once, see the testing notes), with
+   nothing of yours at risk:
+
+   ```
+   npm run test:installer:sandbox -- --old <folder>\netterm_<previous>_x64-setup.exe
+   ```
+
+   It runs the check above inside the sandbox, then installs this release,
+   starts the app and waits for its window, puts two saved logins of the
+   app's and one of another program in Credential Manager, upgrades over
+   itself in passive mode as the updater would, and uninstalls through the
+   uninstaller's window with "Delete the application data" ticked. It
+   fails if anything of the app's is left: the install folder, the
+   uninstall entry, the vendor key, shortcuts, the data folders or the
+   app's Credential Manager entries (the other program's must stay). The
+   log is printed and kept in `target/sandbox/installer-<time>/out/`. Its
+   window is on a desktop of its own; it takes about two minutes. Paste its
+   output into the release's ticket too.
+
 5. Publish by hand: create the release (tag `v<version>`), upload every file
    from `target/dist/<version>/`, and paste the version's section of
    `CHANGELOG.md` and `SHA256SUMS.txt` into the release notes. Make `latest.json` reachable at `NETTERM_UPDATE_ENDPOINT` **last**,
