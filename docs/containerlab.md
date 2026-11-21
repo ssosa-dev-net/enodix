@@ -28,7 +28,7 @@ Cisco and Juniper nodes since #47, the files check since #108, first run
 | telnet                         | Log in by telnet (answers typed into the terminal), run `command`; only where `telnet` is set, and behind a jump host only with `telnet_address` (telnet is not tunnelled) |
 | paging off                     | A job driven by the device's built-in platform definition runs `paging_command` (more lines than a job's 100-row terminal): no pager (`--More--`, `---(more)---`, ...) shows and the job ends at the prompt |
 | config backup                  | A config backup job keeps the configuration without the prompt (its last line matches `config_end`); a second backup of the unchanged device keeps nothing new, so the definition's ignored lines cover what changes by itself |
-| privileged mode                | Only where the definition has a privilege command: a job's `privilege_check` command shows `privilege_expect` (level 15) |
+| privileged mode                | Only where the definition has a privilege command: a job's `privilege_check` command shows `privilege_expect` (level 15). On an entry with an enable secret (the two privilege-1 logins): the device asked for it, and a job with a wrong secret fails the host as refused |
 | fill in from devices           | Only with `NETTERM_LAB_PYTHON` (a Python with NAPALM): the app's script (`python -m netterm.enrich`, from `python/`) runs as a job for every device whose definition has a NAPALM driver (cEOS, IOS-XE, Junos), through the headless binary's tunnels (`netterm-cli tunnel`, opened by the package) when there is a jump host, after a terminal session through the chain has trusted the keys; every device reports vendor, model, serial number and OS version, and applying writes them |
 | tunnel ports                   | Only with `NETTERM_LAB_PYTHON`: a script (`crates/core/tests/lab/tunnel_ports.py`) opens the headless binary's tunnels with ports 830 and 443 named, through the jump host, after a terminal session has trusted the keys; ncclient reaches NETCONF on the `junos` device's port 830 with the device's key checked against the keys the app trusts, gets the running configuration, and is refused with another key in its known-hosts file; an HTTPS eAPI call (requests) runs `show version` on the `ceos` device's port 443. A check whose library that Python lacks, or whose platform the lab file has no device of, is NOT CHECKED |
 | second channel and backup on login | A session opened with the host's backup on login reports it saved; then a second shell channel on that session's connection is opened: accepted (the command runs there, the terminal is untouched) or refused (then the backup used a second connection) |
@@ -99,6 +99,11 @@ files).
    SCP server and SSH bulk mode, then `write memory`). The other devices
    offer SFTP and SCP as the topology deploys them. What each offers is in
    [Files on the lab devices](#files-on-the-lab-devices).
+
+   For the enable password question (#113), csr1 also needs
+   `lab/configs/csr1-privilege.cfg` pasted after each deploy (a login at
+   privilege 1 and an enable secret, then `write memory`). cEOS has the
+   same in its startup configuration (`lab/configs/ceos1.cfg`).
 
    Docker inside a Proxmox LXC container needs two entries in the
    container's `/etc/pve/lxc/<id>.conf` on the Proxmox host (besides
@@ -184,8 +189,12 @@ containerlab server's address with `telnet: 2323`), `login_prompt`,
 platform definition jobs drive the device with, written as the host's
 `platform`; `""` for none, which skips those checks), `paging_command`,
 `privilege_check` with `privilege_expect`, `config_end` (a regular
-expression for the configuration's last line) and `enable_secret_env`
-(the profile's enable secret, for a privilege command that asks for one).
+expression for the configuration's last line) and `enable_secret` or
+`enable_secret_env` (the profile's enable secret, for a privilege command
+that asks for one). `checks` names the only checks made on an entry, by
+the names in the table above; it is for a second login to a device that
+is there for a few checks, like the two privilege-1 logins of the example
+file.
 
 ## Platform defaults (verified on the versions above)
 
@@ -236,8 +245,22 @@ prompt is two lines (`--{ running }--[  ]--`, then `A:srl1#`), and the
 first one ended up at the end of every kept configuration; a config
 backup now drops trailing lines that match the definition's ignored lines.
 Privileged mode was reached with `enable` on accounts that are already
-privilege 15; an enable password question on a real device is not
-exercised (the in-process device-mode server covers it).
+privilege 15, which are not asked for a password.
+
+The enable password question was checked on 2026-11-21 (#113), with a
+second login at privilege 1 on cEOS and on the CSR 1000v (`labuser`, and
+an enable password on the device; the entries `ceos1-enable` and
+`csr1-enable` of the example file). Both devices land that login at
+`name>` and ask `Password: ` after `enable`. A job answers with the
+profile's enable secret and reaches level 15; from there paging off, the
+config backup and the backup on login work as for the admin login (cEOS
+over a second channel, the CSR over a second connection). With a wrong
+secret both devices ask again (three times, then `% Bad secret` on cEOS,
+`% Bad secrets` on IOS-XE); the job does not answer a second time and
+fails the host with "the device refused the enable secret of the
+credential profile …". No value of the `eos` or `ios` definition had to
+change. A terminal session is not affected: the app never types
+`enable` there.
 
 Each built-in definition's file folder (#102) comes from
 [Files on the lab devices](#files-on-the-lab-devices): `eos` `/mnt/flash`

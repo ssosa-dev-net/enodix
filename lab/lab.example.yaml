@@ -25,9 +25,10 @@ jump_host:
 # size_command, size_output, exit, telnet (true or a port), login_prompt,
 # password_prompt, and for the built-in platform checks definition (the
 # built-in platform jobs drive it with; "" for none), paging_command,
-# privilege_check + privilege_expect, config_end, enable_secret_env. A
-# device logs in with `password_env` (default NETTERM_LAB_PASSWORD), or
-# `agent: true`.
+# privilege_check + privilege_expect, config_end, enable_secret_env, and
+# checks (the only checks made on the entry, by the names the suite
+# prints). A device logs in with `password_env` (default
+# NETTERM_LAB_PASSWORD), or `agent: true`.
 devices:
   - name: srl1
     platform: srlinux
@@ -68,6 +69,33 @@ devices:
     platform: junos
     address: 172.20.30.15
     password_env: NETTERM_LAB_JUNOS_PASSWORD
+
+  # A second login to cEOS and to the CSR 1000v, at privilege 1, where
+  # `enable` asks for a password: the privileged mode check answers it with
+  # `enable_secret` and sees a wrong one refused, and the other job checks
+  # run from the unprivileged prompt. The login and the secret are the lab's
+  # own (lab/configs/ceos1.cfg, lab/configs/csr1-privilege.cfg). `checks`
+  # names the only checks made on an entry: the rest need privilege 15 in
+  # a terminal, which the app never asks for there.
+  - name: ceos1-enable
+    platform: ceos
+    address: 172.20.30.12
+    username: labuser
+    password: labuser
+    enable_secret: netterm-enable
+    checks: &enable_checks
+      - privileged mode
+      - paging off
+      - config backup
+      - second channel and backup on login
+
+  - name: csr1-enable
+    platform: ios
+    address: 172.20.30.14
+    username: labuser
+    password: labuser
+    enable_secret: netterm-enable
+    checks: *enable_checks
 
   # Cisco NX-OS (n9kv) is not in the topology (no image on the lab server
   # yet); with one, add a node and:

@@ -37,6 +37,9 @@ pub async fn check(lab: &Lab) -> Result<Checked, String> {
     let supported: Vec<(&Device, &'static str)> = lab
         .devices
         .iter()
+        // An entry that names its checks is a second login to a device,
+        // there for those checks only.
+        .filter(|device| device.only.is_none())
         .filter_map(|device| {
             let definition = built_in.platform(device.definition.as_deref()?)?;
             Some((device, napalm_driver(definition)?))
@@ -44,7 +47,12 @@ pub async fn check(lab: &Lab) -> Result<Checked, String> {
         .collect();
     let mut checked = Checked::default();
     for device in &lab.devices {
-        if !supported.iter().any(|(d, _)| d.name == device.name) {
+        if device.only.is_some() {
+            checked.notes.push(format!(
+                "{}: an entry for the checks it names only, not checked",
+                device.name
+            ));
+        } else if !supported.iter().any(|(d, _)| d.name == device.name) {
             checked.notes.push(format!(
                 "{}: no NAPALM driver for its platform, not checked",
                 device.name

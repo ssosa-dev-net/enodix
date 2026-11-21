@@ -41,7 +41,6 @@ As of 2026-11-21, every item but 8 is built. Items 1, 2, 3, 5, 6 and 7 were rele
 - **The release files themselves:** the installer, the portable zip and the Linux packages of 0.3.0 and 0.4.0 were built and checksummed, not installed and run as part of the release. The end-to-end test runs the same code built without the installer.
 - **Linux desktop:** the packages build and the core, the headless binary and the Python bridge pass their tests under WSL. The app itself has not been run on a real Linux desktop; the check list is in `docs/linux.md`.
 - **NX-OS:** its built-in platform definition has not been run against a device (no image in the lab). The other five are verified in the containerlab suite. Settled on 2026-11-21: this is not a check owed. NX-OS is a platform definition like the others, a handful of values the user can correct in the app, and everything else it uses is the same code the five verified platforms use.
-- **Privilege password:** no lab account asks for an enable password, so that question has only been exercised against the test device.
 - **Files:** checked on the five lab devices, which are virtual. Not verified: NX-OS, the name of flash on physical Catalyst switches, speeds on real hardware, a jump host that needs a typed login, a real Explorer drag and the real file dialog (the end-to-end test plays both), Linux. The list is in [docs/files.md](docs/files.md).
 
 ## Hardening
@@ -127,7 +126,7 @@ Act on many devices at once, with config backup as the proving use case.
 - Stored in `_platforms.yaml` at the workspace root and shared through git, but created and edited only in the app.
 - A definition is matched to a host by its `platform` field, ignoring case. The field becomes a dropdown of defined platforms that still accepts typed text, and it can be set on a folder so a folder of identical devices needs one assignment.
 - Built in: SR Linux, EOS, FRR, IOS, NX-OS and Junos, each verified in the containerlab suite before it ships (all but NX-OS, which has no lab image).
-- The engine sends the credential profile's enable secret at the privilege prompt.
+- The engine sends the credential profile's enable secret at the privilege prompt. Checked in the lab on 2026-11-21 (#113) with a privilege-1 login on cEOS and on the CSR 1000v: both ask, the job answers and reaches level 15, and a wrong secret fails the host as refused.
 
 **Jobs**
 
