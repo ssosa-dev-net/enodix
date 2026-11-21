@@ -573,9 +573,19 @@ impl TestSshServer {
     }
 
     /// From now on, accepts the `sftp` subsystem and closes the channel at
-    /// once, before SFTP's first reply (as IOS-XE does).
+    /// once, before SFTP's first reply, and keeps the connection (cEOS for
+    /// an account below privilege 15; IOS-XE also ends the connection:
+    /// [`Self::close_sftp_and_hang_up`]).
     pub fn close_sftp_at_once(&self) {
         *self.sftp.lock().unwrap() = sftp::SftpMode::CloseAtOnce;
+    }
+
+    /// From now on, accepts the `sftp` subsystem, closes the channel at
+    /// once and then the whole connection, as IOS-XE really does: by the
+    /// time a client looks at why SFTP did not start, the connection is
+    /// gone too.
+    pub fn close_sftp_and_hang_up(&self) {
+        *self.sftp.lock().unwrap() = sftp::SftpMode::CloseAndHangUp;
     }
 
     /// How many shells its clients have asked for.
@@ -1476,6 +1486,14 @@ impl Handler for ScriptedShell {
                 session.exit_status_request(channel, 0)?;
                 session.eof(channel)?;
                 session.close(channel)?;
+            }
+            ("sftp", sftp::SftpMode::CloseAndHangUp, _) => {
+                self.channels.remove(&channel);
+                session.channel_success(channel)?;
+                session.exit_status_request(channel, 0)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+                session.disconnect(russh::Disconnect::ByApplication, "", "en")?;
             }
             _ => session.channel_failure(channel)?,
         }

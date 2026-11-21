@@ -208,11 +208,19 @@ impl FileConnection {
             .subsystem("sftp")
             .await
             .map_err(|refusal| match refusal {
-                _ if !self.is_open() => lost(),
+                // The device's own word, read from the channel: it stands
+                // even if the device has ended the connection since.
                 SubsystemRefusal::Refused => StartError::NoSftp(NoSftp::Refused),
                 SubsystemRefusal::Closed => StartError::NoSftp(NoSftp::ClosedBeforeReply),
+                // No word from the device: its doing only if the
+                // connection is still up.
+                SubsystemRefusal::Ended if self.is_open() => {
+                    StartError::NoSftp(NoSftp::ClosedBeforeReply)
+                }
+                SubsystemRefusal::Ended => lost(),
                 SubsystemRefusal::Failed(reason) => StartError::Connection(reason),
             })?;
+        let channel_id = channel.id();
         let timeout = self.connect_timeout() * STALL_TIMEOUTS;
         let config = Config {
             max_concurrent_reads: REQUESTS_IN_FLIGHT,
@@ -235,16 +243,26 @@ impl FileConnection {
                     _channel: permit,
                 }),
             }),
-            Err(_) if !self.is_open() => Err(lost()),
-            Err(_) if !answered.load(Ordering::Acquire) => {
-                Err(StartError::NoSftp(NoSftp::ClosedBeforeReply))
+            Err(error) => {
+                // Read in this order: once the connection has ended, every
+                // channel the device ended before that has been noted.
+                let open = self.is_open();
+                let ended_in_order = self.channel_ended_in_order(channel_id);
+                let answered = answered.load(Ordering::Acquire);
+                Err(match error {
+                    // The device closed the channel before one byte of
+                    // SFTP: it has none, even when the connection went
+                    // with the channel (IOS-XE ends it there).
+                    _ if !answered && (open || ended_in_order) => {
+                        StartError::NoSftp(NoSftp::ClosedBeforeReply)
+                    }
+                    _ if !open => lost(),
+                    SftpError::Timeout => {
+                        StartError::Connection(FileError::TimedOut { after: timeout }.to_string())
+                    }
+                    error => StartError::Connection(format!("SFTP did not start ({error})")),
+                })
             }
-            Err(SftpError::Timeout) => Err(StartError::Connection(
-                FileError::TimedOut { after: timeout }.to_string(),
-            )),
-            Err(error) => Err(StartError::Connection(format!(
-                "SFTP did not start ({error})"
-            ))),
         }
     }
 }

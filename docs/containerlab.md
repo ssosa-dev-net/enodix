@@ -12,8 +12,8 @@ Every check passes against the topology's Nokia SR Linux 24.10.1, Arista
 cEOS 4.36.0.1F, FRR 10.2.1, Cisco CSR 1000v (IOS-XE 17.03.08) and Juniper
 cJunos Evolved 25.4R1.13-EVO (containerlab 0.83.0, through the containerlab
 server as the jump host), first run 2026-11-14 (the platform checks and the
-Cisco and Juniper nodes since #47). The README's tested-platforms list comes
-from these runs.
+Cisco and Juniper nodes since #47, the files check since #108, first run
+2026-11-21). The README's tested-platforms list comes from these runs.
 
 ## What it checks, per device
 
@@ -32,6 +32,7 @@ from these runs.
 | fill in from devices           | Only with `NETTERM_LAB_PYTHON` (a Python with NAPALM): the app's script (`python -m netterm.enrich`, from `python/`) runs as a job for every device whose definition has a NAPALM driver (cEOS, IOS-XE, Junos), through the headless binary's tunnels (`netterm-cli tunnel`, opened by the package) when there is a jump host, after a terminal session through the chain has trusted the keys; every device reports vendor, model, serial number and OS version, and applying writes them |
 | tunnel ports                   | Only with `NETTERM_LAB_PYTHON`: a script (`crates/core/tests/lab/tunnel_ports.py`) opens the headless binary's tunnels with ports 830 and 443 named, through the jump host, after a terminal session has trusted the keys; ncclient reaches NETCONF on the `junos` device's port 830 with the device's key checked against the keys the app trusts, gets the running configuration, and is refused with another key in its known-hosts file; an HTTPS eAPI call (requests) runs `show version` on the `ceos` device's port 443. A check whose library that Python lacks, or whose platform the lab file has no device of, is NOT CHECKED |
 | second channel and backup on login | A session opened with the host's backup on login reports it saved; then a second shell channel on that session's connection is opened: accepted (the command runs there, the terminal is untouched) or refused (then the backup used a second connection) |
+| files                          | What [Files on the lab devices](#files-on-the-lab-devices) says the device offers, on a file connection of its own (as a Files tab and a file job make one), with a 300 KiB file. SFTP: the platform's file folder (else the login's) is listed, the file is uploaded with its size checked, downloaded and compared, renamed and deleted. A device without SFTP: the fall back to SCP happens by itself, the file is sent to the platform's file folder, fetched and compared (an `ios` device takes it at `flash:` and gives it back from `bootflash:`, the same storage on the CSR 1000v); it stays on the device under the fixed name `netterm-lab-check.bin` (SCP cannot delete), replaced by each run. A device that lacks the settings of step 1 (`lab/configs/csr1-files.cfg`, `lab/configs/cjunos1-files.set`) is NOT CHECKED, with the device's words and the app's hint as the reason |
 
 The output of every check (pass, fail or not checked, with the negotiated
 algorithms) is printed, so run it with `--nocapture` (the npm script does).
@@ -142,7 +143,7 @@ files).
    `lab_wrong_password`, `lab_terminal_size`,
    `lab_large_output_with_flow_control`, `lab_session_log`, `lab_telnet`,
    `lab_paging`, `lab_config_backup`, `lab_privilege`,
-   `lab_second_channel`, `lab_enrichment`, `lab_tunnel_ports`) after `--test containerlab` to run one check.
+   `lab_second_channel`, `lab_files`, `lab_enrichment`, `lab_tunnel_ports`) after `--test containerlab` to run one check.
 
 Without a lab file the suite prints `containerlab suite SKIPPED: no lab
 configured ...` and passes. A lab file that exists but cannot be used (a
@@ -253,8 +254,12 @@ public-key logins to the devices themselves other than through the agent.
 What the file transfer prototype (#96, branch `prototype/96-files`, not
 merged) found on 2026-11-18, with the accounts the lab uses and the lab
 configuration of step 1 (`lab/configs/csr1-files.cfg`,
-`lab/configs/cjunos1-files.set`). The suite does not check file transfers
-yet; the numbers and texts below come from the prototype's runs.
+`lab/configs/cjunos1-files.set`). The numbers and texts below come from the
+prototype's runs. Since #108 the suite's `files` check (`lab_files`) checks
+what the table says each device offers, with the app's own code; it passed
+on all five devices through the jump host on 2026-11-21, on a lab deployed
+that day, and reported csr1 and cjunos1 as NOT CHECKED, each with its
+reason, before their settings were pasted.
 
 | Device | SFTP | SCP | What was configured | Login lands in | Files belong in | Account needs |
 | ------ | ---- | --- | ------------------- | -------------- | --------------- | ------------- |
@@ -270,7 +275,10 @@ sessions open it closes a sixth connection before sending its SSH banner
 (OpenSSH: `kex_exchange_identification: Connection closed by remote
 host`). An idle file connection with no channel holds one of those lines,
 and csr1 closes the whole connection once an SCP transfer ends (cjunos1
-runs several on one connection). No device dropped a file connection left
+runs several on one connection). It does the same when it closes the SFTP
+channel it has no server for: the connection goes with the channel, which
+the app first took for a lost connection in a file job (#108; it now goes
+by the channel the device closed in order). No device dropped a file connection left
 idle for 21 minutes with SSH keepalives every 30 seconds.
 
 The lab's speeds are those of virtual machines and containers on one

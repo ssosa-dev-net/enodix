@@ -241,6 +241,12 @@ impl FileConnection {
         self.connected.subsystem(name).await
     }
 
+    /// Whether the device has ended `channel` in order; final once the
+    /// connection has ended.
+    pub(crate) fn channel_ended_in_order(&self, channel: russh::ChannelId) -> bool {
+        self.connected.channel_ended_in_order(channel)
+    }
+
     /// A channel running `command`.
     pub(crate) async fn exec(
         &self,

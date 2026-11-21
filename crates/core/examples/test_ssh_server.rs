@@ -34,8 +34,9 @@
 //! (created if missing) over SFTP, as `/` (`tests/support/sftp.rs`); without
 //! it they refuse the subsystem, as a device without SFTP. With
 //! `--scp-only`, a server with the same login listens on the given port,
-//! refuses SFTP and serves the folder (created if missing) over SCP, as
-//! `/` (`tests/support/scp.rs`), as a device with SCP only. The
+//! has no SFTP the way IOS-XE has none (it accepts the subsystem, closes
+//! the channel and then the whole connection) and serves the folder
+//! (created if missing) over SCP, as `/` (`tests/support/scp.rs`). The
 //! shells behind them are
 //! scripted; see `tests/support/mod.rs` and `tests/support/telnet.rs` for
 //! their commands.
@@ -122,6 +123,9 @@ async fn main() {
             std::fs::create_dir_all(&folder).expect("the SCP folder can be created");
             let scp = support::TestSshServer::start_on(port).await;
             scp.serve_scp(&folder);
+            // As IOS-XE: the SFTP channel is closed, and the connection
+            // with it.
+            scp.close_sftp_and_hang_up();
             Some(scp)
         }
         None => None,

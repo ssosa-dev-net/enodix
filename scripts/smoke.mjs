@@ -8047,12 +8047,23 @@ async function fileTransfers({
       fail("the SCP form does not say an existing file is replaced");
     if (await exists(`${tabOf(scp)} [data-files-folder]`))
       fail("the SCP tab shows a listing");
-    await answerDialogs([localFile("up1.cfg")]);
-    await clickOn(`${tabOf(scp)} [data-files-action=choose-send]`);
     const field = (name) =>
       evaluate(
         `document.querySelector(${json(`${tabOf(scp)} [name=${name}]`)})?.value ?? null`,
       );
+    // Before a file is chosen the path is the platform's file folder.
+    if ((await field("files-send-remote")) !== "/scp/")
+      fail(
+        `the send's path starts as ${json(await field("files-send-remote"))}, not the platform's file folder`,
+      );
+    if (
+      !(await evaluate(
+        `document.querySelector(${json(`${tabOf(scp)} [data-files-action=send]`)}).disabled`,
+      ))
+    )
+      fail("Send is offered before a file is chosen");
+    await answerDialogs([localFile("up1.cfg")]);
+    await clickOn(`${tabOf(scp)} [data-files-action=choose-send]`);
     await until(
       "the path filled in",
       async () => (await field("files-send-remote")) === "/scp/up1.cfg",
@@ -8161,7 +8172,10 @@ async function fileJob({ evaluate, fillForm, screenshot, step }) {
     : null;
   const localFolder = join(userData, "stage-local");
   const localFile = join(localFolder, "stage.bin");
-  const remote = (name) => join(sftpFolder, "stage", name);
+  // Each host has a folder of its own on the one example server: two
+  // hosts sending to one path would be two devices sharing a file, and
+  // the second would find the first's half-written file there.
+  const remote = (name, folder = "stage") => join(sftpFolder, folder, name);
   const hash = (kind) =>
     createHash(kind).update(readFileSync(localFile)).digest("hex");
   const atStep = (name) => exists(`${JOB_TAB}[data-step=${name}]`);
@@ -8190,13 +8204,15 @@ async function fileJob({ evaluate, fillForm, screenshot, step }) {
   const bytes = Buffer.alloc(3 * 1024 * 1024);
   for (let i = 0; i < bytes.length; i += 1024) bytes[i] = i % 253;
   writeFileSync(localFile, bytes);
-  rmSync(join(sftpFolder, "stage"), { recursive: true, force: true });
-  mkdirSync(join(sftpFolder, "stage"), { recursive: true });
+  for (const each of ["stage", "stage-prod"]) {
+    rmSync(join(sftpFolder, each), { recursive: true, force: true });
+    mkdirSync(join(sftpFolder, each), { recursive: true });
+  }
 
   try {
     writeFileSync(
       platformsFile,
-      `${savedPlatforms ?? ""}smoke-stage:\n  prompt: 'test-ssh\\$ '\n  file_folder: /stage\n`,
+      `${savedPlatforms ?? ""}smoke-stage:\n  prompt: 'test-ssh\\$ '\n  file_folder: /stage\nsmoke-stage-prod:\n  prompt: 'test-ssh\\$ '\n  file_folder: /stage-prod\n`,
     );
     mkdirSync(folder, { recursive: true });
     writeFileSync(
@@ -8206,7 +8222,7 @@ async function fileJob({ evaluate, fillForm, screenshot, step }) {
     writeFileSync(join(folder, "stage-r1.yaml"), "address: 127.0.0.1\n");
     writeFileSync(
       join(folder, "stage-prod.yaml"),
-      "address: 127.0.0.1\nenvironment: production\n",
+      "address: 127.0.0.1\nenvironment: production\nplatform: smoke-stage-prod\n",
     );
     writeFileSync(
       join(folder, "stage-telnet.yaml"),
@@ -8244,7 +8260,8 @@ async function fileJob({ evaluate, fillForm, screenshot, step }) {
     if (json(plan.runs) !== json([prod, r1]))
       fail(`the file job would send to ${json(plan.runs)}`);
     if (
-      json(plan.destinations) !== json(["/stage/stage.bin", "/stage/stage.bin"])
+      json(plan.destinations) !==
+      json(["/stage-prod/stage.bin", "/stage/stage.bin"])
     )
       fail(`the destinations are ${json(plan.destinations)}`);
     if (json(plan.skipped) !== json({ [telnet]: "notSsh" }))
@@ -8267,8 +8284,10 @@ async function fileJob({ evaluate, fillForm, screenshot, step }) {
       if (sent[host]?.state !== "done")
         fail(`${host} ended ${json(sent[host])}`);
     }
-    if (!readFileSync(remote("stage.bin")).equals(bytes))
-      fail("the file did not reach the device byte for byte");
+    for (const each of ["stage", "stage-prod"]) {
+      if (!readFileSync(remote("stage.bin", each)).equals(bytes))
+        fail(`the file did not reach /${each} byte for byte`);
+    }
     await screenshot("file-job-sent");
     step("the file job sends the file to each host, each ends Sent");
 

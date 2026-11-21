@@ -53,7 +53,8 @@ everything 0.2.0 could do, the app still does, reached differently.
   shows Waiting, Sending with its progress, Sent, Already there or Failed
   with the reason. Its run tab shows the file's name, size, MD5 and
   SHA-256, the destination and each host's bytes; it cannot be saved as a
-  job (the file is on this computer).
+  job (the file is on this computer). [files.md](files.md) is the page
+  for it and for the Files tab: what each platform needs, and the limits.
 - **Files tab** (#103): an SSH host's files over SFTP, titled "Files" and
   the host's name, in the main window only (not in a window of its own).
   Opened from the host's details sheet, the tree's context menu, and a
@@ -85,9 +86,12 @@ everything 0.2.0 could do, the app still does, reached differently.
   an upload's MD5 and SHA-256 with a copy button. Transfers go on while
   another tab is shown; closing the tab, the main window or switching
   workspace while one runs or waits asks first.
-  A device without SFTP shows, in place of the listing, a form: Send (a
-  local file, chosen or dropped, to a path filled in with the platform's
-  file folder and the file's name) and Fetch (a path into a local folder).
+  A device without SFTP (IOS and IOS-XE; a Junos device whose SFTP server
+  is off) is reached over SCP, which the app falls back to by itself. Its
+  tab shows, in place of the listing, a form: Send (a
+  local file, chosen or dropped, to a path that starts as the platform's
+  file folder and gets the file's name) and Fetch (a path into a local
+  folder).
   It says that a file of that name is replaced (the device cannot be
   asked), that no connection is held between transfers, and shows a
   device's refusal in its words with the app's hint under it.

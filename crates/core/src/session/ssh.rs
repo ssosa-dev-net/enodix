@@ -1,6 +1,6 @@
 //! The SSH transport: an interactive shell over `russh`.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -14,8 +14,8 @@ use russh::keys::{
     load_secret_key, Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate,
 };
 use russh::{
-    AgentAuthError, Channel, ChannelMsg, ChannelOpenFailure, ChannelWriteHalf, Disconnect,
-    MethodKind, MethodSet,
+    AgentAuthError, Channel, ChannelId, ChannelMsg, ChannelOpenFailure, ChannelWriteHalf,
+    Disconnect, MethodKind, MethodSet,
 };
 
 use super::algorithms::{self, AlgorithmKind, NegotiationFailure};
@@ -43,9 +43,52 @@ struct Client {
     asker: SharedAsker,
     /// The algorithms the last key exchange agreed on.
     negotiated: Arc<std::sync::Mutex<Option<russh::Names>>>,
-    /// Told why the connection ended, for a file connection; dropped (with
-    /// the handler) when it has.
-    ended: Option<watch::Sender<Option<Lost>>>,
+    /// What a file connection follows of its device's connection.
+    followed: Option<Followed>,
+}
+
+/// What a file connection follows of its device's connection, told by the
+/// connection's handler.
+struct Followed {
+    /// Told why the connection ended; dropped (with the handler) when it
+    /// has.
+    ended: watch::Sender<Option<Lost>>,
+    /// The channels the device has ended in order: it sent an exit status,
+    /// an EOF or a close on them.
+    channels_ended: ChannelsEnded,
+}
+
+/// The channels of a connection that its device has ended in order,
+/// shared by the connection's handler (which notes them) and its owner.
+#[derive(Clone, Default)]
+struct ChannelsEnded(Arc<std::sync::Mutex<HashSet<ChannelId>>>);
+
+impl ChannelsEnded {
+    fn note(&self, channel: ChannelId) {
+        self.channels().insert(channel);
+    }
+
+    fn contains(&self, channel: ChannelId) -> bool {
+        self.channels().contains(&channel)
+    }
+
+    fn channels(&self) -> std::sync::MutexGuard<'_, HashSet<ChannelId>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl Client {
+    /// The device ended `channel` in order (an exit status, an EOF or a
+    /// close on it): noted for a file connection, which tells that apart
+    /// from a connection that dropped (IOS-XE ends the connection right
+    /// after the channel).
+    fn channel_ended(&self, channel: ChannelId) {
+        if let Some(followed) = &self.followed {
+            followed.channels_ended.note(channel);
+        }
+    }
 }
 
 /// Asks about the host keys of every hop of a session, one at a time.
@@ -150,10 +193,40 @@ impl client::Handler for Client {
                 (lost, Err(error))
             }
         };
-        if let Some(ended) = &self.ended {
-            ended.send_replace(Some(lost));
+        if let Some(followed) = &self.followed {
+            followed.ended.send_replace(Some(lost));
         }
         result
+    }
+
+    // The three ways a device ends a channel in order.
+
+    async fn exit_status(
+        &mut self,
+        channel: ChannelId,
+        _exit_status: u32,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.channel_ended(channel);
+        Ok(())
+    }
+
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.channel_ended(channel);
+        Ok(())
+    }
+
+    async fn channel_close(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.channel_ended(channel);
+        Ok(())
     }
 }
 
@@ -689,8 +762,8 @@ struct Hop<'a> {
     auth: &'a SshAuth,
     legacy_crypto: bool,
     connect_timeout: Duration,
-    /// For a file connection's device: told why the connection ended.
-    ended: Option<watch::Sender<Option<Lost>>>,
+    /// For a file connection's device: what the connection is followed by.
+    followed: Option<Followed>,
 }
 
 /// The jump host a hop is reached through.
@@ -708,14 +781,15 @@ type Device = (
 );
 
 /// Connects to each jump host in turn, each through the one before, then
-/// to the target through the last, and logs in there; `ended` is told why
-/// the device's connection ends (a file connection's).
+/// to the target through the last, and logs in there; `followed` is told
+/// why the device's connection ends and which channels the device ends (a
+/// file connection's).
 async fn connect_device(
     target: &SshTarget,
     known_hosts: KnownHosts,
     asker: HostKeyAsker,
     prompter: &mut Prompter,
-    ended: Option<watch::Sender<Option<Lost>>>,
+    followed: Option<Followed>,
 ) -> Result<Device, OpenError> {
     let asker = Arc::new(Mutex::new(asker));
     let (jumps, mut algorithms) =
@@ -728,7 +802,7 @@ async fn connect_device(
         auth: &target.auth,
         legacy_crypto: target.legacy_crypto,
         connect_timeout: target.connect_timeout,
-        ended,
+        followed,
     };
     let through = last_via(&target.jump_hosts, &jumps);
     let (connection, agreed) = connect(hop, through, &known_hosts, &asker, prompter).await?;
@@ -782,7 +856,7 @@ async fn connect_jumps(
             auth: &jump.auth,
             legacy_crypto: jump.legacy_crypto,
             connect_timeout: jump.connect_timeout,
-            ended: None,
+            followed: None,
         };
         let through = last_via(jump_hosts, &jumps);
         prompter.jump_host = Some(jump.name.clone());
@@ -997,7 +1071,7 @@ async fn connect_and_log_in(
         known_hosts: known_hosts.clone(),
         asker: asker.clone(),
         negotiated: Arc::clone(&negotiated),
-        ended: hop.ended,
+        followed: hop.followed,
     };
     // What the server sends first, for reporting a failed negotiation.
     let first_bytes = FirstBytes::new();
@@ -1224,6 +1298,8 @@ pub(super) struct Connected {
     pub(super) algorithms: Vec<NegotiatedAlgorithms>,
     /// Why the device's connection ended, once it has.
     pub(super) ended: watch::Receiver<Option<Lost>>,
+    /// The channels the device has ended in order.
+    channels_ended: ChannelsEnded,
     /// The device's connect timeout: the wait for a channel.
     pub(super) connect_timeout: Duration,
 }
@@ -1237,8 +1313,13 @@ pub(super) async fn open_connection(
     prompter: &mut Prompter,
 ) -> Result<Connected, OpenError> {
     let (ended_tx, ended) = watch::channel(None);
+    let channels_ended = ChannelsEnded::default();
+    let followed = Followed {
+        ended: ended_tx,
+        channels_ended: channels_ended.clone(),
+    };
     let (connection, jumps, algorithms) =
-        connect_device(target, known_hosts, asker, prompter, Some(ended_tx)).await?;
+        connect_device(target, known_hosts, asker, prompter, Some(followed)).await?;
     let mut connections = vec![connection];
     connections.extend(jumps.into_iter().rev());
     Ok(Connected {
@@ -1246,6 +1327,7 @@ pub(super) async fn open_connection(
         jump_names: target.jump_hosts.iter().map(|j| j.name.clone()).collect(),
         algorithms,
         ended,
+        channels_ended,
         connect_timeout: target.connect_timeout,
     })
 }
@@ -1257,8 +1339,11 @@ const CONNECTION_LOST: &str = "the connection was lost";
 pub(crate) enum SubsystemRefusal {
     /// The device said no.
     Refused,
-    /// The device closed the channel instead (before or after saying yes).
+    /// The device closed the channel in order instead of answering.
     Closed,
+    /// The channel ended without a word from the device: the device's
+    /// doing only if the connection is still up.
+    Ended,
     /// The connection failed, or the device did not answer.
     Failed(String),
 }
@@ -1292,10 +1377,19 @@ impl Connected {
                             return Err(SubsystemRefusal::Closed)
                         }
                         Some(_) => {}
-                        None if self.connections[0].is_closed() => {
-                            return Err(SubsystemRefusal::Failed(CONNECTION_LOST.into()))
+                        None => {
+                            // Read in this order: once the connection is
+                            // closed, what the device ended is final.
+                            let closed = self.connections[0].is_closed();
+                            return Err(if self.channel_ended_in_order(channel.id()) {
+                                // An exit status and nothing more.
+                                SubsystemRefusal::Closed
+                            } else if closed {
+                                SubsystemRefusal::Failed(CONNECTION_LOST.into())
+                            } else {
+                                SubsystemRefusal::Ended
+                            });
                         }
-                        None => return Err(SubsystemRefusal::Closed),
                     }
                 }
             };
@@ -1342,6 +1436,13 @@ impl Connected {
     /// Whether the device's connection is still up.
     pub(super) fn is_open(&self) -> bool {
         !self.connections.is_empty() && !self.connections[0].is_closed()
+    }
+
+    /// Whether the device has ended `channel` in order (an exit status, an
+    /// EOF or a close on it). Once the connection has ended this is final:
+    /// everything the device sent before was noted first.
+    pub(super) fn channel_ended_in_order(&self, channel: ChannelId) -> bool {
+        self.channels_ended.contains(channel)
     }
 
     /// The first jump host whose connection has ended, if any.

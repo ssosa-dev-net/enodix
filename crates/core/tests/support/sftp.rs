@@ -39,9 +39,12 @@ pub enum SftpMode {
     /// Refused (the default, as a device without SFTP that says so).
     #[default]
     Refuse,
-    /// Accepted, then the channel is closed before SFTP's first reply, as
-    /// IOS-XE does.
+    /// Accepted, then the channel is closed before SFTP's first reply; the
+    /// connection stays.
     CloseAtOnce,
+    /// As `CloseAtOnce`, and then the whole connection is closed: what
+    /// IOS-XE really does (it ends the connection when a channel ends).
+    CloseAndHangUp,
     /// This folder is served.
     Serve(PathBuf),
 }
