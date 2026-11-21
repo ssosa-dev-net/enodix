@@ -3081,18 +3081,18 @@ pub fn run() {
             let built_in = updater_config
                 .as_ref()
                 .and_then(|config| config.get("endpoints")?.get(0)?.as_str());
-            let checker = UpdateChecker::new(
-                UpdateSource::choose(override_address.as_deref(), built_in),
-                &app.package_info().version.to_string(),
-                InstallKind::detect(&program_folder),
-            )?;
-            // Where the bundle's resources are (the Python wheel): beside
-            // the program on Windows and in a build folder, the package's
-            // `/usr/lib/<product>` on Linux.
+            // Where the bundle's resources are (the Python wheel; a Linux
+            // package's marker): beside the program on Windows and in a
+            // build folder, the package's `/usr/lib/<product>` on Linux.
             let resource_folder = app
                 .path()
                 .resource_dir()
                 .unwrap_or_else(|_| program_folder.clone());
+            let checker = UpdateChecker::new(
+                UpdateSource::choose(override_address.as_deref(), built_in),
+                &app.package_info().version.to_string(),
+                InstallKind::detect(&program_folder, &resource_folder),
+            )?;
             app.manage(python::PythonSetup::new(
                 data_folder.clone(),
                 program_folder.clone(),

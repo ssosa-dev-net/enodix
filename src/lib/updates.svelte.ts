@@ -1,11 +1,11 @@
 // The update check, as the core does it (`netterm_core::update`): once at
 // start when the preference allows it, or when the user asks. An installed
 // copy offers to install a newer version (only when the user clicks); a
-// portable copy only says it exists.
+// portable copy, or one a system package installed, only says it exists.
 
 import { invoke } from "@tauri-apps/api/core";
 
-export type InstallKind = "installed" | "portable";
+export type InstallKind = "installed" | "package" | "portable";
 
 export interface UpdateBuild {
   version: string;

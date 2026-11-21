@@ -24,8 +24,11 @@ const MIB: u64 = 1024 * 1024;
 const SIZE: u64 = 40 * MIB;
 
 /// How much the process's memory may grow while files move: well below
-/// [`SIZE`] (the SSH window, the SFTP requests in flight, buffers).
-const GROWTH: u64 = 16 * MIB;
+/// [`SIZE`] (the SSH window, the SFTP requests in flight, buffers), so a
+/// file held whole would not pass. On Linux the growth measured 16 to 18
+/// MiB (glibc's allocator keeps an arena per thread of the runtime), so
+/// 16 MiB failed there (#114).
+const GROWTH: u64 = 24 * MIB;
 
 /// The process's resident memory, in bytes, where the platform tells.
 #[cfg(windows)]

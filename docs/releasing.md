@@ -180,8 +180,10 @@ equivalent, or publish the file at a fixed address yourself.
    once the installer can be downloaded.
 
 6. Check: an installed copy of the previous version shows the notice
-   (**Check now** in Preferences), and installing works. On Linux, check the
-   packages on a real desktop with the list in `docs/linux.md`.
+   (**Check now** in Preferences), and installing works. On Linux, install
+   the .deb in WSL and run `npm run test:linux-desktop` (also with
+   `--backend x11` and `--app <the AppImage>`), then check what it cannot
+   on a real desktop with the list in `docs/linux.md`.
 
 The release build replaces `target/release/netterm.exe` with one that
 has the updater; run `npm run app:build` again before the smoke test.

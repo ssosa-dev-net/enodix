@@ -969,15 +969,52 @@ fn exit_code(status: ExitStatus) -> String {
     }
 }
 
+/// The variable a bundle's runtime sets to the folder the bundle is
+/// mounted at (an AppImage's `APPDIR`).
+pub const BUNDLE_VARIABLE: &str = "APPDIR";
+
+/// Leaves out of `command`'s environment what a bundle's runtime added
+/// for the app and that points into the bundle ([`BUNDLE_VARIABLE`]): an
+/// AppImage sets `PYTHONHOME`, `PYTHONPATH`, `LD_LIBRARY_PATH` and others
+/// there, with which the system's own Python cannot even start ("No module
+/// named 'encodings'"). A variable holding a list keeps its other entries.
+fn leave_the_bundle(command: &mut Command) {
+    let Some(bundle) = std::env::var_os(BUNDLE_VARIABLE).filter(|folder| !folder.is_empty()) else {
+        return;
+    };
+    let bundle = PathBuf::from(bundle);
+    let inside = |path: &PathBuf| path.starts_with(&bundle);
+    for (name, value) in std::env::vars_os() {
+        if name == BUNDLE_VARIABLE {
+            continue;
+        }
+        let parts: Vec<PathBuf> = std::env::split_paths(&value).collect();
+        if !parts.iter().any(inside) {
+            continue;
+        }
+        let kept: Vec<PathBuf> = parts
+            .into_iter()
+            .filter(|part| !part.as_os_str().is_empty() && !inside(part))
+            .collect();
+        match std::env::join_paths(&kept) {
+            Ok(joined) if !kept.is_empty() => command.env(&name, joined),
+            _ => command.env_remove(&name),
+        };
+    }
+}
+
 /// A command with no window of its own (on Windows a console would flash
 /// up for every check), its input closed and its output captured.
 ///
 /// Elsewhere it starts in a session of its own, so that it has no
 /// terminal either (as a Windows process without a console: the headless
 /// binary then never waits on a password prompt nobody sees) and
-/// [`stop`] can end the processes it started with it.
+/// [`stop`] can end the processes it started with it. Started from an
+/// AppImage, it gets none of the bundle's variables
+/// ([`leave_the_bundle`]).
 pub(crate) fn quiet_command(program: &OsStr) -> Command {
     let mut command = Command::new(program);
+    leave_the_bundle(&mut command);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

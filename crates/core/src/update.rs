@@ -42,6 +42,11 @@ pub const PORTABLE_MARKER: &str = "portable.txt";
 /// program: only a copy next to it counts as installed.
 pub const INSTALLED_MARKER: &str = "uninstall.exe";
 
+/// The file that marks a copy installed by a system package (the release
+/// script puts it in the .deb's and .rpm's resource folder, not in the
+/// AppImage's): the system's package manager updates such a copy.
+pub const PACKAGE_MARKER: &str = "package.txt";
+
 /// How long a check may take altogether.
 pub const DEFAULT_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -54,22 +59,29 @@ pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub enum InstallKind {
     /// Set up by the installer: updates can be installed.
     Installed,
-    /// Anything else (the portable zip first of all): updates are only
-    /// announced, so that installing never adds a second copy.
+    /// Installed by a system package (a .deb or an .rpm): updates are only
+    /// announced, and come through the system's package manager.
+    Package,
+    /// Anything else (the portable zip and the AppImage first of all):
+    /// updates are only announced, so that installing never adds a second
+    /// copy.
     Portable,
 }
 
 impl InstallKind {
     /// Installed when the installer's uninstaller ([`INSTALLED_MARKER`]) is a
     /// file in `program_folder` (the folder holding the running program) and
-    /// [`PORTABLE_MARKER`] is not; portable otherwise. Only Windows has an
-    /// installer the app updates itself with: on other systems every copy
-    /// is portable (Linux packages are updated with the system's own
-    /// tools), so the update check only notifies there.
-    pub fn detect(program_folder: &Path) -> Self {
+    /// [`PORTABLE_MARKER`] is not; a package when [`PACKAGE_MARKER`] is a
+    /// file in `resource_folder` (the folder of the bundle's resources);
+    /// portable otherwise. Only Windows has an installer the app updates
+    /// itself with: on other systems no copy is installed, so the update
+    /// check only notifies there.
+    pub fn detect(program_folder: &Path, resource_folder: &Path) -> Self {
         let has = |name: &str| program_folder.join(name).is_file();
         if cfg!(windows) && has(INSTALLED_MARKER) && !has(PORTABLE_MARKER) {
             Self::Installed
+        } else if !has(PORTABLE_MARKER) && resource_folder.join(PACKAGE_MARKER).is_file() {
+            Self::Package
         } else {
             Self::Portable
         }
@@ -371,7 +383,7 @@ impl UpdateChecker {
             page: manifest.page.and_then(|page| web_url(&page).ok()),
             action: match self.kind {
                 InstallKind::Installed => UpdateAction::Install,
-                InstallKind::Portable => UpdateAction::Notify,
+                InstallKind::Package | InstallKind::Portable => UpdateAction::Notify,
             },
         }))
     }
