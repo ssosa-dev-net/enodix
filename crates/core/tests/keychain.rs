@@ -24,8 +24,13 @@ struct TestKeychain {
 impl TestKeychain {
     fn new() -> Self {
         let suffix: u64 = rand::random();
+        Self::with_prefix(format!("netterm-test-{suffix:016x}"))
+    }
+
+    fn with_prefix(prefix: String) -> Self {
+        assert!(prefix.starts_with("netterm-test-"));
         Self {
-            store: KeychainStore::new(format!("netterm-test-{suffix:016x}")),
+            store: KeychainStore::new(prefix),
         }
     }
 }
@@ -307,4 +312,44 @@ fn everything_is_listed_across_scopes_and_only_under_the_prefix() {
         .map(|s| (s.scope.as_str(), s.name.as_str(), s.value.expose()))
         .collect();
     assert_eq!(secrets, [(SCOPE_B, "Token", "t0ken")]);
+}
+
+#[test]
+fn everything_under_the_prefix_is_removed_and_nothing_else() {
+    let suffix: u64 = rand::random();
+    let prefix = format!("netterm-test-{suffix:016x}");
+    let keychain = TestKeychain::with_prefix(prefix.clone());
+    // Names that start like the prefix's own but are another prefix's.
+    let longer = TestKeychain::with_prefix(format!("{prefix}x"));
+    let other = TestKeychain::new();
+    let store = &keychain.store;
+    store
+        .put(SCOPE_A, &password_profile("core", "pw-a"))
+        .unwrap();
+    store
+        .put(SCOPE_B, &password_profile("core", "pw-b"))
+        .unwrap();
+    store
+        .put(SCOPE_B, &password_profile("edge", "pw-e"))
+        .unwrap();
+    store
+        .put_secret(SCOPE_A, "Token", &SecretValue::new("t0ken"))
+        .unwrap();
+    for kept in [&longer.store, &other.store] {
+        kept.put(SCOPE_A, &password_profile("core", "x")).unwrap();
+        kept.put_secret(SCOPE_A, "Token", &SecretValue::new("y"))
+            .unwrap();
+    }
+
+    let removed = store.remove_all().unwrap();
+
+    assert_eq!((removed.profiles, removed.secrets), (3, 1));
+    assert!(store.contents().unwrap().is_empty());
+    for kept in [&longer.store, &other.store] {
+        assert_eq!(kept.list(SCOPE_A).unwrap().len(), 1);
+        assert_eq!(kept.secret_names(SCOPE_A).unwrap(), ["Token"]);
+    }
+    // Nothing left: nothing more to remove.
+    let again = store.remove_all().unwrap();
+    assert_eq!((again.profiles, again.secrets), (0, 0));
 }

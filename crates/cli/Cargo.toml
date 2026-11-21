@@ -36,3 +36,8 @@ libc = "0.2"
 
 [build-dependencies]
 serde_json = "1"
+
+# The program's version details on Windows (the crate Tauri uses for the
+# app's).
+[target.'cfg(windows)'.build-dependencies]
+tauri-winres = "0.3"

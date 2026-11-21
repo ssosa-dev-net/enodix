@@ -414,6 +414,72 @@ fn with_the_app_closed_it_reads_the_keychain() {
     );
 }
 
+/// `clear-keychain` removes the entries under the app's prefix (here this
+/// test's own), of every workspace, and nothing under another prefix.
+#[cfg(windows)]
+#[test]
+fn clear_keychain_removes_every_saved_login_and_only_those() {
+    use netterm_core::credentials::KeychainStore;
+
+    /// Removes everything under its prefix when dropped.
+    struct Cleanup(KeychainStore);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = self.0.remove_all();
+        }
+    }
+
+    let setup = Setup::new();
+    let keychain = Cleanup(KeychainStore::new(setup.keychain_prefix.clone()));
+    let other = Cleanup(KeychainStore::new(format!("{}x", setup.keychain_prefix)));
+    fill(&keychain.0);
+    keychain.0.put("another-workspace", &profiles()[0]).unwrap();
+    fill(&other.0);
+    // The app running does not change what is removed.
+    let _app = setup.serve(memory_store());
+
+    let output = setup.run(&["clear-keychain"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "removed 4 credential profiles and 1 named secret from the keychain\n"
+    );
+    assert!(keychain.0.contents().unwrap().is_empty());
+    assert_eq!(other.0.contents().unwrap().sorted(), contents().sorted());
+
+    let again = setup.run(&["clear-keychain"]);
+    assert_eq!(
+        String::from_utf8_lossy(&again.stdout),
+        "removed 0 credential profiles and 0 named secrets from the keychain\n"
+    );
+}
+
+/// Elsewhere there is no keychain: nothing to remove.
+#[cfg(not(windows))]
+#[test]
+fn clear_keychain_has_nothing_to_remove_without_a_keychain() {
+    let setup = Setup::new();
+    let output = setup.run(&["clear-keychain"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("nothing removed"));
+}
+
+#[test]
+fn clear_keychain_takes_no_arguments_and_is_refused_to_a_script_job() {
+    let setup = Setup::new();
+    assert_eq!(
+        setup.run(&["clear-keychain", setup.ws()]).status.code(),
+        Some(2)
+    );
+    let mut command = setup.command(&["clear-keychain"]);
+    command.env("NETTERM_JOB_TARGETS", setup.data.join("targets.json"));
+    without_terminal(&mut command);
+    refused(
+        &command.output().unwrap(),
+        "this runs for a script job, and removes no saved logins",
+    );
+}
+
 /// Elsewhere there is no keychain: with the app closed and no vault, the
 /// binary says the vault is where credentials are kept.
 #[cfg(not(windows))]

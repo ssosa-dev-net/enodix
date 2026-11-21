@@ -36,7 +36,7 @@ mod secrets;
 mod vault;
 
 pub use agent::{AgentEndpoint, AgentError, AgentServer, AgentStore, HostCredentials, NamedSecret};
-pub use keychain::KeychainStore;
+pub use keychain::{KeychainStore, RemovedEntries};
 pub use secrets::{SecretError, SecretValue, Secrets, MAX_SECRET_NAME};
 pub use vault::{vault_file, ActiveStore, KdfParams, Vault, VaultError, VaultStatus, VAULT_FILE};
 

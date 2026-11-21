@@ -31,6 +31,7 @@ Usage:
   {NAME} secret <workspace folder> <name>
   {NAME} tunnel <workspace folder> [--folder <path> | --filter <name> | --host <id>...]
                 [--port <number>...]
+  {NAME} clear-keychain
   {NAME} --help | --version
 
 inventory   prints the workspace's hosts as JSON, each with the settings that
@@ -57,6 +58,11 @@ tunnel      opens a loopback tunnel to each host behind jump hosts (in the
             the same jump hosts; a listening host then has \"extra_ports\",
             from device port to the 127.0.0.1 port that reaches it. Nothing
             checks that the device listens on it.
+clear-keychain
+            removes every credential profile and named secret {PRODUCT}
+            keeps in the system keychain, of every workspace, and says how
+            many it removed. The vault is not touched. Uninstalling
+            {PRODUCT} with its data deleted runs it.
 
 Credentials come from {PRODUCT} while it runs and its vault, if it has
 one, is unlocked. Otherwise they are read here: from the keychain, or from
@@ -103,6 +109,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
         Some("credentials") => credentials::host(&args[1..]),
         Some("secret") => credentials::secret(&args[1..]),
         Some("tunnel") => tunnel::run(&args[1..]),
+        Some("clear-keychain") => credentials::clear_keychain(&args[1..]),
         Some(other) => Err(Failure::Usage(format!("unknown command {other:?}"))),
     }
 }

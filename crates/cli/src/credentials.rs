@@ -14,6 +14,7 @@ use netterm_core::credentials::{
     vault_file, AgentEndpoint, AgentStore, CredentialStore, HostCredentials, KeychainStore,
     NamedSecret, Profiles, Secrets, Vault, VaultError, VaultStatus,
 };
+use netterm_core::job::script::ScriptTargets;
 use netterm_core::workspace::{HostId, Workspace};
 use zeroize::Zeroize;
 
@@ -64,6 +65,49 @@ pub fn secret(args: &[String]) -> Result<(), Failure> {
         .map_err(|error| Failure::Error(error.to_string()))?
         .ok_or_else(|| Failure::Error(format!("there is no secret called {name}")))?;
     print_secret(&NamedSecret::new(name, value))
+}
+
+/// `clear-keychain`: removes every credential profile and named secret
+/// this app keeps in the system keychain, of every workspace, and says how
+/// many. The uninstaller runs it when the app's data is deleted. Neither the
+/// running app nor the vault is asked: the vault is a file in the data
+/// folder, which goes with it.
+pub fn clear_keychain(args: &[String]) -> Result<(), Failure> {
+    if let Some(extra) = args.first() {
+        return Err(Failure::Usage(format!("unexpected argument {extra:?}")));
+    }
+    if ScriptTargets::from_environment().is_some() {
+        return Err(Failure::Error(
+            "this runs for a script job, and removes no saved logins".into(),
+        ));
+    }
+    if !KeychainStore::is_supported() {
+        return print(&format!(
+            "{PRODUCT} keeps nothing in a keychain on this system: nothing removed\n"
+        ));
+    }
+    let removed = keychain()
+        .remove_all()
+        .map_err(|error| Failure::Error(error.to_string()))?;
+    print(&format!(
+        "removed {} and {} from the keychain\n",
+        counted(removed.profiles, "credential profile"),
+        counted(removed.secrets, "named secret"),
+    ))
+}
+
+fn counted(count: usize, noun: &str) -> String {
+    match count {
+        1 => format!("1 {noun}"),
+        count => format!("{count} {noun}s"),
+    }
+}
+
+/// The app's entries in the keychain, or the tests' own
+/// ([`KEYCHAIN_PREFIX_VARIABLE`]).
+fn keychain() -> KeychainStore {
+    let prefix = std::env::var(KEYCHAIN_PREFIX_VARIABLE).unwrap_or_else(|_| IDENTIFIER.into());
+    KeychainStore::new(prefix)
 }
 
 fn two_arguments<'a>(args: &'a [String], second: &str) -> Result<[&'a str; 2], Failure> {
@@ -146,8 +190,7 @@ pub(crate) fn open_store() -> Result<Box<dyn CredentialStore>, Failure> {
             "no credentials are stored: on this system {PRODUCT} keeps them only in its vault, which is not turned on (Preferences, Security)"
         )));
     }
-    let prefix = std::env::var(KEYCHAIN_PREFIX_VARIABLE).unwrap_or_else(|_| IDENTIFIER.into());
-    Ok(Box::new(KeychainStore::new(prefix)))
+    Ok(Box::new(keychain()))
 }
 
 /// Opens the vault with the master password, asked on the terminal (up to
