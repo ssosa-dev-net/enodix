@@ -106,10 +106,33 @@ folder, and what stalled it was fixed [116].
   the Credential profile setting, the Credentials view and the reports of
   the CSV and Nornir imports say how a host gets a credential profile.
 
+### What the app connects to
+
+- New: [docs/trust.md](docs/trust.md) says where passwords, key
+  passphrases and named secrets are kept, what is encrypted and what is
+  not, how a script gets a login, every connection the app can make and
+  why, and what the app does not protect against [115].
+- The window's engine, Microsoft's WebView2, no longer contacts Microsoft
+  on its own [115]. In every earlier release it fetched Edge's
+  configuration at start (with a client id, the OS version and the install
+  date), looked up `wpad` for a proxy script, asked for component updates
+  and downloaded them, and ran Edge's autofill and writing suggestions on
+  what is typed. The app's own code made none of these connections; they
+  were found by watching every connection of the app's processes through a
+  whole run of the end-to-end test, which now fails on any of them.
+- **Not solved yet:** while text is typed, the engine now and then
+  connects to Microsoft's Office servers. What these connections carry has
+  not been seen. Until this is closed, assume typed text may reach
+  Microsoft; `docs/trust.md` has what is known [135].
+- The README said the app made no connection you did not start, and that
+  session logs could be written to a folder you chose. Neither was true;
+  both are corrected [115].
+
 ### Fixes
 
-Found by deliberately hostile use of the inventory and the stored logins
-[117], and by a review of the 0.2.0 work against its specs [112].
+Found by deliberately hostile use of the inventory, the stored logins and
+sessions [117] [118], and by a review of the 0.2.0 work against its specs
+[112].
 
 - Start in a job tab runs exactly the plan that tab shows [121]. Before,
   the app kept only the plan made last, so with two job tabs at pre-flight
