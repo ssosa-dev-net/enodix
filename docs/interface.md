@@ -54,7 +54,11 @@ everything 0.2.0 could do, the app still does, reached differently.
   history (one per host), Preferences, CSV import, Nornir import, platform
   definitions, highlight rules, fill-in review, Python setup and Files
   (one per host). They have an icon and no connection dot, move, split
-  and close like session tabs, and never join multi-send.
+  and close like session tabs, and never join multi-send. Several job
+  tabs can wait at pre-flight at once: each one's Start runs the hosts
+  its own pre-flight lists, after its own production question (#121). A
+  pre-flight that is no longer current (another workspace was opened, or
+  many jobs were planned since) refuses to start and offers Plan again.
 - **Send a file to many hosts** (#107): "Send file…" beside Run snippet
   and Run script (a folder's or host's details sheet, the tree's context
   menu, a saved filter's actions) opens a job tab: the file (Browse… or a

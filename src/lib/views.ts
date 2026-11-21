@@ -86,7 +86,7 @@ export function openView(view: ViewName, subject: string | null = null) {
 }
 
 /** Opens a new job tab for `draft`'s job. */
-export function openJobTab(draft: Omit<JobDraft, "run" | "opened">) {
+export function openJobTab(draft: Omit<JobDraft, "run" | "opened" | "shown">) {
   openView("job", addDraft(draft));
 }
 

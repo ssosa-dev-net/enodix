@@ -44,6 +44,7 @@
 //! and planned again on the same target with [`plan_again`].
 
 mod file;
+mod kept;
 mod live;
 mod login;
 pub mod results;
@@ -64,6 +65,7 @@ use crate::workspace::{
     Workspace,
 };
 
+pub use kept::{KeptPlan, KeptPlans, PlanId, PlanRefused, MAX_KEPT_PLANS};
 pub use live::{LiveJob, LiveJobs, NewLiveJob};
 pub use login::{LoginBackup, LoginBackupOutcome, SessionLogin};
 pub use run::{
