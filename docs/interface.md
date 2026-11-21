@@ -189,7 +189,31 @@ everything 0.2.0 could do, the app still does, reached differently.
   sessions (over that window).
 - **First window**: with no workspace open, the active pane shows the
   welcome view (recent workspaces, open a folder, create a workspace,
-  quick connect); side views that need a workspace say so.
+  quick connect); side views that need a workspace say so. The
+  workspace switcher (Ctrl+Shift+O) says the same: "Open an existing
+  folder", never "add". A folder that is not there, a file chosen as a
+  folder, and a create over a folder that has files each say what to
+  do instead (#116). With a workspace open, the empty pane says that a
+  double-click on a host in the Hosts view connects it.
+- **A connection that fails** (#116) says what happened and what to
+  check next, in the bar under the terminal (or the SSH agent's card):
+  the address for a name that does not resolve, the Port setting for a
+  refused port, the address, the device and the Connect timeout for no
+  answer, the username and password (and the Credentials view) for a
+  refused login, the agent for an agent login; a jump host's failure
+  says it is the jump host's. Enter then says it tries again with the
+  same settings: a host's changed settings or profile are used by
+  connecting it again from the Hosts view.
+- **First hosts and logins** (#116): the New host form refuses an
+  address with a port after it (`10.0.0.1:2222`) saying to set the
+  Port in the host's details. The Credential profile setting says what
+  it takes (a profile of the Credentials view, or a new name set up at
+  the first connection), and the Jump host setting that a host is named
+  by its id; a jump host named by its host name says which id to use.
+  A login asked at each connection says how to keep it, the
+  Credentials view how a host uses a profile, and the CSV and Nornir
+  reports, after creating hosts, how to connect and give them a
+  profile.
 
 ## Shortcuts
 

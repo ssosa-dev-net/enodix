@@ -77,6 +77,9 @@ export type SessionState =
       offersPasswordLogin: boolean;
       /** The algorithm negotiation failed; null for other failures. */
       negotiation: NegotiationFailure | null;
+      /** What to check next, from the core (#116); null when the reason
+       * says it, or for a session that ended rather than failed. */
+      advice?: string | null;
     };
 
 export type AlgorithmKind = "keyExchange" | "hostKey" | "cipher" | "mac";

@@ -65,15 +65,43 @@ fn a_new_workspace_is_refused_in_a_folder_that_has_files() {
 
     let error = Workspace::create(root.path()).unwrap_err();
 
-    assert!(
-        error.reason.contains("not empty"),
-        "unexpected reason: {}",
-        error.reason
+    // It says what to do instead, in the words of the welcome view (#116).
+    assert_eq!(
+        error.reason,
+        "the folder is not empty; open it as a workspace instead, or create one in an empty folder"
     );
     assert!(!root.path().join(WORKSPACE_FILE).exists());
     assert_eq!(
         fs::read_to_string(root.path().join("notes.txt")).unwrap(),
         "mine"
+    );
+}
+
+#[test]
+fn opening_a_folder_that_is_not_there_says_so_and_what_to_do() {
+    let parent = TempDir::new().unwrap();
+    let gone = parent.path().join("acme");
+
+    let error = Workspace::open(&gone).unwrap_err();
+
+    // Not the system's own words ("os error 2"), and a way on (#116).
+    assert_eq!(
+        error.reason,
+        "there is no such folder; check the path, or create a new workspace there"
+    );
+}
+
+#[test]
+fn opening_a_file_as_a_workspace_says_to_choose_its_folder() {
+    let parent = TempDir::new().unwrap();
+    let file = parent.path().join("hosts.csv");
+    fs::write(&file, "name,address\n").unwrap();
+
+    let error = Workspace::open(&file).unwrap_err();
+
+    assert_eq!(
+        error.reason,
+        "it is a file, not a folder; choose the folder that holds the host files"
     );
 }
 

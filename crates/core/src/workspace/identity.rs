@@ -98,7 +98,7 @@ impl Workspace {
                 let entry = entry.map_err(|error| refuse(error.to_string()))?;
                 if !entry.file_name().to_string_lossy().starts_with('.') {
                     return Err(refuse(
-                        "the folder is not empty; add it as an existing folder instead".into(),
+                        "the folder is not empty; open it as a workspace instead, or create one in an empty folder".into(),
                     ));
                 }
             }

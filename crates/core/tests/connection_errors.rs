@@ -6,8 +6,8 @@ mod support;
 use std::time::{Duration, Instant};
 
 use netterm_core::session::{
-    CloseReason, JumpHost, OpenError, SessionManager, SessionState, SessionTarget, SshAuth,
-    SshTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT,
+    AgentError, CloseReason, JumpHost, OpenError, SessionManager, SessionState, SessionTarget,
+    SshAuth, SshTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT,
 };
 use russh::MethodKind;
 use support::{
@@ -229,5 +229,115 @@ async fn each_kind_of_failure_has_its_own_message() {
             "authentication failed",
             "connection lost",
         ]
+    );
+}
+
+#[tokio::test]
+async fn a_failure_says_what_to_check_next() {
+    // Each failure a newcomer meets first says what to check and where it
+    // is set, besides what happened (#116). A lost connection needs none:
+    // reconnecting is the way on.
+    let advice = [
+        CloseReason::Failed(OpenError::NameNotResolved {
+            host: "core1".into(),
+        }),
+        CloseReason::Failed(OpenError::Unreachable {
+            host: "core1".into(),
+            reason: "no route".into(),
+        }),
+        CloseReason::Failed(OpenError::ConnectionRefused {
+            host: "core1".into(),
+            port: 2222,
+        }),
+        CloseReason::Failed(OpenError::TimedOut {
+            after: Duration::from_secs(15),
+        }),
+        CloseReason::Failed(OpenError::AuthenticationFailed),
+        CloseReason::Failed(OpenError::Agent(AgentError::NotRunning("no agent".into()))),
+        CloseReason::Failed(OpenError::Agent(AgentError::NoKeys)),
+        CloseReason::Failed(OpenError::Agent(AgentError::KeysRefused)),
+        CloseReason::Failed(OpenError::HostKeyChanged),
+        CloseReason::Failed(OpenError::JumpHost {
+            name: "Site/bastion.yaml".into(),
+            error: Box::new(OpenError::ConnectionRefused {
+                host: "10.0.0.1".into(),
+                port: 22,
+            }),
+        }),
+        CloseReason::ConnectionLost,
+        CloseReason::ClosedLocally,
+    ]
+    .map(|reason| reason.advice());
+
+    assert_eq!(
+        advice,
+        [
+            Some("Check the address: a name your DNS knows, or an IP address.".into()),
+            Some(
+                "Check the address, and that this computer has a route to it (a VPN, say).".into()
+            ),
+            Some(
+                "Nothing accepts connections on port 2222: check the Port setting, and that \
+                 the device has SSH (or telnet) turned on."
+                    .into()
+            ),
+            Some(
+                "Check the address and that the device is up; a firewall may be dropping the \
+                 connection. A slow device may need a longer Connect timeout."
+                    .into()
+            ),
+            Some(
+                "Check the username and password (or key). For a host with a credential \
+                 profile, change them in the Credentials view, then connect to the host again."
+                    .into()
+            ),
+            Some(
+                "Start your SSH agent with your key in it and connect again, or log in with a \
+                 password."
+                    .into()
+            ),
+            Some(
+                "Add your key to the SSH agent (ssh-add) and connect again, or log in with a \
+                 password."
+                    .into()
+            ),
+            Some(
+                "Check the username, and that the device has your public key; or log in with a \
+                 password."
+                    .into()
+            ),
+            Some(
+                "If the device was replaced or reinstalled, check its new fingerprint with the \
+                 device, then connect again and replace the key."
+                    .into()
+            ),
+            Some(
+                "For the jump host Site/bastion.yaml: nothing accepts connections on port 22: \
+                 check the Port setting, and that the device has SSH (or telnet) turned on."
+                    .into()
+            ),
+            None,
+            None,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_refused_port_comes_with_its_advice() {
+    // The advice travels with the failure the session ends with.
+    let manager = support::manager();
+    let port = closed_port().await;
+    let (_id, mut events) = manager.open(SessionTarget::Ssh(target_at("127.0.0.1", port)), SIZE);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    let SessionState::Closed(reason) = next_state(&mut events).await else {
+        panic!("expected the session to fail");
+    };
+
+    assert_eq!(
+        reason.advice(),
+        Some(format!(
+            "Nothing accepts connections on port {port}: check the Port setting, and that \
+             the device has SSH (or telnet) turned on."
+        ))
     );
 }

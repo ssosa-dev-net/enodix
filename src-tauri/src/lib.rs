@@ -384,6 +384,8 @@ enum StateMessage {
         offers_password_login: bool,
         /// The algorithm negotiation failed: what the device offered.
         negotiation: Option<NegotiationMessage>,
+        /// What to check next (`CloseReason::advice`, #116).
+        advice: Option<String>,
     },
 }
 
@@ -422,6 +424,7 @@ impl From<SessionState> for StateMessage {
                         unsupported: failure.unsupported_even_with_legacy_crypto(),
                     }
                 }),
+                advice: reason.advice(),
                 reason: reason.to_string(),
             },
         }

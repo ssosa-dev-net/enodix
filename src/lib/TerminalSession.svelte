@@ -1303,7 +1303,15 @@
     {:else if status.state === "closed" && session}
       <div class="ended" role="alert" data-session-ended>
         <span class="reason">{status.reason}.</span>
-        <span>Press <kbd>Enter</kbd> to reconnect.</span>
+        {#if status.advice}
+          <!-- What to change; Enter would try the same again (#116). -->
+          <span data-session-advice>{status.advice}</span>
+          <span
+            >Press <kbd>Enter</kbd> to try again with the same settings.</span
+          >
+        {:else}
+          <span>Press <kbd>Enter</kbd> to reconnect.</span>
+        {/if}
         <button data-session-new-connection onclick={ondismiss}
           >New connection</button
         >
@@ -1312,6 +1320,9 @@
       <!-- It never opened, so there is nothing to reconnect. -->
       <div class="ended" role="alert" data-session-failed>
         <span class="reason">{status.reason}.</span>
+        {#if status.advice}
+          <span data-session-advice>{status.advice}</span>
+        {/if}
         <button data-session-new-connection onclick={ondismiss}
           >New connection</button
         >
@@ -1364,6 +1375,9 @@
         >
           <h2>Could not log in with the SSH agent</h2>
           <p>{reason}.</p>
+          {#if status.advice}
+            <p data-session-advice>{status.advice}</p>
+          {/if}
           <div class="actions">
             <button type="button" onclick={ondismiss}>Cancel</button>
             <button type="submit">Log in with a password</button>

@@ -425,7 +425,75 @@ pub enum AgentError {
     Failed(String),
 }
 
+impl OpenError {
+    /// What the user can do about the failure, when the reason alone does
+    /// not say it (#116): what to check and where it is set. `None` when
+    /// the reason says it already, or the interface asks its own question
+    /// (a failed negotiation's legacy-crypto card).
+    pub fn advice(&self) -> Option<String> {
+        let advice = match self {
+            Self::NameNotResolved { .. } => {
+                "Check the address: a name your DNS knows, or an IP address.".into()
+            }
+            Self::Unreachable { .. } => {
+                "Check the address, and that this computer has a route to it (a VPN, say).".into()
+            }
+            Self::ConnectionRefused { port, .. } => format!(
+                "Nothing accepts connections on port {port}: check the Port setting, and that \
+                 the device has SSH (or telnet) turned on."
+            ),
+            Self::TimedOut { .. } => "Check the address and that the device is up; a firewall \
+                may be dropping the connection. A slow device may need a longer Connect timeout."
+                .into(),
+            Self::AuthenticationFailed => "Check the username and password (or key). For a \
+                host with a credential profile, change them in the Credentials view, then \
+                connect to the host again."
+                .into(),
+            Self::Agent(AgentError::NotRunning(_)) => {
+                "Start your SSH agent with your key in it and connect again, or log in with a \
+                 password."
+                    .into()
+            }
+            Self::Agent(AgentError::NoKeys) => {
+                "Add your key to the SSH agent (ssh-add) and connect again, or log in with a \
+                 password."
+                    .into()
+            }
+            Self::Agent(AgentError::KeysRefused) => {
+                "Check the username, and that the device has your public key; or log in with a \
+                 password."
+                    .into()
+            }
+            Self::HostKeyChanged => "If the device was replaced or reinstalled, check its new \
+                fingerprint with the device, then connect again and replace the key."
+                .into(),
+            Self::JumpHost { name, error } => {
+                return error.advice().map(|advice| {
+                    let mut chars = advice.chars();
+                    let first = chars.next().map(|c| c.to_lowercase().collect::<String>());
+                    format!(
+                        "For the jump host {name}: {}{}",
+                        first.unwrap_or_default(),
+                        chars.as_str()
+                    )
+                });
+            }
+            _ => return None,
+        };
+        Some(advice)
+    }
+}
+
 impl CloseReason {
+    /// What the user can do about it: [`OpenError::advice`] for a session
+    /// that could not be opened, else `None`.
+    pub fn advice(&self) -> Option<String> {
+        match self {
+            Self::Failed(error) => error.advice(),
+            _ => None,
+        }
+    }
+
     /// Whether the session failed in a way that logging in with a password
     /// might get past: the SSH agent was not running or had no key the
     /// server accepts.

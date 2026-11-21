@@ -8,9 +8,15 @@ use super::{Folder, HostId, Origin, Protocol, ResolvedHost, Workspace};
 /// Why a host's jump hosts cannot be worked out.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum JumpChainError {
-    /// `from` names a jump host the workspace does not have.
-    #[error("the jump host {jump_host} of {from} is not in the workspace")]
-    Missing { from: HostId, jump_host: String },
+    /// `from` names a jump host the workspace does not have. `named` is
+    /// the one host whose name (not id) is `jump_host`, as a newcomer writes
+    /// it (#116): the message then gives its id.
+    #[error("{}", missing(.from, .jump_host, .named.as_ref()))]
+    Missing {
+        from: HostId,
+        jump_host: String,
+        named: Option<HostId>,
+    },
     /// Following the jump hosts comes back to a host already on the way:
     /// the hosts in order, the repeated one last.
     #[error("the jump hosts form a loop: {}", loop_path(.0))]
@@ -18,6 +24,17 @@ pub enum JumpChainError {
     /// A jump host has to be reached over SSH to tunnel through it.
     #[error("the jump host {jump_host} is not reached over SSH")]
     NotSsh { jump_host: HostId },
+}
+
+fn missing(from: &HostId, jump_host: &str, named: Option<&HostId>) -> String {
+    match named {
+        Some(id) => format!(
+            "the jump host {jump_host} of {from} is named by its host name; name it by its id, {id}, as the Jump host setting lists it"
+        ),
+        None => format!(
+            "the jump host {jump_host} of {from} is not in the workspace; choose one the Jump host setting lists"
+        ),
+    }
 }
 
 fn loop_path(ids: &[HostId]) -> String {
@@ -44,6 +61,7 @@ impl Workspace {
             let missing = || JumpChainError::Missing {
                 from: current.host.id.clone(),
                 jump_host: reference.to_owned(),
+                named: self.host_named(reference),
             };
             let id = self.find_host_id(reference).ok_or_else(missing)?;
             if id == current.host.id && jump.origin != Origin::Host {
@@ -80,5 +98,29 @@ impl Workspace {
                 .or_else(|| folder.folders.iter().find_map(|child| find(child, lower)))
         }
         find(&self.tree, &reference.to_lowercase())
+    }
+
+    /// The id of the one host whose name is `name` (ignoring case); `None`
+    /// when no host or several have it.
+    fn host_named(&self, name: &str) -> Option<HostId> {
+        fn collect(folder: &Folder, lower: &str, found: &mut Vec<HostId>) {
+            found.extend(
+                folder
+                    .hosts
+                    .iter()
+                    .filter(|host| host.name.to_lowercase() == lower)
+                    .map(|host| host.id.clone()),
+            );
+            for child in &folder.folders {
+                collect(child, lower, found);
+            }
+        }
+        let mut found = Vec::new();
+        collect(&self.tree, &name.to_lowercase(), &mut found);
+        if found.len() == 1 {
+            found.pop()
+        } else {
+            None
+        }
     }
 }

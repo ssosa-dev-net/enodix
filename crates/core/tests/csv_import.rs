@@ -273,10 +273,53 @@ fn values_are_trimmed_and_empty_cells_set_nothing() {
 fn a_mapping_needs_an_address_column() {
     let (_temp, _root, workspace) = workspace();
     let job = import("name\nr1\n", vec![field(HostField::Name)], "");
+    let error = job.preview(&workspace).unwrap_err();
     assert!(matches!(
-        job.preview(&workspace),
-        Err(MappingError::NoAddress)
+        error,
+        MappingError::NoAddress {
+            first_row_is_a_device: false
+        }
     ));
+    // It says what to do (#116).
+    assert_eq!(
+        error.to_string(),
+        "no column fills the management address: choose Management address for the column that holds it"
+    );
+}
+
+#[test]
+fn a_csv_file_that_is_not_there_says_so() {
+    let temp = TempDir::new().unwrap();
+
+    let error = CsvTable::read(temp.path().join("hosts.csv")).unwrap_err();
+
+    assert!(matches!(error, CsvError::Io(_)));
+    assert_eq!(
+        error.to_string(),
+        "cannot read the file: there is no such file; check the path"
+    );
+}
+
+#[test]
+fn a_file_without_a_row_of_column_names_is_told_to_get_one() {
+    // A first export's mistake: the first device is read as the column
+    // names, and its address is no column's suggestion (#116).
+    let (_temp, _root, workspace) = workspace();
+    let table = CsvTable::parse(b"r1,10.0.0.1,ISR4321\r\nr2,10.0.0.2,ISR4321\r\n").unwrap();
+    let mapping = suggest_mapping(&table.headers);
+    let job = CsvImport {
+        table,
+        mapping,
+        target: String::new(),
+    };
+
+    let error = job.preview(&workspace).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "no column fills the management address, and the first row looks like a device: \
+         the first row must name the columns, so add one such as name,address at the top of the file"
+    );
 }
 
 #[test]

@@ -73,7 +73,10 @@
       <h1>{name}</h1>
       {#if onpalette}
         <div class="palette">
-          <p>Connect to a host of the workspace by name or address:</p>
+          <p data-connect-hint>
+            Double-click a host in the Hosts view to connect, or find it by name
+            or address:
+          </p>
           <button
             type="button"
             data-empty-pane="palette"

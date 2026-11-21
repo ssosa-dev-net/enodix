@@ -473,7 +473,7 @@ pub enum EditError {
     #[error("{0} already exists")]
     AlreadyExists(String),
     /// The name cannot be a file or folder name on every system.
-    #[error("\"{name}\" cannot be used as a name: {reason}")]
+    #[error("{}", invalid_name(.name, .reason))]
     InvalidName { name: String, reason: &'static str },
     /// The edit makes no sense (an empty address, a folder into itself, ...).
     #[error("{0}")]
@@ -488,6 +488,15 @@ pub enum EditError {
         #[source]
         source: io::Error,
     },
+}
+
+/// An empty name is said plainly, not quoted as `""` (#116).
+fn invalid_name(name: &str, reason: &str) -> String {
+    if name.is_empty() {
+        "the name is empty".into()
+    } else {
+        format!("\"{name}\" cannot be used as a name: {reason}")
+    }
 }
 
 /// Whether deleting a folder may delete the hosts inside it.
@@ -509,9 +518,17 @@ impl Workspace {
             path: root.clone(),
             reason,
         };
-        let metadata = fs::metadata(&root).map_err(|error| open_error(error.to_string()))?;
+        let metadata = fs::metadata(&root).map_err(|error| {
+            open_error(if error.kind() == io::ErrorKind::NotFound {
+                "there is no such folder; check the path, or create a new workspace there".into()
+            } else {
+                error.to_string()
+            })
+        })?;
         if !metadata.is_dir() {
-            return Err(open_error("not a folder".into()));
+            return Err(open_error(
+                "it is a file, not a folder; choose the folder that holds the host files".into(),
+            ));
         }
         fs::read_dir(&root).map_err(|error| open_error(error.to_string()))?;
 
@@ -1346,6 +1363,7 @@ impl Workspace {
         self.existing_folder(folder)?;
         let name = check_name(name)?;
         let address = required_address(address)?;
+        no_port_in(address)?;
         self.ensure_free(folder, Entry::Host(name), None)?;
         let file = join(folder, &format!("{name}.{HOST_EXTENSION}"));
         let mut document = Mapping::new();
@@ -1630,6 +1648,22 @@ fn required_address(address: &str) -> Result<&str, EditError> {
     Ok(address)
 }
 
+/// Refuses a new address with a port after it, `10.0.0.1:2222` or
+/// `router1:2222` as other tools write it: the port would be taken as part
+/// of the name (#116). One colon only, so an IPv6 address is never taken
+/// for one.
+fn no_port_in(address: &str) -> Result<(), EditError> {
+    let Some((host, port)) = address.split_once(':') else {
+        return Ok(());
+    };
+    if host.is_empty() || port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(());
+    }
+    Err(EditError::Invalid(format!(
+        "write the address without the port ({host}), then set Port to {port} in the host's details"
+    )))
+}
+
 /// Trimmed text; blank is none.
 fn normalize(text: Option<&str>) -> Option<String> {
     text.map(str::trim)
@@ -1653,6 +1687,7 @@ fn updated_document(current: &Host, edit: &Host) -> Result<Mapping, EditError> {
 
     let address = required_address(&edit.address)?;
     if address != current.address {
+        no_port_in(address)?;
         set_key(&mut document, ADDRESS, address.into());
     }
 

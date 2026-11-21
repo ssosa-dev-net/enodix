@@ -1528,8 +1528,13 @@ async function welcome({ evaluate, text, screenshot, step }) {
   ]) {
     if (!(await exists(selector))) fail(`the welcome view lacks ${selector}`);
   }
-  // Side views that need a workspace say so.
-  if (!(await exists("[data-side-view=hosts] [data-needs-workspace]"))) {
+  // Side views that need a workspace say so, the Hosts view naming the
+  // control above it (#116).
+  if (
+    !(await text("[data-side-view=hosts] [data-needs-workspace]")).includes(
+      "“No workspace” above",
+    )
+  ) {
     fail("the Hosts view does not say it needs a workspace");
   }
   await mouseClick(evaluate, `[data-rail=snippets]`);
@@ -1548,9 +1553,34 @@ async function welcome({ evaluate, text, screenshot, step }) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
     form.requestSubmit();
   })()`);
+  // It says what to do instead, in the view's own words (#116).
   await until("the refusal", async () =>
-    (await text("[data-welcome-error]")).includes("not empty"),
+    (await text("[data-welcome-error]")).includes(
+      "not empty; open it as a workspace instead",
+    ),
   );
+  // A folder that is not there is said plainly, with a way on, not in
+  // the system's words (#116).
+  await evaluate(`(() => {
+    const form = document.querySelector("[data-welcome-form=open]");
+    const input = form.querySelector("[name=welcome-folder]");
+    input.value = ${json(join(userData, "no-such-folder"))};
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    form.requestSubmit();
+  })()`);
+  await until("the missing folder said", async () =>
+    (await text("[data-welcome-error]")).includes(
+      "there is no such folder; check the path",
+    ),
+  );
+  if ((await text("[data-welcome-error]")).includes("os error")) {
+    fail(`the welcome view says: ${await text("[data-welcome-error]")}`);
+  }
+  await evaluate(`(() => {
+    const input = document.querySelector("[data-welcome-form=open] [name=welcome-folder]");
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
 
   // The gone folder is taken off the list.
   await mouseClickElement(
@@ -1817,6 +1847,14 @@ async function main() {
   }
   if (await evaluate(`!!document.querySelector("[data-welcome]")`)) {
     fail("the welcome view stayed with a workspace open");
+  }
+  // It says how a host of the tree is connected (#116).
+  if (
+    !(await text(".slot.connect [data-connect-hint]")).startsWith(
+      "Double-click a host in the Hosts view to connect",
+    )
+  ) {
+    fail("the connect view does not say a double-click connects");
   }
   await mouseClick(evaluate, `.slot.connect [data-empty-pane=palette]`);
   await until("the palette from the empty pane", () =>
@@ -2173,7 +2211,20 @@ async function main() {
     "the authentication failure",
     async () => (await status()) === "Closed: authentication failed",
   );
-  step("a wrong password is reported (the remembered key was not asked about)");
+  // It says what to check, and that Enter tries the same login (#116).
+  const failedBar = `${shownSession} [data-session-ended]`;
+  await until("the authentication failure's advice", async () =>
+    (await text(`${failedBar} [data-session-advice]`)).includes(
+      "Check the username and password",
+    ),
+  );
+  if (!(await text(failedBar)).includes("try again with the same settings")) {
+    fail(`the failure's bar says: ${await text(failedBar)}`);
+  }
+  await screenshot("authentication-failed");
+  step(
+    "a wrong password is reported with what to check (the remembered key was not asked about)",
+  );
 
   // A port nobody listens on is reported as refused.
   await click("New connection");
@@ -2191,7 +2242,14 @@ async function main() {
     async () =>
       (await status()) === "Closed: 127.0.0.1 refused the connection on port 1",
   );
-  step(`a refused connection is reported: "${await status()}"`);
+  await until("the refused connection's advice", async () =>
+    (
+      await text(`${shownSession} [data-session-ended] [data-session-advice]`)
+    ).includes("Nothing accepts connections on port 1: check the Port setting"),
+  );
+  step(
+    `a refused connection is reported, with what to check: "${await status()}"`,
+  );
 
   // A changed key blocks the connection, shows both fingerprints, and goes
   // on only when the user replaces the stored key.
@@ -4967,6 +5025,14 @@ async function csvImport({
   await until(`the report ${first}`, async () => (await counts()) === first);
   const failed = await text(`${dialog} [data-report=failed] li`);
   if (!failed.includes("Row 6")) fail(`the failed row: ${failed}`);
+  // New hosts come with the next step: connecting, and a profile (#116).
+  if (
+    !(await text(`${dialog} [data-report-next]`)).includes(
+      "name a credential profile",
+    )
+  ) {
+    fail("the CSV report does not say what to do next");
+  }
   await screenshot("csv-report");
   const madrid = readFileSync(
     join(workspace, "Europe", "Madrid", "imp-1.yaml"),
@@ -5028,10 +5094,42 @@ async function csvImport({
   ) {
     fail("imp-1.yaml was overwritten");
   }
+  if (await exists(`${dialog} [data-report-next]`)) {
+    fail("the CSV report gives a next step with no host created");
+  }
   await clickOn(`${dialog} [data-csv=close]`);
   await until("the CSV import tab closed", async () => !(await exists(dialog)));
   step(
     "a re-import from a folder's menu, in the one tab, overwrites no existing host without confirmation",
+  );
+
+  // A first export's mistake: no row of column names. The first device is
+  // read as the columns, and the preview is refused saying what to add
+  // (#116); a file that is not there is said plainly.
+  const headless = join(userData, "no-header.csv");
+  writeFileSync(headless, "r7,10.9.0.7,ISR4321\r\nr8,10.9.0.8,ISR4321\r\n");
+  await clickOn("[data-add-menu]");
+  await clickOn("[data-add-entries] [data-open-csv-import]");
+  await until("the CSV import tab", () => atStep("file"));
+  await fillForm({ "csv-file": join(userData, "gone.csv") }, `${dialog} form`);
+  await until("the missing file said", async () =>
+    (await text(`${dialog} [data-csv-error]`)).includes(
+      "there is no such file; check the path",
+    ),
+  );
+  await fillForm({ "csv-file": headless }, `${dialog} form`);
+  await until("the column mapping", () => atStep("map"));
+  await clickOn(`${dialog} [data-csv=preview]`);
+  await until("the missing column names said", async () =>
+    (await text(`${dialog} [data-csv-error]`)).includes(
+      "the first row looks like a device: the first row must name the columns",
+    ),
+  );
+  await screenshot("csv-no-header");
+  await clickOn(`${dialog} [data-csv=cancel]`);
+  await until("the CSV import tab closed", async () => !(await exists(dialog)));
+  step(
+    "a CSV file with no row of column names, and one that is not there, say what to do",
   );
 }
 
@@ -9191,6 +9289,26 @@ async function workspaces({
   await until("the new host form", () =>
     exists("[role=dialog] input[name=name]"),
   );
+  // A first host as other tools write it: a port after the address is
+  // refused with where the port goes; no name is said plainly (#116).
+  await fillForm(
+    { name: "edge1", address: "10.0.0.1:2222" },
+    "[role=dialog] form",
+  );
+  await until("the address refused", async () =>
+    (await text("[role=dialog] [role=alert]")).includes(
+      "write the address without the port (10.0.0.1), then set Port to 2222",
+    ),
+  );
+  await fillForm({ name: " ", address: "10.0.0.1" }, "[role=dialog] form");
+  await until(
+    "the empty name refused",
+    async () =>
+      (await text("[role=dialog] [role=alert]")) === "the name is empty",
+  );
+  if (existsSync(join(second, "edge1.yaml"))) {
+    fail("a refused new host was written");
+  }
   await clickButton(evaluate, "Cancel", "[role=dialog]");
   await until(
     "the new host form closed",
@@ -9292,8 +9410,18 @@ async function workspaces({
     "[data-workspace-form=create]",
   );
   await until("the refusal", async () =>
-    (await text("[data-workspace-error]")).includes("not empty"),
+    (await text("[data-workspace-error]")).includes(
+      "not empty; open it as a workspace instead",
+    ),
   );
+  // The same words as the welcome view: open, not add (#116).
+  if (
+    (await text("[data-workspace-form=add] label")) !==
+      "Open an existing folder" ||
+    (await text("[data-workspace-form=add] button[type=submit]")) !== "Open"
+  ) {
+    fail(`the switcher offers: ${await text("[data-workspace-form=add]")}`);
+  }
   await fillForm(
     { "workspace-folder": workspace },
     "[data-workspace-form=add]",
@@ -10897,6 +11025,14 @@ async function credentialProfiles({
   );
   if (await exists(`${profilesDialog} [data-profiles-empty]`))
     fail("the empty state stayed after the first profile");
+  // The list says how a host uses one (#116).
+  if (
+    !(await text(`${profilesDialog} [data-profiles-use]`)).includes(
+      "Credential profile setting",
+    )
+  ) {
+    fail("the profiles list does not say how a host uses a profile");
+  }
   if (await exists("[data-dialog=profiles]")) fail("a profiles dialog is left");
   await screenshot("profiles");
   await showSideView(evaluate, "hosts");
@@ -10909,6 +11045,14 @@ async function credentialProfiles({
   await until("the host's side panel", async () =>
     (await text(".side h2")).includes("smoke-r1"),
   );
+  // The setting says what goes in it (#116).
+  if (
+    !(await text(".side [data-setting-note=credential_profile]")).includes(
+      "a profile in the Credentials view, or a new name",
+    )
+  ) {
+    fail("the Credential profile setting does not say what it takes");
+  }
   await changeField("[name=setting-credential_profile]", "lab-login");
   await until("the profile's name in the host file", () =>
     readFileSync(hostFile, "utf8").includes("credential_profile: lab-login\n"),
@@ -11215,6 +11359,14 @@ async function agentAndKeyboardInteractive({
       "accepted none of the SSH agent's keys",
     ),
   );
+  // With what to check (#116).
+  if (
+    !(await text("[data-password-fallback] [data-session-advice]")).includes(
+      "that the device has your public key",
+    )
+  ) {
+    fail("the agent failure does not say what to check");
+  }
   await screenshot("agent-refused");
   await click("Log in with a password");
   await until("the password prompt", () => exists("main input[name=password]"));
@@ -11280,6 +11432,15 @@ async function legacyCrypto({
         (await text("main")).includes(`127.0.0.1:${OLD_DEVICE_PORT}`) &&
         (await exists("main input[name=password]")),
     );
+    // A host with no credential profile says where one keeps the login
+    // (#116).
+    if (
+      !(await text("main [data-credentials-hint]")).includes(
+        "Credential profile setting",
+      )
+    ) {
+      fail("the login asked for does not say how to keep it");
+    }
     await fillForm({ username: USERNAME, password: PASSWORD }, "main form");
   };
 

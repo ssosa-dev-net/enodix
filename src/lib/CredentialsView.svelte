@@ -201,8 +201,9 @@
         <div class="empty" data-profiles-empty>
           <p>
             A credential profile is a login (a username with a password, a key
-            or the SSH agent) that hosts name in their settings, kept on this
-            computer, never in the workspace's files.
+            or the SSH agent), kept on this computer, never in the workspace's
+            files. A host uses the one named in the Credential profile setting
+            of its details, or of its folder's for every host in it.
           </p>
           <button
             data-profile-first
@@ -259,6 +260,10 @@
             </li>
           {/each}
         </ul>
+        <p class="use" data-profiles-use>
+          A host uses the profile named in the Credential profile setting of its
+          details, or of its folder's.
+        </p>
       {/if}
 
       <h3>
@@ -397,6 +402,12 @@
   .vault-text {
     flex: 1;
     min-width: 0;
+  }
+
+  .use {
+    margin: var(--space-1) var(--space-3);
+    color: var(--muted);
+    font-size: var(--text-xs);
   }
 
   .note {

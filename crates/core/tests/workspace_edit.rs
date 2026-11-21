@@ -557,9 +557,15 @@ fn invalid_edits_are_refused_and_the_file_is_untouched() {
     same_key_twice.custom.push(CustomField::new("owner", "x"));
     let mut value_without_key = original.clone();
     value_without_key.custom.push(CustomField::new(" ", "x"));
+    let mut port_in_address = original.clone();
+    port_in_address.address = "10.0.0.1:2222".into();
 
     for (edit, message) in [
         (no_address, "the management address is empty"),
+        (
+            port_in_address,
+            "write the address without the port (10.0.0.1), then set Port to 2222 in the host's details",
+        ),
         (same_key_twice, "custom field `owner` appears twice"),
         (value_without_key, "a custom field has a value but no name"),
     ] {
@@ -568,6 +574,48 @@ fn invalid_edits_are_refused_and_the_file_is_untouched() {
         assert_eq!(error.to_string(), message);
     }
     assert_eq!(read(&root, "Core/core-r1.yaml"), CORE_R1);
+}
+
+#[test]
+fn a_new_host_with_a_port_after_its_address_is_refused_with_where_the_port_goes() {
+    let (_temp, root, mut workspace) = edit_workspace();
+
+    // How other tools write it; the port would be taken as part of the
+    // name and the connection would fail as a name that does not resolve.
+    for (address, message) in [
+        (
+            "10.0.0.9:2222",
+            "write the address without the port (10.0.0.9), then set Port to 2222 in the host's details",
+        ),
+        (
+            "edge1.example.net:22",
+            "write the address without the port (edge1.example.net), then set Port to 22 in the host's details",
+        ),
+    ] {
+        let error = workspace.create_host("", "edge1", address).unwrap_err();
+        assert!(matches!(error, EditError::Invalid(_)), "{error}");
+        assert_eq!(error.to_string(), message);
+    }
+    assert_eq!(files(&root), FIXTURE_FILES);
+
+    // IPv6 addresses have colons of their own and are kept as written.
+    for (name, address) in [
+        ("v6-a", "2001:db8::1"),
+        ("v6-b", "fe80::1"),
+        ("v6-c", "::1"),
+    ] {
+        let id = workspace.create_host("", name, address).unwrap();
+        assert_eq!(host(&workspace, id.as_str()).address, address);
+    }
+}
+
+#[test]
+fn an_empty_name_is_said_plainly() {
+    let (_temp, _root, mut workspace) = edit_workspace();
+
+    let error = workspace.create_host("", " ", "10.0.0.9").unwrap_err();
+
+    assert_eq!(error.to_string(), "the name is empty");
 }
 
 #[test]
