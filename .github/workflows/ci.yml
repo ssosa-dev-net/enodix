@@ -74,8 +74,16 @@ jobs:
       - name: Build the interface
         run: npm run build
 
-      - name: Format check, lint and tests
-        run: npm run check
+      # `npm run check`'s three parts, the tests with --no-fail-fast so that
+      # one failing test file does not hide the others.
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint (clippy, svelte-check)
+        run: npm run lint
+
+      - name: Tests
+        run: cargo test --workspace --no-fail-fast
 
       - name: Python bridge tests
         run: npm run test:python
