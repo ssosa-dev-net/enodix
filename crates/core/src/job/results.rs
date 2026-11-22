@@ -219,18 +219,44 @@ type Active = Arc<Mutex<BTreeSet<(String, String)>>>;
 type Listed = Arc<Mutex<HashMap<PathBuf, (Stamp, StoredRun)>>>;
 
 /// A description file's size and modification time, as listing saw it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 struct Stamp {
     len: u64,
     modified: Option<SystemTime>,
+    /// Whether the file had lain unchanged for [`STAMP_SETTLES`] when it
+    /// was looked at. A file written a moment ago can be written again
+    /// with the same size and, the clock of a file system being coarse
+    /// (milliseconds on Linux, two seconds on FAT), the same time: a
+    /// host's state going from `waiting` to `running` did, on Linux. What
+    /// was read of such a file is never taken for what it holds now.
+    settled: bool,
 }
+
+/// How long a description must have lain unchanged before what a list read
+/// of it is used again while its size and time stay the same: longer than
+/// the coarsest file time in use.
+const STAMP_SETTLES: Duration = Duration::from_secs(3);
 
 impl Stamp {
     fn of(metadata: &fs::Metadata) -> Self {
+        let modified = metadata.modified().ok();
         Self {
             len: metadata.len(),
-            modified: metadata.modified().ok(),
+            modified,
+            // A time ahead of this computer's clock (a server's) never
+            // settles: the file is read at every list.
+            settled: modified.is_some_and(|modified| {
+                SystemTime::now()
+                    .duration_since(modified)
+                    .is_ok_and(|age| age >= STAMP_SETTLES)
+            }),
         }
+    }
+
+    /// Whether what was read at this stamp is still what the file holds,
+    /// going by the stamp it has `now`.
+    fn holds(&self, now: &Stamp) -> bool {
+        self.settled && self.len == now.len && self.modified == now.modified
     }
 }
 
@@ -844,7 +870,7 @@ fn look_at_runs(
             Ok(metadata) => {
                 let stamp = Stamp::of(&metadata);
                 match known.get(&file) {
-                    Some((was, run)) if *was == stamp => Ok((stamp, run.clone())),
+                    Some((was, run)) if was.holds(&stamp) => Ok((*was, run.clone())),
                     // Stamped before it is read: a change in between is
                     // read again next time.
                     _ => read_run(&folder, &id).map(|run| (stamp, run)),
