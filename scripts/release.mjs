@@ -460,6 +460,8 @@ function linux() {
   // resource folder: the app then knows the package manager updates it
   // (InstallKind::detect).
   const marker = join(ROOT, "target", "release", PACKAGE_MARKER);
+  // A fresh checkout has no target/release yet: the build makes it later.
+  mkdirSync(dirname(marker), { recursive: true });
   writeFileSync(
     marker,
     `This copy of ${productName} was installed by a system package: ` +
