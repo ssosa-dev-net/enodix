@@ -14,8 +14,15 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn run(args: &[&str]) -> Output {
+    // A data folder of no one's: the trusted host keys are read from it.
+    let data = std::env::temp_dir().join("enodix-test-inventory-no-data");
+    run_with_data(args, &data)
+}
+
+fn run_with_data(args: &[&str], data: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_enodix-cli"))
         .args(args)
+        .env("ENODIX_DATA_DIR", data)
         .output()
         .expect("the binary starts")
 }
@@ -60,6 +67,51 @@ fn refused(args: &[&str], expected: &str) {
     assert!(output.stdout.is_empty());
     let message = stderr(&output);
     assert!(message.contains(expected), "{message}");
+}
+
+/// Each host comes with the keys the app trusts for its address and port,
+/// for a script that reaches it by itself to check (none when the app has
+/// trusted none, as with no data folder at all).
+#[test]
+fn each_host_comes_with_the_host_keys_the_app_trusts_for_it() {
+    let (json, _) = inventory(&[]);
+    let first = json["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["settings"]["port"].is_u64())
+        .expect("a host with a port");
+    assert_eq!(first["host_keys"], serde_json::json!([]));
+    let (id, address) = (
+        first["id"].clone(),
+        first["address"].as_str().unwrap().to_string(),
+    );
+    let port = first["settings"]["port"].as_u64().unwrap();
+
+    let key = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/tests/fixtures/keys/rsa_client.pub"),
+    )
+    .unwrap();
+    let key: Vec<&str> = key.split_whitespace().take(2).collect();
+    let key = key.join(" ");
+    let data = tempfile::TempDir::new().unwrap();
+    let name = if port == 22 {
+        address.to_lowercase()
+    } else {
+        format!("[{}]:{port}", address.to_lowercase())
+    };
+    std::fs::write(data.path().join("known_hosts"), format!("{name} {key}\n")).unwrap();
+    let root = fixture("export");
+    let output = run_with_data(&["inventory", root.to_str().unwrap()], data.path());
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let host = json["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["id"] == id)
+        .unwrap();
+    assert_eq!(host["host_keys"], serde_json::json!([key]));
 }
 
 #[test]

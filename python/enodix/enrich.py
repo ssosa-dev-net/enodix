@@ -15,9 +15,11 @@ to, rewritten after every host::
 
 Each host logs in with its own credential profile, handed over by the
 app. Hosts behind jump hosts are reached through the binary's loopback
-tunnels (:func:`enodix.tunnels`); NAPALM's drivers that log in through
-Netmiko (``ios``, ``nxos_ssh``, and ``eos`` as run here, over SSH) then
-check the device's host key against the keys the app trusts. Nothing is written to the workspace here: the app shows what the
+tunnels (:func:`enodix.tunnels`), the others directly. Either way NAPALM's
+drivers that log in through Netmiko (``ios``, ``nxos_ssh``, and ``eos``
+as run here, over SSH) check the device's host key against the keys the
+app trusts, and a host the app trusts no key for is not logged in to (its
+password would go to whoever answered). Nothing is written to the workspace here: the app shows what the
 devices report and fills in what the user applies. NAPALM is the user's
 to install (the app's Python setup offers it); without it every host
 fails, saying so.
@@ -35,7 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from . import Tunnels, credentials, inventory, tunnels
-from ._tunnel import host_key_options
+from ._tunnel import direct_host_keys, host_key_options
 
 #: The variable naming the file the facts go to.
 FACTS_VARIABLE = "ENODIX_FACTS_FILE"
@@ -65,11 +67,13 @@ def driver_arguments(
     login: Mapping[str, Any],
     driver: str,
     tunnel: Optional[Mapping[str, Any]] = None,
+    direct: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """The keyword arguments of NAPALM's driver class ``driver`` for the
     exported ``host`` and its ``login`` (``enodix-cli credentials``),
     through ``tunnel`` (an entry of :attr:`enodix.Tunnels.hosts`) if the
-    host is behind jump hosts."""
+    host is behind jump hosts; ``direct`` (:func:`enodix._tunnel.direct_host_keys`)
+    names the keys the app trusts for a host reached directly."""
     settings = host.get("settings") or {}
     optional: Dict[str, Any] = {}
     port = tunnel["port"] if tunnel else settings.get("port")
@@ -94,8 +98,9 @@ def driver_arguments(
         optional.update(use_keys=True, allow_agent=True)
     if login.get("enable_secret"):
         optional["secret"] = login["enable_secret"]
-    if tunnel and driver in NETMIKO_DRIVERS:
-        optional.update(host_key_options(dict(tunnel))["napalm"])
+    checked = tunnel or direct
+    if checked and driver in NETMIKO_DRIVERS:
+        optional.update(host_key_options(dict(checked))["napalm"])
     return {
         "hostname": tunnel["address"] if tunnel else host["address"],
         "username": login.get("username") or "",
@@ -218,12 +223,26 @@ def collect(
         tunnel = tunnelled.get(host_id)
         if tunnel is not None and "error" in tunnel:
             return {"id": host_id, "error": f"it cannot be reached through its jump hosts: {tunnel['error']}"}
+        direct = None
+        if tunnel is None:
+            # Reached directly: its key is checked as a tunnelled host's is,
+            # and with no key trusted there is nothing to check it against.
+            direct = direct_host_keys(host)
+            if direct is None:
+                port = (host.get("settings") or {}).get("port")
+                return {
+                    "id": host_id,
+                    "error": (
+                        f"the app has not trusted its host key (at {host['address']} port {port}) yet, "
+                        "so its login is not sent: connect to it once in the app and trust and remember its key"
+                    ),
+                }
         try:
             login = credentials(None, host_id)
         except Exception as error:
             return {"id": host_id, "error": f"its login could not be had: {_reason(error)}"}
         try:
-            facts = fetch(get_driver, driver, driver_arguments(host, login, driver, tunnel))
+            facts = fetch(get_driver, driver, driver_arguments(host, login, driver, tunnel, direct))
         except Exception as error:
             return {"id": host_id, "error": f"NAPALM ({driver}) failed: {_reason(error)}"}
         return {"id": host_id, "facts": facts}

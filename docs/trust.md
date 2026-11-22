@@ -211,6 +211,15 @@ logins of the job's hosts. That limit guards against mistakes; it is not a
 sandbox: a script can drop the variable, and any program running as you
 can ask the agent for any login of any workspace while the app runs.
 
+A script's own connections check the device's host key against the keys
+the app trusts when the Python package sets them up: through a tunnel, and
+for a host reached directly too (Netmiko, scrapli, NAPALM's
+Netmiko-based drivers). **Fill in from devices** sends no login to a host
+whose key the app has not trusted yet. The Nornir plugin still connects to
+such a host with its library's own check (Netmiko's accepts any key) and
+names it in a warning; connect to each host once in the app, and trust and
+remember its key, before a script logs in to it.
+
 ## Every connection the app can make
 
 | Connection                             | Who starts it                                                         | Where to                                                       |

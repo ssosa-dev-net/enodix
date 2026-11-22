@@ -64,6 +64,10 @@ class Misbehaving(BridgeTest):
         names = [f"devices/d{n:02}.yaml" for n in range(count)]
         for name in names:
             self.workspace.write(name, "address: 127.0.0.1\n")
+        # The app trusts the device's key (their folder gives the port).
+        (self.workspace.data / "known_hosts").write_text(
+            f"[127.0.0.1]:{self.server.device_port} {self.server.device_key}\n", encoding="utf-8"
+        )
         return names
 
     def collect(self, hosts: List[str], driver: Any) -> Dict[str, Dict[str, Any]]:

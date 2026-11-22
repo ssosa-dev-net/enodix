@@ -13,6 +13,7 @@ use std::process::ExitCode;
 use enodix_core::app_state::{resolved_path, same_folder};
 use enodix_core::inventory::{export_within, InventoryExport, Limit};
 use enodix_core::job::script::{ScriptTargets, TARGETS_VARIABLE};
+use enodix_core::known_hosts::KnownHosts;
 use enodix_core::workspace::{folder_kind, FolderKind, Workspace};
 
 mod credentials;
@@ -133,10 +134,53 @@ fn inventory(args: &[String]) -> Result<(), Failure> {
     for problem in &exported.problems {
         eprintln!("{NAME}: warning: {problem}");
     }
-    let mut json = serde_json::to_string_pretty(&exported)
+    let mut json = serde_json::to_string_pretty(&with_host_keys(exported))
         .map_err(|error| Failure::Error(format!("cannot write the inventory: {error}")))?;
     json.push('\n');
     print(&json)
+}
+
+/// The export with each host's `host_keys`: the keys the app trusts for its
+/// address and port (`algorithm base64`, as a known-hosts line has them;
+/// none for a host whose key it has not trusted, or a serial one). A script
+/// reaching a host by itself checks its key against these (the Python
+/// package does), as the app does for every unattended connection. A
+/// known-hosts file that cannot be read gives none, and a warning.
+fn with_host_keys(exported: InventoryExport) -> serde_json::Value {
+    let mut value = serde_json::to_value(&exported).expect("the export serialises");
+    let known_hosts = match credentials::data_folder() {
+        Ok(folder) => Some(KnownHosts::in_data_folder(&folder)),
+        Err(_) => None,
+    };
+    let mut warned = false;
+    let hosts = value["hosts"].as_array_mut().expect("hosts is a list");
+    for (host, exported) in hosts.iter_mut().zip(&exported.hosts) {
+        let keys = match (&known_hosts, exported.settings.port) {
+            (Some(known), Some(port)) => match known.trusted(&exported.address, port) {
+                Ok(keys) => keys,
+                Err(error) => {
+                    if !warned {
+                        eprintln!("{NAME}: warning: {error}: no host keys are given");
+                        warned = true;
+                    }
+                    Vec::new()
+                }
+            },
+            _ => Vec::new(),
+        };
+        let texts: Vec<String> = keys
+            .iter()
+            .filter_map(|key| key.to_openssh().ok())
+            .map(|text| {
+                text.split_whitespace()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        host["host_keys"] = serde_json::json!(texts);
+    }
+    value
 }
 
 /// The workspace and the export of `<workspace> [limit]` (`args`), within
