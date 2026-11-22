@@ -8,6 +8,7 @@
 pub mod app_state;
 pub mod configs;
 pub mod credentials;
+pub mod data_folders;
 pub mod diff;
 pub mod enrich;
 pub mod files;

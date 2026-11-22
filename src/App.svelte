@@ -74,6 +74,7 @@
   import { jumpHostOf } from "./lib/ways";
   import UnlockVault from "./lib/UnlockVault.svelte";
   import UpdateNotice from "./lib/UpdateNotice.svelte";
+  import DataNotice from "./lib/DataNotice.svelte";
   import { startUpdates } from "./lib/updates.svelte";
   import { vaultStatus } from "./lib/vault";
   import WorkspacesDialog from "./lib/WorkspacesDialog.svelte";
@@ -2007,6 +2008,7 @@
 {/if}
 
 <UpdateNotice live={liveSessions} />
+<DataNotice />
 
 {#if inventory.palette}
   <CommandPalette

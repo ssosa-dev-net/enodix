@@ -367,6 +367,7 @@ else. Each of its features, and where it is now:
 | Unlock and start over                            | Unlock screen at start                                                             |
 | Preferences (theme, font, paste, updates, ...)   | Preferences tab (gear on the rail, Ctrl+, , palette)                               |
 | Update check and install                         | Notice in the corner; Preferences tab                                              |
+| Where the data is, when it could not move (#128) | Notice at the top right at start, until dismissed                                  |
 | Platform definitions                             | Platforms tab (Hosts view header, details sheet, palette)                          |
 | Run snippet, run script on folder/filter/host    | Tree context menu, details sheet, filter actions; job tab                          |
 | A job on several selected hosts (new, #110)      | Ctrl+click or Shift+click in the tree, then its context menu; job tab              |

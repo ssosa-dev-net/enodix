@@ -71,7 +71,11 @@ VIAddVersionKey "Comments" "${NETTERM_DESCRIPTION}"
 !macroend
 
 ; Before anything is removed: the app and the headless binary are closed
-; (Tauri checks the app again right after: then nothing is running). With
+; (Tauri checks the app again right after: then nothing is running). The
+; box's data is removed by Tauri's own template afterwards: the whole of
+; $APPDATA\${BUNDLEID} (settings, the vault, known hosts) and of
+; $LOCALAPPDATA\${BUNDLEID} (logs and, since 0.5.0, config backups, job
+; results and the Python environment, #128). With
 ; "Delete the application data" ticked, and only then (never in silent mode
 ; or on an update, which show no such box), the saved logins are removed
 ; from Windows Credential Manager while the headless binary is still here

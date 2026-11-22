@@ -146,10 +146,12 @@ Your data stays, so a later install finds it again, unless you tick
 **Also delete settings, saved logins and the vault, ...** on the uninstall
 page. That deletes:
 
-- `%APPDATA%\dev.netterm.app`: settings, the vault, known host keys, config
-  backups, kept job results and the Python environment;
-- `%LOCALAPPDATA%\dev.netterm.app`: session logs and the window's web
-  view data;
+- `%APPDATA%\dev.netterm.app`: settings, the vault, known host keys, the
+  list of workspaces and the Python choice;
+- `%LOCALAPPDATA%\dev.netterm.app`: session logs, config backups, kept job
+  results, the Python environment and the window's web view data (before
+  0.5.0 the backups, results and environment were in `%APPDATA%`; the
+  first start of 0.5.0 moves them, see below);
 - the saved logins (credential profiles and named secrets) in Windows
   Credential Manager, the entries whose names start with `dev.netterm.app`;
 - the registry key `HKCU\Software\Sergio Sosa\netterm`, where the installer
@@ -161,6 +163,32 @@ installed with `pip`. To remove the data by hand after an uninstall without
 the box, delete the two folders above and the Credential Manager entries
 (**Control Panel, Credential Manager, Windows Credentials**), or run
 `netterm-cli clear-keychain --yes` before uninstalling.
+
+### The move to the local folder in 0.5.0
+
+Config backups, kept job results and the Python environment are large and
+only make sense on one computer, so since 0.5.0 they are in
+`%LOCALAPPDATA%\dev.netterm.app`, not in the roaming `%APPDATA%`, which a
+company's roaming profiles copy at every logon. The first start of 0.5.0
+moves them there, once, before it shows anything:
+
+- On one drive the move is a rename, done whole or not at all. When the
+  roaming folder is on another drive (redirected to a server), the backups
+  and results are copied, each file checked, and only then removed from
+  the old place; the Python environment is not copied but goes on working
+  where it is until you set it up again (Preferences, Python), which makes
+  it in the local folder and removes the old one.
+- A move that is cut short (the computer switched off, a full disk) loses
+  nothing: the next start finishes it or starts it again. A move that
+  fails leaves the data where it was, and the app uses it there and says
+  so in a notice.
+- If both folders hold backups or results (an older version was run after
+  the move), neither is changed: the app uses the local one and says where
+  the other is, so you can look in it and remove it.
+- While another copy of netterm runs, a starting copy moves nothing: the
+  move waits for a start when it runs alone.
+
+On Linux everything was and stays in `~/.local/share/dev.netterm.app`.
 
 ### Installing and uninstalling silently
 

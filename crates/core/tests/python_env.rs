@@ -9,9 +9,9 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use netterm_core::python::{
-    self, create_environment, find_python, package_version, status, wheel_name, Candidate,
-    FindError, InstallSource, Library, OfferError, PythonChoice, PythonProblem, PythonStatus,
-    Setup, SetupCanceller, SetupError, SetupOffer, SetupProgress,
+    self, create_environment, environment_folder, find_python, package_version, status, wheel_name,
+    Candidate, FindError, InstallSource, Library, OfferError, PythonChoice, PythonProblem,
+    PythonStatus, Setup, SetupCanceller, SetupError, SetupOffer, SetupProgress,
 };
 use support::processes;
 use support::python::{build_wheel, real_python, too_old, FakePython};
@@ -252,7 +252,13 @@ fn the_offer_needs_the_wheel_shipped_with_the_app() {
     let folder = TempDir::new().unwrap();
     let data = folder.path().join("data");
     let good = FakePython::answering(folder.path(), "good", "3.12.4", None);
-    let error = SetupOffer::find(&[good.candidate()], &data, folder.path(), EXPECTED).unwrap_err();
+    let error = SetupOffer::find(
+        &[good.candidate()],
+        &environment_folder(&data),
+        folder.path(),
+        EXPECTED,
+    )
+    .unwrap_err();
     assert!(matches!(error, OfferError::NoWheel { .. }), "{error:?}");
     assert!(error.to_string().contains(&wheel_name(EXPECTED)));
 }
@@ -265,7 +271,13 @@ fn the_plan_lists_everything_and_installs_nothing() {
     fs::write(&wheel, "not really a wheel").unwrap();
     let good = FakePython::answering(folder.path(), "good", "3.12.4", None);
 
-    let offer = SetupOffer::find(&[good.candidate()], &data, folder.path(), EXPECTED).unwrap();
+    let offer = SetupOffer::find(
+        &[good.candidate()],
+        &environment_folder(&data),
+        folder.path(),
+        EXPECTED,
+    )
+    .unwrap();
     assert_eq!(offer.base.executable, good.path);
     assert_eq!(offer.environment, data.join("python"));
     assert!(!offer.existing);
@@ -317,7 +329,13 @@ fn a_failing_step_stops_the_setup_naming_it_and_chooses_nothing() {
     let wheel = folder.path().join(wheel_name(EXPECTED));
     fs::write(&wheel, "x").unwrap();
     let good = FakePython::answering(folder.path(), "good", "3.12.4", None);
-    let mut offer = SetupOffer::find(&[good.candidate()], &data, folder.path(), EXPECTED).unwrap();
+    let mut offer = SetupOffer::find(
+        &[good.candidate()],
+        &environment_folder(&data),
+        folder.path(),
+        EXPECTED,
+    )
+    .unwrap();
     offer.base.executable = FakePython::failing(folder.path(), "broken").path;
 
     let mut heard = Vec::new();
@@ -351,7 +369,13 @@ fn a_setup_can_be_cancelled() {
     let wheel = folder.path().join(wheel_name(EXPECTED));
     fs::write(&wheel, "x").unwrap();
     let good = FakePython::answering(folder.path(), "good", "3.12.4", None);
-    let mut offer = SetupOffer::find(&[good.candidate()], &data, folder.path(), EXPECTED).unwrap();
+    let mut offer = SetupOffer::find(
+        &[good.candidate()],
+        &environment_folder(&data),
+        folder.path(),
+        EXPECTED,
+    )
+    .unwrap();
     offer.base.executable = FakePython::sleeping(folder.path(), "slow").path;
 
     let canceller = SetupCanceller::new();
@@ -389,7 +413,13 @@ fn tree_setup(folder: &std::path::Path, pids: &std::path::Path) -> python::Setup
     let wheel = folder.join(wheel_name(EXPECTED));
     fs::write(&wheel, "x").unwrap();
     let good = FakePython::answering(folder, "good", "3.12.4", None);
-    let mut offer = SetupOffer::find(&[good.candidate()], &data, folder, EXPECTED).unwrap();
+    let mut offer = SetupOffer::find(
+        &[good.candidate()],
+        &environment_folder(&data),
+        folder,
+        EXPECTED,
+    )
+    .unwrap();
     offer.base.executable = processes::tree_python(folder, "tree", pids).path;
     offer.plan(&[])
 }
@@ -515,7 +545,7 @@ fn the_app_environment_is_created_from_a_real_python() {
     let data = folder.path().join("data");
     let offer = SetupOffer::find(
         &[Candidate::new(&base.executable)],
-        &data,
+        &environment_folder(&data),
         wheel.parent().unwrap(),
         version,
     )
@@ -543,7 +573,7 @@ fn the_app_environment_is_created_from_a_real_python() {
     // A second setup updates the environment in place.
     let again = SetupOffer::find(
         &[Candidate::new(&base.executable)],
-        &data,
+        &environment_folder(&data),
         wheel.parent().unwrap(),
         version,
     )
