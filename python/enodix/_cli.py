@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import re
 import subprocess
 import sys
@@ -83,6 +82,26 @@ def default_location() -> Optional[Path]:
     return Path(local) / PRODUCT_NAME / _executable(CLI_NAME)
 
 
+def _on_path(file_name: str) -> Optional[Path]:
+    """The program ``file_name`` in the first ``PATH`` folder that has it,
+    never in the current folder. A script job runs in the workspace's folder,
+    and on Windows ``shutil.which`` looks in the current folder first (and,
+    before Python 3.12, even when given a path): a shared workspace could
+    put its own ``enodix-cli.exe`` there. Only the binary's own name is
+    looked for, not ``.bat`` or ``.cmd``."""
+    here = os.path.normcase(os.path.abspath(os.curdir))
+    for folder in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        folder = folder.strip().strip('"')
+        if not folder or folder == os.curdir:
+            continue
+        if os.path.normcase(os.path.abspath(folder)) == here:
+            continue
+        candidate = Path(folder) / file_name
+        if candidate.is_file() and (sys.platform == "win32" or os.access(candidate, os.X_OK)):
+            return candidate
+    return None
+
+
 def find_cli() -> Path:
     """The headless binary: ``ENODIX_CLI`` if set, else the default
     install location, else ``PATH``. Raises :class:`CliNotFound` saying
@@ -102,9 +121,9 @@ def find_cli() -> Path:
         if default.is_file():
             return default
         tried.append(str(default))
-    found = shutil.which(CLI_NAME)
-    if found:
-        return Path(found)
+    found = _on_path(_executable(CLI_NAME))
+    if found is not None:
+        return found
     tried.append(f"{CLI_NAME} on PATH")
     app = PRODUCT_NAME or "the app"
     raise CliNotFound(

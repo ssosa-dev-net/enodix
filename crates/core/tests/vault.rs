@@ -434,7 +434,7 @@ fn creating_over_an_existing_vault_or_with_an_empty_password_is_refused() {
     drop(Vault::create(&data.vault(), MASTER).unwrap());
     let before = fs::read(data.vault()).unwrap();
     assert_eq!(
-        Vault::create(&data.vault(), "another").unwrap_err(),
+        Vault::create(&data.vault(), "another password").unwrap_err(),
         VaultError::AlreadyExists
     );
     assert_eq!(fs::read(data.vault()).unwrap(), before);
@@ -444,7 +444,76 @@ fn creating_over_an_existing_vault_or_with_an_empty_password_is_refused() {
         Vault::create(&data.vault(), "").unwrap_err(),
         VaultError::Invalid(_)
     ));
+    // Too short to stand a guess at a copy of the file.
+    let error = Vault::create(&data.vault(), "seven c").unwrap_err();
+    assert!(
+        matches!(&error, VaultError::Invalid(message) if message.contains("at least 8")),
+        "{error:?}"
+    );
+    let store = ActiveStore::new(Box::new(MemoryStore::new()), data.vault());
+    assert!(matches!(
+        store.turn_on("seven c", "seven c").unwrap_err(),
+        VaultError::Invalid(_)
+    ));
     assert!(data.files().is_empty());
+}
+
+/// The key derivation's passes and lanes are bounded, as its memory is: the
+/// cost is read from the file, and a file someone altered must not make
+/// unlocking run for ever.
+#[test]
+fn a_key_derivation_cost_beyond_what_the_app_writes_is_damage() {
+    let data = DataFolder::new();
+    for kdf in [
+        KdfParams {
+            iterations: 17,
+            ..cheap()
+        },
+        KdfParams {
+            parallelism: 17,
+            ..cheap()
+        },
+    ] {
+        let error =
+            Vault::create_with(&data.vault(), MASTER, kdf, StoreContents::default()).unwrap_err();
+        assert!(
+            matches!(error, VaultError::Damaged(_)),
+            "{kdf:?}: {error:?}"
+        );
+    }
+    let most = KdfParams {
+        iterations: 16,
+        parallelism: 16,
+        ..cheap()
+    };
+    drop(Vault::create_with(&data.vault(), MASTER, most, StoreContents::default()).unwrap());
+    assert_eq!(unlocked(&data.vault()).kdf(), most);
+}
+
+/// On Unix the vault is its user's alone: a new vault, its lock and its
+/// folder give others no access, and an older vault left readable to others
+/// is tightened when unlocked.
+#[cfg(unix)]
+#[test]
+fn the_vault_and_its_folder_are_its_users_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let data = DataFolder::new();
+    let folder = data.temp.path().join("data");
+    let file = vault_file(&folder);
+    drop(Vault::create_with(&file, MASTER, cheap(), StoreContents::default()).unwrap());
+    assert_eq!(mode(&file), 0o600);
+    assert_eq!(mode(&folder.join(LOCK_FILE)), 0o600);
+    assert_eq!(mode(&folder), 0o700);
+
+    for path in [file.clone(), folder.join(LOCK_FILE)] {
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+    drop(unlocked(&file));
+    assert_eq!(mode(&file), 0o600);
+    assert_eq!(mode(&folder.join(LOCK_FILE)), 0o600);
+    assert_eq!(mode(&folder), 0o700);
 }
 
 #[test]

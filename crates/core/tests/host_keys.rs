@@ -378,3 +378,38 @@ fn the_file_uses_the_openssh_format_and_keeps_lines_it_does_not_change() {
         HostKeyStatus::Trusted
     );
 }
+
+/// A host name that cannot be one entry of the file (a comma would make the
+/// line name two hosts, so trusting a key for `core1,x` would trust it for
+/// `core1` too) is refused, and nothing is trusted for either name.
+#[test]
+fn a_host_name_that_would_name_other_hosts_in_the_file_is_not_remembered() {
+    let data = TempDir::new().unwrap();
+    let known_hosts = KnownHosts::in_data_folder(data.path());
+    let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+        .unwrap()
+        .public_key()
+        .clone();
+    for host in [
+        "core1,x", "core1 x", "core1\tx", "*", "core?", "!core1", "#core1", "@revoked", "|1|hash",
+        "core1\n",
+    ] {
+        let refused = known_hosts.remember(host, 22, &key);
+        assert!(refused.is_err(), "{host:?} was remembered");
+    }
+    for host in ["core1", "x", "core"] {
+        assert_eq!(
+            known_hosts.check(host, 22, &key).unwrap(),
+            HostKeyStatus::Unknown,
+            "{host}"
+        );
+    }
+    assert!(!data.path().join(FILE_NAME).exists() || known_hosts_text(&data).trim().is_empty());
+
+    known_hosts.remember("core1", 22, &key).unwrap();
+    known_hosts.remember("fe80::1", 2222, &key).unwrap();
+    assert_eq!(
+        known_hosts.check("CORE1", 22, &key).unwrap(),
+        HostKeyStatus::Trusted
+    );
+}

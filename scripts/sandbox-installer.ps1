@@ -285,7 +285,12 @@ try {
 
   Step "uninstall through its window, with Delete the application data ticked"
   $started = Get-Date
+  # The binary's test variable left in the user's environment, naming the
+  # other program's prefix: the uninstaller must not pass it on (its logins
+  # must stay, checked below).
+  $env:ENODIX_KEYCHAIN_PREFIX = "another-program"
   Start-Process -FilePath (Join-Path $install "uninstall.exe")
+  Remove-Item Env:ENODIX_KEYCHAIN_PREFIX
   $window = WaitWindow "*Uninstall*" 60
   if (-not $window) { throw "the uninstaller's window did not show" }
   $mainHandle = $window.Current.NativeWindowHandle
