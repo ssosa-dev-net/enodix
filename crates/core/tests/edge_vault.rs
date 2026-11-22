@@ -141,7 +141,9 @@ fn nothing_writes_over(data: &DataFolder) {
         VaultError::AlreadyExists
     );
     assert_eq!(
-        store.change_password(MASTER, "new", "new").unwrap_err(),
+        store
+            .change_password(MASTER, "new master", "new master")
+            .unwrap_err(),
         VaultError::Locked
     );
     assert_eq!(store.turn_off(MASTER).unwrap_err(), VaultError::Locked);
@@ -654,12 +656,14 @@ fn changing_the_password_or_turning_off_takes_what_another_copy_wrote_meanwhile(
     let other = Vault::unlock(&data.vault(), MASTER).unwrap();
     other.put(SCOPE, &profile("theirs", "t")).unwrap();
 
-    first.change_password(MASTER, "second", "second").unwrap();
+    first
+        .change_password(MASTER, "second master", "second master")
+        .unwrap();
     assert!(first.get(SCOPE, "theirs").unwrap().is_some());
 
-    let other = Vault::unlock(&data.vault(), "second").unwrap();
+    let other = Vault::unlock(&data.vault(), "second master").unwrap();
     other.put(SCOPE, &profile("theirs-too", "t")).unwrap();
-    first.turn_off("second").unwrap();
+    first.turn_off("second master").unwrap();
     assert!(keychain.get(SCOPE, "theirs").unwrap().is_some());
     assert!(keychain.get(SCOPE, "theirs-too").unwrap().is_some());
 }

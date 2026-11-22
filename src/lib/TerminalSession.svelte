@@ -630,6 +630,10 @@
       theme: terminalTheme(untrack(isDark)),
       // For the search addon's match highlighting and count (decorations).
       allowProposedApi: true,
+      // Hyperlinks a device prints (OSC 8) open nothing: without this,
+      // xterm asks with a dialog and then calls window.open, which the
+      // window refuses, so the question would only mislead.
+      linkHandler: { activate: () => {} },
     });
     xterm = terminal;
     const fit = new FitAddon();

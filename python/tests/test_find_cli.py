@@ -72,6 +72,25 @@ class FindCli(unittest.TestCase):
         with self.environment(LOCALAPPDATA=str(self.temp / "none"), PATH=str(elsewhere)):
             self.assertEqual(Path(enodix.find_cli()).resolve(), on_path.resolve())
 
+    def test_the_current_folder_is_never_looked_in(self) -> None:
+        # A script job runs in the workspace's folder, which a shared
+        # workspace fills: a binary or batch file of its own there must not
+        # be taken for the app's (Windows' search looks there first).
+        here = self.temp / "workspace"
+        here.mkdir()
+        for name in (EXE, f"{_cli.CLI_NAME}.bat", f"{_cli.CLI_NAME}.cmd"):
+            planted = here / name
+            planted.write_bytes(b"")
+            if sys.platform != "win32":
+                planted.chmod(0o755)
+        before = os.getcwd()
+        os.chdir(here)
+        self.addCleanup(os.chdir, before)
+        for path in ("", os.curdir, str(here)):
+            with self.environment(LOCALAPPDATA=str(self.temp / "none"), PATH=path):
+                with self.assertRaises(enodix.CliNotFound, msg=repr(path)):
+                    enodix.find_cli()
+
     def test_nowhere_says_where_it_looked(self) -> None:
         with self.environment(LOCALAPPDATA=str(self.temp / "none"), PATH=str(self.temp)):
             with self.assertRaises(enodix.CliNotFound) as raised:
