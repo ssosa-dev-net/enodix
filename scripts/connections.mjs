@@ -152,18 +152,20 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
     }
     return names.join(" < ");
   };
-  // KNOWN FINDING (#135): WebView2's browser process (its
-  // msedgewebview2.exe started by netterm.exe) now and then connects to
-  // port 443 of Microsoft's Exchange Online / Office addresses
-  // (40.96.0.0/13, 52.96.0.0/14), outside its network stack: its sign-in
-  // with the Windows account. The app now starts WebView2 with that
-  // sign-in off, and no run has made the connection since; until enough
-  // runs have shown none, one is still let through and listed at the end
-  // of the run. Anything else fails.
-  const known = [];
-  const browserProcess = (event) =>
-    event.name === "msedgewebview2.exe" &&
-    processes.get(processes.get(event.pid)?.parent)?.name === "netterm.exe";
+  // What WebView2 used to do here (#135): on a Windows signed in to a
+  // Microsoft account its browser process connected, outside its network
+  // stack, to port 443 of Microsoft's Exchange Online / Office addresses
+  // (40.96.0.0/13, 52.96.0.0/14), its sign-in fetching the account's
+  // profile. The app starts WebView2 with that sign-in off; such a
+  // connection is named for what it is, and fails the run like any other.
+  const officeConnection = (event) => {
+    const [a, b] = event.remoteAddress.split(".").map(Number);
+    return (
+      event.name === "msedgewebview2.exe" &&
+      event.remotePort === 443 &&
+      ((a === 40 && b >= 96 && b <= 103) || (a === 52 && b >= 96 && b <= 99))
+    );
+  };
   // A process WebView2's browser process started (its network process is
   // one of them).
   const networkProcess = (event) => {
@@ -172,14 +174,6 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
       event.name === "msedgewebview2.exe" &&
       processes.get(parent)?.name === "msedgewebview2.exe" &&
       processes.get(processes.get(parent)?.parent)?.name === "netterm.exe"
-    );
-  };
-  const knownOfficeConnection = (event) => {
-    const [a, b] = event.remoteAddress.split(".").map(Number);
-    return (
-      browserProcess(event) &&
-      event.remotePort === 443 &&
-      ((a === 40 && b >= 96 && b <= 103) || (a === 52 && b >= 96 && b <= 99))
     );
   };
   const judge = (event) => {
@@ -214,11 +208,9 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
     connections.set(key, (connections.get(key) ?? 0) + 1);
     if (!LOOPBACK.test(event.remoteAddress)) {
       const what = `${who} connected to ${event.remote} (${event.state})`;
-      if (knownOfficeConnection(event)) {
-        known.push(`${what}, during ${step}`);
-        return null;
-      }
-      return what;
+      return officeConnection(event)
+        ? `${what}: WebView2's sign-in with the Windows account, which the app starts it without (#135)`
+        : what;
     }
     if (event.remoteWatched || event.remoteTest) return null;
     if (allowed.has(event.remotePort)) return null;
@@ -287,7 +279,6 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
         connections: remotes,
         udp: udp.length,
         probes: probes.length,
-        known: [...known],
       };
     },
     stop() {

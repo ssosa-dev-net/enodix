@@ -532,6 +532,7 @@ fn build(
     let (min_width, min_height) = SESSION_WINDOW_MIN_SIZE;
     let built = WebviewWindowBuilder::new(app, label, WebviewUrl::default())
         .additional_browser_args(crate::WEBVIEW_ARGUMENTS)
+        .use_https_scheme(crate::HTTPS_SCHEME)
         .general_autofill_enabled(false)
         .title(title)
         .inner_size(first.width, first.height)
