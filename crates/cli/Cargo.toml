@@ -1,5 +1,6 @@
 [package]
 name = "enodix-cli"
+publish = false
 description = "The headless binary of enodix: the core from the command line, with no window."
 version.workspace = true
 edition.workspace = true

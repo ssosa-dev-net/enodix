@@ -19,7 +19,10 @@ keys, addresses and configurations you would not publish.
    (`.github/workflows/ci.yml`); a pull request is merged once they pass.
    The end-to-end smoke test, the containerlab device suite and the
    installer checks need a desktop, a lab or Windows Sandbox, so the
-   maintainer runs them before a release.
+   maintainer runs them before a release. A new or updated dependency must
+   also pass `cargo deny check` (known vulnerabilities, licences and
+   sources, set in `deny.toml`) and `npm audit --omit=dev`; CI runs both
+   (`.github/workflows/dependencies.yml`), and again every week.
 3. Tests check what a user would see, through `enodix-core`'s public API;
    extend the test harness in `crates/core/tests/support` rather than
    mocking internals.

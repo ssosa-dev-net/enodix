@@ -1,0 +1,79 @@
+# cargo-deny: what the Rust dependencies may be (CI runs `cargo deny check`).
+#
+# - advisories: no dependency with a known vulnerability, unless it is listed
+#   below with the reason it cannot be fixed yet and why enodix is not exposed
+#   or how users avoid it. Review the list at every release.
+# - licenses: only licences compatible with enodix's GPL-3.0 (their texts are
+#   carried in THIRD-PARTY-NOTICES.txt, scripts/third-party-notices.mjs).
+# - bans and sources: crates only from crates.io, no git dependencies.
+
+[graph]
+# The platforms enodix is built for: crates only other systems use are left out.
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+# Unsoundness notices for every crate in the tree, not only the ones the
+# workspace depends on directly (cargo-deny's default).
+unsound = "all"
+ignore = [
+  # rsa: the Marvin timing side channel. No fixed release of the rsa crate
+  # exists; every Rust SSH stack has it (russh and ssh-key use rsa). It is
+  # only reached when signing with an RSA private key; Ed25519 and ECDSA keys
+  # do not use it. Drop this once russh moves to a fixed rsa.
+  { id = "RUSTSEC-2023-0071", reason = "no fixed rsa release; only RSA client keys reach it; Ed25519 keys avoid it" },
+  # chrono marked unmaintained: no safe upgrade or drop-in replacement yet,
+  # and russh-sftp and russh-util need it too. Not a vulnerability.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained notice, no replacement; used by russh as well" },
+  # glib 0.18 (Linux only, through Tauri's GTK 3 stack: gtk, wry, tao): its
+  # VariantStrIter iterators are unsound, fixed only in glib 0.20, which the
+  # GTK 3 crates Tauri uses cannot take. enodix never uses VariantStrIter.
+  # Drop this once Tauri's Linux webview moves past GTK 3.
+  { id = "RUSTSEC-2024-0429", reason = "fixed only in glib 0.20, out of reach of Tauri's GTK 3 stack; enodix never uses VariantStrIter" },
+  # proc-macro-error unmaintained: a build-time macro helper of glib-macros
+  # (the same GTK 3 stack); nothing of it ships in enodix.
+  { id = "RUSTSEC-2024-0370", reason = "build-time only, inside Tauri's GTK 3 stack; no replacement reachable" },
+  # zvariant, zvariant_derive and zbus_names unmaintained: merged into zbus 6.
+  # enodix gets zbus 5 through tauri-plugin-opener on Linux; these go when
+  # the plugin moves to zbus 6.
+  { id = "RUSTSEC-2026-0370", reason = "zvariant merged into zbus 6; zbus 5 comes with tauri-plugin-opener" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names merged into zbus 6; zbus 5 comes with tauri-plugin-opener" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive merged into zbus 6; zbus 5 comes with tauri-plugin-opener" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+  "GPL-3.0-only",
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "BSL-1.0",
+  "CC0-1.0",
+  "Unlicense",
+  "Unicode-3.0",
+  "MPL-2.0",
+]
+
+[licenses.private]
+# The workspace's own crates (GPL-3.0-only) are not published.
+ignore = true
+
+[bans]
+# Tauri's tree has several versions of some crates; that is not a problem.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,5 +1,6 @@
 [package]
 name = "enodix-core"
+publish = false
 description = "UI-free core of enodix: all behaviour lives here."
 version.workspace = true
 edition.workspace = true
