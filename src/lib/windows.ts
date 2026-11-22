@@ -192,6 +192,50 @@ export function onSessionWindows(
   );
 }
 
+/** A session window whose page stopped answering (#120), as the main
+ * window is told: the names of the sessions it shows. */
+export interface NotAnswering {
+  window: number;
+  names: string[];
+}
+
+/** Calls `handler` each time a session window's page stops answering
+ * (`answering`: false) or answers again (true). */
+export function onSessionWindowAnswering(
+  handler: (window: NotAnswering, answering: boolean) => void,
+): Promise<UnlistenFn[]> {
+  const main = getCurrentWebviewWindow();
+  return Promise.all([
+    main.listen<NotAnswering>("session-window-not-answering", (event) =>
+      handler(event.payload, false),
+    ),
+    main.listen<NotAnswering>("session-window-answering", (event) =>
+      handler(event.payload, true),
+    ),
+  ]);
+}
+
+/** Takes the sessions of the session window `window`, which does not
+ * answer, into the main window (without their earlier output) and closes
+ * it (#120). */
+export function takeBackSessions(window: number) {
+  return invoke<void>("session_window_take_back", { target: window });
+}
+
+/** The shell's question to this session window's page, every 2 s (#120):
+ * answered as soon as the page runs; a page that leaves it unanswered for
+ * 10 s is said to the main window. */
+export function onAnswerCheck(handler: () => void): Promise<UnlistenFn> {
+  return getCurrentWebviewWindow().listen<null>("answer-check", () =>
+    handler(),
+  );
+}
+
+/** This session window's page answers the shell's question (#120). */
+export function sayAnswering() {
+  return invoke<void>("session_window_answering");
+}
+
 /** A session the main window is given (docked back, or from a session
  * window that died: `snapshot` null). */
 export interface ArrivedSession {

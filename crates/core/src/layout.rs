@@ -19,6 +19,7 @@
 //! The app's windows each have a layout, kept together in [`Windows`] with
 //! the one multi-send group that spans them (#83).
 
+mod answers;
 mod closing;
 mod dead;
 mod placement;
@@ -29,6 +30,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub use answers::{Answered, PageAnswers, PAGE_ANSWER_WAIT, PAGE_ASK_EVERY};
 pub use closing::{close_workspace_sessions, live_in_session_windows, WorkspaceClosed};
 pub use dead::take_over_dead_window;
 pub use placement::{

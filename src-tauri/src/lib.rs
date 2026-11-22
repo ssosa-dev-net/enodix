@@ -3371,7 +3371,7 @@ pub fn run() {
                 watcher: Mutex::new(None),
             });
             let title = product_name(app.handle());
-            WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default())
+            let main = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default())
                 .additional_browser_args(WEBVIEW_ARGUMENTS)
                 .general_autofill_enabled(false)
                 .title(title)
@@ -3384,6 +3384,11 @@ pub fn run() {
                 .decorations(false)
                 .shadow(true)
                 .build()?;
+            // The engine ending as a whole ends the app (#120); the session
+            // windows' pages are asked whether they answer.
+            session_windows::watch_main(&main);
+            app.manage(session_windows::Answers::default());
+            session_windows::ask_pages(app.handle().clone());
             Ok(())
         })
         // Closing the main window closes the detached ones (and so the app).
@@ -3433,6 +3438,8 @@ pub fn run() {
             session_windows::session_attach,
             session_windows::session_dock,
             session_windows::session_window_close,
+            session_windows::session_window_answering,
+            session_windows::session_window_take_back,
             session_windows::session_window_take_tab,
             session_windows::session_dock_all,
             session_windows::session_windows_list,
