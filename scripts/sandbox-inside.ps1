@@ -37,6 +37,47 @@ function Facts {
   Say "network: $(if ($addresses) { $addresses -join ', ' } else { 'none' })"
   $accounts = @(Get-ChildItem "HKCU:\Software\Microsoft\IdentityCRL\StoredIdentities" -ErrorAction SilentlyContinue | ForEach-Object PSChildName)
   Say "Microsoft accounts signed in to Windows: $(if ($accounts.Count) { $accounts.Count } else { 'none' }); OneAuth's folder: $(Test-Path "$env:LOCALAPPDATA\Microsoft\OneAuth")"
+  # What may refuse an unsigned program here (the sandbox's own state, not
+  # the host's): Smart App Control (0 off, 1 on, 2 evaluating) and the App
+  # Control policies enforced.
+  $sac = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState
+  Say "Smart App Control: $(if ($null -eq $sac) { 'not set' } else { $sac })"
+  try {
+    $policies = (& CiTool.exe -lp -json | ConvertFrom-Json).Policies | Where-Object { $_.IsEnforced } | ForEach-Object FriendlyName
+    Say "App Control policies enforced: $($policies -join '; ')"
+  } catch { Say "App Control policies: cannot be listed ($_)" }
+}
+
+# Smart App Control turns itself on in the sandbox's Windows (seen on
+# 2026-11-22: off at 19:11, on by 23:10) and then refuses every unsigned
+# program it has not seen widely, the app's installer and the app among
+# them. The sandbox is thrown away after each run, so it is turned off for
+# this run only, and the policies reloaded; the host is not touched.
+function SmartAppControlOff {
+  $key = "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy"
+  $state = (Get-ItemProperty $key -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState
+  if ($state -eq 0) { return }
+  try {
+    Set-ItemProperty -Path $key -Name VerifiedAndReputablePolicyState -Value 0 -Type DWord
+    & CiTool.exe --refresh --json | Out-Null
+    $now = (Get-ItemProperty $key).VerifiedAndReputablePolicyState
+    Say "Smart App Control was $state in the sandbox: turned off for this run (now $now)"
+  } catch { Say "Smart App Control could not be turned off: $_" }
+}
+
+# After a failure: the latest code-integrity events, which name the file a
+# policy refused and the policy.
+function CodeIntegrity {
+  try {
+    $events = Get-WinEvent -LogName "Microsoft-Windows-CodeIntegrity/Operational" -MaxEvents 12 -ErrorAction Stop
+    foreach ($e in $events) {
+      Say "code integrity $($e.Id) at $($e.TimeCreated.ToString('HH:mm:ss')): $(($e.Message -split "`n")[0..2] -join ' ')"
+    }
+  } catch { Say "code integrity: no events ($_)" }
+  try {
+    $events = Get-WinEvent -LogName "Microsoft-Windows-AppLocker/EXE and DLL" -MaxEvents 4 -ErrorAction Stop
+    foreach ($e in $events) { Say "AppLocker $($e.Id): $(($e.Message -split "`n")[0])" }
+  } catch {}
 }
 
 function Copy-Into([string]$from, [string]$to) {
@@ -123,12 +164,14 @@ function Installer($job) {
 try {
   Say "logged on; the run starts"
   $job = Get-Content (Join-Path $out "job.json") -Raw | ConvertFrom-Json
+  SmartAppControlOff
   Facts
   if ($job.mode -eq "smoke") { $code = Smoke $job } else { $code = Installer $job }
 } catch {
   Say "the run stopped: $_"
   $code = 1
 } finally {
+  if ($code -ne 0) { CodeIntegrity }
   Set-Content -Path (Join-Path $out "done.json") -Value (@{ code = [int]$code } | ConvertTo-Json) -Encoding ASCII
   Say "done (exit code $code); the sandbox shuts down"
   & shutdown.exe /s /t 2 /f
