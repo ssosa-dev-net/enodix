@@ -385,6 +385,20 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   remain on the device.
 - The Jobs view lists thousands of kept runs several times faster (5,000
   runs: 0.83 s before, 0.15 s now, 0.085 s when listed again) [137].
+- In split panes, keys typed just after moving to another pane could
+  reach the previous pane's device [141]. Clicking a terminal in one
+  pane and then one in another within a moment, or a tab and then
+  another pane's terminal, let the first answer from the core hand the
+  keyboard back. It needed a busy computer to show. A focus the window
+  gives a moment later now never takes the keys from where they have
+  gone since.
+- Linux: a serial port without modem control lines (a pseudo terminal,
+  some adapters) opens; before, raising RTS failed the whole open
+  [58]. A file manager or browser opened from the AppImage no longer
+  gets the AppImage's environment, which made it load the bundle's
+  libraries [58]. The AppImage starts dark on a desktop whose dark look
+  is a style, such as XFCE's Adwaita-dark; switching the style while it
+  runs needs a restart there [143].
 - A connection that times out says where it stopped [140]: no TCP
   connection to the address and port (and through which jump host), no
   SSH identification line, the key exchange not finished, no answer to
