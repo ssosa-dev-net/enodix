@@ -14,6 +14,7 @@ use netterm_core::credentials::{
     KeychainStore, MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles, Secrets,
     VaultError, VaultStatus,
 };
+use netterm_core::data_folders;
 use netterm_core::diff::DiffLine;
 use netterm_core::enrich::{self, EnrichPreview, EnrichReport};
 use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
@@ -1463,6 +1464,18 @@ struct Runs(RunStore);
 
 /// Where config backups are kept: per user, outside every workspace.
 struct Configs(ConfigStore);
+
+/// Where the data was found at start, what moved and what to tell the user
+/// (#128); holds the running copy's lock on the data folders.
+struct DataMove(data_folders::Settled);
+
+/// What the start found about where the data is that the user should be
+/// told (a move that failed or waits, data in both folders); empty when
+/// nothing.
+#[tauri::command]
+fn data_notices(data: State<'_, DataMove>) -> Vec<data_folders::Notice> {
+    data.0.notices.clone()
+}
 
 /// Why a workspace without an id cannot keep job runs or config backups.
 fn no_workspace_id() -> String {
@@ -3283,15 +3296,37 @@ pub fn run() {
     }
     builder
         .setup(move |app| {
-            let (data_folder, log_folder) = match std::env::var_os(DATA_DIR_VARIABLE) {
+            let (data_folder, local_folder, log_folder) = match std::env::var_os(DATA_DIR_VARIABLE)
+            {
                 Some(folder) => {
                     let folder = PathBuf::from(folder);
                     let logs = folder.join("logs");
-                    (folder, logs)
+                    (folder.clone(), folder, logs)
                 }
-                // Logs stay on this computer (local, not roaming, app data).
-                None => (app.path().app_data_dir()?, app.path().app_log_dir()?),
+                // Logs, config backups, job results and the Python
+                // environment stay on this computer (#128): on Windows
+                // the local app data, not the roaming one. Elsewhere
+                // the app has one data folder.
+                None => (
+                    app.path().app_data_dir()?,
+                    if cfg!(windows) {
+                        app.path().app_local_data_dir()?
+                    } else {
+                        app.path().app_data_dir()?
+                    },
+                    app.path().app_log_dir()?,
+                ),
             };
+            // Before anything reads them: what an older version kept in
+            // the roaming folder moves to the local one, once (#128).
+            let settled = data_folders::settle(&data_folder, &local_folder);
+            for what in &settled.moved {
+                eprintln!("moved {what} to {}", local_folder.display());
+            }
+            for notice in &settled.notices {
+                eprintln!("{}", notice.message);
+            }
+            let folders = settled.folders.clone();
             // The vault, if its file is in the data folder, replaces the
             // keychain (layered the same way over the smoke's memory store).
             // Without a keychain (Linux; the smoke's `none`) it is the only
@@ -3334,11 +3369,14 @@ pub fn run() {
             app.manage(NornirFiles(Mutex::new(None)));
             app.manage(JobPlans::default());
             app.manage(EnrichPreviews(Mutex::new(None)));
-            // Job runs are per user, beside the app state, keyed by
+            // Job runs are per user, in the local data folder, keyed by
             // workspace id.
-            app.manage(Runs(RunStore::new(data_folder.join("jobs"))));
+            app.manage(Runs(RunStore::new(folders.jobs.clone())));
             // Config backups likewise.
-            app.manage(Configs(ConfigStore::new(data_folder.join("configs"))));
+            app.manage(Configs(ConfigStore::new(folders.configs.clone())));
+            // Holds the running copy's lock on the data folders for the
+            // app's life.
+            app.manage(DataMove(settled));
             app.manage(RunningJobs::new());
             app.manage(Arc::new(Live::default()));
             let preferences = Preferences::load(&data_folder);
@@ -3365,7 +3403,7 @@ pub fn run() {
                 InstallKind::detect(&program_folder, &resource_folder),
             )?;
             app.manage(python::PythonSetup::new(
-                data_folder.clone(),
+                folders.clone(),
                 program_folder.clone(),
                 resource_folder,
                 app.package_info().version.to_string(),
@@ -3436,6 +3474,7 @@ pub fn run() {
             files::files_rename,
             files::files_delete,
             files::files_make_folder,
+            data_notices,
             enrich_preview,
             workspace_current,
             window_detach_run,

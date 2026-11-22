@@ -706,10 +706,12 @@ pub struct SetupOffer {
 
 impl SetupOffer {
     /// Finds a Python 3.10 or newer among `candidates` and the wheel of
-    /// `app_version` in `wheel_folder`. Installs nothing.
+    /// `app_version` in `wheel_folder`, for an environment in the folder
+    /// `environment` (the app's: `DataFolders::python_environment`, since
+    /// #128 in the local data folder). Installs nothing.
     pub fn find(
         candidates: &[Candidate],
-        data_folder: &Path,
+        environment: &Path,
         wheel_folder: &Path,
         app_version: &str,
     ) -> Result<Self, OfferError> {
@@ -723,7 +725,7 @@ impl SetupOffer {
                 folder: wheel_folder.display().to_string(),
             });
         }
-        let environment = environment_folder(data_folder);
+        let environment = environment.to_path_buf();
         Ok(Self {
             existing: environment_interpreter(&environment).exists(),
             base,

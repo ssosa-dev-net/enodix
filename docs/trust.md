@@ -139,12 +139,12 @@ readable by anyone who can read your files:
 | Profiles and secrets, with the vault      | `<data folder>\credentials.vault`                     | Yes (see above)                         |
 | Profiles and secrets, without the vault   | Windows Credential Manager                            | By Windows, for your account            |
 | Session logs (on for every host by default) | `<local folder>\logs`                               | No                                      |
-| Kept job results (every host's output)    | `<data folder>\jobs`                                  | No                                      |
-| Config backups and their history          | `<data folder>\configs`                               | No                                      |
+| Kept job results (every host's output)    | `<local folder>\jobs`                                 | No                                      |
+| Config backups and their history          | `<local folder>\configs`                              | No                                      |
 | The workspace (hosts, folders, snippets, web links, jobs) | the folder you chose                  | No                                      |
 | Trusted host keys                         | `<data folder>\known_hosts`                           | No (public keys)                        |
 | Preferences, the list of workspaces       | `<data folder>\preferences.yaml`, `state.yaml`        | No                                      |
-| The Python environment and its choice     | `<data folder>\python`, `python.yaml`                 | No                                      |
+| The Python environment and its choice     | `<local folder>\python`, `<data folder>\python.yaml`  | No                                      |
 | Files you download from devices           | where you save them                                   | No                                      |
 | The window's web view data                | `<local folder>\EBWebView`                            | No                                      |
 
@@ -158,8 +158,12 @@ Telnet sends everything, passwords included, in the clear; a telnet
 session is marked unencrypted in its header.
 
 On Windows `<data folder>` is in the roaming part of your profile: in a
-domain with roaming profiles, job results and config backups are copied to
-the profile server with it.
+domain with roaming profiles it is copied to the profile server, with the
+vault and the trusted host keys. Since 0.5.0 job results, config backups
+and the Python environment are in `<local folder>`, which stays on the
+computer; the first start of 0.5.0 moves them there from `<data folder>`
+(the README says how). Before 0.5.0 they roamed too, and a profile server
+may still hold a copy of them.
 
 ## How a script gets a login
 

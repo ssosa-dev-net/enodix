@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use netterm_core::data_folders::{self, DataFolders};
 use netterm_core::job::ScriptOptions;
 use netterm_core::python::{
     self, create_environment, package_version, status, system_candidates, Library, PythonChoice,
@@ -18,7 +19,11 @@ use tauri::State;
 /// Where the app keeps the choice and its environment, where its wheel is,
 /// and the setup under way.
 pub struct PythonSetup {
+    /// The choice is kept here (the settings folder).
     data_folder: PathBuf,
+    /// Where the app's environment is made (the local data folder's, since
+    /// #128), and one left behind in the roaming folder.
+    folders: DataFolders,
     /// `python` in the resource folder: beside the program on Windows (the
     /// installer and the portable zip put the wheel there, and `app:build`
     /// leaves it in `target/release/python`), `/usr/lib/<product>/python`
@@ -42,13 +47,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl PythonSetup {
     pub fn new(
-        data_folder: PathBuf,
+        folders: DataFolders,
         program_folder: PathBuf,
         resource_folder: PathBuf,
         app_version: String,
     ) -> Arc<Self> {
         Arc::new(Self {
-            data_folder,
+            data_folder: folders.settings.clone(),
+            folders,
             wheel_folder: resource_folder.join("python"),
             program_folder,
             app_version,
@@ -100,7 +106,7 @@ impl PythonSetup {
                 &self.expected(),
                 wheel.as_deref(),
             ),
-            environment: python::environment_folder(&self.data_folder),
+            environment: self.folders.python_environment.clone(),
             wheel,
         }
     }
@@ -137,7 +143,7 @@ pub async fn python_offer(setup: State<'_, Arc<PythonSetup>>) -> Result<SetupOff
     blocking(move || {
         let offer = SetupOffer::find(
             &system_candidates(),
-            &setup.data_folder,
+            &setup.folders.python_environment,
             &setup.wheel_folder,
             &setup.app_version,
         )
@@ -195,6 +201,11 @@ pub async fn python_setup(
             },
         )
         .map_err(|error| error.to_string())?;
+        // An environment an older version left in the roaming folder, on
+        // another drive (#128), goes now that its successor is ready.
+        if let Err(error) = data_folders::remove_left_environment(&setup.folders) {
+            eprintln!("the old Python environment could not be removed: {error}");
+        }
         Ok(setup.view())
     })
     .await

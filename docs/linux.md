@@ -79,8 +79,10 @@ the first package build downloads the AppImage tools.
   GPL) as `/usr/share/doc/netterm/copyright` (.deb) or
   `/usr/share/licenses/netterm/LICENSE` (.rpm, and inside the AppImage);
   the release checks each package holds those. Settings, the vault,
-  known hosts, logs, job results and config backups live in
-  `~/.local/share/dev.netterm.app` (`$XDG_DATA_HOME`). The AppImage carries
+  known hosts, logs, job results, config backups and the Python
+  environment live in `~/.local/share/dev.netterm.app` (`$XDG_DATA_HOME`),
+  one folder (Windows splits them between a roaming and a local folder
+  since 0.5.0; nothing moves on Linux). The AppImage carries
   the binary and the wheel inside it: scripts run outside the app need
   `NETTERM_CLI` (see `python/README.md`).
 

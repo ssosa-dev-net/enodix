@@ -429,6 +429,22 @@ export async function pickWorkspaceFolder(
  */
 export type FolderKind = "workspace" | "empty" | "other";
 
+/**
+ * What the start found about where the app's data is (#128: config
+ * backups, job results and the Python environment moving to the local
+ * data folder) that the user should be told.
+ */
+export interface DataNotice {
+  what: "configs" | "jobs" | "python";
+  kind: "notMoved" | "bothHold" | "otherCopyRunning" | "leftBehind";
+  message: string;
+}
+
+/** The start's notices about the data folders; empty when none. */
+export function dataNotices(): Promise<DataNotice[]> {
+  return invoke<DataNotice[]>("data_notices");
+}
+
 /** What kind of folder `path` is; nothing is written. */
 export function folderKind(path: string): Promise<FolderKind> {
   return invoke<FolderKind>("workspace_folder_kind", { path });
