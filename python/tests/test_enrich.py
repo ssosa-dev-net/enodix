@@ -103,6 +103,11 @@ class FillIn(BridgeTest):
             "devices/sw-eos.yaml": "eos",
             "devices/r-missing.yaml": "ios",
         }
+        # The app trusts their keys (as after a first session to each).
+        (self.workspace.data / "known_hosts").write_text(
+            f"[127.0.0.1]:{port} {self.server.device_key}\n[127.0.0.2]:2201 {self.server.device_key}\n",
+            encoding="utf-8",
+        )
         # r-key's facts are those of r-pass: both reach the device server.
         with self.job(hosts):
             entries = enrich.collect(self.targets, self.facts_file, driver, lines.append)
@@ -136,6 +141,12 @@ class FillIn(BridgeTest):
         eos = opened[("127.0.0.2", False)]
         self.assertEqual(eos["optional_args"]["transport"], "ssh")
         self.assertEqual(eos["optional_args"]["port"], 2201)
+        # Reached directly, the device's key is checked against the app's.
+        for arguments in (password, key, eos):
+            optional = arguments["optional_args"]
+            self.assertTrue(optional["ssh_strict"])
+            self.assertFalse(optional["system_host_keys"])
+            self.assertIn(self.server.device_key, Path(optional["alt_key_file"]).read_text(encoding="utf-8"))
         self.assertEqual(driver.closed, 2)
         self.assertTrue(any(line.startswith("devices/r-pass.yaml: vendor Cisco") for line in lines), lines)
         # No secret in what the script prints.
@@ -199,6 +210,18 @@ class FillIn(BridgeTest):
         self.assertIn(self.server.device_key, arguments["known"])
         # The tunnels end with the collection.
         self.assertFalse(Path(optional["alt_key_file"]).exists())
+
+    def test_a_direct_host_whose_key_the_app_has_not_trusted_is_not_logged_in_to(self) -> None:
+        # No known_hosts at all: whoever answers at the address would get
+        # the login, so none is fetched and the driver never opens.
+        driver = Recording({})
+        with self.job({"devices/r-pass.yaml": "ios"}):
+            with mock.patch.object(enrich, "credentials", side_effect=AssertionError("login fetched")):
+                entries = enrich.collect(self.targets, self.facts_file, driver, lambda line: None)
+        [entry] = entries
+        self.assertIn("has not trusted its host key", entry["error"])
+        self.assertIn("connect to it once in the app", entry["error"])
+        self.assertEqual(driver.opened, [])
 
     def test_without_napalm_every_host_fails_saying_so(self) -> None:
         with self.job({"devices/r-pass.yaml": "ios", "devices/r-key.yaml": "ios"}):
