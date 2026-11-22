@@ -122,6 +122,20 @@ without the running app unlocked, a vault is refused at once, saying so:
 unattended runs against a vault that is not unlocked in the running app are
 deliberately impossible.
 
+### Host keys of the hosts reached directly
+
+The headless binary gives each host the keys the app trusts for its address
+and port (`host_keys` in `enodix.inventory()`), and the plugin checks an SSH
+host reached directly against them, as it does a tunnelled one (below): a
+known-hosts file per host with those keys, and checking turned on for
+Netmiko, scrapli and NAPALM's Netmiko-based drivers. A device answering with
+another key is refused. `enodix.host_key_checked` says whether a host's key
+is checked so; a host the app trusts no key for yet (never connected to in
+the app) is not, its library's own check applies (Netmiko's accepts any
+key), and the plugin's warning names it. Connect to such a host once in the
+app and trust and remember its key; `nr.filter(F(enodix__host_key_checked=True))`
+keeps only the checked ones.
+
 ### Hosts behind jump hosts
 
 The libraries make their own SSH connections and know nothing of the app's
@@ -300,7 +314,11 @@ broken) (`ios`, `eos`,
 `junos`, `nxos_ssh`, `nxos`, `iosxr`, `iosxr_netconf`; NX-OS prefers
 `nxos_ssh`). Each device is asked with its own login, on the host's SSH
 port (EOS over SSH, not eAPI; Junos over NETCONF on that port), at most 10
-at once. The script writes what it found to the file `ENODIX_FACTS_FILE`
+at once. A host whose key the app has not trusted yet is not logged in to
+(its password would go to whoever answered): pre-flight says so, and the
+host's result says to connect to it once in the app; with `ios`, `eos` and
+`nxos_ssh` the key a device presents is then checked against the app's,
+directly or through a tunnel. The script writes what it found to the file `ENODIX_FACTS_FILE`
 names; nothing is written to the workspace until you review it in the app
 and apply: empty fields are filled, typed values are replaced only on the
 hosts you tick. The OS version goes to the custom field `os_version`.

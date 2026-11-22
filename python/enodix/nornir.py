@@ -88,6 +88,7 @@ from ._tunnel import (
     _behind_any,
     answer,
     behind as _behind,
+    direct_host_keys,
     host_key_options,
     ports_of,
 )
@@ -227,6 +228,7 @@ def build_inventory(
 
     hosts = Hosts()
     refused: List[str] = []
+    unchecked: List[str] = []
     for exported_host in exported["hosts"]:
         tunnel = dict(tunnelled.get(exported_host["id"]) or {})
         # Why a host behind jump hosts with no tunnel entry has none.
@@ -239,8 +241,18 @@ def build_inventory(
         error = host.data["enodix"]["tunnel_error"]
         if error:
             refused.append(f"{host.name} ({error})")
+        elif not host.data["enodix"]["host_key_checked"] and exported_host["settings"].get("protocol") == "ssh":
+            unchecked.append(host.name)
     for problem in exported.get("problems", []):
         LOG.warning("workspace problem: %s: %s", problem["file"], problem["message"])
+    if unchecked:
+        LOG.warning(
+            "%d host(s) have no host key the app trusts yet, so their key is checked only as the "
+            "connection library does by itself (Netmiko accepts any): connect to each once in the "
+            "app and trust and remember its key (enodix.host_key_checked is False): %s",
+            len(unchecked),
+            ", ".join(unchecked),
+        )
     if refused:
         LOG.warning(
             "%d host(s) behind jump hosts could not be tunnelled and keep their own address "
@@ -313,10 +325,19 @@ def _host(
         "custom": custom,
     }
     username, password, extras = _login(login)
+    # Whose keys the libraries check: a tunnelled host's from its tunnel, a
+    # host reached directly over SSH from the keys the app trusts for it
+    # (none trusted: the libraries' own checks, warned about by the loader).
+    checked: Optional[Mapping[str, Any]] = None
     if listening:
+        checked = tunnel
+    elif not _behind_any(exported) and settings.get("protocol") == "ssh":
+        checked = direct_host_keys(exported)
+    data["enodix"]["host_key_checked"] = checked is not None
+    if checked is not None:
         # Only the libraries that talk to the SSH port: no connection
         # plugin is set up for the extra ports.
-        for library, options in host_key_options(dict(tunnel)).items():
+        for library, options in host_key_options(dict(checked)).items():
             if library in SSH_PORT_LIBRARIES:
                 extras.setdefault(library, {}).update(options)
     folder = exported["folder"]

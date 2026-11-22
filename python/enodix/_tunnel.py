@@ -284,6 +284,50 @@ def endpoint(host: Mapping[str, Any], port: int, tunnels: Optional[Tunnels] = No
     )
 
 
+#: The folder of the known-hosts files written for hosts reached directly
+#: (:func:`direct_host_keys`), made at the first and removed at exit.
+_DIRECT: Dict[str, Any] = {"folder": None, "count": 0}
+_DIRECT_LOCK = threading.Lock()
+
+
+@atexit.register
+def _remove_direct() -> None:
+    with _DIRECT_LOCK:
+        folder, _DIRECT["folder"] = _DIRECT["folder"], None
+    if folder is not None:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def direct_host_keys(host: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """For an exported host reached directly (not :func:`behind` jump
+    hosts): the same entry as a tunnelled host's (``address``, ``port``,
+    ``host_keys`` and a ``known_hosts`` file naming only the keys the app
+    trusts for it, with an SSH config beside it), so that
+    :func:`host_key_options` makes each library check its key as the app
+    does. ``None`` when the app trusts no key for it (never connected to in
+    the app, or serial): a library left to itself would accept whatever
+    key answered. The files are in a folder only this user can read
+    (``mkdtemp``), removed when Python exits."""
+    keys = list(host.get("host_keys") or [])
+    port = (host.get("settings") or {}).get("port")
+    if not keys or not port:
+        return None
+    address = host["address"]
+    with _DIRECT_LOCK:
+        if _DIRECT["folder"] is None:
+            _DIRECT["folder"] = Path(tempfile.mkdtemp(prefix="enodix-host-keys-"))
+        folder: Path = _DIRECT["folder"]
+        _DIRECT["count"] += 1
+        known_hosts = folder / f"known_hosts_{_DIRECT['count']}"
+    name = address.lower()
+    lines = [f"{name} {key}\n" if port == 22 else f"[{name}]:{port} {key}\n" for key in keys]
+    known_hosts.write_text("".join(lines), encoding="utf-8")
+    ssh_config_for(str(known_hosts)).write_text(
+        f'Host *\n  UserKnownHostsFile "{known_hosts}"\n', encoding="utf-8"
+    )
+    return {"address": address, "port": port, "host_keys": keys, "known_hosts": str(known_hosts)}
+
+
 def ssh_config_for(known_hosts: str) -> Path:
     """The SSH config written beside a tunnel's known-hosts file: it names
     only that file (for ncclient)."""
