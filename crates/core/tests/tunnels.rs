@@ -739,14 +739,17 @@ async fn a_stalled_reader_does_not_block_its_jump_connection() {
 }
 
 /// Past the buffer's limit, the stalled tunnel's connection is closed,
-/// saying why.
+/// saying why. The flood first fills the reading session's window and the
+/// loopback socket's buffers, which Linux grows to several MiB, through
+/// two SSH hops: on a slow computer (CI's runners) that took more than 20 s,
+/// so the deadline is generous (it ends as soon as the event comes).
 #[tokio::test]
 async fn a_reader_that_lets_too_much_wait_loses_its_connection() {
     let stalled = stalled(TunnelOptions {
         buffer_limit: 256 * 1024,
     })
     .await;
-    event_within(&stalled.events, Duration::from_secs(20), |event| {
+    event_within(&stalled.events, Duration::from_secs(60), |event| {
         matches!(event, TunnelEvent::Failed { host, reason }
             if host.as_str() == "flooder.yaml" && reason.contains("did not read its output"))
     })
