@@ -155,6 +155,7 @@
     type ViewRef,
     viewOf,
   } from "./lib/layout";
+  import { askForKeys, givingKeys, keyMark, keysAsked } from "./lib/keys";
   import {
     expandSnippet,
     findHost,
@@ -232,6 +233,15 @@
   } | null>(null);
   /** Raised when a tab is clicked, so that its terminal takes the keys. */
   let focusRequest = $state(0);
+  /**
+   * Asks that the active terminal take the keys (#141): at once, or with
+   * `mark` (`keyMark()` taken when the user acted, before an await) only
+   * if the keyboard has not moved since.
+   */
+  function requestKeys(mark?: number) {
+    askForKeys(mark);
+    focusRequest += 1;
+  }
   /** The tab whose closing waits for the user's confirmation. */
   let closing = $state<TabId | null>(null);
   /** A Files tab whose closing would cancel its transfers, waiting for
@@ -365,29 +375,63 @@
     if (layout === null || next.revision > layout.revision) layout = next;
   }
 
+  /** Layout edits sent and not answered yet: until then, the layout shown
+   * may not say yet which pane a focus just activated. */
+  let pendingEdits = 0;
+
   /**
    * Edits the layout; `prepare` is given the created tab or pane before the
    * new layout is shown (to give a new tab its session). Edits naming a tab
    * or pane that is already gone (a race with closing it) do nothing.
+   * `ask`: the edit is the user's, so the terminal it makes active takes
+   * the keys once it is shown, unless the keyboard moves meanwhile (#141);
+   * false for edits that only follow where the keys already are, or that
+   * the user did not make at that instant.
    */
   async function edit(
     change: LayoutEdit,
     prepare?: (created: number) => void,
+    ask = true,
   ): Promise<void> {
+    if (ask) askForKeys();
     let changed;
+    pendingEdits += 1;
     try {
       changed = await editLayout(change);
     } catch {
       return;
+    } finally {
+      pendingEdits -= 1;
     }
     if (changed.created !== null) prepare?.(changed.created);
     adopt(changed.layout);
     forgetClosedTabs();
   }
 
+  /**
+   * The active pane follows the keyboard (#141): once every edit is
+   * answered, if the keys are in a tab that is not the active pane's shown
+   * one (put there while an answer was on its way, or by a click on a
+   * terminal that had them already) and no terminal was asked to take them
+   * since, that tab is made active, without taking the keys anywhere.
+   */
+  function followKeys() {
+    if (pendingEdits > 0 || keysAsked() || !layout) return;
+    const holder =
+      document.activeElement?.closest<HTMLElement>(".slot[data-tab]");
+    const tab = Number(holder?.dataset.tab);
+    const place = Number.isInteger(tab) ? placement.get(tab) : undefined;
+    if (place && !(place.shown && place.pane === layout.activePane))
+      void edit({ kind: "activate", tab }, undefined, false);
+  }
+  $effect(() => {
+    void layout;
+    untrack(followKeys);
+  });
+
   /** Shows `view` in a tab (its own if open). */
   function openViewTab(view: ViewRef) {
-    focusRequest += 1;
+    requestKeys();
     void edit({ kind: "openView", view: view.view, subject: view.subject });
   }
   setViewOpener(openViewTab);
@@ -414,12 +458,16 @@
             continue;
           const moved = moves.find((move) => move.from === item.subject);
           if (moved) {
-            void edit({
-              kind: "retargetView",
-              view: item.view,
-              from: moved.from,
-              to: moved.to,
-            });
+            void edit(
+              {
+                kind: "retargetView",
+                view: item.view,
+                from: moved.from,
+                to: moved.to,
+              },
+              undefined,
+              false,
+            );
           }
         }
       });
@@ -503,7 +551,7 @@
    * join (the core refuses them too). */
   function toggleGroup(tab: TabId) {
     if (!sessions[tab]) return;
-    if (inGroup(tab)) void edit({ kind: "leaveGroup", tab });
+    if (inGroup(tab)) void edit({ kind: "leaveGroup", tab }, undefined, false);
     else
       void join([tab], (confirmed) => ({ kind: "joinGroup", tab, confirmed }));
   }
@@ -559,7 +607,7 @@
         };
       });
       joining = null;
-      focusRequest += 1;
+      requestKeys();
       if (!agreed) return;
       const now = current?.() ?? tabs;
       if (now.some((tab) => !tabs.includes(tab))) {
@@ -593,7 +641,7 @@
         groupPasteQuestion = { tab, ...question, answer };
       });
       groupPasteQuestion = null;
-      focusRequest += 1;
+      requestKeys();
       return send;
     },
     withdraw: () => groupPasteQuestion?.answer(false),
@@ -648,20 +696,20 @@
       };
     },
     activate: (tab) => {
-      focusRequest += 1;
+      requestKeys();
       void edit({ kind: "activate", tab });
     },
     activatePane: (pane) => void edit({ kind: "activatePane", pane }),
     close: (tab) => closeTab(tab),
     move: (tab, pane, index) => {
-      focusRequest += 1;
+      requestKeys();
       void edit({ kind: "moveTab", tab, pane, index });
     },
     newTab: (pane) => {
       view = { kind: "quick" };
       void edit({ kind: "showConnectView", pane });
     },
-    refocus: () => (focusRequest += 1),
+    refocus: () => requestKeys(),
     split: (pane, direction) => void edit({ kind: "split", pane, direction }),
     closePane: (pane) => void edit({ kind: "closePane", pane }),
     joinPane,
@@ -764,7 +812,7 @@
             item.view === "nornir-import" ||
             item.view === "enrich"
           )
-            void edit({ kind: "closeTab", tab: item.tab });
+            void edit({ kind: "closeTab", tab: item.tab }, undefined, false);
         }
         // Runs in windows of their own too (#77).
         void closeDetachedWindows().catch(() => {});
@@ -848,7 +896,7 @@
 
   function closeDetails() {
     inventory.details = false;
-    focusRequest += 1;
+    requestKeys();
   }
 
   /** What a rail icon (or its shortcut) does: shows `view`, or folds the
@@ -968,13 +1016,13 @@
   void startLiveJobs();
   // A run docked back from its own window opens as a tab here.
   void onDockRun((run) => {
-    focusRequest += 1;
+    requestKeys();
     openRunTab(run);
   });
   // A config history docked back likewise (#78), and its Back up now
   // opens the backup's tab here.
   void onDockConfigs((host) => {
-    focusRequest += 1;
+    requestKeys();
     openConfigHistory(host);
   });
   void onBackUpHost((host) => {
@@ -1081,6 +1129,8 @@
     open: () => Promise<WorkspaceView>,
   ): Promise<string | null> {
     const current = inventory.workspace;
+    // The keys go back to the terminal at the end unless moved meanwhile.
+    let mark = keyMark();
     const tabs = current
       ? Object.keys(sessions)
           .map(Number)
@@ -1103,6 +1153,7 @@
         };
       });
       switching = null;
+      mark = keyMark();
       if (choice === "cancel") return null;
     }
     let next;
@@ -1113,7 +1164,8 @@
     }
     // Reopening the same workspace leaves its sessions where they are.
     if (choice === "close" && current && next.root !== current.root) {
-      for (const tab of tabs) await edit({ kind: "closeTab", tab });
+      for (const tab of tabs)
+        await edit({ kind: "closeTab", tab }, undefined, false);
       await closeWorkspaceSessionsElsewhere(current.root).catch((error) => {
         inventory.editError = `Cannot close the sessions in session windows: ${error}`;
       });
@@ -1121,7 +1173,7 @@
     setWorkspace(next);
     inventory.openError = null;
     switcher = false;
-    focusRequest += 1;
+    requestKeys(mark);
     return null;
   }
 
@@ -1167,12 +1219,14 @@
     );
   }
 
-  /** Opens a session in a new tab of the active pane. */
+  /** Opens a session in a new tab of the active pane. `mark`: when the
+   * user asked, if that was before an await (#141). */
   function connect(
     target: ConnectTarget,
     name: string,
     title: string,
     profileLogin?: { host: Host; username: string },
+    mark?: number,
   ) {
     const hostId = "id" in target ? target.id : null;
     const workspace = hostId ? (inventory.workspace?.root ?? null) : null;
@@ -1180,32 +1234,37 @@
       hostId && inventory.workspace
         ? findHost(inventory.workspace.tree, hostId)
         : null;
-    void edit({ kind: "openTab" }, (tab) => {
-      sessions[tab] = {
-        source: { kind: "target", target, name, title },
-        name,
-        title,
-        address: host ? addressBesides(host, title) : null,
-        jumpHost: null,
-        hostId,
-        workspace,
-        safety: (hostId ? hostSafety(hostId) : null) ?? NO_SAFETY,
-        role: hostId ? hostRole(hostId) : null,
-        profileLogin,
-      };
-      // Telnet and serial never go through one.
-      if (hostId && target.kind === "host") {
-        resolveSettings({ kind: "host", id: hostId }).then(
-          (settings) => {
-            const jump = jumpHostOf(hostId, settings);
-            if (sessions[tab]) sessions[tab].jumpHost = jump;
-          },
-          () => {
-            // The header then names no jump host; connecting says more.
-          },
-        );
-      }
-    });
+    askForKeys(mark);
+    void edit(
+      { kind: "openTab" },
+      (tab) => {
+        sessions[tab] = {
+          source: { kind: "target", target, name, title },
+          name,
+          title,
+          address: host ? addressBesides(host, title) : null,
+          jumpHost: null,
+          hostId,
+          workspace,
+          safety: (hostId ? hostSafety(hostId) : null) ?? NO_SAFETY,
+          role: hostId ? hostRole(hostId) : null,
+          profileLogin,
+        };
+        // Telnet and serial never go through one.
+        if (hostId && target.kind === "host") {
+          resolveSettings({ kind: "host", id: hostId }).then(
+            (settings) => {
+              const jump = jumpHostOf(hostId, settings);
+              if (sessions[tab]) sessions[tab].jumpHost = jump;
+            },
+            () => {
+              // The header then names no jump host; connecting says more.
+            },
+          );
+        }
+      },
+      false,
+    );
   }
 
   /**
@@ -1269,7 +1328,7 @@
       role: record?.role ?? null,
     };
     adopt(arrived.layout);
-    focusRequest += 1;
+    requestKeys();
   });
 
   // A session window whose page stopped answering (#120), as the shell
@@ -1335,6 +1394,7 @@
    */
   async function prompt(host: Host, protocol: Protocol | null = null) {
     select({ kind: "host", id: host.id });
+    const mark = keyMark();
     let login;
     try {
       login = await hostLogin(host.id, protocol);
@@ -1352,6 +1412,7 @@
         host.name,
         title,
         username === null ? undefined : { host, username },
+        mark,
       );
     } else {
       const missingProfile = login.kind === "notSetUp" ? login.profile : null;
@@ -1479,6 +1540,7 @@
       await sendSnippetToGroup(name, answers, tab);
       return;
     }
+    const mark = keyMark();
     let expansion;
     try {
       // A host of another workspace gives no values: all are asked for.
@@ -1496,7 +1558,7 @@
       inventory.editError = `Cannot send ${name}: the session is no longer connected.`;
       return;
     }
-    focusRequest += 1;
+    requestKeys(mark);
   }
 
   /**
@@ -1511,6 +1573,7 @@
     answers: Record<string, string>,
     tab: TabId,
   ) {
+    const mark = keyMark();
     let receiving;
     let expansion;
     try {
@@ -1526,7 +1589,7 @@
       return;
     }
     groupPaste.pasteEach(tab, receiving, expansion.texts);
-    focusRequest += 1;
+    requestKeys(mark);
   }
 
   /** The window's shortcuts, by what they do. */
@@ -1716,8 +1779,11 @@
             onfocusin={() => {
               // Focus is already where the user put it (perhaps a question
               // over this pane): no focus request, which would hand the
-              // keys back to the pane active until then.
-              if (!focused && place) void edit({ kind: "activate", tab });
+              // keys back to the pane active until then. While an edit is
+              // on its way, `focused` may be out of date (#141): sent
+              // anyway, so the last focus decides the active pane.
+              if (place && (!focused || (pendingEdits > 0 && !givingKeys())))
+                void edit({ kind: "activate", tab }, undefined, false);
               void terminalUsed(tab);
             }}
           >
@@ -1727,7 +1793,8 @@
               {tab}
               groupSize={inGroup(tab) ? layout.groupSize : null}
               ontogglegroup={() => toggleGroup(tab)}
-              onendgroup={() => void edit({ kind: "endGroup" })}
+              onendgroup={() =>
+                void edit({ kind: "endGroup" }, undefined, false)}
               ongrouppaste={(text) => groupPaste.paste(tab, text)}
               title={session.title}
               address={session.address}
@@ -1778,7 +1845,7 @@
                 }}
                 oncancel={() => {
                   asking = null;
-                  focusRequest += 1;
+                  requestKeys();
                 }}
               />
             {/if}
@@ -1801,8 +1868,15 @@
             style:width="{rect?.width ?? 0}px"
             style:height="{rect?.height ?? 0}px"
             onfocusin={() => {
-              if (place && place.pane !== layout?.activePane)
-                void edit({ kind: "activatePane", pane: place.pane });
+              if (
+                place &&
+                (place.pane !== layout?.activePane || pendingEdits > 0)
+              )
+                void edit(
+                  { kind: "activatePane", pane: place.pane },
+                  undefined,
+                  false,
+                );
             }}
           >
             {#if item.view === "preferences"}
@@ -1896,7 +1970,7 @@
               }}
               oncancel={() => {
                 closingFiles = null;
-                focusRequest += 1;
+                requestKeys();
               }}
             />
           </div>
@@ -1921,7 +1995,7 @@
               onclose={confirmClose}
               oncancel={() => {
                 closing = null;
-                focusRequest += 1;
+                requestKeys();
               }}
             />
           </div>
@@ -2002,7 +2076,7 @@
     y={tabMenu.y}
     onclose={() => {
       tabMenu = null;
-      focusRequest += 1;
+      requestKeys();
     }}
   />
 {/if}
@@ -2083,7 +2157,7 @@
     onopen={openFolder}
     onclose={() => {
       switcher = false;
-      focusRequest += 1;
+      requestKeys();
     }}
   />
 {/if}
@@ -2099,7 +2173,7 @@
     onquit={() => void closeMainWindow()}
     oncancel={() => {
       quitting = null;
-      focusRequest += 1;
+      requestKeys();
     }}
   />
 {/if}

@@ -20,6 +20,14 @@
 //   SMOKE_WEBVIEW2_POLICY  set: WebView2's arguments also go in the
 //                      machine's WebView2 policy (`webviewPolicy`; an
 //                      elevated app ignores the environment variable)
+//
+// To repeat one part quickly (#141); none set, the whole test runs:
+//
+//   SMOKE_ONLY=severalInAWindow  only the part with several sessions in a
+//                      session window (the split typing step among them),
+//                      after three quick connections; the run then ends
+//   SMOKE_SPLIT_TYPING_REPEAT=<n>  that part's typing in each of two
+//                      panes done n times over (default once)
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -47,6 +55,14 @@ import {
   watchConnections,
 } from "./connections.mjs";
 
+/** The one part to run, if any (see the top). */
+const ONLY = process.env.SMOKE_ONLY || null;
+if (ONLY !== null && ONLY !== "severalInAWindow") {
+  console.error(`SMOKE_ONLY=${ONLY}: only severalInAWindow can run alone`);
+  process.exit(2);
+}
+/** How many times the split panes' typing is done (see the top). */
+const SPLIT_TYPING_REPEAT = Number(process.env.SMOKE_SPLIT_TYPING_REPEAT || 1);
 /** The built app's folder (see the top). */
 const APP_FOLDER = process.env.SMOKE_APP_FOLDER || join("target", "release");
 const SSH_PORT = 22722;
@@ -2280,6 +2296,57 @@ async function main() {
   if (heading !== name) fail(`heading ${heading} differs from title ${name}`);
   await screenshot("quick-connect");
   step(`app launched, named "${name}"`);
+
+  // SMOKE_ONLY=severalInAWindow (#141): only the part with several
+  // sessions in a session window, after the least it needs (the workspace
+  // open, three quick connections), to repeat it quickly. Unset, the whole
+  // test runs as always.
+  if (ONLY === "severalInAWindow") {
+    await until("the welcome view", () =>
+      evaluate(
+        `!!document.querySelector(${JSON.stringify(`[data-welcome-workspace=${JSON.stringify(workspace)}]`)})`,
+      ),
+    );
+    await mouseClick(
+      evaluate,
+      `[data-welcome-workspace=${JSON.stringify(workspace)}]`,
+    );
+    for (let count = 1; count <= 3; count++) {
+      if (count > 1) {
+        await mouseClick(evaluate, "[data-tab-bar] [data-new-tab]");
+        await until(`the connect view for session ${count}`, () =>
+          evaluate(
+            `!!document.querySelector(".slot.connect input[name=host]")`,
+          ),
+        );
+      }
+      await fillForm(
+        {
+          host: "127.0.0.1",
+          port: String(SSH_PORT),
+          username: USERNAME,
+          password: PASSWORD,
+        },
+        ".slot.connect form:has(input[name=host])",
+      );
+      if (count === 1) {
+        await hostKeyCheck("first-use");
+        await decideHostKey("trustAndRemember");
+      }
+      await until(`session ${count} connected`, () =>
+        evaluate(
+          `document.querySelectorAll('[role=tab][data-tab-state=connected]').length === ${count}`,
+        ),
+      );
+    }
+    step("three quick connections open (SMOKE_ONLY=severalInAWindow)");
+    // The clipboard, as the whole run grants it (editInventory).
+    await devtools.send("Browser.grantPermissions", {
+      permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+    });
+    await sessionWindows({ evaluate, devtools, screenshot, step });
+    return;
+  }
 
   // The interface typeface and icons ship inside the app: the font is
   // loaded, and nothing was requested from anywhere but the app itself.
@@ -15088,6 +15155,27 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
   };
   const gone = (label) =>
     until(`${label} closed`, async () => !(await windowOpen(label)));
+  const several = {
+    evaluate,
+    tabs,
+    slot,
+    show,
+    keysOn,
+    main,
+    focusTerminal,
+    lines,
+    ran,
+    ranAnywhere,
+    openWindow,
+    gone,
+    step,
+    screenshot,
+  };
+  // Alone (SMOKE_ONLY): its windows are the first two.
+  if (ONLY === "severalInAWindow") {
+    await severalInAWindow({ ...several, windows: [1, 2] });
+    return;
+  }
   // The moving session's tab here, if any: the main window keeps only
   // the other two members' tabs meanwhile.
   const movingTab = async () =>
@@ -15543,22 +15631,7 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
 
   // The group as multiSend left it: ended (in the session window, above).
 
-  await severalInAWindow({
-    evaluate,
-    tabs,
-    slot,
-    show,
-    keysOn,
-    main,
-    focusTerminal,
-    lines,
-    ran,
-    ranAnywhere,
-    openWindow,
-    gone,
-    step,
-    screenshot,
-  });
+  await severalInAWindow({ ...several, windows: [4, 5] });
 }
 
 /**
@@ -15567,10 +15640,12 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
  * shortcuts on that window's tabs only, Duplicate there, a split with
  * typing in each pane, search, copy, paste and highlighting there, zoom
  * and theme from the main window, the title following the active tab,
- * and Dock all back. The window ids follow those sessionWindows used
- * (session-1 to -3).
+ * and Dock all back. `windows`: the numbers of the two session windows it
+ * opens (4 and 5 after those sessionWindows used, session-1 to -3; 1 and 2
+ * when run alone).
  */
 async function severalInAWindow({
+  windows: [first, second],
   evaluate,
   tabs,
   slot,
@@ -15609,9 +15684,9 @@ async function severalInAWindow({
   // A new window from the main window, then a second session into it.
   await show(x.id);
   await sessionAction(evaluate, "open-in-window", slot(x.id));
-  const window = await openWindow("session-4");
+  const window = await openWindow(`session-${first}`);
   await show(y.id);
-  await sessionAction(evaluate, "open-in-window-4", slot(y.id));
+  await sessionAction(evaluate, `open-in-window-${first}`, slot(y.id));
   await until("two tabs in the session window", async () => {
     const shown = await windowTabs(window);
     return (
@@ -15630,9 +15705,9 @@ async function severalInAWindow({
   // From another session window: that window, emptied, closes.
   await show(z.id);
   await sessionAction(evaluate, "open-in-window", slot(z.id));
-  const other = await openWindow("session-5");
-  await sessionAction(other.evaluate, "open-in-window-4");
-  await gone("session-5");
+  const other = await openWindow(`session-${second}`);
+  await sessionAction(other.evaluate, `open-in-window-${first}`);
+  await gone(`session-${second}`);
   await until(
     "three tabs in the first session window",
     async () => (await windowTabs(window)).length === 3,
@@ -15788,48 +15863,150 @@ async function severalInAWindow({
     window.evaluate(
       `(() => { const slot = document.querySelector('${selector}'); return !!slot && !slot.hidden; })()`,
     );
-  // The split took the shown tab (x) into the new pane; the first shows y
-  // or z: show y there.
-  await mouseClick(window.evaluate, `[data-tab="${yTab}"]`);
-  await until(
-    "both sessions side by side",
-    async () => (await visible(xSlot)) && (await visible(ySlot)),
-  );
-  // The tab clicked hands its terminal the keys a moment later: once it
-  // has, focusing x is not undone.
-  await until("y's terminal given the keys", () =>
-    window.evaluate(`!!document.activeElement?.closest(${json(ySlot)})`),
-  );
-  await focusTerminal(window.evaluate, xSlot);
-  await keys.type("inleft\r");
-  await focusTerminal(window.evaluate, ySlot);
-  await keys.type("inright\r");
-  try {
-    await until(
-      "each typed line echoed in its own pane",
-      async () =>
-        (await ran(window.evaluate, xSlot, "inleft")) &&
-        (await ran(window.evaluate, ySlot, "inright")),
-    );
-  } catch (error) {
-    // Seen to fail now and then (2026-11-21, twice): say where the typed
-    // lines went and who had the keys.
-    const tail = async (slot) =>
-      (await lines(window.evaluate, slot)).filter(Boolean).slice(-3);
-    const focused = await window.evaluate(
+  const tail = async (slot) =>
+    (await lines(window.evaluate, slot)).filter(Boolean).slice(-3);
+  /** The tab whose slot has the keys (or the element's tag). */
+  const keysWith = () =>
+    window.evaluate(
       `document.activeElement?.closest(".slot")?.dataset.tab ?? document.activeElement?.tagName ?? null`,
     );
-    fail(
-      `${error.message}; x (tab ${xTab}) ends ${json(await tail(xSlot))}; y (tab ${yTab}) ends ${json(await tail(ySlot))}; the keys are with ${json(focused)}`,
+  const activeTab = () =>
+    window.evaluate(
+      `document.querySelector(${json(SHOWN_SESSION)})?.dataset.tab ?? null`,
     );
+  /** Where the typed lines went and who has the keys, for a failure. */
+  const whereTyped = async () =>
+    `x (tab ${xTab}) ends ${json(await tail(xSlot))}; y (tab ${yTab}) ends ${json(await tail(ySlot))}; the keys are with ${json(await keysWith())}; the active tab is ${json(await activeTab())}`;
+  // The split took the shown tab (x) into the new pane; the first shows y
+  // or z: show y there. Then x is focused and typed in, then y (#141: once
+  // in five runs on a loaded computer, both lines went to x). Done
+  // SMOKE_SPLIT_TYPING_REPEAT times over, to repeat it under load.
+  for (let round = 1; round <= SPLIT_TYPING_REPEAT; round++) {
+    const [left, right] =
+      round === 1
+        ? ["inleft", "inright"]
+        : [`inleft${round}`, `inright${round}`];
+    await mouseClick(window.evaluate, `[data-tab="${yTab}"]`);
+    await until(
+      "both sessions side by side",
+      async () => (await visible(xSlot)) && (await visible(ySlot)),
+    );
+    // The tab clicked hands its terminal the keys a moment later: once it
+    // has, focusing x is not undone.
+    await until("y's terminal given the keys", () =>
+      window.evaluate(`!!document.activeElement?.closest(${json(ySlot)})`),
+    );
+    await focusTerminal(window.evaluate, xSlot);
+    await keys.type(`${left}\r`);
+    await focusTerminal(window.evaluate, ySlot);
+    await keys.type(`${right}\r`);
+    try {
+      await until(
+        "each typed line echoed in its own pane",
+        async () =>
+          (await ran(window.evaluate, xSlot, left)) &&
+          (await ran(window.evaluate, ySlot, right)),
+      );
+    } catch (error) {
+      fail(
+        `${error.message} (round ${round} of ${SPLIT_TYPING_REPEAT}); ${await whereTyped()}`,
+      );
+    }
+    if (
+      (await ranAnywhere(window.evaluate, xSlot, right)) ||
+      (await ranAnywhere(window.evaluate, ySlot, left))
+    )
+      fail(`typing in one pane reached the other's device (round ${round})`);
   }
-  if (
-    (await ranAnywhere(window.evaluate, xSlot, "inright")) ||
-    (await ranAnywhere(window.evaluate, ySlot, "inleft"))
-  )
-    fail("typing in one pane reached the other's device");
   step(
-    "split in the session window: two sessions side by side, each typing to its own device",
+    `split in the session window: two sessions side by side, each typing to its own device${SPLIT_TYPING_REPEAT > 1 ? ` (${SPLIT_TYPING_REPEAT} times)` : ""}`,
+  );
+
+  // The same with the core's layout answers held back (#141), as on a
+  // computer too busy to answer: a focus given a moment later never takes
+  // the keys from where they went meanwhile.
+  const holdAnswers = () =>
+    window.evaluate(`(() => {
+      window.__smokeLayoutInFlight = 0;
+      window.__smokeHoldLayoutAnswers = new Promise((resolve) => (window.__smokeReleaseLayoutAnswers = resolve));
+    })()`);
+  const releaseAnswers = () =>
+    window.evaluate(`(() => {
+      const release = window.__smokeReleaseLayoutAnswers;
+      delete window.__smokeHoldLayoutAnswers;
+      delete window.__smokeReleaseLayoutAnswers;
+      release?.();
+    })()`);
+  /** Every held answer given, then `tab`'s pane active with the keys. */
+  const settledWith = (what, tab) =>
+    until(what, async () =>
+      window.evaluate(`(() => {
+        if ((window.__smokeLayoutInFlight ?? 0) !== 0) return false;
+        const slot = document.querySelector(${json(`.slot[data-tab="${tab}"]`)});
+        return !!slot && slot.matches("[data-active]") && !!document.activeElement && slot.contains(document.activeElement);
+      })()`),
+    ).catch(async (error) => fail(`${error.message}; ${await whereTyped()}`));
+  // (1) Focus moved to another pane while the first pane's activation is
+  // on its way: the first pane, made active by its answer, takes nothing.
+  try {
+    await holdAnswers();
+    await focusTerminal(window.evaluate, xSlot);
+    await keys.type("heldleft\r");
+    await focusTerminal(window.evaluate, ySlot);
+    if ((await keysWith()) !== String(yTab))
+      fail(`focusing y left the keys with ${json(await keysWith())}`);
+  } finally {
+    await releaseAnswers();
+  }
+  await settledWith("y's pane active with the keys, the answers given", yTab);
+  await keys.type("heldright\r");
+  await until(
+    "each line typed while the answers were held echoed in its own pane",
+    async () =>
+      (await ran(window.evaluate, xSlot, "heldleft")) &&
+      (await ran(window.evaluate, ySlot, "heldright")),
+  ).catch(async (error) => fail(`${error.message}; ${await whereTyped()}`));
+  if (
+    (await ranAnywhere(window.evaluate, xSlot, "heldright")) ||
+    (await ranAnywhere(window.evaluate, ySlot, "heldleft"))
+  )
+    fail("typing in one pane reached the other's device (answers held)");
+  // (2) A tab clicked (its terminal to take the keys once shown), then a
+  // click on the terminal that has the keys before the answer: the keys
+  // stay there, and its pane is made active again.
+  const zTab = (await windowTabs(window))
+    .map((tab) => tab.id)
+    .find((id) => id !== xTab && id !== yTab);
+  await focusTerminal(window.evaluate, xSlot);
+  await settledWith("x's pane active with the keys", xTab);
+  try {
+    await holdAnswers();
+    await mouseClick(window.evaluate, `[data-tab="${zTab}"]`);
+    await mouseClick(window.evaluate, `${xSlot} .terminal`);
+  } finally {
+    await releaseAnswers();
+  }
+  await settledWith(
+    "x's pane active again with the keys, the tab clicked before shown",
+    xTab,
+  );
+  await keys.type("afterclick\r");
+  await until("the line typed after the click echoed in x", () =>
+    ran(window.evaluate, xSlot, "afterclick"),
+  ).catch(async (error) => fail(`${error.message}; ${await whereTyped()}`));
+  if (await ranAnywhere(window.evaluate, slot(zTab), "afterclick"))
+    fail("the line typed after the click went to the tab clicked before");
+  // y shown again in its pane, with the keys, for what follows.
+  await mouseClick(window.evaluate, `[data-tab="${yTab}"]`);
+  await until(
+    "both sessions side by side again",
+    async () => (await visible(xSlot)) && (await visible(ySlot)),
+  );
+  await until("y's terminal given the keys again", () =>
+    window.evaluate(`!!document.activeElement?.closest(${json(ySlot)})`),
+  );
+  step(
+    "with the core's layout answers held back, a pane made active late took no keys from the pane focused meanwhile, nor from a terminal clicked meanwhile",
   );
   if (screenshot) await screenshot("session-window-split");
 
@@ -15974,13 +16151,25 @@ async function severalInAWindow({
     },
   );
   window.devtools.close();
-  await gone("session-4");
+  await gone(`session-${first}`);
   const docked = await until("the three sessions back", async () => {
     const back = (await tabs()).filter((tab) => !known.has(tab.id));
     return back.length === 3 && back;
   });
-  if (docked.some((tab) => tab.state !== "connected"))
-    fail(`Dock all back left ${json(docked)}`);
+  // Each tab says connecting until its terminal has attached (as after
+  // Dock back above): then connected. Read at once, a loaded computer
+  // showed them still connecting (#141, not a focus fault).
+  await until(
+    "the three sessions back connected",
+    async () =>
+      (await tabs()).filter(
+        (tab) => !known.has(tab.id) && tab.state === "connected",
+      ).length === 3,
+  ).catch(async (error) =>
+    fail(
+      `${error.message}: Dock all back left ${json((await tabs()).filter((tab) => !known.has(tab.id)))}`,
+    ),
+  );
   for (const word of ["inleft", "inright"]) {
     let found = false;
     for (const tab of docked) {
