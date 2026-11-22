@@ -86,6 +86,11 @@ VIAddVersionKey "Comments" "${ENODIX_DESCRIPTION}"
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
     DetailPrint "$(enodixClearKeychain)"
+    ; The binary would take another prefix from ENODIX_KEYCHAIN_PREFIX (its
+    ; tests' own): left set in the user's environment, `git` say, the
+    ; uninstall would empty another program's saved logins. It is taken out
+    ; of the environment the binary inherits, so only the app's go.
+    System::Call 'kernel32::SetEnvironmentVariable(t "ENODIX_KEYCHAIN_PREFIX", p 0)'
     nsExec::ExecToLog '"$INSTDIR\${ENODIX_CLI}" clear-keychain --yes'
     Pop $0
     ${If} $0 != "0"

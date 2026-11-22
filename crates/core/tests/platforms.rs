@@ -173,6 +173,37 @@ fn invalid_patterns_are_listed_with_their_error_and_not_used() {
     assert_eq!(listed(&workspace, "eos").error, None);
 }
 
+/// A command is one line: a platforms file (a shared workspace's, say) whose
+/// command holds a line break would send lines the user never sees, at
+/// every login with back up on login. Such a definition is listed with its
+/// error and never used, a changed built-in included.
+#[test]
+fn a_command_holding_a_line_break_is_an_error_and_the_definition_is_not_used() {
+    let (_temp, workspace) = workspace_with(concat!(
+        "ios:\n",
+        "  show_config: \"configure terminal\\rusername x secret y\\rend\\rshow running-config\"\n",
+        "mine:\n",
+        "  prompt: x\n",
+        "  disable_paging: \"terminal length 0\\nreload\"\n",
+        "tabbed:\n",
+        "  prompt: x\n",
+        "  privilege_command: \"enable\\t\"\n",
+    ));
+    for (name, key) in [
+        ("ios", "show_config"),
+        ("mine", "disable_paging"),
+        ("tabbed", "privilege_command"),
+    ] {
+        let error = listed(&workspace, name).error.clone().unwrap_or_default();
+        assert!(
+            error.contains(key) && error.contains("one line"),
+            "{name}: {error}"
+        );
+        assert_eq!(matched(&workspace, name), None, "{name} is used");
+    }
+    assert_eq!(matched(&workspace, "cisco_ios"), None);
+}
+
 #[test]
 fn badly_defined_entries_are_problems_and_left_out() {
     let workspace = Workspace::open(fixture("platforms")).unwrap();
@@ -367,6 +398,20 @@ fn definitions_that_cannot_work_are_refused_without_touching_the_file() {
             PlatformDefinition {
                 ignored_lines: Some("[".into()),
                 ..definition("bad-ignored", "x")
+            },
+        ),
+        (
+            None,
+            PlatformDefinition {
+                show_config: Some("show running-config\rreload".into()),
+                ..definition("two-lines", "x")
+            },
+        ),
+        (
+            Some("ios"),
+            PlatformDefinition {
+                disable_paging: Some("terminal length 0\nwrite erase".into()),
+                ..built_in("ios")
             },
         ),
         (None, definition("MINE", "y")),

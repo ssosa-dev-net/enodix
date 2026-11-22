@@ -81,6 +81,13 @@ const MIN_SALT_LEN: usize = 16;
 /// The most memory a header may ask the key derivation for (4 GiB): a
 /// damaged or hostile header must not exhaust the machine.
 const MAX_MEMORY_KIB: u32 = 4 * 1024 * 1024;
+/// The most passes and lanes a header may ask for (the default asks 3 and
+/// 4): without a bound, a file someone altered could make unlocking run
+/// for ever.
+const MAX_ITERATIONS: u32 = 16;
+const MAX_PARALLELISM: u32 = 16;
+/// The shortest new master password.
+const MIN_PASSWORD_CHARS: usize = 8;
 /// A temporary file of the vault's older than this was left by a write that
 /// stopped (a power cut, a crash): no write takes that long.
 const LEFTOVER_AGE: Duration = Duration::from_secs(60);
@@ -118,7 +125,9 @@ pub enum VaultError {
     NoVault,
     #[error("a vault already exists")]
     AlreadyExists,
-    #[error("the master password is not right")]
+    /// Also what a header altered with its checksum made to fit gives: the
+    /// key cannot open the check either way, so the message says both.
+    #[error("the master password is not right (or the vault file was altered)")]
     WrongPassword,
     /// The file is there but cannot be what this app wrote: cut short,
     /// altered, or not a vault at all.
@@ -347,6 +356,7 @@ impl Vault {
 
     /// Opens the vault at `path` with `password`.
     pub fn unlock(path: &Path, password: &str) -> Result<Self, VaultError> {
+        private::tighten(path);
         let (sealed, salt) = read_sealed(path, None)?;
         let kdf = sealed.kdf.params;
         let key = derive_key(password, &kdf, &salt)?;
@@ -487,6 +497,13 @@ fn usable_password(password: &str) -> Result<(), VaultError> {
             "the master password cannot be empty".into(),
         ));
     }
+    // A copy of the file can be guessed at offline; the key derivation
+    // slows each guess, but a password of a few letters falls anyway.
+    if password.chars().count() < MIN_PASSWORD_CHARS {
+        return Err(VaultError::Invalid(format!(
+            "the master password needs at least {MIN_PASSWORD_CHARS} characters"
+        )));
+    }
     Ok(())
 }
 
@@ -518,6 +535,11 @@ fn derive_key(
             "its key parameters ask for too much memory".into(),
         ));
     }
+    if kdf.iterations > MAX_ITERATIONS || kdf.parallelism > MAX_PARALLELISM {
+        return Err(VaultError::Damaged(
+            "its key parameters ask for more passes or lanes than the app ever writes".into(),
+        ));
+    }
     let params = Params::new(kdf.memory_kib, kdf.iterations, kdf.parallelism, Some(32))
         .map_err(|error| VaultError::Damaged(format!("its key parameters are invalid: {error}")))?;
     let mut key = Zeroizing::new([0u8; 32]);
@@ -537,15 +559,12 @@ impl WriteLock {
     /// milliseconds), making its lock file if there is none.
     fn take(vault: &Path) -> Result<Self, VaultError> {
         let path = lock_file(vault);
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(|error| {
-                VaultError::Io(format!("cannot open the vault's lock file: {error}"))
-            })?;
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        private::file(&mut options);
+        let file = options.open(&path).map_err(|error| {
+            VaultError::Io(format!("cannot open the vault's lock file: {error}"))
+        })?;
         file.lock()
             .map_err(|error| VaultError::Io(format!("cannot lock the vault: {error}")))?;
         Ok(Self(file))
@@ -574,9 +593,57 @@ fn make_folder(path: &Path) -> Result<(), VaultError> {
         .filter(|parent| !parent.as_os_str().is_empty())
     {
         Some(parent) => {
-            fs::create_dir_all(parent).map_err(|error| VaultError::Io(error.to_string()))
+            fs::create_dir_all(parent).map_err(|error| VaultError::Io(error.to_string()))?;
+            private::tighten(path);
+            Ok(())
         }
         None => Ok(()),
+    }
+}
+
+/// Keeping the vault to its user. On Unix a new file or folder gets the
+/// umask's permissions (others may read, usually), and a copy of the vault
+/// can be guessed at offline; so the vault, its temporary files and its
+/// lock are made owner-only (0600) and its folder (the data folder) 0700,
+/// and an existing vault and folder are tightened when unlocked or written.
+/// On Windows the data folder is the user's own already.
+mod private {
+    use std::fs::OpenOptions;
+    use std::path::Path;
+
+    /// New files `options` opens are readable by their owner only.
+    pub(super) fn file(options: &mut OpenOptions) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        #[cfg(not(unix))]
+        let _ = options;
+    }
+
+    /// Takes others' access to the vault at `vault`, its lock and its
+    /// folder (best effort: a file the user does not own stays as it is).
+    pub(super) fn tighten(vault: &Path) {
+        #[cfg(unix)]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+            let set = |path: &Path, mode: u32| {
+                if let Ok(metadata) = fs::metadata(path) {
+                    if metadata.permissions().mode() & 0o777 != mode {
+                        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+                    }
+                }
+            };
+            if let Some(folder) = vault.parent().filter(|p| !p.as_os_str().is_empty()) {
+                set(folder, 0o700);
+            }
+            set(vault, 0o600);
+            set(&super::lock_file(vault), 0o600);
+        }
+        #[cfg(not(unix))]
+        let _ = vault;
     }
 }
 
@@ -694,10 +761,10 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     ));
     let temporary = PathBuf::from(temporary);
     let written = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        private::file(&mut options);
+        let mut file = options.open(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);

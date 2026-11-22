@@ -573,8 +573,8 @@ fn stand_in(folder: &Path) -> FakePython {
     FakePython::running(
         folder,
         "enrich",
-        "echo args=%1 %2 %3\r\ntype \"%ENODIX_JOB_TARGETS%\"\r\necho.\r\necho facts=%ENODIX_FACTS_FILE%\r\ncopy /y \"%ENODIX_TEST_FACTS%\" \"%ENODIX_FACTS_FILE%\" >nul",
-        "echo \"args=$1 $2 $3\"\ncat \"$ENODIX_JOB_TARGETS\"\necho\necho \"facts=$ENODIX_FACTS_FILE\"\ncp \"$ENODIX_TEST_FACTS\" \"$ENODIX_FACTS_FILE\"",
+        "echo args=%1 %2 %3\r\necho cwd=%CD%\r\ntype \"%ENODIX_JOB_TARGETS%\"\r\necho.\r\necho facts=%ENODIX_FACTS_FILE%\r\ncopy /y \"%ENODIX_TEST_FACTS%\" \"%ENODIX_FACTS_FILE%\" >nul",
+        "echo \"args=$1 $2 $3\"\necho \"cwd=$(pwd)\"\ncat \"$ENODIX_JOB_TARGETS\"\necho\necho \"facts=$ENODIX_FACTS_FILE\"\ncp \"$ENODIX_TEST_FACTS\" \"$ENODIX_FACTS_FILE\"",
     )
 }
 
@@ -637,6 +637,15 @@ async fn the_job_runs_the_shipped_script_and_keeps_its_facts_with_the_run() {
             .to_string()
     };
     assert_eq!(line("args"), "-u -m enodix.enrich");
+    // Run in the interpreter's folder, not the workspace's: `-m` puts the
+    // current folder first on the import path, and a workspace's own
+    // `enodix` package must not replace the app's.
+    let cwd = std::fs::canonicalize(line("cwd")).unwrap();
+    assert_eq!(
+        cwd,
+        std::fs::canonicalize(python.path.parent().unwrap()).unwrap()
+    );
+    assert_ne!(cwd, std::fs::canonicalize(workspace.root()).unwrap());
     assert!(
         !Path::new(&line("facts")).exists(),
         "the facts file is removed"

@@ -362,6 +362,35 @@ async fn names_that_cannot_be_files_are_refused_before_anything_is_added() {
         browsers.fetch(id, "flash:", local.path()),
         Err(BrowseError::BadName { .. })
     ));
+    // Names a device may list (a backslash is an ordinary character on
+    // Unix) that would leave the folder, or name another place, as a local
+    // file on Windows: refused on every system, before anything is added.
+    for name in [
+        r"..\..\AppData\Roaming\x.bat",
+        r"\Windows\x",
+        r"C:\x",
+        "C:x",
+        r"\\server\share\x",
+        "a:stream",
+        "CON",
+        "nul.txt",
+        "bell\u{7}",
+        "ends with a dot.",
+    ] {
+        let refused = browsers.download(id, "/", vec![name.into()], local.path());
+        assert!(
+            matches!(refused, Err(BrowseError::BadName { .. })),
+            "{name:?}: {refused:?}"
+        );
+    }
+    for remote in [r"/up/..\..\x.bat", r"/x\y"] {
+        let refused = browsers.fetch(id, remote, local.path());
+        assert!(
+            matches!(refused, Err(BrowseError::BadName { .. })),
+            "{remote:?}: {refused:?}"
+        );
+    }
+    assert_eq!(fs::read_dir(local.path()).unwrap().count(), 0);
 }
 
 /// A server with SCP only, serving a new folder, and a browser on it.
