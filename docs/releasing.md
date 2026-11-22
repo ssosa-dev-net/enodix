@@ -34,9 +34,9 @@ two commands above, and there is no `latest.json` to publish.
 
 | File                                 | Purpose                                                                          |
 | ------------------------------------ | -------------------------------------------------------------------------------- |
-| `enodix_<version>_x64-setup.exe`    | NSIS installer, per user (no administrator rights); installs `enodix-cli.exe` and `LICENSE` beside the app and the Python wheel in `python\` (see "The installer" below). |
+| `enodix_<version>_x64-setup.exe`    | NSIS installer, per user (no administrator rights); installs `enodix-cli.exe`, `LICENSE` and `THIRD-PARTY-NOTICES.txt` beside the app and the Python wheel in `python\` (see "The installer" below). |
 | `enodix_<version>_x64-setup.exe.sig`| The updater signature of the installer (made with the release key).              |
-| `enodix_<version>_x64-portable.zip` | `enodix.exe`, `enodix-cli.exe`, `python\enodix-<version>-py3-none-any.whl` (the Python bridge), `portable.txt` (makes the copy portable: it only notifies), README.|
+| `enodix_<version>_x64-portable.zip` | `enodix.exe`, `enodix-cli.exe`, `python\enodix-<version>-py3-none-any.whl` (the Python bridge), `portable.txt` (makes the copy portable: it only notifies), README, `LICENSE`, `THIRD-PARTY-NOTICES.txt`.|
 | `latest.json`                        | The update manifest the app checks (Tauri updater format, plus `page`).          |
 | `enodix_<version>_amd64.deb`        | Debian/Ubuntu package: `/usr/bin/enodix`, `/usr/bin/enodix-cli`, the wheel in `/usr/lib/enodix/python/`. |
 | `enodix-<version>-1.x86_64.rpm`     | Fedora/RHEL/openSUSE package, the same files.                                    |
@@ -166,7 +166,7 @@ equivalent, or publish the file at a fixed address yourself.
    passively. After each step it lists the install folder, the uninstall
    entry, the vendor registry keys, the shortcuts and the version details,
    then puts the computer back. Check that each upgrade leaves one wheel,
-   `LICENSE` and the new `enodix-cli.exe`, that the running one was
+   `LICENSE`, `THIRD-PARTY-NOTICES.txt` and the new `enodix-cli.exe`, that the running one was
    closed (Windows takes about 30 seconds to end it), that each uninstall
    leaves no install folder, entry or shortcut, and that the last lines say
    the data folders are as they were. It never
@@ -241,6 +241,10 @@ Tauri generates the NSIS installer; `scripts/release.mjs` adds to it:
   changed. It replaces Tauri's file whole: after a Tauri update, compare it
   with the `English.nsh` Tauri writes to `target/release/nsis/x64/`.
 - `LICENSE` as the licence page and beside the program; the copyright line.
+- `THIRD-PARTY-NOTICES.txt` beside the program: every component of other people's the
+  build links or bundles, its licence and the licence texts
+  (`scripts/third-party-notices.mjs`, run by the release for each platform;
+  it fails the release if a component has no licence text).
 
 The publisher, who is also the copyright holder, is set once:
 `bundle.publisher` in `src-tauri/tauri.conf.json`. It is the installed entry's

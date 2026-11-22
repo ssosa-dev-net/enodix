@@ -322,5 +322,11 @@ runs the Python bridge tests and `npm run test:linux` the Linux checks;
 ## License
 
 enodix is free software under the GNU General Public License, version 3 only
-(`GPL-3.0-only`); see [LICENSE](LICENSE). It is funded by donations, with no paid
-tier, no hosted service and no contributor agreement.
+(`GPL-3.0-only`); see [LICENSE](LICENSE). The components it is built from are
+listed, with their licences, in `THIRD-PARTY-NOTICES.txt`, which every
+installer and package carries. There is no paid tier and no hosted service.
+
+Contributions are welcome under the Contributor Licence Agreement in
+[CONTRIBUTING.md](CONTRIBUTING.md): you keep your copyright, and the author may
+also offer enodix under other terms, while every contribution stays available
+under the GPL.
