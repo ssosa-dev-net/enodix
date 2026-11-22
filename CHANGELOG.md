@@ -153,18 +153,33 @@ folder, and what stalled it was fixed [116].
   what is typed. The app's own code made none of these connections; they
   were found by watching every connection of the app's processes through a
   whole run of the end-to-end test, which now fails on any of them.
+- **The app's own commands could reach port 80 of your computer in
+  clear, in every version up to 0.4.1** [142]. The interface talks to the
+  rest of the app by commands the engine is meant to hand over directly.
+  A command still on its way when its window closed or reloaded was also
+  sent out as an ordinary web request to port 80 of the same computer,
+  with its contents. Usually nothing listens there and it was lost, but
+  a program that does (a web server, and on a shared computer another
+  user's program) received it. In a test run sixteen commands went that
+  way, all about windows closing and sessions moving between windows,
+  none with a password; which command is on its way when a window goes
+  is a matter of timing. The app now addresses its pages and commands
+  with `https`: what slips out goes to port 443 as the opening of an
+  encrypted connection, and nothing follows unless the listener has a
+  certificate Windows trusts for the app's name. The end-to-end test
+  plays that other program on both ports on every run.
 - On a computer where Windows is signed in to a Microsoft account, the
   engine also connected to Microsoft's Office servers a few seconds
   after the app started: its own sign-in library fetching that account's
   profile and picture. Typing did not cause it, and nothing points to
   typed text being in it, though what it carried was not read. The app
   now starts the engine with Edge's sign-in with the Windows account
-  off [135]. Three whole test runs in a row with it off made no such
-  connection; the same run straight afterwards without it made six. On
-  a Windows with no Microsoft account the app never made the connection
-  at all [139]. This is strong evidence, not proof (the connection does
-  not come at every start), so the end-to-end test still lists any it
-  sees; `docs/trust.md` has what it rests on and what is still open.
+  off [135]. Fourteen test runs with it off made no such connection;
+  four without it made six, nine, six and nine, two of them straight
+  after runs with it off. On a Windows with no Microsoft account the
+  app never made the connection at all [139]. The end-to-end test now
+  fails on such a connection. `docs/trust.md` has what this rests on
+  and what stays unknown.
 - The README said the app made no connection you did not start, and that
   session logs could be written to a folder you chose. Neither was true;
   both are corrected [115].
@@ -370,6 +385,13 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   remain on the device.
 - The Jobs view lists thousands of kept runs several times faster (5,000
   runs: 0.83 s before, 0.15 s now, 0.085 s when listed again) [137].
+- A connection that times out says where it stopped [140]: no TCP
+  connection to the address and port (and through which jump host), no
+  SSH identification line, the key exchange not finished, no answer to
+  the login, to the channel request or to the SFTP request, or no shell.
+  A jump host's failure names the jump host and its stage. Before, each
+  of these read "the device did not answer within N s". Jobs and the
+  Files tab show the same words.
 - The window's Minimize, Maximize and Close stay inside a narrow
   window [120]. Before, with the side view open and the window narrow,
   they ran past its edge. The side view and the other panes give way
