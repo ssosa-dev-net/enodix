@@ -89,7 +89,8 @@ the first package build downloads the AppImage tools.
   `/usr/bin/enodix-cli` (on the PATH, where the Python bridge finds it)
   and the Python wheel in `/usr/lib/enodix/python/`, and the licence (the
   GPL) as `/usr/share/doc/enodix/copyright` (.deb) or
-  `/usr/share/licenses/enodix/LICENSE` (.rpm, and inside the AppImage);
+  `/usr/share/licenses/enodix/LICENSE` (.rpm, and inside the AppImage),
+  with the third-party notices beside it as `THIRD-PARTY-NOTICES.txt`;
   the release checks each package holds those. Settings, the vault,
   known hosts, logs, job results, config backups and the Python
   environment live in `~/.local/share/dev.enodix.app` (`$XDG_DATA_HOME`),

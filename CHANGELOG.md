@@ -11,6 +11,11 @@ environment variable. It is installed as a new app beside netterm and
 starts with an empty data folder; a vault file copied over from netterm
 still opens with its master password.
 
+Every installer and package now carries `THIRD-PARTY-NOTICES.txt` beside
+the licence: each component of other people's that the program contains,
+its licence and the licence text. Contributions come under the
+Contributor Licence Agreement in `CONTRIBUTING.md`.
+
 ## 0.5.0
 
 A pre-release: not code-signed, and without automatic updates (install it

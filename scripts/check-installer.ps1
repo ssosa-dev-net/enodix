@@ -199,6 +199,7 @@ function CheckUpgrade([string]$folder) {
   $wheels = @(Get-ChildItem (Join-Path $folder "python") -Filter "*.whl" -ErrorAction SilentlyContinue | ForEach-Object Name)
   Write-Output "wheels in python\: $($wheels -join ', ') (expected only $wheel): $(($wheels.Count -eq 1) -and ($wheels[0] -eq $wheel))"
   Write-Output "LICENSE beside the program: $(Test-Path (Join-Path $folder 'LICENSE'))"
+  Write-Output "THIRD-PARTY-NOTICES.txt beside the program: $(Test-Path (Join-Path $folder 'THIRD-PARTY-NOTICES.txt'))"
 }
 
 # --- Before anything ---------------------------------------------------------

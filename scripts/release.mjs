@@ -51,6 +51,10 @@ import { fileURLToPath } from "node:url";
 
 import { wheelName } from "./build-wheel.mjs";
 import { writeChecksums } from "./release-files.mjs";
+import {
+  NOTICES_FILE,
+  writeThirdPartyNotices,
+} from "./third-party-notices.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_KEY_FILE = join(ROOT, "src-tauri", "updater-key.pub");
@@ -182,6 +186,15 @@ const LINUX_LICENCE = {
   rpm: `/usr/share/licenses/${productName}/LICENSE`,
   appimage: `/usr/share/licenses/${productName}/LICENSE`,
 };
+/** Where each Linux package carries the third-party notices: beside the
+ * licence (scripts/third-party-notices.mjs writes them). */
+const LINUX_NOTICES = {
+  deb: `/usr/share/doc/${productName}/${NOTICES_FILE}`,
+  rpm: `/usr/share/licenses/${productName}/${NOTICES_FILE}`,
+  appimage: `/usr/share/licenses/${productName}/${NOTICES_FILE}`,
+};
+/** The notices as built for this platform (generated, never committed). */
+const NOTICES = join(ROOT, "target", "release", NOTICES_FILE);
 /** The AppRun hook (src-tauri/appimage/desktop-style.sh) that makes the
  * AppImage start dark on a desktop whose dark look is a style (#143). */
 const APPIMAGE_STYLE_HOOK = "/apprun-hooks/enodix-desktop-style.sh";
@@ -305,8 +318,22 @@ function writeInstallerHooks() {
   return file;
 }
 
+/** Writes this platform's third-party notices, or fails the release. */
+function notices() {
+  try {
+    const { count } = writeThirdPartyNotices({
+      out: NOTICES,
+      product: productName,
+    });
+    console.log(`release: ${NOTICES_FILE} lists ${count} components`);
+  } catch (error) {
+    fail(`third-party notices: ${error.message}`);
+  }
+}
+
 function windows() {
   const signed = unsigned ? null : signing();
+  notices();
   // The updater exists only in a signed build: its key and the release
   // server.
   const configFile = writeConfig({
@@ -318,11 +345,13 @@ function windows() {
       // The installer's licence page.
       licenseFile: join(ROOT, "LICENSE"),
       // The headless binary and the Python bridge's wheel (both built by
-      // `beforeBuildCommand`) and the licence, installed beside the app.
+      // `beforeBuildCommand`), the licence and the third-party notices,
+      // installed beside the app.
       resources: {
         [`../target/release/${CLI_EXE}`]: CLI_EXE,
         [`../target/release/python/${wheel}`]: `python/${wheel}`,
         "../LICENSE": "LICENSE",
+        [`../target/release/${NOTICES_FILE}`]: NOTICES_FILE,
       },
       windows: {
         nsis: {
@@ -387,7 +416,7 @@ function windows() {
 
   // The portable zip: the program, the headless binary, the Python bridge's
   // wheel, the marker that makes it portable (it only announces updates), the
-  // README and the licence.
+  // README, the licence and the third-party notices.
   const exeName = `${tauriConfig.mainBinaryName ?? "enodix"}.exe`;
   const portableName = `${productName}_${version}_x64-portable`;
   const stage = join(ROOT, "target", "dist", "stage", portableName);
@@ -409,6 +438,7 @@ function windows() {
   );
   copyFileSync(join(ROOT, "README.md"), join(stage, "README.md"));
   copyFileSync(join(ROOT, "LICENSE"), join(stage, "LICENSE"));
+  copyFileSync(NOTICES, join(stage, NOTICES_FILE));
   const zip = join(dist, `${portableName}.zip`);
   // Windows' own bsdtar (not Git's GNU tar, which cannot write zip files):
   // unlike PowerShell's Compress-Archive it stores `/` separators, which every
@@ -446,6 +476,7 @@ function windows() {
 
 function linux() {
   clearOwnFiles(LINUX_FILES);
+  notices();
   const bundles = join(ROOT, "target", "release", "bundle");
   const formats = { deb: "deb", rpm: "rpm", appimage: "AppImage" };
   for (const folder of Object.keys(formats))
@@ -453,11 +484,13 @@ function linux() {
   // The headless binary goes to /usr/bin, beside the app's own program
   // (where the app looks for it) and on the PATH (where the Python bridge
   // finds it); the wheel to /usr/lib/<product>/python, the resource folder;
-  // the GPL where each kind of package keeps its licence (LINUX_LICENCE).
+  // the GPL where each kind of package keeps its licence (LINUX_LICENCE),
+  // and the third-party notices beside it (LINUX_NOTICES).
   const cli = { [`/usr/bin/${CLI_LINUX}`]: `../target/release/${CLI_LINUX}` };
   const withLicence = (format) => ({
     ...cli,
     [LINUX_LICENCE[format]]: "../LICENSE",
+    [LINUX_NOTICES[format]]: `../target/release/${NOTICES_FILE}`,
   });
   // The .deb and the .rpm (not the AppImage) carry PACKAGE_MARKER in the
   // resource folder: the app then knows the package manager updates it
@@ -620,6 +653,7 @@ function checkLinuxPackage(format, file) {
     `/usr/bin/${CLI_LINUX}`,
     `/usr/lib/${productName}/python/${wheel}`,
     LINUX_LICENCE[format],
+    LINUX_NOTICES[format],
   ];
   // The .deb and the .rpm say a package manager updates them; the AppImage
   // must not (InstallKind::detect).
