@@ -21,6 +21,7 @@ pub mod known_hosts;
 pub mod layout;
 pub mod logging;
 mod names;
+pub mod opener;
 pub mod paste;
 pub mod platform;
 pub mod preferences;
