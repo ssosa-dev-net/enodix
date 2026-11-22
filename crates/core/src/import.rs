@@ -1,7 +1,7 @@
 //! Importers: hosts from other sources into a workspace folder.
 //!
 //! [`csv`] reads spreadsheets, [`nornir`] a Nornir simple inventory. Every
-//! importer follows the same rules (`docs/spec-v1.md`, "Import"): a preview
+//! importer follows the same rules: a preview
 //! before anything is written, existing hosts are never overwritten without
 //! the user's confirmation, passwords are never written to the workspace,
 //! and every import ends with an [`ImportReport`].
