@@ -1028,7 +1028,8 @@ pub const BUNDLE_VARIABLE: &str = "APPDIR";
 /// AppImage sets `PYTHONHOME`, `PYTHONPATH`, `LD_LIBRARY_PATH` and others
 /// there, with which the system's own Python cannot even start ("No module
 /// named 'encodings'"). A variable holding a list keeps its other entries.
-fn leave_the_bundle(command: &mut Command) {
+/// The desktop's openers get the same ([`crate::opener`]).
+pub(crate) fn leave_the_bundle(command: &mut Command) {
     let Some(bundle) = std::env::var_os(BUNDLE_VARIABLE).filter(|folder| !folder.is_empty()) else {
         return;
     };

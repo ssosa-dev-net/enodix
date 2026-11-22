@@ -2975,6 +2975,7 @@ dependencies = [
  "libc",
  "md5",
  "notify",
+ "open",
  "rand",
  "regex",
  "reqwest",

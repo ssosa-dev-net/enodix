@@ -2270,9 +2270,15 @@ fn logs_open_folder(app: AppHandle, shell: State<'_, Shell>, id: HostId) -> Resu
         shell.logs.create_host_folder(workspace, &id)
     })?
     .map_err(|error| format!("cannot create the log folder: {error}"))?;
-    app.opener()
-        .open_path(folder.display().to_string(), None::<&str>)
-        .map_err(|error| format!("cannot open the log folder {}: {error}", folder.display()))
+    let opened = if netterm_core::opener::in_a_bundle() {
+        // From an AppImage: the file manager must not get its variables.
+        netterm_core::opener::open_detached(&folder).map_err(|error| error.to_string())
+    } else {
+        app.opener()
+            .open_path(folder.display().to_string(), None::<&str>)
+            .map_err(|error| error.to_string())
+    };
+    opened.map_err(|error| format!("cannot open the log folder {}: {error}", folder.display()))
 }
 
 /// The web links of the host `id`, each with the URL it opens or why it
@@ -2317,6 +2323,9 @@ fn open_in_browser(app: &AppHandle, url: &str) -> Result<(), String> {
                 .and_then(|mut file| writeln!(file, "{url}"))
                 .map_err(|error| format!("cannot record {url}: {error}"))?;
         }
+        // From an AppImage: the browser must not get its variables.
+        None if netterm_core::opener::in_a_bundle() => netterm_core::opener::open_detached(url)
+            .map_err(|error| format!("cannot open {url} in the browser: {error}"))?,
         None => app
             .opener()
             .open_url(url, None::<&str>)
