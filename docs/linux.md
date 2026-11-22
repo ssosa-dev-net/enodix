@@ -170,10 +170,100 @@ up 1100x757 for the 1100x720 asked (X11: 1100x720); nothing is cut off.
 | 8. Log folder, web links       | Checked as far as the app goes: "Open log folder" and a web link hand the folder and the URL to the desktop's opener (under WSL, Windows' through `powershell.exe`, with the folder as `\\wsl$\<distribution>\...`). Not seen: a file manager or browser opening (replaced by the recording stand-ins).                                                                                                                                                                                         |
 | 9. The app's own frame         | Checked on Wayland and X11: no system frame (`is_decorated` false, and no title bar in the X11 pictures), Minimize, Maximize, Close in the top bar; Maximize and Restore; a double click on the top bar's empty part maximizes and restores; Close ends the app. Cannot be checked under WSLg: dragging the window, resizing from the edges and corners, Minimize's effect and edge tiling. WSLg's compositor moves and sizes windows for the Windows desktop, Wayland has no position to read, XWayland keeps reporting the old one, and `is_minimized` stays false. |
 
-What only a real Linux desktop can show: the application menu entry,
-serial adapters, a file manager and a browser opened by the app, the
-desktop's light/dark switch, a GPU the app can use, and the window frame's
-moving, resizing, minimizing and edge tiling (#58).
+WSLg alone could not show the application menu entry, serial, a file
+manager and a browser opened by the app, the desktop's light/dark
+switch, a GPU, the frame's moving, resizing, minimizing and edge tiling,
+and the .rpm on Fedora. The next section takes those as far as WSL goes
+(#58).
+
+## A desktop out of sight (#58)
+
+Inside WSL the check can run in a real desktop session of its own, on a
+virtual screen: nothing appears on the Windows desktop, and the
+computer's keyboard and pointer are left alone.
+
+```
+npm run test:linux-desktop -- --desktop xfce          # the .deb, X11
+npm run test:linux-desktop -- --desktop gnome         # the .deb, Wayland
+npm run test:linux-desktop -- --desktop xfce --app <file>.AppImage
+npm run test:linux-desktop -- --desktop gnome --app <file>.AppImage
+npm run test:linux-desktop -- --desktop xfce --gallium-driver d3d12  # the GPU
+npm run test:linux-fedora                             # the .rpm on Fedora 45
+```
+
+`--gallium-driver d3d12` gives the app Mesa's D3D12 driver (WSL's way to
+the computer's GPU) and requires the renderer webkit://gpu names to be
+it; without it the check reports the renderer it finds.
+
+- `--desktop xfce`: an X11 session on Xvfb with XFCE's window manager
+  (xfwm4), its panel (the Whisker menu, the task list), its settings
+  daemon and the desktop portal. The pointer and keys are X's own
+  (xdotool); where a window is and whether it is minimized or maximized
+  is read from the window manager.
+- `--desktop gnome`: GNOME Shell on Wayland, headless with a virtual
+  monitor. The pointer and keys go through Mutter's remote desktop
+  interface (`scripts/linux-desktop-input.py`), as GNOME's own remote
+  desktop does; the windows are read from the shell.
+- `npm run test:linux-fedora` builds a Fedora container (podman) with the
+  .rpm installed by dnf, so its dependencies resolve as on Fedora, and
+  runs the whole check with the app inside it on the XFCE session
+  (`--desktop gnome` for GNOME). It first checks the package's menu
+  entry and icons in the image.
+
+Each session has its own D-Bus bus, runtime folder and settings folders
+in the check's temporary folder; the default applications are set there
+to Thunar (folders) and GNOME Web (web pages). The whole check list of
+the previous section runs in it (also without `--desktop`, a serial
+console now: see the table below), and with a desktop also:
+
+1. the menu entry: `desktop-file-validate`, the icon as GTK's icon theme
+   finds it at 16 to 256 px, the menu's search (Whisker; GNOME's
+   overview) finding netterm and starting it (GNOME: the window tied to
+   `netterm.desktop`, so the dock shows its icon);
+2. the desktop's own dark switch while the app runs, its theme on
+   "system" (XFCE: Appearance's style, `Adwaita-dark`; GNOME: the colour
+   scheme), and back to light;
+3. the frame with the desktop's pointer: the top bar dragged, the window
+   resized from each edge and corner, tiled to the left half by dragging
+   it to the screen's edge and with the desktop's key (Super+Left), back
+   to its size when dragged off, maximized and restored by a double
+   click, minimized with its button and brought back;
+4. "Open log folder" and a web link really starting Thunar and GNOME
+   Web: the file manager shows the log folder, the browser loads the
+   page (the check's server sees it), and neither got anything of the
+   app's AppImage in its environment or its working folder.
+
+Setting up, once (as root in the distribution), besides the packages of
+the previous section:
+
+```
+apt-get install --no-install-recommends xvfb xfwm4 xfce4-panel \
+  xfce4-settings xfce4-whiskermenu-plugin thunar epiphany-browser \
+  gnome-shell socat desktop-file-utils podman uidmap wmctrl
+```
+
+`npm run test:linux-fedora` pulls `registry.fedoraproject.org/fedora:45`
+(about 200 MB) and builds `netterm-fedora-check` on it (about 1.2 GB);
+`podman image rm netterm-fedora-check fedora:45` takes them away again.
+
+Verified on 2026-11-22: Windows 11, WSL 2, Ubuntu 26.04.1, WebKitGTK
+2.52.6, xfwm4 4.20.0, GNOME Shell 50.1; Fedora 45 with WebKitGTK 2.54.2
+in podman 5.7. netterm 0.4.1 as built from this tree.
+
+| #58 item                     | In WSL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Menu entry and icon          | Checked on XFCE and GNOME: valid, found by each menu's search with its icon, started from it; GNOME ties the window to the entry. The package installs the icon at 32 and 128 px only; the other sizes are scaled from those. Not seen: KDE's menu.                                                                                                                                                                                                                                                                                                                                                                       |
+| Light and dark               | Checked: the .deb follows XFCE's style switch and GNOME's colour scheme live, both ways. The AppImage follows GNOME's, not XFCE's: its runtime pins `GTK_THEME` to `Adwaita:light` or `:dark` from the colour scheme at start, so a dark XFCE style leaves it light (a fault, not fixed here).                                                                                                                                                                                                                                                                                                                             |
+| Serial                       | Partly: a console on a pseudo terminal that `socat` forwards (as a console server's port is reached) opens from quick connect by its path at 115200, shows the console's output, takes typing, and takes Send break with the session going on. The core's tests drive the real driver on a pseudo terminal pair (`tests/serial_pty.rs`). Fixed: such a port could not be opened at all (RTS refused). Not checkable in WSL: a USB adapter and its driver, the speed on a wire, a break, DTR and RTS reaching a device, unplugging, the `dialout` group. |
+| File manager and browser     | Checked on XFCE and GNOME, from the .deb and the AppImage: Thunar opens on the log folder, GNOME Web loads the web link and the release page. Fixed: from the AppImage they got its library path, GTK and GIO modules, Python home and more, and started inside its mount.                                                                                                                                                                                                                                                                                                                                          |
+| WebGL and a GPU              | Partly. By default Mesa renders in software (llvmpipe): the user cannot open `/dev/dri` (the `render` group) and the virtual displays have no DRI3. With `--gallium-driver d3d12` the app's GL is Mesa's D3D12 driver on the computer's own GPU through `/dev/dxg`: webkit://gpu says `GL_RENDERER` "D3D12 (<the GPU>)", WebGL on, and the terminal draws with xterm's WebGL renderer, on X11 and on Wayland. That is a real GPU through a translation layer (OpenGL ES over Direct3D 12), and WebKit hands its frames over in shared memory (no render node for DMA-BUF). Every check passes with it, but the pictures show stray diagonal lines across some rounded borders (buttons, badges), which llvmpipe does not draw: the translation layer's, not the app's, and why WSL's default stays software. Not checkable in WSL: Mesa's or a vendor's native driver (amdgpu, i915/xe, nouveau, NVIDIA's) and zero-copy DMA-BUF. |
+| The frame                    | Checked on X11 (xfwm4) and Wayland (GNOME's Mutter): moved, resized from all four edges and corners, tiled by drag and key, restored, maximized and restored by a double click, minimized and brought back, all with the desktop's pointer and read from the window manager. On Wayland the app cannot tell it is minimized (`is_minimized` stays false: Wayland does not say). xfwm4 tiles on drag only with "wrap windows to the next workspace" off (Thunar the same). Not seen: KWin and other window managers, HiDPI scaling. |
+| The .rpm on Fedora           | Checked in a Fedora 45 container: dnf installs the .rpm with its dependencies (WebKitGTK 2.54.2), its menu entry is valid with its icons, and the whole check passes with the app from it on the XFCE session: the update notice says a package manager updates it, Python from Fedora's own, serial, Thunar and GNOME Web from Fedora. The container shares the kernel, the X display and the session bus with WSL, so this is Fedora's userland, not a Fedora desktop: Fedora's GNOME session, SELinux and its packaging of the desktop are not in it. A second WSL distribution would add a systemd user session but no more than that, and was not installed. |
+
+What WSL cannot show at all: a USB serial adapter, a GPU without the
+D3D12 translation, KDE, and a person's hand on a real pointer (the
+checks inject input at the X server or compositor, the layer real
+devices reach).
 
 ## Checking the packages on a Linux desktop
 
