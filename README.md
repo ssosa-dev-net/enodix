@@ -315,6 +315,11 @@ jump host: over SFTP a listing, an upload, a download compared byte for
 byte, a rename and a delete; over SCP a file sent, fetched and compared.
 Cisco NX-OS has not been tested.
 
+Old equipment that speaks only SSH algorithms no longer considered safe is
+reached with the **Legacy crypto** setting, off by default:
+[docs/legacy-crypto.md](docs/legacy-crypto.md) says what it allows and what to
+do when a connection cannot agree on algorithms.
+
 ## Building from source
 
 Install the JavaScript dependencies with `npm install`, run every check with
