@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in enodix does not work as it should.
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Leave out real passwords, keys, device addresses
+        and configurations: made-up ones are fine. A security problem goes to
+        the private report on the Security tab instead (see SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: enodix version
+      description: Shown in Preferences, or `enodix-cli --version`.
+      placeholder: "0.6.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it is installed
+      options:
+        - Windows installer
+        - Windows portable zip
+        - Linux .deb
+        - Linux .rpm
+        - Linux AppImage
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11 24H2, Ubuntu 24.04, ..."
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device, if a session is involved
+      description: Platform and software version, and how you connect (SSH, telnet, serial, through a jump host).
+      placeholder: "Cisco IOS-XE 17.3 over SSH through a jump host"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Messages or logs
+      description: Error messages, or the relevant part of a session log (with secrets removed).
+      render: text

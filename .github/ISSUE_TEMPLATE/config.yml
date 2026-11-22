@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/ssosa-dev-net/enodix/security/advisories/new
+    about: Privately, never as a public issue (see SECURITY.md).
+  - name: How enodix works
+    url: https://github.com/ssosa-dev-net/enodix#readme
+    about: Installing, uninstalling, the window, files on a device and the headless binary.
