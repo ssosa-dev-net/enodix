@@ -100,6 +100,18 @@ const UPDATE_ENDPOINT_VARIABLE: &str = "NETTERM_UPDATE_ENDPOINT";
 /// refuses another set for the same data folder.
 pub(crate) const WEBVIEW_ARGUMENTS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msOneAuthWAM,msForceOneAuthWAM,msOneAuthIDHRD,msLoadOneAuthInBackground,msImplicitSignin,msImplicitSignInNetworkRetry,msM365LinksImplicitSignin,msSeamlessWebToBrowserSignIn,msEnableWebToBrowserSignIn --autoplay-policy=no-user-gesture-required --disable-background-networking --no-proxy-server --disable-component-update";
 
+/// The app's pages and its commands are addressed to the engine as
+/// `https://tauri.localhost` and `https://ipc.localhost`, never `http://`
+/// (#142). WebView2 answers both itself, but a command in flight when its
+/// window closes or reloads is let through to the network once the window
+/// is gone: over `http://` it reached port 80 of this computer in clear,
+/// where another program (or another user's, on a shared computer) can
+/// listen. Over `https://` whoever listens on port 443 gets a TLS greeting
+/// and, having no certificate the engine trusts for the name, nothing more.
+/// Every window must be built with it: a window on `http://` could not use
+/// what the others stored, and its commands would go in clear.
+pub(crate) const HTTPS_SCHEME: bool = true;
+
 /// The event that brings the interface the workspace after changes made
 /// outside the app.
 const WORKSPACE_CHANGED_EVENT: &str = "workspace-changed";
@@ -3164,6 +3176,7 @@ fn open_detached(
 ) -> Result<(), String> {
     WebviewWindowBuilder::new(app, label, WebviewUrl::default())
         .additional_browser_args(WEBVIEW_ARGUMENTS)
+        .use_https_scheme(HTTPS_SCHEME)
         .general_autofill_enabled(false)
         .title(title)
         .inner_size(900.0, 640.0)
@@ -3423,6 +3436,7 @@ pub fn run() {
             let title = product_name(app.handle());
             let main = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::default())
                 .additional_browser_args(WEBVIEW_ARGUMENTS)
+                .use_https_scheme(HTTPS_SCHEME)
                 .general_autofill_enabled(false)
                 .title(title)
                 .inner_size(1100.0, 720.0)

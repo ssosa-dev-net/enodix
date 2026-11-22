@@ -304,6 +304,45 @@ address and reading back which of the computer's addresses Windows
 picked. Pointing a UDP socket sends nothing, and the end-to-end test
 fails if the engine's network log ever shows a datagram sent.
 
+#### The app's own commands, and ports 80 and 443 of your computer
+
+The interface is a page at the address `tauri.localhost`, and it talks
+to the rest of the app by commands sent to the address `ipc.localhost`.
+Both names mean this computer, and WebView2 answers both itself, from
+the app: nothing of that is meant to touch the network. Two things do:
+
+- For each new window WebView2 opens a connection to this computer
+  ahead of time, with nothing on it.
+- A command still on its way when its window closes or reloads is let
+  through to the network once the window is gone. The command has run in
+  the app by then; what goes out is a second copy.
+
+Up to 0.4.1 both addresses were `http://`, so that second copy went to
+port 80 of your computer in clear, with its contents. Usually nothing
+listens there and it was lost. But a program that does listen on port 80
+(a web server, a development tool, on a shared computer another user's
+program) received it. Measured on 2026-11-22: sixteen commands in one
+run of the end-to-end test, all about windows closing and sessions
+moving between windows, none carrying a password. Which command is on
+its way when a window goes is a matter of timing, so that is no promise
+about what could have been in one.
+
+Since 0.5.0 both addresses are `https://`. What slips out now goes to
+port 443 as the opening of an encrypted connection, and WebView2 sends
+nothing more unless the listener proves it is `ipc.localhost` with a
+certificate your Windows trusts, which another program cannot have
+without an administrator having installed one. The end-to-end test
+plays that other program on every run: it listens on port 80, where a
+single byte fails the run, and runs a web server on port 443 with a
+certificate of its own making for the app's names, where a completed
+connection or a request fails the run. In the first run, port 80 got
+nothing and port 443 got 92 connection attempts, none completed.
+
+Not covered: a computer where an administrator has installed a
+certificate authority that issues a certificate for `ipc.localhost` to
+a local program (some corporate inspection tools issue certificates on
+the fly, but for traffic that leaves the computer, which this does not).
+
 WebView2 belongs to Windows and is updated by Windows (Edge's updater),
 not by the app, so a later WebView2 may add something new, or stop
 honouring a switch; the smoke test watches for it (see the end of this
@@ -355,10 +394,12 @@ and implicit sign-in features off (`msOneAuthWAM`, `msForceOneAuthWAM`,
 them off the connection was never seen and OneAuth was never loaded.
 What that rests on, on a Windows signed in to a Microsoft account:
 
-- Three whole runs of the end-to-end test in a row with the features
-  off (about seven starts of the app each) made no such connection; the
-  same test run straight afterwards without them made six, as the two
-  runs before had made six and nine.
+- Fourteen runs of the end-to-end test with the features off (about
+  seven starts of the app in each whole run; eight ran to the end, six
+  were stopped part-way by other failures) made no such connection.
+- Four whole runs without them made six, nine, six and nine. Two of
+  those were made straight after a series of runs with the features
+  off, on the same build with only that changed.
 - Earlier, starts with and without the features off were run back to
   back twice while OneAuth's record was stale: the start without made
   the connection, the start with did not.
@@ -367,10 +408,10 @@ What that rests on, on a Windows signed in to a Microsoft account:
 
 Whether the connection comes at all depends on OneAuth's shared record
 (in the first hour of testing it came at 14 of 16 starts with nothing
-turned off, later at 4 of 34), so this is strong evidence and not proof.
-The end-to-end test therefore still lists any such connection it sees,
-without failing, until enough runs have shown none; then it will fail on
-one. One thing is open: with the features off, WebView2 loads a
+turned off, later at 4 of 34), which is why the runs without the
+features were made right beside the runs with them. Since 2026-11-22
+the end-to-end test fails on such a connection, as on any other. One
+thing is open: with the features off, WebView2 loads a
 different part of Windows' account broker, so Edge might sign in another
 way, through Windows' own broker process, which the app's watch does not
 see. That would be Windows signing in to its own account, as it does for

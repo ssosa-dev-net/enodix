@@ -35,6 +35,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
+import { createServer as createTlsServer } from "node:https";
+import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -1351,6 +1353,7 @@ function harvestNetLog() {
  * check, naming too what WebView2's network logs show so far (the names
  * behind the addresses). */
 function checkConnections() {
+  nothingAskedOfThePagePorts();
   try {
     connections.check();
   } catch (error) {
@@ -1394,24 +1397,157 @@ async function noConnectionOfItsOwn(step) {
       ),
     );
   }
-  const {
-    processes,
-    connections: seen,
-    udp,
-    probes,
-    known,
-  } = connections.summary();
-  // Let through, but never silently (see connections.mjs).
-  for (const finding of known) {
-    console.log(`KNOWN FINDING (#135) - WebView2's sign-in: ${finding}`);
-  }
+  const { processes, connections: seen, udp, probes } = connections.summary();
   const names = Object.entries(processes)
     .map(([name, count]) => `${name} ×${count}`)
     .join(", ");
   const total = Object.values(seen).reduce((sum, count) => sum + count, 0);
+  if (process.env.SMOKE_PAGE_PORT_REPORT) {
+    console.log(
+      `PAGE PORT REPORT: port ${CLEAR_PORT}: ${pagePorts.clear.connections} connections, ${pagePorts.clear.bytes} bytes; port ${TLS_PORT}: ${pagePorts.tls.connections} connections, ${pagePorts.tls.handshakes} completed TLS handshakes, ${pagePorts.tls.requests.length} requests`,
+    );
+    for (const request of [
+      ...pagePorts.clear.requests,
+      ...pagePorts.tls.requests,
+    ])
+      console.log(`  ${request}`);
+  }
+  const listened = (port, state, got) =>
+    state.listening.length > 0
+      ? `port ${port}: ${state.connections} connections, ${got}`
+      : `port ${port} was not the test's to listen on (${state.refused})`;
+  const pagePort = [
+    listened(CLEAR_PORT, pagePorts.clear, "no byte"),
+    listened(
+      TLS_PORT,
+      pagePorts.tls,
+      "none trusting the test's certificate, no request",
+    ),
+  ].join("; ");
   step(
-    `over the whole run the app's processes (${names}) made ${total} connections, all to the test or to each other on this computer but ${known.length} known ones of WebView2 to Office, ${udp} UDP sockets (${probes} of them WebView2's IPv6 check, which sends nothing), and WebView2 (the network logs of ${netLogs.copies} copies) looked up, requested and sent nothing beyond it`,
+    `over the whole run the app's processes (${names}) made ${total} connections, all to the test or to each other on this computer (where the test listened in place of another program: ${pagePort}), ${udp} UDP sockets (${probes} of them WebView2's IPv6 check, which sends nothing), and WebView2 (the network logs of ${netLogs.copies} copies) looked up, requested and sent nothing beyond it`,
   );
+}
+
+/**
+ * The ports of this computer WebView2 takes the app's own addresses for
+ * (#142). The app's pages are at `https://tauri.localhost/` and its commands
+ * go to `https://ipc.localhost/`; WebView2 answers both itself. But for each
+ * new page it opens a connection ahead of time (a preconnect), and a command
+ * in flight when its window closes or reloads is let through to the network
+ * once the window is gone. Over `http://`, as the app was built until 0.4.1,
+ * such a command reached port 80 in clear: `POST /session_dock`, with its
+ * arguments, to whoever listened there. So the test listens in place of
+ * another program, on both loopback addresses:
+ *
+ * - on port 80, where nothing may arrive at all now;
+ * - on port 443, as a web server with a certificate of its own making for
+ *   those names: WebView2 must not trust it, so no TLS handshake may
+ *   complete and no request may arrive.
+ */
+const CLEAR_PORT = 80;
+const TLS_PORT = 443;
+const pagePorts = {
+  clear: {
+    listening: [],
+    refused: "",
+    connections: 0,
+    bytes: 0,
+    first: "",
+    requests: [],
+  },
+  tls: {
+    listening: [],
+    refused: "",
+    connections: 0,
+    handshakes: 0,
+    requests: [],
+  },
+  /** The step running, for what arrives during it. */
+  at: "at the start",
+};
+
+/** Starts `server` on `port` of both loopback addresses' worth of `make`d
+ * servers; a port that is taken or refused is said in the run's last step. */
+async function listenOnLoopback(port, state, make) {
+  for (const address of ["127.0.0.1", "::1"]) {
+    await new Promise((resolve) => {
+      const server = make();
+      server.once("error", (error) => {
+        state.refused ||= `${address}: ${error.code ?? error.message}`;
+        resolve();
+      });
+      server.listen(port, address, () => {
+        server.unref();
+        state.listening.push(address);
+        resolve();
+      });
+    });
+  }
+}
+
+/** Listens where WebView2 could send the app's pages and commands
+ * ([`pagePorts`]). */
+async function listenOnThePagePorts() {
+  const { clear, tls } = pagePorts;
+  await listenOnLoopback(CLEAR_PORT, clear, () =>
+    createTcpServer((socket) => {
+      clear.connections += 1;
+      socket.on("data", (chunk) => {
+        clear.bytes += chunk.length;
+        const text = chunk.toString("latin1");
+        clear.first ||= text.slice(0, 120);
+        // Each request's first line and host, never its body.
+        for (const [, line] of text.matchAll(
+          /^((?:GET|POST|PUT|HEAD|OPTIONS|DELETE) \S+) HTTP\//gm,
+        )) {
+          const host = /^Host: (\S+)/im.exec(text)?.[1] ?? "?";
+          clear.requests.push(`${line} (${host}), ${pagePorts.at}`);
+        }
+        // SMOKE_PAGE_PORT_REPORT: list what came instead of failing, and
+        // hang up as a closed port would, so the app goes on as usual.
+        if (process.env.SMOKE_PAGE_PORT_REPORT) socket.destroy();
+      });
+      socket.on("error", () => {});
+    }),
+  );
+  const fixtures = join("scripts", "fixtures");
+  await listenOnLoopback(TLS_PORT, tls, () => {
+    const server = createTlsServer(
+      {
+        key: readFileSync(join(fixtures, "page-port-key.pem")),
+        cert: readFileSync(join(fixtures, "page-port-cert.pem")),
+      },
+      (request, response) => {
+        tls.requests.push(
+          `${request.method} ${request.url} (${request.headers.host ?? "?"}) over TLS, ${pagePorts.at}`,
+        );
+        // Answered as a server that knows nothing of it.
+        response.writeHead(404).end();
+      },
+    );
+    server.on("connection", () => (tls.connections += 1));
+    server.on("secureConnection", () => (tls.handshakes += 1));
+    server.on("tlsClientError", () => {});
+    return server;
+  });
+}
+
+/** Fails if WebView2 sent anything of the app's to this computer's ports
+ * 80 or 443 (#142). */
+function nothingAskedOfThePagePorts() {
+  if (process.env.SMOKE_PAGE_PORT_REPORT) return;
+  const { clear, tls } = pagePorts;
+  if (clear.bytes > 0) {
+    fail(
+      `WebView2 sent ${clear.bytes} bytes in clear to port ${CLEAR_PORT} of this computer, where another program could listen: ${JSON.stringify(clear.requests)}; they start ${JSON.stringify(clear.first)}`,
+    );
+  }
+  if (tls.handshakes > 0 || tls.requests.length > 0) {
+    fail(
+      `WebView2 trusted a certificate of the test's making on port ${TLS_PORT} of this computer (${tls.handshakes} TLS handshakes completed) and asked it: ${JSON.stringify(tls.requests)}`,
+    );
+  }
 }
 
 /** The app's pages (one per window) DevTools lists. */
@@ -1998,6 +2134,7 @@ async function main() {
   writeFileSync(INSTALLED_MARKER, "");
   await startReleaseServer();
   await startServer();
+  await listenOnThePagePorts();
   // From here on, every connection of the app's processes is watched: only
   // the test's own servers on this computer may be reached (#115).
   connections = await watchConnections({
@@ -2013,6 +2150,10 @@ async function main() {
       Number(new URL(releaseServer.url).port),
     ],
   });
+  // Where the test could not listen on the page port, WebView2's
+  // preconnect goes to whoever does, or to nobody: let through unjudged.
+  if (pagePorts.clear.listening.length < 2) connections.allow(CLEAR_PORT);
+  if (pagePorts.tls.listening.length < 2) connections.allow(TLS_PORT);
   const app = startApp();
   const devtools = await connectDevTools();
 
@@ -2118,6 +2259,7 @@ async function main() {
     checkConnections();
     console.log(`ok - ${message}`);
     connections.during(`the step after "${message}"`);
+    pagePorts.at = `after "${message.slice(0, 70)}"`;
   };
   // Set SMOKE_SCREENSHOTS to a folder to keep pictures of the window.
   // Every screen photographed is also checked for contrast, in both
