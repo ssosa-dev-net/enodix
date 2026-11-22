@@ -15,18 +15,18 @@ git). Free and open source under the GPL-3.0.
   profile's name. [docs/trust.md](docs/trust.md) says where every login
   and file is kept, what is encrypted, and every connection the app can
   make.
-- **Jobs:** run a snippet on a folder, a saved filter, one host or a
-  few hosts selected in the tree, with
-  per-device output you can search, compare and save; nothing is asked
-  mid-run, and a list beforehand shows which hosts will be skipped and why.
+- **Jobs:** run a snippet on a folder, a saved filter, one host or a few
+  hosts selected in the tree, with per-device output you can search,
+  compare and save. Nothing is asked mid-run; a list beforehand shows
+  which hosts will be skipped and why.
 - **Config backup:** as a job or each time you log in, kept as versions
   with a diff between any two.
-- **Files** (built, not released yet): a device's files in a tab, over
-  SFTP, or SCP on devices that have nothing else, with the host's login and
-  jump hosts; upload, download, rename and delete, with progress, checked
-  sizes and the uploaded file's MD5 and SHA-256. One file can be sent to a
-  folder of devices as a job. [docs/files.md](docs/files.md) says what
-  each platform needs and what the limits are.
+- **Files:** a device's files in a tab, over SFTP, or SCP on devices that
+  have nothing else, with the host's login and jump hosts; upload,
+  download, rename and delete, with progress, checked sizes and the
+  uploaded file's MD5 and SHA-256. One file can be sent to a folder of
+  devices as a job. [docs/files.md](docs/files.md) says what each platform
+  needs and what the limits are.
 - **Python:** the inventory and logins as a Nornir inventory for your own
   Netmiko, scrapli and NAPALM scripts, run from the app or from a shell,
   with hosts behind jump hosts reached through the app's own jump chains.
@@ -43,15 +43,15 @@ open in a window of its own. So can a terminal, still connected and with
 its scrollback, for a second monitor. [docs/interface.md](docs/interface.md)
 describes the window, lists the shortcuts and says where everything is.
 
-Releases up to 0.1.2 have the sessions and the inventory only; everything
-else in the list came with 0.2.0, the redesigned interface with 0.3.0, and
-terminals in windows of their own with 0.4.0, script tunnel ports with
-0.4.1, and a device's files with 0.5.0. Releases so far are
-pre-releases: not
-code-signed, and without the automatic updates described below (install
-the next version over the old one by hand). [CHANGELOG.md](CHANGELOG.md) lists what
-each release added, and [ROADMAP.md](ROADMAP.md) says what is built, what
-is not yet verified and what comes next.
+Releases up to 0.1.2 have the sessions and the inventory only. The rest
+of the list, apart from files, came with 0.2.0. Later releases added the
+redesigned interface (0.3.0), terminals in windows of their own (0.4.0),
+script tunnel ports (0.4.1) and a device's files (0.5.0). Every release so
+far is a pre-release: not code-signed, and without the automatic updates
+described below, so you install the next version over the old one by hand.
+[CHANGELOG.md](CHANGELOG.md) lists what each release added, and
+[ROADMAP.md](ROADMAP.md) says what is built, what is not yet verified and
+what comes next.
 
 Windows 10 and 11 (64-bit). The app needs Microsoft Edge WebView2,
 which Windows 11 includes; the installer downloads it when it is missing.
@@ -60,9 +60,11 @@ jump box, say), install Microsoft's Evergreen Standalone WebView2 runtime
 first. The portable copy needs it too: it cannot install WebView2, and
 without it the app does not start.
 
-Linux packages (.deb, .rpm, AppImage) are built too, but the app has not
-been checked on a real Linux desktop yet, so Linux is not claimed as
-supported; see [docs/linux.md](docs/linux.md) for how it differs there.
+0.5.0 also has Linux packages (.deb, .rpm, AppImage). They have been
+checked in XFCE and GNOME desktop sessions inside WSL, and the .rpm in a
+Fedora container, but not yet on a Linux computer, so Linux is not claimed
+as supported. [docs/linux.md](docs/linux.md) says how the app differs there
+and what each check covered.
 
 ## Download and install
 
@@ -72,7 +74,7 @@ Each release has these files:
 | ------------------------------------ | --------------------------------------------------------------------------- |
 | `netterm_<version>_x64-setup.exe`    | The installer. Installs for your user only; no administrator rights needed. |
 | `netterm_<version>_x64-portable.zip` | The portable copy: unpack it anywhere (a USB stick) and run `netterm.exe`.  |
-| `netterm_<version>_amd64.deb`        | Debian and Ubuntu package (from the next release; not desktop-checked yet). |
+| `netterm_<version>_amd64.deb`        | Debian and Ubuntu package (checked only in desktops inside WSL).            |
 | `netterm-<version>-1.x86_64.rpm`     | Fedora, RHEL and openSUSE package (the same).                               |
 | `netterm_<version>_amd64.AppImage`   | One Linux file that runs without installing (the same).                     |
 | `SHA256SUMS.txt`                     | The SHA-256 checksum of every file, to check a download.                    |
@@ -158,11 +160,11 @@ page. That deletes:
   remembers the program folder.
 
 What always stays: your workspace folders, files you downloaded from
-devices, and a Python bridge you
-installed with `pip`. To remove the data by hand after an uninstall without
-the box, delete the two folders above and the Credential Manager entries
-(**Control Panel, Credential Manager, Windows Credentials**), or run
-`netterm-cli clear-keychain --yes` before uninstalling.
+devices, and a Python bridge you installed with `pip`. If you uninstalled
+without ticking the box, delete the two folders above by hand, and the
+Credential Manager entries in **Control Panel, Credential Manager, Windows
+Credentials**. Running `netterm-cli clear-keychain --yes` before you
+uninstall removes those entries for you.
 
 ### The move to the local folder in 0.5.0
 
