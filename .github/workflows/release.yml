@@ -1,0 +1,178 @@
+# Builds a release with scripts/release.mjs (docs/releasing.md) and publishes
+# it as a GitHub Release.
+#
+# - Pushing a tag v<version> (the version in Cargo.toml) builds the Windows
+#   installer, its updater signature, the portable zip and latest.json, and
+#   the Linux .deb, .rpm and AppImage, then publishes them with the
+#   changelog's section for the version and SHA256SUMS.txt.
+# - Run by hand (Actions, Release, Run workflow), it builds the same files
+#   and keeps them as the run's artifacts, publishing nothing unless
+#   "publish" is ticked.
+#
+# The updater key never leaves GitHub's secrets: TAURI_SIGNING_PRIVATE_KEY
+# (the key file's contents) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD. The
+# smoke test, the containerlab suite and the installer checks run on the
+# maintainer's computer before the tag is pushed.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the release (otherwise the files are only kept as artifacts)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Built into the app, the same for every release: GitHub serves the
+  # newest release's latest.json here.
+  ENODIX_UPDATE_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the version, and check the tag names it
+        id: read
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
+          test -n "$version" || { echo "no version in Cargo.toml"; exit 1; }
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "v$version" ]; then
+            echo "the tag $REF_NAME does not match the version $version in Cargo.toml"
+            exit 1
+          fi
+          grep -q "^## $version\$" CHANGELOG.md || { echo "CHANGELOG.md has no section ## $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows files
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      ENODIX_RELEASE_URL: https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.version }}/
+      ENODIX_RELEASE_PAGE: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release
+      - run: npm ci
+      - name: Build and sign the Windows files
+        run: npm run release
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: |
+            target/dist/${{ needs.version.outputs.version }}/*
+            !target/dist/${{ needs.version.outputs.version }}/SHA256SUMS.txt
+          if-no-files-found: error
+
+  linux:
+    name: Linux packages
+    needs: version
+    # The oldest supported Ubuntu with WebKitGTK 4.1: the AppImage then runs
+    # on systems with that glibc or newer.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      # linuxdeploy is an AppImage; the runner has no FUSE to mount it.
+      APPIMAGE_EXTRACT_AND_RUN: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Linux packages (docs/linux.md)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+            libudev-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev patchelf file xdg-utils rpm2cpio cpio squashfs-tools
+      - name: Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: release
+      - run: npm ci
+      - name: Build the Linux packages
+        run: npm run release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux
+          path: |
+            target/dist/${{ needs.version.outputs.version }}/*
+            !target/dist/${{ needs.version.outputs.version }}/SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [version, windows, linux]
+    if: github.ref_type == 'tag' || inputs.publish
+    runs-on: ubuntu-24.04
+    # The only job that may write: it creates the release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          (cd dist && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          awk -v v="## $VERSION" '$0 == v {on=1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          { echo; echo '```'; echo 'SHA256SUMS.txt'; cat dist/SHA256SUMS.txt; echo '```'; } >> notes.md
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          product=$(node -p "require('./src-tauri/tauri.conf.json').productName")
+          gh release create "v$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$product $VERSION" \
+            --notes-file notes.md \
+            --latest

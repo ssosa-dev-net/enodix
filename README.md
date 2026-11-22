@@ -46,9 +46,11 @@ describes the window, lists the shortcuts and says where everything is.
 Releases up to 0.1.2 have the sessions and the inventory only. The rest
 of the list, apart from files, came with 0.2.0. Later releases added the
 redesigned interface (0.3.0), terminals in windows of their own (0.4.0),
-script tunnel ports (0.4.1) and a device's files (0.5.0). Every release so
-far is a pre-release: not code-signed, and without the automatic updates
-described below, so you install the next version over the old one by hand.
+script tunnel ports (0.4.1) and a device's files (0.5.0); 0.6.0 is the
+first release as enodix and the first with the automatic updates described
+below (releases up to 0.5.0 were pre-releases without them). No release is
+code-signed yet, so Windows SmartScreen may warn the first time (see
+below). Download the files from the repository's **Releases** page.
 [CHANGELOG.md](CHANGELOG.md) lists what each release added, and
 [ROADMAP.md](ROADMAP.md) says what is built, what is not yet verified and
 what comes next.
@@ -60,7 +62,7 @@ jump box, say), install Microsoft's Evergreen Standalone WebView2 runtime
 first. The portable copy needs it too: it cannot install WebView2, and
 without it the app does not start.
 
-0.5.0 also has Linux packages (.deb, .rpm, AppImage). They have been
+Since 0.5.0 there are also Linux packages (.deb, .rpm, AppImage). They have been
 checked in XFCE and GNOME desktop sessions inside WSL, and the .rpm in a
 Fedora container, but not yet on a Linux computer, so Linux is not claimed
 as supported. [docs/linux.md](docs/linux.md) says how the app differs there
