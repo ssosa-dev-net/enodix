@@ -24,12 +24,14 @@ ships with. The paths are those of Windows unless a Linux path is given.
   session, a Files tab, a job, a script or a Python setup you confirmed.
   The update check is the one connection it makes on its own; unsigned
   pre-releases and builds of your own have no release server and check
-  nothing. One exception is not solved yet: if Windows is signed in to a
-  Microsoft account, the window's engine, Microsoft's WebView2, now and
-  then fetches that account's profile from Microsoft's Office servers a
-  few seconds after the app starts. It is not caused by typing, and
-  nothing seen points to it carrying what you type (see "The window"
-  below).
+  nothing. One exception existed up to 0.4.1: if Windows is signed in to
+  a Microsoft account, the window's engine, Microsoft's WebView2, now and
+  then fetched that account's profile from Microsoft's Office servers a
+  few seconds after the app started. It was not caused by typing, and
+  nothing seen points to it carrying what you type. The app now starts
+  the engine with that sign-in off, and the connection has not been seen
+  since; what that rests on, and what is still open, is under "The
+  window" below.
 - There is no telemetry, no account, no cloud service and no crash
   reporting.
 - The app trusts every program that runs under your Windows account, as an
@@ -291,7 +293,16 @@ The app turns the first four off: WebView2 is started with
 `--disable-component-update` (and SmartScreen off), its general autofill
 is off, and every field of the interface, the terminals' input included,
 is marked `writingsuggestions="false"`. The first three were each seen
-to stop the connection they name. The last one is not solved yet.
+to stop the connection they name. The last one is turned off since
+0.5.0 by switching off Edge's sign-in with the Windows account (see
+below).
+
+One thing the engine still does needs no connection: when it resolves a
+name, the app's own `tauri.localhost` included, it asks Windows whether
+IPv6 reaches the internet by pointing a UDP socket at a fixed Microsoft
+address and reading back which of the computer's addresses Windows
+picked. Pointing a UDP socket sends nothing, and the end-to-end test
+fails if the engine's network log ever shows a datagram sent.
 
 WebView2 belongs to Windows and is updated by Windows (Edge's updater),
 not by the app, so a later WebView2 may add something new, or stop
@@ -336,29 +347,37 @@ computer, with the network open. Other app makers have reported the
 same behaviour of WebView2 157 to Microsoft (WebView2Feedback issue
 5760), with no answer so far.
 
-**Turning it off.** A switch is being tested: starting WebView2 with
-Edge's OneAuth and implicit sign-in features off (`msOneAuthWAM`,
-`msForceOneAuthWAM`, `msOneAuthIDHRD`, `msLoadOneAuthInBackground`,
-`msImplicitSignin`, `msImplicitSignInNetworkRetry`,
-`msM365LinksImplicitSignin`, `msSeamlessWebToBrowserSignIn`,
-`msEnableWebToBrowserSignIn`). With it, the connection was never seen
-and OneAuth was never loaded. That is not yet proof, because whether the
-connection comes at all depends on OneAuth's shared record: in the first
-hour of testing it came at 14 of 16 starts with nothing turned off,
-later at 4 of 34. The comparisons that count are the ones where the
-switch and no switch ran back to back while the record was stale; there
-have been two so far (one while the computer was also in use), and in
-both the start without the switch made the connection and the start
-with it did not. The implicit
-sign-in features alone are not enough (one start with them off made the
-connection). One more thing is open: with the switch, WebView2 loads a
-different part of Windows' account broker, so Edge may sign in another
-way, through Windows' own broker process, which the app's watch does
-not see. The app does not use the switch yet; until it is proven,
-the smoke test lets exactly this connection through and lists every one
-it sees.
+**Turned off since 0.5.0.** The app starts WebView2 with Edge's OneAuth
+and implicit sign-in features off (`msOneAuthWAM`, `msForceOneAuthWAM`,
+`msOneAuthIDHRD`, `msLoadOneAuthInBackground`, `msImplicitSignin`,
+`msImplicitSignInNetworkRetry`, `msM365LinksImplicitSignin`,
+`msSeamlessWebToBrowserSignIn`, `msEnableWebToBrowserSignIn`). With
+them off the connection was never seen and OneAuth was never loaded.
+What that rests on, on a Windows signed in to a Microsoft account:
 
-What you can do now, outside the app, all untested here: use a Windows
+- Three whole runs of the end-to-end test in a row with the features
+  off (about seven starts of the app each) made no such connection; the
+  same test run straight afterwards without them made six, as the two
+  runs before had made six and nine.
+- Earlier, starts with and without the features off were run back to
+  back twice while OneAuth's record was stale: the start without made
+  the connection, the start with did not.
+- The implicit sign-in features alone are not enough (one start with
+  only those off made the connection).
+
+Whether the connection comes at all depends on OneAuth's shared record
+(in the first hour of testing it came at 14 of 16 starts with nothing
+turned off, later at 4 of 34), so this is strong evidence and not proof.
+The end-to-end test therefore still lists any such connection it sees,
+without failing, until enough runs have shown none; then it will fail on
+one. One thing is open: with the features off, WebView2 loads a
+different part of Windows' account broker, so Edge might sign in another
+way, through Windows' own broker process, which the app's watch does not
+see. That would be Windows signing in to its own account, as it does for
+every program, and not the app's engine reaching out.
+
+If you want more than the app's own switch, outside the app, all
+untested here: use a Windows
 account that is not signed in to a Microsoft account; or have an
 administrator block `msedgewebview2.exe` from 40.96.0.0/13 and
 52.96.0.0/14 on port 443 in the firewall (this also cuts other programs

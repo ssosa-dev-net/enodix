@@ -62,6 +62,15 @@ Checked on the lab's devices through its jump host: SFTP on Nokia SR Linux
 
 ### Windows installer
 
+- Config backups, kept job results and the app's Python environment
+  move from `%APPDATA%` (roaming, copied at every logon in a domain) to
+  `%LOCALAPPDATA%`, once, at the first start of this version [128].
+  Preferences, the list of workspaces, the vault and the trusted host
+  keys stay where they were. On one drive the move is a rename; across
+  drives it is a checked copy that an interruption leaves whole in one
+  place. If both folders already hold data, neither is touched and the
+  main window says so. A Python environment on another drive is not
+  copied: it keeps working and moves when it is set up again.
 - Upgrading removes the Python wheel of the version it replaces, and
   uninstalling removes every wheel and then the program folder [111].
   Before, each upgrade left the old wheel behind, and the uninstaller the
@@ -144,15 +153,18 @@ folder, and what stalled it was fixed [116].
   what is typed. The app's own code made none of these connections; they
   were found by watching every connection of the app's processes through a
   whole run of the end-to-end test, which now fails on any of them.
-- **Not solved yet:** on a computer where Windows is signed in to a
-  Microsoft account, the engine still connects to Microsoft's Office
-  servers a few seconds after the app starts. It is the engine's own
-  sign-in library fetching that account's profile and picture; typing
-  does not cause it, and nothing points to typed text being in it, though
-  what it carries was not read. On a Windows with no Microsoft account
-  the app made no such connection in two whole test runs [139]. A switch
-  that looks likely to stop it is still being measured; `docs/trust.md`
-  has what is known and what you can do meanwhile [135].
+- On a computer where Windows is signed in to a Microsoft account, the
+  engine also connected to Microsoft's Office servers a few seconds
+  after the app started: its own sign-in library fetching that account's
+  profile and picture. Typing did not cause it, and nothing points to
+  typed text being in it, though what it carried was not read. The app
+  now starts the engine with Edge's sign-in with the Windows account
+  off [135]. Three whole test runs in a row with it off made no such
+  connection; the same run straight afterwards without it made six. On
+  a Windows with no Microsoft account the app never made the connection
+  at all [139]. This is strong evidence, not proof (the connection does
+  not come at every start), so the end-to-end test still lists any it
+  sees; `docs/trust.md` has what it rests on and what is still open.
 - The README said the app made no connection you did not start, and that
   session logs could be written to a folder you chose. Neither was true;
   both are corrected [115].
@@ -358,6 +370,19 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   remain on the device.
 - The Jobs view lists thousands of kept runs several times faster (5,000
   runs: 0.83 s before, 0.15 s now, 0.085 s when listed again) [137].
+- The window's Minimize, Maximize and Close stay inside a narrow
+  window [120]. Before, with the side view open and the window narrow,
+  they ran past its edge. The side view and the other panes give way
+  first now.
+- A session window that stops answering for 10 s is named in the main
+  window, which offers to bring its sessions back (still connected,
+  without their earlier output) or to wait [120]. Before, the sessions
+  were stuck in it. If the web engine ends as a whole, the app ends too;
+  before, it stayed open with blank windows that could not be closed.
+- Two hosts whose files differ only in the extension (`r1.yaml` and
+  `r1.yml`) keep a config history each [127]. Before, they shared one.
+  History they already shared is left where it was and reported, since
+  the versions cannot be told apart.
 - A job's pre-flight names the hosts whose host key, the device's or a
   jump host's on the way, is not trusted yet, says how to trust it and
   counts them in its summary [129]. Before, such a host was only refused
