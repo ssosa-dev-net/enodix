@@ -40,6 +40,7 @@
     type LayoutEdit,
     type TabId,
   } from "./lib/layout";
+  import { askForKeys, givingKeys, keyMark, keysAsked } from "./lib/keys";
   import { PaneRects, sessionWindowSize } from "./lib/paneRects.svelte";
   import { joinConfirmations, NO_SAFETY } from "./lib/paste";
   import {
@@ -126,6 +127,11 @@
     entries: SessionAction[];
   } | null>(null);
   let focusRequest = $state(0);
+  /** Asks that the active terminal take the keys (#141), as App's. */
+  function requestKeys(mark?: number) {
+    askForKeys(mark);
+    focusRequest += 1;
+  }
   /** Set while sessions leave: no other move meanwhile. */
   let moving = false;
   /** A snippet waiting for the user to give its variables a value (#86). */
@@ -215,11 +221,12 @@
   // taken as the page loaded is skipped).
   void onTabArrived(async (tab) => {
     if (sessions[tab]) return;
+    const mark = keyMark();
     try {
       const taken = await takeTab(tab);
       receive(taken.session);
       adopt(taken.layout);
-      focusRequest += 1;
+      requestKeys(mark);
     } catch (reason) {
       error = `A session could not move here: ${reason}`;
     }
@@ -236,17 +243,27 @@
     (reason) => (error = String(reason)),
   );
 
+  /** Layout edits sent and not answered yet (#141, as in App). */
+  let pendingEdits = 0;
+
   /** Edits the layout; `prepare` is given the created tab first. Edits
-   * naming a tab or pane already gone do nothing. */
+   * naming a tab or pane already gone do nothing. `ask`: the user's edit,
+   * whose active terminal takes the keys unless they move meanwhile
+   * (#141); false for one that follows where the keys are. */
   async function edit(
     change: LayoutEdit,
     prepare?: (created: number) => void,
+    ask = true,
   ): Promise<void> {
+    if (ask) askForKeys();
     let changed;
+    pendingEdits += 1;
     try {
       changed = await editLayout(change);
     } catch {
       return;
+    } finally {
+      pendingEdits -= 1;
     }
     if (changed.created !== null) prepare?.(changed.created);
     adopt(changed.layout);
@@ -269,6 +286,21 @@
   );
   /** Every tab, in reading order. */
   const tabOrder = $derived(panes.flatMap((pane) => pane.tabs));
+
+  /** The active pane follows the keyboard (#141), as App's `followKeys`. */
+  function followKeys() {
+    if (pendingEdits > 0 || keysAsked() || !layout) return;
+    const holder =
+      document.activeElement?.closest<HTMLElement>(".slot[data-tab]");
+    const tab = Number(holder?.dataset.tab);
+    const place = Number.isInteger(tab) ? placement.get(tab) : undefined;
+    if (place && !(place.shown && place.pane === layout.activePane))
+      void edit({ kind: "activate", tab }, undefined, false);
+  }
+  $effect(() => {
+    void layout;
+    untrack(followKeys);
+  });
   const activeTab = $derived(activePane?.active ?? null);
 
   /** Drops the sessions of tabs no longer in the layout. */
@@ -472,7 +504,7 @@
     const id = terminals[tab]?.sessionId() ?? null;
     if (!sessions[tab] || joining) return;
     if (inGroup(tab)) {
-      await edit({ kind: "leaveGroup", tab });
+      await edit({ kind: "leaveGroup", tab }, undefined, false);
       return;
     }
     let production: TabId[] = [];
@@ -493,7 +525,7 @@
         };
       });
       joining = null;
-      focusRequest += 1;
+      requestKeys();
       if (!agreed || !sessions[tab]) return;
     }
     // The shell refuses a production join that was not confirmed (#123).
@@ -522,7 +554,7 @@
         groupPasteQuestion = { tab, ...question, answer };
       });
       groupPasteQuestion = null;
-      focusRequest += 1;
+      requestKeys();
       return send;
     },
     withdraw: () => groupPasteQuestion?.answer(false),
@@ -584,9 +616,11 @@
       error = `Cannot send ${name}: the session is no longer connected.`;
       return;
     }
+    // The keys go to its terminal at the end, unless moved meanwhile.
+    const mark = keyMark();
     if (activeTab !== tab) await edit({ kind: "activate", tab });
     if (group) {
-      await sendSnippetToGroup(name, answers, tab);
+      await sendSnippetToGroup(name, answers, tab, mark);
       return;
     }
     let expansion;
@@ -605,7 +639,7 @@
       error = `Cannot send ${name}: the session is no longer connected.`;
       return;
     }
-    focusRequest += 1;
+    requestKeys(mark);
   }
 
   /**
@@ -618,6 +652,7 @@
     name: string,
     answers: Record<string, string>,
     tab: TabId,
+    mark: number = keyMark(),
   ) {
     let receiving;
     let expansion;
@@ -634,7 +669,7 @@
       return;
     }
     groupPaste.pasteEach(tab, receiving, expansion.texts);
-    focusRequest += 1;
+    requestKeys(mark);
   }
 
   void onSnippetSend(({ tab, name }) => void sendSnippet(tab, name));
@@ -688,6 +723,7 @@
     groupPasteQuestion?.answer(false);
     joining?.answer(false);
     closing = null;
+    const mark = keyMark();
     await tick();
     const reasons = tabOrder
       .map((tab) => {
@@ -703,8 +739,8 @@
     if (left.length > 0) {
       const count = left.length === 1 ? "A session" : `${left.length} sessions`;
       error = `${count} could not dock back, so the window stays open. ${reasons.join("; ")}`;
-      void edit({ kind: "activate", tab: left[0] });
-      focusRequest += 1;
+      void edit({ kind: "activate", tab: left[0] }, undefined, false);
+      requestKeys(mark);
     }
   }
 
@@ -751,6 +787,7 @@
    * comes forward.
    */
   async function connectHost(host: Host) {
+    const mark = keyMark();
     let connection;
     try {
       connection = hostConnection(host, await hostLogin(host.id));
@@ -777,13 +814,18 @@
       safety: hostSafety(host.id) ?? NO_SAFETY,
       role: hostRole(host.id),
     };
-    await edit({ kind: "openTab" }, (tab) => {
-      sessions[tab] = {
-        source: { kind: "target", target, name: host.name, title },
-        record,
-      };
-    });
-    focusRequest += 1;
+    askForKeys(mark);
+    await edit(
+      { kind: "openTab" },
+      (tab) => {
+        sessions[tab] = {
+          source: { kind: "target", target, name: host.name, title },
+          record,
+        };
+      },
+      false,
+    );
+    requestKeys(mark);
   }
 
   /** A session opened here: once it is open, its header shows what the app
@@ -853,17 +895,17 @@
       };
     },
     activate: (tab) => {
-      focusRequest += 1;
+      requestKeys();
       void edit({ kind: "activate", tab });
     },
     activatePane: (pane) => void edit({ kind: "activatePane", pane }),
     close: (tab) => closeTab(tab),
     move: (tab, pane, index) => {
-      focusRequest += 1;
+      requestKeys();
       void edit({ kind: "moveTab", tab, pane, index });
     },
     newTab: () => {},
-    refocus: () => (focusRequest += 1),
+    refocus: () => requestKeys(),
     split: (pane, direction) => void edit({ kind: "split", pane, direction }),
     closePane: (pane) => void edit({ kind: "closePane", pane }),
     joinPane: () => {},
@@ -978,7 +1020,10 @@
           style:width="{rect?.width ?? 0}px"
           style:height="{rect?.height ?? 0}px"
           onfocusin={() => {
-            if (!focused && place) void edit({ kind: "activate", tab });
+            // While an edit is on its way `focused` may be out of date
+            // (#141): sent anyway, so the last focus decides the pane.
+            if (place && (!focused || (pendingEdits > 0 && !givingKeys())))
+              void edit({ kind: "activate", tab }, undefined, false);
             void terminalUsed(tab);
           }}
         >
@@ -988,7 +1033,7 @@
             {tab}
             groupSize={inGroup(tab) ? layout.groupSize : null}
             ontogglegroup={() => void toggleGroup(tab)}
-            onendgroup={() => void edit({ kind: "endGroup" })}
+            onendgroup={() => void edit({ kind: "endGroup" }, undefined, false)}
             ongrouppaste={(text) => groupPaste.paste(tab, text)}
             title={record.title}
             address={record.address}
@@ -1048,7 +1093,7 @@
               }}
               oncancel={() => {
                 asking = null;
-                focusRequest += 1;
+                requestKeys();
               }}
             />
           {/if}
@@ -1094,7 +1139,7 @@
             onclose={confirmClose}
             oncancel={() => {
               closing = null;
-              focusRequest += 1;
+              requestKeys();
             }}
           />
         </div>
@@ -1120,7 +1165,7 @@
     reveals={false}
     onclose={() => {
       palette = false;
-      focusRequest += 1;
+      requestKeys();
     }}
   />
 {/if}
@@ -1134,7 +1179,7 @@
     onclosesessions={closeWithSessions}
     oncancel={() => {
       closingWindow = null;
-      focusRequest += 1;
+      requestKeys();
     }}
   />
 {/if}
@@ -1146,7 +1191,7 @@
     y={tabMenu.y}
     onclose={() => {
       tabMenu = null;
-      focusRequest += 1;
+      requestKeys();
     }}
   />
 {/if}

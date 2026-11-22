@@ -7,6 +7,7 @@
   import { webglRenderer } from "./renderer";
   import { terminalInput, type TerminalInput } from "./terminalInput";
   import { unserializedModes } from "./handover";
+  import { giveKeys } from "./keys";
   import { highlighting, highlightTerminal } from "./highlight.svelte";
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
@@ -265,6 +266,8 @@
   function cancelLogin() {
     prompt = null;
     session?.close();
+    // Closed, Enter reconnects: the keys come back here at once.
+    xterm?.focus();
   }
 
   const statusText = $derived(
@@ -400,7 +403,9 @@
 
   // The terminal takes the keys when it comes on screen and when the
   // session closes (Enter reconnects), unless a card or the search bar
-  // over it takes them.
+  // over it takes them. That comes a moment after the user asked (the
+  // core's layout answer, say): never if the keyboard has moved since
+  // (`giveKeys`, #141), so keys typed in another pane meanwhile stay there.
   $effect(() => {
     void focusRequest;
     if (
@@ -414,7 +419,7 @@
       // the keys: this pane may become active after it took them.
       !document.activeElement?.closest("[role=dialog]")
     )
-      xterm?.focus();
+      giveKeys(xterm);
   });
 
   $effect(() => onstate?.(status));
@@ -1050,7 +1055,8 @@
         ) {
           opened.resize(current);
         }
-        if (untrack(() => focused)) terminal.focus();
+        // Opened a while after it was asked for: not over a move since.
+        if (untrack(() => focused)) giveKeys(terminal);
       },
       (error) =>
         (status = {

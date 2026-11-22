@@ -109,8 +109,30 @@ export function resetLayout(): Promise<Layout> {
   return invoke<Layout>("layout_reset");
 }
 
-export function editLayout(edit: LayoutEdit): Promise<LayoutChanged> {
-  return invoke<LayoutChanged>("layout_edit", { edit });
+/**
+ * For the end-to-end test only (#141); nothing in the app sets these.
+ * While the page holds a promise in `__smokeHoldLayoutAnswers`, the core's
+ * answers wait for it, as on a computer too busy to answer at once; once
+ * the page has set `__smokeLayoutInFlight` (to 0), it counts the edits sent
+ * and not yet answered.
+ */
+const smoke = globalThis as {
+  __smokeHoldLayoutAnswers?: Promise<void>;
+  __smokeLayoutInFlight?: number;
+};
+
+export async function editLayout(edit: LayoutEdit): Promise<LayoutChanged> {
+  const counted = smoke.__smokeLayoutInFlight !== undefined;
+  if (counted)
+    smoke.__smokeLayoutInFlight = (smoke.__smokeLayoutInFlight ?? 0) + 1;
+  try {
+    const changed = await invoke<LayoutChanged>("layout_edit", { edit });
+    if (smoke.__smokeHoldLayoutAnswers) await smoke.__smokeHoldLayoutAnswers;
+    return changed;
+  } finally {
+    if (counted)
+      smoke.__smokeLayoutInFlight = (smoke.__smokeLayoutInFlight ?? 1) - 1;
+  }
 }
 
 /** The view `tab` shows, or null for a session tab (or an unknown one). */
