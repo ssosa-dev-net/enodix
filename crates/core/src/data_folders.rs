@@ -59,6 +59,7 @@
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -229,11 +230,7 @@ pub fn settle_with(settings: &Path, local: &Path, options: SettleOptions<'_>) ->
             Err(fs::TryLockError::Error(error)) => return Err(error),
         }
         let running = open_lock(&local.join(RUNNING_LOCK))?;
-        let alone = match running.try_lock() {
-            Ok(()) => true,
-            Err(fs::TryLockError::WouldBlock) => false,
-            Err(fs::TryLockError::Error(error)) => return Err(error),
-        };
+        let alone = alone_on(&running)?;
         Ok((moving, running, alone))
     });
     let (moving, running, alone) = match locks {
@@ -303,6 +300,30 @@ pub fn settle_with(settings: &Path, local: &Path, options: SettleOptions<'_>) ->
         moved,
         notices,
         _running: running,
+    }
+}
+
+/// How long a start waits for the running lock before it takes another
+/// copy to be running.
+const ENDING_COPY_WAIT: Duration = Duration::from_secs(1);
+
+/// Whether no other copy holds the running lock, which is then held alone.
+/// A copy that is just ending (the app starting again after an update)
+/// holds it a moment longer, and so, on Linux, does a process that is just
+/// being started, until it runs its program (it has copies of the starting
+/// process's open files till then; seen in the tests): the lock is tried
+/// for [`ENDING_COPY_WAIT`] before another copy is taken to be running.
+fn alone_on(running: &File) -> io::Result<bool> {
+    let deadline = Instant::now() + ENDING_COPY_WAIT;
+    loop {
+        match running.try_lock() {
+            Ok(()) => return Ok(true),
+            Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(fs::TryLockError::WouldBlock) => return Ok(false),
+            Err(fs::TryLockError::Error(error)) => return Err(error),
+        }
     }
 }
 
