@@ -98,6 +98,10 @@ start with `_` or be `clab-server` (the suite's own files).
    commit and-quit
    ```
 
+   `plain-text-password` asks for the new root password twice; the lab
+   uses the `admin` login's password for it (nothing in the suite logs in
+   as root).
+
    For file transfers (#96), two devices need more after each deploy,
    pasted by hand like the lines above (the topology gives neither a
    startup configuration): `lab/configs/cjunos1-files.set` on cjunos1
