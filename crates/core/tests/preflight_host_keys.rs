@@ -251,28 +251,46 @@ credential_profile: lab
         assert_eq!(plan.untrusted_keys(), 2, "{step:?}");
     }
 
-    for step in [
-        JobStep::Script {
+    // A workspace's script reaches a direct host by itself: its library
+    // checks that key, not the app.
+    let mut plan = lab.plan(
+        &target,
+        &JobStep::Script {
             path: "scripts/check.py".into(),
         },
-        JobStep::Enrich,
-    ] {
-        let mut plan = lab.plan(&target, &step);
-        plan.check_host_keys(&known_hosts);
-        assert_eq!(plan.hosts.len(), 2, "{step:?}: {plan:?}");
-        assert_eq!(planned(&plan, "direct.yaml").host_keys, None, "{step:?}");
-        assert_eq!(
-            untrusted(&plan, "Behind/r1.yaml"),
-            [jump.clone(), device.clone()]
-        );
+    );
+    plan.check_host_keys(&known_hosts);
+    assert_eq!(plan.hosts.len(), 2, "{plan:?}");
+    assert_eq!(planned(&plan, "direct.yaml").host_keys, None);
+    assert_eq!(
+        untrusted(&plan, "Behind/r1.yaml"),
+        [jump.clone(), device.clone()]
+    );
+    assert!(
+        message(&plan, "Behind/r1.yaml").contains("so the script's tunnel will refuse this host"),
+        "{}",
+        message(&plan, "Behind/r1.yaml")
+    );
+    assert_eq!(plan.untrusted_keys(), 1);
+
+    // Fill in from devices checks a direct host's key against the app's
+    // and refuses an untrusted one, as for a host behind jump hosts.
+    let mut plan = lab.plan(&target, &JobStep::Enrich);
+    plan.check_host_keys(&known_hosts);
+    assert_eq!(plan.hosts.len(), 2, "{plan:?}");
+    assert_eq!(
+        untrusted(&plan, "direct.yaml"),
+        [(None, "10.9.2.10".to_string(), 22)]
+    );
+    assert_eq!(untrusted(&plan, "Behind/r1.yaml"), [jump, device]);
+    for host in ["direct.yaml", "Behind/r1.yaml"] {
         assert!(
-            message(&plan, "Behind/r1.yaml")
-                .contains("so the script's tunnel will refuse this host"),
+            message(&plan, host).contains("so Fill in from devices will refuse this host"),
             "{}",
-            message(&plan, "Behind/r1.yaml")
+            message(&plan, host)
         );
-        assert_eq!(plan.untrusted_keys(), 1, "{step:?}");
     }
+    assert_eq!(plan.untrusted_keys(), 2);
 }
 
 /// A changed key cannot be told by pre-flight: the store holds a key for

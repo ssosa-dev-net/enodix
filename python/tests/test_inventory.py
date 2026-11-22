@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from nornir import InitNornir
@@ -147,8 +148,7 @@ class Inventories(BridgeTest):
         # Without credentials no tunnel is opened (test_tunnels.py has them).
         self.assertIsNone(core["tunnel"])
         self.assertIn("tunnels off", core["tunnel_error"])
-        warning = "\n".join(logged.output)
-        self.assertIn("could not be tunnelled", warning)
+        [warning] = [line for line in logged.output if "could not be tunnelled" in line]
         self.assertIn("Madrid/core-r1.yaml", warning)
         self.assertIn("Madrid/Lab/lab-sw1.yaml", warning)
         self.assertNotIn("bastion.yaml,", warning)
@@ -157,6 +157,34 @@ class Inventories(BridgeTest):
 class Logins(BridgeTest):
     def load(self, *hosts: str) -> Inventory:
         return EnodixInventory(str(self.workspace.root), hosts=list(hosts)).load()
+
+    def test_a_host_reached_directly_is_checked_against_the_keys_the_app_trusts(self) -> None:
+        port = self.server.device_port
+        (self.workspace.data / "known_hosts").write_text(
+            f"[127.0.0.1]:{port} {self.server.device_key}\n", encoding="utf-8"
+        )
+        self.workspace.write("devices/new.yaml", "address: 192.0.2.44\n")
+        with self.assertLogs("enodix", "WARNING") as logged:
+            inventory = self.load("devices/r-pass.yaml", "devices/new.yaml")
+        trusted = inventory.hosts["devices/r-pass.yaml"]
+        self.assertTrue(trusted["enodix"]["host_key_checked"])
+        for library in ("netmiko", "napalm"):
+            extras = trusted.get_connection_parameters(library).extras or {}
+            options = extras.get("optional_args", extras) if library == "napalm" else extras
+            self.assertTrue(options["ssh_strict"], library)
+            self.assertFalse(options["system_host_keys"], library)
+            known = Path(options["alt_key_file"]).read_text(encoding="utf-8")
+            self.assertIn(f"[127.0.0.1]:{port} {self.server.device_key}", known)
+        scrapli = trusted.get_connection_parameters("scrapli").extras or {}
+        self.assertTrue(scrapli["auth_strict_key"])
+        # A host the app has never trusted a key for is said to be unchecked.
+        new = inventory.hosts["devices/new.yaml"]
+        self.assertFalse(new["enodix"]["host_key_checked"])
+        netmiko = new.get_connection_parameters("netmiko").extras or {}
+        self.assertNotIn("alt_key_file", netmiko)
+        [warning] = [line for line in logged.output if "no host key the app trusts" in line]
+        self.assertIn("devices/new.yaml", warning)
+        self.assertNotIn("devices/r-pass.yaml", warning)
 
     def test_a_password_profile_hands_over_username_and_password(self) -> None:
         lab = self.server.profile("lab")

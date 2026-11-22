@@ -234,10 +234,11 @@ impl JobPlan {
     /// known by connecting, and the run refuses it then. Checking again
     /// replaces the warnings.
     pub fn check_host_keys(&mut self, known_hosts: &KnownHosts) {
-        let refuses = if self.step.runs_script() {
-            "the script's tunnel will refuse this host"
-        } else {
-            "the job will refuse this host"
+        let refuses = match &self.step {
+            // Its script refuses a host reached directly too (enodix.enrich).
+            JobStep::Enrich => "Fill in from devices will refuse this host",
+            step if step.runs_script() => "the script's tunnel will refuse this host",
+            _ => "the job will refuse this host",
         };
         for host in &mut self.hosts {
             host.host_keys = host_key_warning(&host.work.keys, known_hosts, refuses);
@@ -944,7 +945,13 @@ fn enrich_runnable(
             return Err(SkipReason::NoProfile)
         }
     };
-    let keys = tunnelled(workspace, profiles, host)?;
+    let mut keys = tunnelled(workspace, profiles, host)?;
+    if keys.is_empty() {
+        // Reached directly, the script checks the device's key against the
+        // app's and refuses an untrusted one (enodix.enrich), as a tunnel
+        // does: pre-flight says so first.
+        keys = KeyPlace::of(&host.ssh_target_with(String::new(), SshAuth::Prompt));
+    }
     let work = HostWork {
         keys,
         target: None,
