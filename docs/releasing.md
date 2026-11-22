@@ -107,7 +107,51 @@ certificate store; a self-signed certificate on a private server fails the
 check, harmlessly but always). On GitHub,
 `https://github.com/<owner>/<repo>/releases/latest/download/latest.json`
 always serves the newest release's file; check that your host offers an
-equivalent, or publish the file at a fixed address yourself.
+equivalent, or publish the file at a fixed address yourself. enodix uses
+that GitHub address: the release workflow below sets it from the
+repository, so a release must be a normal one, not a pre-release (GitHub's
+"latest" skips pre-releases).
+
+For the release workflow, the key is also kept as two secrets of the GitHub
+repository (Settings, Secrets and variables, Actions), set with `gh` so the
+password is pasted and never written down:
+
+```powershell
+Get-Content -Raw "$env:USERPROFILE\.enodix-release\enodix-updater.key" | gh secret set TAURI_SIGNING_PRIVATE_KEY --repo <owner>/enodix
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo <owner>/enodix
+```
+
+## Releasing with GitHub Actions (the usual way)
+
+`.github/workflows/release.yml` builds the Windows files and the Linux
+packages on GitHub's runners with `npm run release`, signs the installer
+for the updater with the secrets above, and publishes a GitHub Release with
+every file, `latest.json` included, the version's section of
+`CHANGELOG.md` and `SHA256SUMS.txt` as its notes. It refuses a tag that
+does not match the version in `Cargo.toml`, or a version the changelog has
+no section for.
+
+1. On a branch, set the version and the changelog (step 1 of "Each release"
+   below), open a pull request and merge it once CI passes.
+2. On your computer, from the merged `main`: the checks CI cannot run, the
+   smoke test (`npm run app:build && npm run smoke:hidden`), the containerlab
+   suite (`npm run test:lab`) and the installer check in Windows Sandbox with
+   the previous release (step 4 below, built with `npm run release -- --unsigned`).
+3. If the workflow changed since the last release, try it first: Actions,
+   Release, Run workflow, "publish" left unticked. The files are kept as the
+   run's artifacts.
+4. Tag the merged commit and push the tag; the workflow publishes the release:
+
+   ```
+   git tag -s v<version> -m "<product> <version>"
+   git push origin v<version>
+   ```
+
+5. Then step 6 below (an installed copy of the previous version offers the
+   update) and step 7 (clean up).
+
+The steps below are the same release built and published from your own
+computer, for when GitHub's runners are not available.
 
 ## Each release
 
