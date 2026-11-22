@@ -128,6 +128,8 @@ for (let at = 2; at < process.argv.length; at++) {
   }
   options[name] = process.argv[++at];
 }
+/** Whether the app is a portable copy (an AppImage), not a package's. */
+const portable = !(options.packaged || options.app.startsWith("/usr/"));
 
 if (process.platform === "win32") {
   const stop = (message) => {
@@ -869,8 +871,12 @@ async function desktopMenu() {
 }
 
 /** 2. Light and dark from the desktop's own switch, with the app's theme
- * on "system", while it runs. */
+ * on "system", while it runs. The AppImage pins its GTK theme at launch
+ * (its GTK hook, and netterm's for the style: #143), so where the desktop's
+ * dark look is a style (XFCE) a switch while it runs is not expected to
+ * reach it: only what it starts with is (light here, dark in `restart`). */
 async function desktopTheme(page) {
+  if (portable && desktop.darkBy === "style") return pinnedTheme(page);
   const shown = () =>
     page.js(`return {
       dark: matchMedia("(prefers-color-scheme: dark)").matches,
@@ -912,6 +918,36 @@ async function desktopTheme(page) {
   await page.picture("2-desktop-light");
   if (light) step(`and back to light (${back}): the app turned light`);
   else problem(`the desktop back to light (${back}), the app stayed dark`);
+}
+
+/** 2, for an AppImage on a desktop whose dark look is a style: light at
+ * launch with the desktop light; a switch while it runs is only noted (it
+ * needs a restart: docs/linux.md). */
+async function pinnedTheme(page) {
+  const shown = () =>
+    page.js(`return {
+      dark: matchMedia("(prefers-color-scheme: dark)").matches,
+      applied: document.documentElement.dataset.theme ?? null,
+    }`);
+  const before = await shown();
+  if (before.dark || before.applied !== "light")
+    problem(
+      `the desktop is light, the AppImage started dark: ${JSON.stringify(before)}`,
+    );
+  else
+    step(
+      `the desktop is light (its style): the AppImage started light (${JSON.stringify(before)})`,
+    );
+  const switched = desktop.setDark(true);
+  const followed = await settles(async () => (await shown()).dark, 5000);
+  await page.picture("2-desktop-dark-running");
+  note(
+    `the desktop switched to dark while the AppImage runs (${switched}): it ${followed ? "turned dark" : "stayed light"}; ` +
+      "the AppImage reads the style at launch only (#143)",
+  );
+  desktop.setDark(false);
+  if (followed && !(await settles(async () => !(await shown()).dark, 10000)))
+    problem("the desktop back to light, the AppImage stayed dark");
 }
 
 /** The screen point of a point of the page: the page's origin is found
@@ -1876,10 +1912,7 @@ async function updates(page, release) {
   const said = (await page.text("[data-update] .detail"))
     .replace(/\s+/g, " ")
     .trim();
-  const expected =
-    options.packaged || options.app.startsWith("/usr/")
-      ? /package manager/
-      : /portable copy/;
+  const expected = portable ? /portable copy/ : /package manager/;
   if (!expected.test(said)) problem(`the update notice says: ${said}`);
   await page.picture("7-update");
   await page.click("[data-update-page]");
@@ -2033,12 +2066,20 @@ async function minimize(page) {
 /** 3 (end) and 2 (theme): after a restart the vault asks for its
  * password; with a dark desktop theme the app is dark. */
 async function restart(bin) {
-  // An AppImage's runtime sets GTK_THEME itself, from the desktop's
-  // colour scheme, unless APPIMAGE_GTK_THEME says otherwise.
-  const darkDesktop = {
+  // In a desktop session the desktop itself is made dark (XFCE's style,
+  // GNOME's colour scheme) before the app starts: what it starts with,
+  // the AppImage's GTK hooks included (#143). Otherwise GTK_THEME plays a
+  // dark desktop (an AppImage's runtime sets GTK_THEME itself, from the
+  // colour scheme, unless APPIMAGE_GTK_THEME says otherwise).
+  let darkDesktop = {
     GTK_THEME: "Adwaita:dark",
     APPIMAGE_GTK_THEME: "Adwaita:dark",
   };
+  let how = "GTK_THEME=Adwaita:dark";
+  if (desktop) {
+    how = desktop.setDark(true);
+    darkDesktop = {};
+  }
   const page = await startApp(appEnvironment(bin, darkDesktop));
   await until("the unlock screen", () =>
     page.exists("[data-unlock-screen] [name=vault-unlock-password]"),
@@ -2051,11 +2092,11 @@ async function restart(bin) {
   step("after a restart the unlock screen asked for the master password");
   if (theme.dark)
     step(
-      `with the desktop dark (GTK_THEME=Adwaita:dark) the app is dark: ${JSON.stringify(theme)}`,
+      `started with the desktop dark (${how}) the app is dark: ${JSON.stringify(theme)}`,
     );
   else
     problem(
-      `with GTK_THEME=Adwaita:dark the app is not dark: ${JSON.stringify(theme)}`,
+      `started with the desktop dark (${how}) the app is not dark: ${JSON.stringify(theme)}`,
     );
   await page.type("[name=vault-unlock-password]", MASTER_PASSWORD);
   await page.click("[data-unlock=unlock]");
