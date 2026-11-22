@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use netterm_core::logging::LogFolder;
 use netterm_core::paste::{plan_paste, PasteSafety};
 use netterm_core::session::{
-    CloseReason, OpenError, OutputOptions, SessionEvent, SessionEvents, SessionId, SessionManager,
-    SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
+    CloseReason, ConnectStage, OpenError, OutputOptions, SessionEvent, SessionEvents, SessionId,
+    SessionManager, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
 };
 use russh::MethodKind;
 use support::proxy::LinkProxy;
@@ -367,7 +367,19 @@ async fn a_device_that_goes_silent_at_each_stage_times_out() {
 
             let error = failure_within(manager, short(server.target()), WAIT).await;
 
-            assert_eq!(error, OpenError::TimedOut { after: SHORT }, "{stage:?}");
+            let expected = match stage {
+                Stage::Login => ConnectStage::Login,
+                Stage::ChannelOpen => ConnectStage::Channel,
+                _ => ConnectStage::Shell,
+            };
+            assert_eq!(
+                error,
+                OpenError::TimedOut {
+                    after: SHORT,
+                    stage: expected
+                },
+                "{stage:?}"
+            );
         }
     });
     futures::future::join_all(stages).await;
@@ -385,7 +397,13 @@ async fn a_device_that_goes_silent_during_the_key_exchange_times_out() {
     )
     .await;
 
-    assert_eq!(error, OpenError::TimedOut { after: SHORT });
+    assert_eq!(
+        error,
+        OpenError::TimedOut {
+            after: SHORT,
+            stage: ConnectStage::KeyExchange
+        }
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

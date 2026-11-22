@@ -6,8 +6,8 @@ mod support;
 use std::time::{Duration, Instant};
 
 use netterm_core::session::{
-    AgentError, CloseReason, JumpHost, OpenError, SessionManager, SessionState, SessionTarget,
-    SshAuth, SshTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT,
+    AgentError, CloseReason, ConnectStage, JumpHost, OpenError, SessionManager, SessionState,
+    SessionTarget, SshAuth, SshTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT,
 };
 use russh::MethodKind;
 use support::{
@@ -106,10 +106,14 @@ async fn a_device_that_never_answers_times_out_after_the_configured_timeout() {
     assert_eq!(
         error,
         OpenError::TimedOut {
-            after: Duration::from_secs(1)
+            after: Duration::from_secs(1),
+            stage: ConnectStage::Identification,
         }
     );
-    assert_eq!(error.to_string(), "the device did not answer within 1 s");
+    assert_eq!(
+        error.to_string(),
+        "connected, but no SSH identification line came within 1 s"
+    );
     assert!(
         took >= Duration::from_millis(900) && took < Duration::from_secs(5),
         "took {took:?}"
@@ -131,7 +135,8 @@ async fn a_login_the_device_never_answers_times_out() {
     assert_eq!(
         error,
         OpenError::TimedOut {
-            after: Duration::from_secs(1)
+            after: Duration::from_secs(1),
+            stage: ConnectStage::Login,
         }
     );
 }
@@ -213,6 +218,11 @@ async fn each_kind_of_failure_has_its_own_message() {
         }),
         CloseReason::Failed(OpenError::TimedOut {
             after: Duration::from_secs(15),
+            stage: ConnectStage::Tcp {
+                host: "core1".into(),
+                port: 22,
+                via: None,
+            },
         }),
         CloseReason::Failed(OpenError::AuthenticationFailed),
         CloseReason::ConnectionLost,
@@ -225,7 +235,7 @@ async fn each_kind_of_failure_has_its_own_message() {
             "the name core1 could not be resolved",
             "core1 cannot be reached (no route)",
             "core1 refused the connection on port 22",
-            "the device did not answer within 15 s",
+            "no TCP connection to core1 port 22 within 15 s",
             "authentication failed",
             "connection lost",
         ]
@@ -251,6 +261,11 @@ async fn a_failure_says_what_to_check_next() {
         }),
         CloseReason::Failed(OpenError::TimedOut {
             after: Duration::from_secs(15),
+            stage: ConnectStage::Tcp {
+                host: "core1".into(),
+                port: 22,
+                via: None,
+            },
         }),
         CloseReason::Failed(OpenError::AuthenticationFailed),
         CloseReason::Failed(OpenError::Agent(AgentError::NotRunning("no agent".into()))),

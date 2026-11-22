@@ -346,6 +346,8 @@ pub enum Stage {
     ChannelOpen,
     /// When the client asks for the shell.
     ShellRequest,
+    /// When the client asks for a subsystem (`sftp`).
+    Subsystem,
 }
 
 /// What a server does at a [`Stage`].
@@ -789,7 +791,6 @@ impl TestSshServer {
     pub fn close_sftp_and_hang_up(&self) {
         *self.sftp.lock().unwrap() = sftp::SftpMode::CloseAndHangUp;
     }
-
     /// How many shells its clients have asked for.
     pub fn shell_requests(&self) -> usize {
         self.shells.load(Ordering::SeqCst)
@@ -985,6 +986,50 @@ impl SilentServer {
 impl Drop for SilentServer {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+/// A loopback port where a TCP connection is never made, as at an address
+/// whose device is down behind a firewall that drops the SYN (#140): a
+/// listener that never accepts, its backlog filled by a connection of its
+/// own, so the system leaves further connection requests unanswered.
+/// Linux drops them; Windows refuses them, but only after about 2 s of
+/// retries, so a connect timeout well below that (1 s) sees the silence.
+pub struct UnansweringPort {
+    port: u16,
+    _listener: tokio::net::TcpListener,
+    _filling: Vec<tokio::net::TcpStream>,
+}
+
+impl UnansweringPort {
+    pub async fn start() -> Self {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind(([127, 0, 0, 1], 0).into()).unwrap();
+        let listener = socket.listen(1).unwrap();
+        let address = listener.local_addr().unwrap();
+        // Connect until one is not answered: the backlog is full then
+        // (how many it takes is the system's choice).
+        let mut filling = Vec::new();
+        for _ in 0..64 {
+            let attempt =
+                tokio::time::timeout(Duration::from_millis(200), TcpStream::connect(address)).await;
+            match attempt {
+                Ok(Ok(connection)) => filling.push(connection),
+                Ok(Err(error)) => panic!("filling the backlog: {error}"),
+                Err(_) => {
+                    return Self {
+                        port: address.port(),
+                        _listener: listener,
+                        _filling: filling,
+                    }
+                }
+            }
+        }
+        panic!("the backlog of a listener never filled");
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
     }
 }
 
@@ -1939,17 +1984,22 @@ impl Handler for ScriptedShell {
             reply.reject(ChannelOpenFailure::ConnectFailed).await;
             return Ok(());
         };
-        match TcpStream::connect((host_to_connect, port)).await {
-            Ok(mut socket) => {
-                reply.accept().await;
-                self.forwarded.fetch_add(1, Ordering::Relaxed);
-                tokio::spawn(async move {
+        // Connected on the side, as OpenSSH's sshd does: the connection
+        // keeps answering meanwhile (keepalives, other channels), even
+        // while the address never answers (#140).
+        let host = host_to_connect.to_owned();
+        let forwarded = self.forwarded.clone();
+        tokio::spawn(async move {
+            match TcpStream::connect((host.as_str(), port)).await {
+                Ok(mut socket) => {
+                    reply.accept().await;
+                    forwarded.fetch_add(1, Ordering::Relaxed);
                     let mut stream = channel.into_stream();
                     let _ = tokio::io::copy_bidirectional(&mut stream, &mut socket).await;
-                });
+                }
+                Err(_) => reply.reject(ChannelOpenFailure::ConnectFailed).await,
             }
-            Err(_) => reply.reject(ChannelOpenFailure::ConnectFailed).await,
-        }
+        });
         Ok(())
     }
 
@@ -2036,6 +2086,7 @@ impl Handler for ScriptedShell {
         name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.quirks.at(Stage::Subsystem).await?;
         let mode = self.sftp.lock().unwrap().clone();
         let claimed = self.unclaimed.remove(&channel);
         match (name, mode, claimed) {

@@ -31,6 +31,23 @@ impl FirstBytes {
             .is_none_or(Vec::is_empty)
     }
 
+    /// Whether the device's SSH identification line (`SSH-2.0-...`, ended
+    /// by a line feed) has arrived. Lines before it (RFC 4253 lets a server
+    /// send some) do not count.
+    pub(super) fn has_identification(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|kept| {
+                // The last piece is a line not ended yet.
+                let ended = kept.iter().filter(|&&byte| byte == b'\n').count();
+                kept.split(|&byte| byte == b'\n')
+                    .take(ended)
+                    .any(|line| line.starts_with(b"SSH-"))
+            })
+    }
+
     /// The bytes kept so far; nothing more is kept after this.
     pub(super) fn take(&self) -> Vec<u8> {
         self.0

@@ -195,18 +195,28 @@ async fn hosts_failing_in_every_way_at_once_each_end_with_their_own_reason() {
         let why = reason(id);
         assert!(why.contains(words), "{id}: {why}");
     }
-    // Each its own reason: no two failures read the same, but for the
-    // three a connect timeout ends (no banner, a login never answered, a
-    // shell never given), which all say the device did not answer in time.
-    let timeouts = ["silent.yaml", "stalled-login.yaml", "no-shell.yaml"];
-    for id in timeouts {
-        assert_eq!(reason(id), "the device did not answer within 1 s");
+    // The three a connect timeout ends (no banner, a login never answered,
+    // a shell never given) carry the session's words for the stage that
+    // went silent (#140).
+    let timeouts = [
+        (
+            "silent.yaml",
+            "connected, but no SSH identification line came within 1 s",
+        ),
+        (
+            "stalled-login.yaml",
+            "the key exchange finished, but the login got no answer within 1 s",
+        ),
+        (
+            "no-shell.yaml",
+            "logged in, but the shell did not start within 1 s",
+        ),
+    ];
+    for (id, words) in timeouts {
+        assert_eq!(reason(id), words, "{id}");
     }
-    let mut reasons: Vec<String> = expect
-        .iter()
-        .filter(|(id, _)| !timeouts.contains(id))
-        .map(|(id, _)| reason(id))
-        .collect();
+    // Each its own reason: no two failures read the same.
+    let mut reasons: Vec<String> = expect.iter().map(|(id, _)| reason(id)).collect();
     reasons.sort();
     let all = reasons.len();
     reasons.dedup();
