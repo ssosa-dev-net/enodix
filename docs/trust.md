@@ -324,8 +324,11 @@ breaking the encryption:
   token; nothing points to text you typed being in it.
 
 It was seen on a Windows account signed in to a personal Microsoft
-account. A Windows account with no Microsoft account should have no
-profile to fetch; that was not tried. Other app makers have reported the
+account. A Windows account with no Microsoft account has no profile to
+fetch, and there the connection does not happen: on a clean Windows with
+a local account only (Windows Sandbox, the same WebView2 version) two
+whole runs of the end-to-end test made no connection beyond the
+computer, with the network open. Other app makers have reported the
 same behaviour of WebView2 157 to Microsoft (WebView2Feedback issue
 5760), with no answer so far.
 

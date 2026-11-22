@@ -149,9 +149,10 @@ folder, and what stalled it was fixed [116].
   servers a few seconds after the app starts. It is the engine's own
   sign-in library fetching that account's profile and picture; typing
   does not cause it, and nothing points to typed text being in it, though
-  what it carries was not read. A switch that looks likely to stop it is
-  still being measured; `docs/trust.md` has what is known and what you
-  can do meanwhile [135].
+  what it carries was not read. On a Windows with no Microsoft account
+  the app made no such connection in two whole test runs [139]. A switch
+  that looks likely to stop it is still being measured; `docs/trust.md`
+  has what is known and what you can do meanwhile [135].
 - The README said the app made no connection you did not start, and that
   session logs could be written to a folder you chose. Neither was true;
   both are corrected [115].
@@ -341,6 +342,22 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   through git. Such an answer already in the file is never used or shown;
   the saved job names it so it can be removed from the file by hand (the
   app cannot remove it from the git history).
+- `netterm-cli.exe` starts on a Windows that has no Visual C++ runtime
+  (a freshly installed Windows) [139]. Before, it did not start there at
+  all, in 0.4.1 too: script jobs, the Python package and the
+  uninstaller's removal of saved logins failed on such a computer. Found
+  by running the installer check in Windows Sandbox.
+- A file job no longer sends a file that changed after pre-flight [137]:
+  the host is sent nothing and says the file changed. A file that changes
+  while it is being sent fails the host, and what was sent stays on the
+  device. Before, each host got whatever the file was at that moment and
+  the run reported the planned size.
+- Cancelling a file job, or closing the app, while a device has stopped
+  answering ends in about 2 s [137]. Before, it waited for the device up
+  to the connect timeout and more. The host then says a partial file may
+  remain on the device.
+- The Jobs view lists thousands of kept runs several times faster (5,000
+  runs: 0.83 s before, 0.15 s now, 0.085 s when listed again) [137].
 - A job's pre-flight names the hosts whose host key, the device's or a
   jump host's on the way, is not trusted yet, says how to trust it and
   counts them in its summary [129]. Before, such a host was only refused
