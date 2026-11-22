@@ -182,7 +182,13 @@ equivalent, or publish the file at a fixed address yourself.
    npm run test:installer:sandbox -- --old <folder>\netterm_<previous>_x64-setup.exe
    ```
 
-   It runs the check above inside the sandbox, then installs this release,
+   It runs the check above inside the sandbox. Then it installs the
+   previous release, starts it once, puts config backups, job results and
+   a Python environment where versions up to 0.4.1 kept them (the roaming
+   data folder), installs this release over it and starts it: every file
+   must then be in the local data folder, the same bytes, and gone from
+   the roaming one, the settings must still be there, and a second start
+   must change nothing (#128). Then it installs this release,
    starts the app and waits for its window, puts two saved logins of the
    app's and one of another program in Credential Manager, upgrades over
    itself in passive mode as the updater would, and uninstalls through the

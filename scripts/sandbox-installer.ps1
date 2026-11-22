@@ -134,6 +134,117 @@ $checked = $LASTEXITCODE
 Write-Output ">>> check-installer.ps1: exit code $checked, $(Elapsed $started) s"
 if ($checked -ne 0) { Problem "check-installer.ps1 failed" }
 
+# --- 1b. An upgrade over a version that kept its data in the roaming folder ----
+#
+# Up to 0.4.1 config backups, kept job results and the Python environment
+# were in the roaming data folder; the first start of a later version moves
+# them to the local one (#128). Here the older release is installed and
+# started once, files are put where it kept them, the new release is
+# installed over it and started, and every file must then be in the local
+# folder, the same bytes, and gone from the roaming one. What stays in the
+# roaming folder (the settings) must still be there.
+
+# Every file below $folder: its path from there and its SHA-256.
+function Tree([string]$folder) {
+  if (-not (Test-Path $folder)) { return @() }
+  @(Get-ChildItem $folder -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
+      "$($_.FullName.Substring($folder.Length + 1)) $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
+    })
+}
+
+# Starts the installed app, waits for its window, leaves it $seconds, closes it.
+function StartAndClose([string]$what, [int]$seconds) {
+  $app = Join-Path $install "$product.exe"
+  if (-not (Test-Path $app)) { throw "no $app ($what)" }
+  $started = Get-Date
+  $process = Start-Process -FilePath $app -PassThru
+  $window = WaitWindow "$product*" 60
+  if ($window) { Write-Output "$what shows its window after $(Elapsed $started) s" } else { Problem "$what showed no window within 60 s" }
+  Start-Sleep -Seconds $seconds
+  if (-not $process.HasExited) {
+    $process.CloseMainWindow() | Out-Null
+    if (-not $process.WaitForExit(10000)) { Stop-Process -Id $process.Id -Force; Write-Output "$what did not close on its window's close: ended" }
+  }
+  Start-Sleep -Seconds 2
+}
+
+try {
+  Step "the data of an older version moves at the first start of the new one (#128)"
+  $roaming = Join-Path $env:APPDATA $identifier
+  $local = Join-Path $env:LOCALAPPDATA $identifier
+  Run $Old "/S" "install the older release silently"
+  StartAndClose "the older release" 5
+  $settingsBefore = @(Get-ChildItem $roaming -Force -ErrorAction SilentlyContinue | ForEach-Object Name)
+  Write-Output "the older release left in ${roaming}: $($settingsBefore -join ', ')"
+
+  # What a version up to 0.4.1 kept there, made up: nested folders, a name
+  # with a space and one outside ASCII, an empty file, a file of 3 MiB.
+  $moved = @("configs", "jobs", "python")
+  $seed = @{
+    "configs\ws-1\core-sw1\2026-11-01_10-00-00.cfg" = "hostname core-sw1`r`n!`r`nend`r`n"
+    "configs\ws-1\core-sw1\2026-11-02_10-00-00.cfg" = "hostname core-sw1`r`ninterface Gi0/1`r`n!`r`nend`r`n"
+    "configs\ws-1\edge r2\2026-11-01_10-00-00.cfg"  = "hostname edge-r2`n"
+    "configs\ws-1\z$([char]0xFC)rich-fw\latest.cfg"  = "set system host-name zurich`n"
+    "jobs\ws-1\2026-11-03_09-00-00\run.yaml"        = "hosts: []`n"
+    "jobs\ws-1\2026-11-03_09-00-00\output\r1.txt"   = "r1# show version`n"
+    "jobs\ws-1\2026-11-03_09-00-00\output\empty.txt" = ""
+    "python\pyvenv.cfg"                             = "home = C:\nowhere`n"
+    "python\Lib\site-packages\marker.txt"           = "moved with the rest`n"
+  }
+  foreach ($path in $seed.Keys) {
+    $file = Join-Path $roaming $path
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null
+    [System.IO.File]::WriteAllText($file, $seed[$path], (New-Object System.Text.UTF8Encoding($false)))
+  }
+  $big = Join-Path $roaming "jobs\ws-1\2026-11-03_09-00-00\output\big.txt"
+  $bytes = New-Object byte[] (3 * 1024 * 1024)
+  (New-Object System.Random 128).NextBytes($bytes)
+  [System.IO.File]::WriteAllBytes($big, $bytes)
+
+  # And one thing that stays in the roaming folder: a trusted host key.
+  $kept = Join-Path $roaming "known_hosts"
+  [System.IO.File]::WriteAllText($kept, "[192.0.2.10]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDkjyJ0Q7mqyl3W7Xk9oQqk0dA4mS8pV0mJbq0dY3x7N`n", (New-Object System.Text.UTF8Encoding($false)))
+  $keptHash = (Get-FileHash $kept -Algorithm SHA256).Hash
+  $before = @{}
+  foreach ($name in $moved) { $before[$name] = Tree (Join-Path $roaming $name) }
+  Write-Output "put in the roaming folder: $(($moved | ForEach-Object { "$_ ($($before[$_].Count) files)" }) -join ', ')"
+
+  Run $New "/S" "install the new release over it silently"
+  StartAndClose "the new release, first start" 8
+
+  foreach ($name in $moved) {
+    $now = Tree (Join-Path $local $name)
+    $old = Join-Path $roaming $name
+    if (Compare-Object $before[$name] $now) {
+      Problem "$name is not whole in $local after the first start: was $($before[$name].Count) files, is $($now.Count); differences: $((Compare-Object $before[$name] $now | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }) -join '; ')"
+    } elseif (Test-Path $old) {
+      Problem "$name is in $local, the same bytes, but still in ${roaming} too: $((Get-ChildItem $old -Recurse -Force | ForEach-Object Name) -join ', ')"
+    } else {
+      Write-Output "$name moved whole to ${local}: $($now.Count) files, the same bytes, none left in $roaming"
+    }
+  }
+  if (-not (Test-Path $kept)) { Problem "known_hosts is gone from $roaming after the first start" }
+  elseif ((Get-FileHash $kept -Algorithm SHA256).Hash -ne $keptHash) { Problem "known_hosts in $roaming changed at the first start" }
+  else { Write-Output "known_hosts stayed in $roaming, unchanged" }
+  $settingsAfter = @(Get-ChildItem $roaming -Force -ErrorAction SilentlyContinue | ForEach-Object Name)
+  $lost = @($settingsBefore | Where-Object { $_ -notin $moved -and $_ -notin $settingsAfter })
+  if ($lost.Count) { Problem "gone from $roaming after the first start: $($lost -join ', ')" }
+  Write-Output "in $roaming now: $($settingsAfter -join ', ')"
+  Write-Output "in $local now: $((Get-ChildItem $local -Force -ErrorAction SilentlyContinue | ForEach-Object Name) -join ', ')"
+
+  # A second start finds nothing to move and changes nothing.
+  $settled = @{}
+  foreach ($name in $moved) { $settled[$name] = Tree (Join-Path $local $name) }
+  StartAndClose "the new release, second start" 5
+  foreach ($name in $moved) {
+    if (Compare-Object $settled[$name] (Tree (Join-Path $local $name))) { Problem "$name in $local changed at the second start" }
+    if (Test-Path (Join-Path $roaming $name)) { Problem "$name is back in $roaming after the second start" }
+  }
+  Write-Output "a second start changed nothing"
+} catch {
+  Problem "the data move check stopped: $($_.Exception.Message)"
+}
+
 # --- 2. What only a throwaway Windows allows ---------------------------------
 
 try {

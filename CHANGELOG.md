@@ -5,6 +5,22 @@ in the project's tracker.
 
 ## Unreleased
 
+## 0.5.0
+
+A pre-release: not code-signed, and without automatic updates (install it
+over 0.4.1 by hand).
+
+**If you run an earlier version, read "What the app connects to" below.**
+Up to 0.4.1 one of the app's own internal commands could be sent in clear to
+port 80 of your own computer when a window closed, where another program
+on that computer could receive it; and on a Windows signed in to a
+Microsoft account the window's engine connected to Microsoft's Office
+servers. Both are closed in this version.
+
+On Windows the first start moves config backups, kept job results and the
+app's Python environment to `%LOCALAPPDATA%`, once (see "Windows
+installer").
+
 ### New
 
 - A device's files, in the app [95]. **Files** on an SSH host (its details
