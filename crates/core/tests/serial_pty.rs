@@ -116,6 +116,22 @@ fn settings(device: &File) -> libc::termios {
     }
 }
 
+/// The line's input and output speeds in baud, as the kernel holds them.
+/// Read with `termios2`, which gives the number whichever way the speed
+/// was set: `cfgetispeed` gives a `Bnnnn` code, or `BOTHER` on kernels that
+/// keep a speed set by number that way (as on CI's runners).
+fn speeds(device: &File) -> (u32, u32) {
+    // SAFETY: TCGETS2 fills the zeroed struct for an open terminal.
+    unsafe {
+        let mut settings: libc::termios2 = std::mem::zeroed();
+        assert_eq!(
+            libc::ioctl(device.as_raw_fd(), libc::TCGETS2, &mut settings),
+            0
+        );
+        (settings.c_ispeed, settings.c_ospeed)
+    }
+}
+
 async fn closed_reason(events: &mut SessionEvents) -> CloseReason {
     match tokio::time::timeout(WAIT, next_state(events)).await {
         Ok(SessionState::Closed(reason)) => reason,
@@ -153,8 +169,8 @@ async fn the_line_settings_given_are_the_ones_the_kernel_holds() {
     // Data bits and parity are accepted but cannot be read back: Linux's
     // pseudo terminal driver keeps its line at 8 bits, no parity, whatever
     // is asked. Speed, stop bits and software flow control are kept.
-    for (parameters, speed, two_stop) in [
-        (SerialParameters::default(), libc::B9600, false),
+    for (parameters, two_stop) in [
+        (SerialParameters::default(), false),
         (
             SerialParameters {
                 baud_rate: 115_200,
@@ -163,7 +179,6 @@ async fn the_line_settings_given_are_the_ones_the_kernel_holds() {
                 stop_bits: 2,
                 flow_control: FlowControl::None,
             },
-            libc::B115200,
             true,
         ),
         (
@@ -174,7 +189,6 @@ async fn the_line_settings_given_are_the_ones_the_kernel_holds() {
                 stop_bits: 1,
                 flow_control: FlowControl::Software,
             },
-            libc::B38400,
             false,
         ),
     ] {
@@ -182,9 +196,8 @@ async fn the_line_settings_given_are_the_ones_the_kernel_holds() {
         let manager = SessionManager::new(known_hosts());
         let (id, _events) = open(&manager, target(&port, parameters)).await;
         let held = settings(&device);
-        // SAFETY: reads fields of a filled termios.
-        let (input, output) = unsafe { (libc::cfgetispeed(&held), libc::cfgetospeed(&held)) };
-        assert_eq!((input, output), (speed, speed), "{parameters:?}");
+        let speed = parameters.baud_rate;
+        assert_eq!(speeds(&device), (speed, speed), "{parameters:?}");
         assert_eq!(held.c_cflag & libc::CSTOPB != 0, two_stop, "{parameters:?}");
         let software = held.c_iflag & (libc::IXON | libc::IXOFF) != 0;
         assert_eq!(

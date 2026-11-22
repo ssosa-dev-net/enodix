@@ -324,7 +324,10 @@ fn only_the_current_user_can_open_the_pipe() {
         .unwrap();
     let access = windows::dacl_of(pipe.as_raw_handle());
     let user = windows::current_user_sid();
-    assert_eq!(access, format!("D:P(A;;FA;;;{user})"));
+    assert_eq!(
+        access,
+        windows::canonical_dacl(&format!("D:P(A;;FA;;;{user})"))
+    );
 }
 
 /// Refused: a client that is not the current user cannot open the pipe,
@@ -383,7 +386,8 @@ mod windows {
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
     use windows_sys::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
-        GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+        SE_KERNEL_OBJECT,
     };
     use windows_sys::Win32::Security::{
         CreateRestrictedToken, GetTokenInformation, ImpersonateLoggedOnUser, RevertToSelf,
@@ -509,18 +513,44 @@ mod windows {
                 &mut descriptor,
             );
             assert_eq!(status, 0, "GetSecurityInfo");
-            let mut text = ptr::null_mut();
-            let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                descriptor,
-                SDDL_REVISION_1,
-                DACL_SECURITY_INFORMATION,
-                &mut text,
-                ptr::null_mut(),
-            );
-            assert_ne!(converted, 0);
-            LocalFree(descriptor);
-            take_string(text)
+            dacl_text(descriptor)
         }
+    }
+
+    /// `sddl` as Windows writes it back: a well-known account such as the
+    /// built-in Administrator (`…-500`, a CI runner's user) comes out as
+    /// its alias (`LA`), the same as in [`dacl_of`].
+    pub fn canonical_dacl(sddl: &str) -> String {
+        let wide: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
+        unsafe {
+            let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+            assert_ne!(
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    ptr::null_mut(),
+                ),
+                0,
+                "{sddl} is not a security descriptor"
+            );
+            dacl_text(descriptor)
+        }
+    }
+
+    /// The access list of `descriptor` as SDDL; frees `descriptor`.
+    unsafe fn dacl_text(descriptor: PSECURITY_DESCRIPTOR) -> String {
+        let mut text = ptr::null_mut();
+        let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut text,
+            ptr::null_mut(),
+        );
+        assert_ne!(converted, 0);
+        LocalFree(descriptor);
+        take_string(text)
     }
 
     pub fn current_user_sid() -> String {
