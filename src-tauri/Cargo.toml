@@ -1,5 +1,6 @@
 [package]
 name = "enodix"
+publish = false
 description = "Tauri shell of enodix: a thin adapter over enodix-core."
 version.workspace = true
 edition.workspace = true

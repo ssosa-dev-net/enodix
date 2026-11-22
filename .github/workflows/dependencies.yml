@@ -1,0 +1,66 @@
+# Checks the dependencies: `cargo deny check` (known vulnerabilities and
+# unsoundness, unmaintained crates, licences, sources: deny.toml) and
+# `npm audit` for the interface's packages. Also every Monday, so that an
+# advisory published after the last change is caught.
+name: Dependencies
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependencies-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # cargo-deny, pinned (deny.toml is written for it).
+  CARGO_DENY_VERSION: 0.20.2
+
+jobs:
+  rust:
+    name: Rust dependencies (cargo deny)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: cargo-deny
+      - name: Install cargo-deny
+        run: |
+          if ! cargo deny --version 2>/dev/null | grep -qx "cargo-deny $CARGO_DENY_VERSION"; then
+            cargo install cargo-deny --locked --version "$CARGO_DENY_VERSION"
+          fi
+          cargo deny --version
+      - name: cargo deny check
+        run: cargo deny check
+
+  npm:
+    name: npm packages (npm audit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # The packages that ship in the app (the build tools are not audited:
+      # they never reach a user).
+      - name: npm audit (production packages)
+        run: npm audit --omit=dev
