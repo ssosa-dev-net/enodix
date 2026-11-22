@@ -21,7 +21,7 @@ These need no key and no environment variables and write to
 Linux packages and `SHA256SUMS.txt`, with no `.sig` and no `latest.json`.
 The app in them has no updater and no release server, so it never checks
 for or installs an update; people install the next version by hand.
-Versions 0.1.0 to 0.4.1 were made this way and published on the tracker's
+Versions 0.1.0 to 0.5.0 were made this way and published on the tracker's
 release page as pre-releases. The first signed release starts the updater:
 copies of a pre-release cannot update themselves to it.
 
@@ -210,6 +210,16 @@ equivalent, or publish the file at a fixed address yourself.
    the .deb in WSL and run `npm run test:linux-desktop` (also with
    `--backend x11` and `--app <the AppImage>`), then check what it cannot
    on a real desktop with the list in `docs/linux.md`.
+
+7. Clean up, so build output does not pile up (it reached hundreds of
+   gigabytes once). Everything published can be downloaded again:
+   - in `target/dist/`, keep only the folder of the release just
+     published (the next release's installer check needs its
+     `setup.exe` as the previous version) and remove the older ones
+     and the `stage-*` folders;
+   - remove `target/debug`, `target/release` and `target/sandbox`;
+   - in WSL, remove `~/netterm-linux-check/target` and the packages
+     the Linux build left there.
 
 The release build replaces `target/release/netterm.exe` with one that
 has the updater; run `npm run app:build` again before the smoke test.
