@@ -1,0 +1,26 @@
+name: Feature request
+description: Something enodix should do that it does not do yet.
+labels: ["needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do in your work, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you would like enodix to do it. Rough is fine.
+  - type: textarea
+    id: devices
+    attributes:
+      label: Devices and platforms
+      description: Which vendors and software versions it matters for, if any.
+  - type: textarea
+    id: today
+    attributes:
+      label: How you do it today
+      description: Another tool, a script, or by hand.
