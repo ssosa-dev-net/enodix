@@ -1,4 +1,4 @@
-//! The Files tab's transfers through `netterm_core::files::FileBrowsers`
+//! The Files tab's transfers through `enodix_core::files::FileBrowsers`
 //! (#106), against the test SSH server: uploads into the folder shown and
 //! downloads of named files into a local folder, which names are already
 //! there (on the device and locally), the transfer states the interface
@@ -14,12 +14,12 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use netterm_core::files::{
+use enodix_core::files::{
     existing_locally, follow, Added, BrowseError, BrowserEvent, BrowserId, Direction, FileBrowsers,
     Listing, TransferState, TransferWatch,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::{HostKeyDecision, SshTarget};
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::{HostKeyDecision, SshTarget};
 use support::scp::ScpQuirk;
 use support::{known_hosts, TestSshServer, CODE_QUESTION, ONE_TIME_CODE, OTP_USERNAME, WAIT};
 use tempfile::TempDir;
@@ -489,8 +489,8 @@ async fn the_test_shell_turns_scp_off_and_on_for_the_smoke_test() {
     let (server, _remote, browsers, id, _) = scp_only().await;
     let manager = support::manager();
     let (session, mut shell) = manager.open(
-        netterm_core::session::SessionTarget::Ssh(server.target()),
-        netterm_core::session::TerminalSize { cols: 80, rows: 24 },
+        enodix_core::session::SessionTarget::Ssh(server.target()),
+        enodix_core::session::TerminalSize { cols: 80, rows: 24 },
     );
     support::next_state(&mut shell).await;
     support::next_state(&mut shell).await;

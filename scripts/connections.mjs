@@ -3,9 +3,9 @@
 // connect only to what the test set up on this computer.
 //
 // `scripts/watch-connections.ps1` samples the TCP and UDP tables of the
-// app's processes (netterm.exe and netterm-cli.exe started by this node
+// app's processes (enodix.exe and enodix-cli.exe started by this node
 // process, and everything they start: WebView2, the Python the app runs,
-// the netterm-cli a script runs) and prints each endpoint it has not seen
+// the enodix-cli a script runs) and prints each endpoint it has not seen
 // before; this module judges each one as it arrives. Allowed:
 //
 // - a listening socket on a loopback address;
@@ -18,8 +18,7 @@
 //   network process points at a fixed address to ask Windows whether IPv6
 //   works (it sends nothing, which the network log is checked for).
 //
-// Anything else is a problem, kept with the step that was running. What it
-// cannot see is in the testing notes.
+// Anything else is a problem, kept with the step that was running.
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -173,7 +172,7 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
     return (
       event.name === "msedgewebview2.exe" &&
       processes.get(parent)?.name === "msedgewebview2.exe" &&
-      processes.get(processes.get(parent)?.parent)?.name === "netterm.exe"
+      processes.get(processes.get(parent)?.parent)?.name === "enodix.exe"
     );
   };
   const judge = (event) => {

@@ -5,9 +5,9 @@
 
 use std::fs;
 
-use netterm_core::paste::{plan_paste, PasteSafety, MAX_PASTE_LINE_DELAY_MS};
-use netterm_core::preferences::Preferences;
-use netterm_core::workspace::{
+use enodix_core::paste::{plan_paste, PasteSafety, MAX_PASTE_LINE_DELAY_MS};
+use enodix_core::preferences::Preferences;
+use enodix_core::workspace::{
     EditError, Effective, Environment, HostId, Origin, Settings, Workspace,
 };
 use tempfile::TempDir;
@@ -219,7 +219,7 @@ fn a_production_snippet_of_several_lines_waits_for_confirmation() {
     .unwrap();
     let workspace = Workspace::open(workspace.root()).unwrap();
     let id = HostId::new("Prod/core-r1.yaml");
-    let mut answers = netterm_core::template::Variables::new();
+    let mut answers = enodix_core::template::Variables::new();
     answers.set("port", "Gi0/1");
     let lines = workspace
         .expand_snippet("shut", Some(&id), &answers)

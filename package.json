@@ -1,5 +1,5 @@
 {
-  "name": "netterm",
+  "name": "enodix",
   "private": true,
   "version": "0.5.0",
   "license": "GPL-3.0-only",
@@ -12,9 +12,9 @@
     "app:build": "tauri build --no-bundle",
     "test": "cargo test --workspace",
     "smoke": "node scripts/smoke.mjs",
-    "smoke:hidden": "py scripts/run-on-desktop.py netterm-smoke target/smoke-hidden.log node scripts/smoke.mjs",
+    "smoke:hidden": "py scripts/run-on-desktop.py enodix-smoke target/smoke-hidden.log node scripts/smoke.mjs",
     "smoke:sandbox": "node scripts/sandbox.mjs smoke",
-    "test:lab": "cargo build -p netterm-cli && cargo test -p netterm-core --test containerlab -- --ignored --nocapture --test-threads=1",
+    "test:lab": "cargo build -p enodix-cli && cargo test -p enodix-core --test containerlab -- --ignored --nocapture --test-threads=1",
     "test:python": "node scripts/test-python.mjs",
     "test:linux": "node scripts/test-linux.mjs",
     "test:linux-desktop": "node scripts/linux-desktop-check.mjs",

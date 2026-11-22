@@ -1,14 +1,14 @@
 # The part of scripts/sandbox.mjs that runs inside Windows Sandbox (#139), as
 # its logon command, in the sandbox's own administrator account
 # (WDAGUtilityAccount, a local account with no Microsoft account). It reads
-# C:\netterm-out\job.json, writes its log to C:\netterm-out\sandbox.log, the
-# test's to smoke.log or installer.log, and C:\netterm-out\done.json with the
+# C:\enodix-out\job.json, writes its log to C:\enodix-out\sandbox.log, the
+# test's to smoke.log or installer.log, and C:\enodix-out\done.json with the
 # exit code last; then it shuts the sandbox down, which ends it.
 #
 # Smoke mode: the built app, the test server and the tree's files are copied
-# from their read-only folders to C:\netterm (the smoke test writes beside
+# from their read-only folders to C:\enodix (the smoke test writes beside
 # the app), Node and Python are used where they are mapped, and
-# scripts/smoke.mjs runs from C:\netterm with SMOKE_APP_FOLDER,
+# scripts/smoke.mjs runs from C:\enodix with SMOKE_APP_FOLDER,
 # SMOKE_TEST_SERVER, SMOKE_PYTHON, SMOKE_SCREENSHOTS, SMOKE_NET_LOGS and
 # SMOKE_WEBVIEW2_POLICY set.
 #
@@ -16,7 +16,7 @@
 # throwaway Windows allows (scripts/sandbox-installer.ps1).
 
 $ErrorActionPreference = "Stop"
-$out = "C:\netterm-out"
+$out = "C:\enodix-out"
 $log = Join-Path $out "sandbox.log"
 $code = 1
 
@@ -25,7 +25,7 @@ function Say([string]$text) {
   Add-Content -Path $log -Value $line -Encoding UTF8
 }
 
-# What this Windows has, for the record (the testing notes).
+# What this Windows has, for the record.
 function Facts {
   $os = Get-CimInstance Win32_OperatingSystem
   Say "Windows: $($os.Caption) $($os.Version), user $(whoami), administrator: $(([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
@@ -46,11 +46,11 @@ function Copy-Into([string]$from, [string]$to) {
 
 function Smoke($job) {
   $f = $job.folders
-  $root = "C:\netterm"
+  $root = "C:\enodix"
   Copy-Into $f.tree $root
   $app = Join-Path $root "app"
   New-Item -ItemType Directory -Force $app | Out-Null
-  foreach ($file in "netterm.exe", "netterm-cli.exe") { Copy-Item (Join-Path $f.app $file) $app }
+  foreach ($file in "enodix.exe", "enodix-cli.exe") { Copy-Item (Join-Path $f.app $file) $app }
   Copy-Into (Join-Path $f.app "python") (Join-Path $app "python")
   $server = Join-Path $root "server"
   New-Item -ItemType Directory -Force $server | Out-Null
@@ -69,13 +69,13 @@ function Smoke($job) {
   $keys = $job.fixtureKeys
   $drive = Split-Path -Qualifier $keys
   if (-not (Test-Path "$drive\")) {
-    $base = "C:\netterm-drive-$($drive.TrimEnd(':'))"
+    $base = "C:\enodix-drive-$($drive.TrimEnd(':'))"
     New-Item -ItemType Directory -Force $base | Out-Null
     & subst.exe $drive $base
   }
   Copy-Into (Join-Path $root "crates\core\tests\fixtures\keys") $keys
   Say "the test server's fixture keys are at $keys, where it was built to read them"
-  foreach ($program in (Join-Path $app "netterm-cli.exe"), (Join-Path $server "test_ssh_server.exe")) {
+  foreach ($program in (Join-Path $app "enodix-cli.exe"), (Join-Path $server "test_ssh_server.exe")) {
     $started = Start-Process -FilePath $program -ArgumentList "--version" -NoNewWindow -Wait -PassThru -RedirectStandardOutput (Join-Path $out "version.txt") -RedirectStandardError (Join-Path $out "version-error.txt")
     $said = ((Get-Content (Join-Path $out "version.txt") -Raw) + (Get-Content (Join-Path $out "version-error.txt") -Raw)) -replace '\s+', ' '
     Say "$(Split-Path -Leaf $program) --version: exit code $('0x{0:X8}' -f $started.ExitCode) $said"
@@ -104,7 +104,7 @@ function Smoke($job) {
 
 function Installer($job) {
   $f = $job.folders
-  $root = "C:\netterm"
+  $root = "C:\enodix"
   Copy-Into $f.tree $root
   $installers = Join-Path $root "installers"
   New-Item -ItemType Directory -Force (Join-Path $installers "old"), (Join-Path $installers "new") | Out-Null

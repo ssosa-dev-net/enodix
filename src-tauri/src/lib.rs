@@ -1,4 +1,4 @@
-//! The Tauri shell: a thin adapter that exposes `netterm-core` to the
+//! The Tauri shell: a thin adapter that exposes `enodix-core` to the
 //! interface. No behaviour lives here; it only translates between the
 //! interface's messages and the core's workspace and session interfaces.
 
@@ -7,39 +7,39 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use netterm_core::app_state::{resolved_path, AppState, KnownWorkspace};
-use netterm_core::configs::{BackedUpHost, ConfigStore, ConfigVersion};
-use netterm_core::credentials::{
+use enodix_core::app_state::{resolved_path, AppState, KnownWorkspace};
+use enodix_core::configs::{BackedUpHost, ConfigStore, ConfigVersion};
+use enodix_core::credentials::{
     prepare_workspace, vault_file, ActiveStore, AgentEndpoint, AgentServer, HostLogin,
     KeychainStore, MemoryStore, ProfileDraft, ProfileError, ProfileSummary, Profiles, Secrets,
     VaultError, VaultStatus,
 };
-use netterm_core::data_folders;
-use netterm_core::diff::DiffLine;
-use netterm_core::enrich::{self, EnrichPreview, EnrichReport};
-use netterm_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
-use netterm_core::history::{self, LeftHistory};
-use netterm_core::import::csv::{
+use enodix_core::data_folders;
+use enodix_core::diff::DiffLine;
+use enodix_core::enrich::{self, EnrichPreview, EnrichReport};
+use enodix_core::highlight::{HighlightRule, Highlighter, ListedRule, Span};
+use enodix_core::history::{self, LeftHistory};
+use enodix_core::import::csv::{
     suggest_mapping, ColumnTarget, CsvImport, CsvTable, ImportPreview, Separator,
 };
-use netterm_core::import::nornir::{NornirImport, NornirInventory, NornirPreview};
-use netterm_core::import::ImportReport;
-use netterm_core::job::results::{OutputRef, RunList, RunStore, SearchHit, StoredRun};
-use netterm_core::job::{
+use enodix_core::import::nornir::{NornirImport, NornirInventory, NornirPreview};
+use enodix_core::import::ImportReport;
+use enodix_core::job::results::{OutputRef, RunList, RunStore, SearchHit, StoredRun};
+use enodix_core::job::{
     self, JobEvent, JobOptions, JobPlan, JobStep, JobTarget, KeptPlan, KeptPlans, LiveJob,
     LiveJobs, LoginBackup, LoginBackupOutcome, NewLiveJob, PlanId, RunningJobs,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::layout::{
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::layout::{
     InputOrigin, LayoutError, PaneId, Split, TabId, View, WindowId, WindowView, Windows,
 };
-use netterm_core::logging::{LogFolder, SessionLog};
-use netterm_core::paste::{
+use enodix_core::logging::{LogFolder, SessionLog};
+use enodix_core::paste::{
     confirm_joining, plan_group_paste, plan_paste, GroupPastePlan, PastePlan, PasteSafety,
 };
-use netterm_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
-use netterm_core::preferences::{FontZoom, Preferences, Theme};
-use netterm_core::session::{
+use enodix_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
+use enodix_core::preferences::{FontZoom, Preferences, Theme};
+use enodix_core::session::{
     AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, HostKeyDecision,
     HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms, OpenOptions,
     Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent, SessionId,
@@ -47,9 +47,9 @@ use netterm_core::session::{
     SshAuth, SshTarget, TerminalSize, Transport, TypedLogin, WhenConnected,
     DEFAULT_CONNECT_TIMEOUT,
 };
-use netterm_core::template::Variables;
-use netterm_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
-use netterm_core::workspace::{
+use enodix_core::template::Variables;
+use enodix_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
+use enodix_core::workspace::{
     folder_kind, EditError, EffectiveSettings, ExpandError, FilterView, Folder, FolderDeletion,
     FolderKind, Host, HostId, HostMove, HostWebLink, Moved, Problem, Protocol, ResolvedHost, Role,
     SavedFilter, SavedJob, SearchResults, Settings, Snippet, Unavailable, WatchOptions, Workspace,
@@ -68,20 +68,20 @@ mod session_windows;
 
 /// Overrides the per-user application data folder (the smoke test uses it to
 /// start from a known state).
-const DATA_DIR_VARIABLE: &str = "NETTERM_DATA_DIR";
+const DATA_DIR_VARIABLE: &str = "ENODIX_DATA_DIR";
 
 /// Set to `memory` to keep credential profiles in memory instead of the OS
 /// keychain (the smoke test uses it, so that it never touches the keychain).
-const CREDENTIAL_STORE_VARIABLE: &str = "NETTERM_CREDENTIAL_STORE";
+const CREDENTIAL_STORE_VARIABLE: &str = "ENODIX_CREDENTIAL_STORE";
 
 /// Set to a file path to have web links written there, one URL per line,
 /// instead of opened in the browser (the smoke test uses it, so that it
 /// never starts a browser).
-const WEB_LINKS_TO_VARIABLE: &str = "NETTERM_WEB_LINKS_TO";
+const WEB_LINKS_TO_VARIABLE: &str = "ENODIX_WEB_LINKS_TO";
 
 /// Overrides the release manifest's address (the smoke test points it at a
 /// local server). A release build has its own, from the release script.
-const UPDATE_ENDPOINT_VARIABLE: &str = "NETTERM_UPDATE_ENDPOINT";
+const UPDATE_ENDPOINT_VARIABLE: &str = "ENODIX_UPDATE_ENDPOINT";
 
 /// What every window's WebView2 is started with (#115). wry's own defaults
 /// (no mini menu, no PDF menu, no SmartScreen, sound without a click),
@@ -1108,7 +1108,7 @@ fn highlight_lines(shell: State<'_, Shell>, lines: Vec<String>) -> Vec<Vec<Span>
 /// The highlight rules when no workspace is open: the built-in ones.
 #[tauri::command]
 fn highlight_built_in_rules() -> Vec<ListedRule> {
-    netterm_core::highlight::built_in_rules()
+    enodix_core::highlight::built_in_rules()
 }
 
 /// Saves a highlight rule in place of the one called `previous`, or as a
@@ -1616,7 +1616,7 @@ fn saved_job_save(
 /// their names look like secrets, so they are asked at each run.
 #[tauri::command]
 fn saved_job_secret_answers(step: JobStep) -> Vec<String> {
-    netterm_core::workspace::secret_answers(&step)
+    enodix_core::workspace::secret_answers(&step)
 }
 
 /// Deletes the saved job `name` from the workspace's jobs file.
@@ -2004,7 +2004,7 @@ fn config_backed_up(
     shell: State<'_, Shell>,
     configs: State<'_, Configs>,
 ) -> Result<Vec<BackedUpHost>, String> {
-    fn walk(folder: &netterm_core::workspace::Folder, ids: &mut Vec<HostId>) {
+    fn walk(folder: &enodix_core::workspace::Folder, ids: &mut Vec<HostId>) {
         ids.extend(folder.hosts.iter().map(|host| host.id.clone()));
         for child in &folder.folders {
             walk(child, ids);
@@ -2270,9 +2270,9 @@ fn logs_open_folder(app: AppHandle, shell: State<'_, Shell>, id: HostId) -> Resu
         shell.logs.create_host_folder(workspace, &id)
     })?
     .map_err(|error| format!("cannot create the log folder: {error}"))?;
-    let opened = if netterm_core::opener::in_a_bundle() {
+    let opened = if enodix_core::opener::in_a_bundle() {
         // From an AppImage: the file manager must not get its variables.
-        netterm_core::opener::open_detached(&folder).map_err(|error| error.to_string())
+        enodix_core::opener::open_detached(&folder).map_err(|error| error.to_string())
     } else {
         app.opener()
             .open_path(folder.display().to_string(), None::<&str>)
@@ -2311,7 +2311,7 @@ fn web_link_open(
 }
 
 /// Opens `url` (already checked by the core) in the default browser, or
-/// records it in the `NETTERM_WEB_LINKS_TO` file.
+/// records it in the `ENODIX_WEB_LINKS_TO` file.
 fn open_in_browser(app: &AppHandle, url: &str) -> Result<(), String> {
     match std::env::var_os(WEB_LINKS_TO_VARIABLE) {
         Some(file) => {
@@ -2324,7 +2324,7 @@ fn open_in_browser(app: &AppHandle, url: &str) -> Result<(), String> {
                 .map_err(|error| format!("cannot record {url}: {error}"))?;
         }
         // From an AppImage: the browser must not get its variables.
-        None if netterm_core::opener::in_a_bundle() => netterm_core::opener::open_detached(url)
+        None if enodix_core::opener::in_a_bundle() => enodix_core::opener::open_detached(url)
             .map_err(|error| format!("cannot open {url} in the browser: {error}"))?,
         None => app
             .opener()
@@ -2452,7 +2452,7 @@ async fn session_reconnect(
 ) -> Result<Reconnected, ReconnectFailure> {
     let window = calling_window(&window)?;
     let session = SessionId(id);
-    let failed = |error: netterm_core::session::SessionError| error.to_string();
+    let failed = |error: enodix_core::session::SessionError| error.to_string();
     // A quick connection has no origin: it reconnects as made.
     let worked_out = match manager.origin(session).map_err(failed)? {
         None => None,
@@ -3033,7 +3033,7 @@ fn group_join_check(joining: Vec<Joining>) -> Vec<TabId> {
     confirm_joining(&joining)
 }
 
-/// The update check (`netterm_core::update`) and, in a release build, the
+/// The update check (`enodix_core::update`) and, in a release build, the
 /// Tauri updater that installs what the user agreed to.
 struct Updates {
     checker: UpdateChecker,
@@ -3381,7 +3381,7 @@ pub fn run() {
             app.manage(SessionManager::new(known_hosts.clone()));
             // The Files tab's connections (#103) check the same keys.
             app.manage(files::FileTabs {
-                browsers: netterm_core::files::FileBrowsers::new(),
+                browsers: enodix_core::files::FileBrowsers::new(),
                 known_hosts,
             });
             app.manage(Tabs::new());
@@ -3659,7 +3659,7 @@ pub fn run() {
 /// does and a Python setup under way is stopped, waiting a bounded time
 /// for them to end and their runs to be kept. (A crash or a kill runs
 /// nothing: a script's processes end with the app all the same, see
-/// `netterm_core::job`.)
+/// `enodix_core::job`.)
 fn end_with_the_app(app: &AppHandle) {
     let until = std::time::Instant::now() + job::APP_CLOSE_WAIT;
     let setup = app.state::<Arc<python::PythonSetup>>().cancel_running();

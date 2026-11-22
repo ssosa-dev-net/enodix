@@ -1,7 +1,7 @@
 //! The window's session layout: tabs in panes, panes split side by side or
 //! one above the other. The multi-send group spans windows: `windows.rs`.
 
-use netterm_core::layout::{Layout, LayoutError, Node, PaneId, Split, TabId, TabKind, View};
+use enodix_core::layout::{Layout, LayoutError, Node, PaneId, Split, TabId, TabKind, View};
 use serde_json::json;
 
 /// The tabs of `pane`, in order.

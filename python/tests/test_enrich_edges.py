@@ -12,7 +12,7 @@ import time
 from typing import Any, Callable, Dict, List
 from unittest import mock
 
-from netterm import enrich
+from enodix import enrich
 
 from support import BridgeTest
 
@@ -54,9 +54,9 @@ class Misbehaving(BridgeTest):
         return mock.patch.dict(
             os.environ,
             {
-                "NETTERM_WORKSPACE": str(self.workspace.root),
-                "NETTERM_JOB_TARGETS": str(path),
-                "NETTERM_FACTS_FILE": str(self.facts_file),
+                "ENODIX_WORKSPACE": str(self.workspace.root),
+                "ENODIX_JOB_TARGETS": str(path),
+                "ENODIX_FACTS_FILE": str(self.facts_file),
             },
         )
 

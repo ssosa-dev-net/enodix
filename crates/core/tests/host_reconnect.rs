@@ -9,16 +9,16 @@ mod support;
 
 use std::fs;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::job::SessionLogin;
-use netterm_core::session::{
+use enodix_core::job::SessionLogin;
+use enodix_core::session::{
     CloseReason, HostSession, HostWay, OpenError, OpenOptions, ReconnectRefused, Reconnection,
     SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth, TerminalSize,
     TypedLogin,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use support::{
     closed_port, next_prompt, next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT,
     USERNAME,
@@ -157,7 +157,7 @@ async fn exit(manager: &SessionManager, id: SessionId, events: &mut SessionEvent
     ));
 }
 
-fn ssh(session: &HostSession) -> &netterm_core::session::SshTarget {
+fn ssh(session: &HostSession) -> &enodix_core::session::SshTarget {
     match &session.target {
         SessionTarget::Ssh(target) => target,
         _ => panic!("an SSH session"),

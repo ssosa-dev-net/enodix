@@ -1,10 +1,10 @@
 """Fill in from devices: the script the app runs (``python -m
-netterm.enrich``) to fetch each host's vendor, model, serial number and OS
+enodix.enrich``) to fetch each host's vendor, model, serial number and OS
 version with NAPALM.
 
-The app starts it as a script job. ``NETTERM_JOB_TARGETS`` names the job's
+The app starts it as a script job. ``ENODIX_JOB_TARGETS`` names the job's
 hosts and the NAPALM driver of each (chosen by the app from the host's
-platform definition); ``NETTERM_FACTS_FILE`` names the file the facts go
+platform definition); ``ENODIX_FACTS_FILE`` names the file the facts go
 to, rewritten after every host::
 
     {"format": 1, "hosts": [
@@ -15,7 +15,7 @@ to, rewritten after every host::
 
 Each host logs in with its own credential profile, handed over by the
 app. Hosts behind jump hosts are reached through the binary's loopback
-tunnels (:func:`netterm.tunnels`); NAPALM's drivers that log in through
+tunnels (:func:`enodix.tunnels`); NAPALM's drivers that log in through
 Netmiko (``ios``, ``nxos_ssh``, and ``eos`` as run here, over SSH) then
 check the device's host key against the keys the app trusts. Nothing is written to the workspace here: the app shows what the
 devices report and fills in what the user applies. NAPALM is the user's
@@ -38,9 +38,9 @@ from . import Tunnels, credentials, inventory, tunnels
 from ._tunnel import host_key_options
 
 #: The variable naming the file the facts go to.
-FACTS_VARIABLE = "NETTERM_FACTS_FILE"
+FACTS_VARIABLE = "ENODIX_FACTS_FILE"
 #: The variable naming the job's targets file.
-TARGETS_VARIABLE = "NETTERM_JOB_TARGETS"
+TARGETS_VARIABLE = "ENODIX_JOB_TARGETS"
 #: The version of the facts file's format.
 FORMAT = 1
 #: The facts NAPALM's ``get_facts`` gives that the app fills in.
@@ -67,8 +67,8 @@ def driver_arguments(
     tunnel: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """The keyword arguments of NAPALM's driver class ``driver`` for the
-    exported ``host`` and its ``login`` (``netterm-cli credentials``),
-    through ``tunnel`` (an entry of :attr:`netterm.Tunnels.hosts`) if the
+    exported ``host`` and its ``login`` (``enodix-cli credentials``),
+    through ``tunnel`` (an entry of :attr:`enodix.Tunnels.hosts`) if the
     host is behind jump hosts."""
     settings = host.get("settings") or {}
     optional: Dict[str, Any] = {}

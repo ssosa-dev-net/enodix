@@ -1,16 +1,16 @@
-# Where netterm keeps your passwords, and what it connects to
+# Where enodix keeps your passwords, and what it connects to
 
 This page is for a network engineer deciding whether to put their logins
-in netterm, and for the security team that has to approve it. It says
+in enodix, and for the security team that has to approve it. It says
 where passwords, key passphrases and named secrets are kept, what is
 encrypted and what is not, how scripts get a login, every connection the
 app can make and why, and what the app does not protect you from.
 
 Everything here was checked against the source code of the version it
 ships with. The paths are those of Windows unless a Linux path is given.
-`<data folder>` is `%APPDATA%\dev.netterm.app` and `<local folder>` is
-`%LOCALAPPDATA%\dev.netterm.app`; on Linux both are
-`~/.local/share/dev.netterm.app`.
+`<data folder>` is `%APPDATA%\dev.enodix.app` and `<local folder>` is
+`%LOCALAPPDATA%\dev.enodix.app`; on Linux both are
+`~/.local/share/dev.enodix.app`.
 
 ## In short
 
@@ -54,8 +54,8 @@ copy of the key.
 ### Windows Credential Manager (the default)
 
 Each profile is one generic credential named
-`dev.netterm.app:<workspace id>:<profile name in lower case>`, and each
-named secret one named `dev.netterm.app.secret:<workspace id>:<secret name in
+`dev.enodix.app:<workspace id>:<profile name in lower case>`, and each
+named secret one named `dev.enodix.app.secret:<workspace id>:<secret name in
 lower case>`. The credential's secret is the profile (or the secret) as
 JSON, passwords included. You can see the entries under **Control Panel,
 Credential Manager, Windows Credentials**.
@@ -67,15 +67,15 @@ as you can.
 
 Credential Manager can lose a change, or hand back the value before it,
 when two programs change it at the same moment. Copies of the app and
-`netterm-cli` therefore take turns at it (through a named mutex, which
+`enodix-cli` therefore take turns at it (through a named mutex, which
 holds nothing), and the app reads every save back before calling it done:
 a change Credential Manager did not keep is an error, and nothing is
 reported saved. Another program writing Credential Manager at the same
 moment can still undo a change a moment later, and the app cannot see
 or prevent that.
 
-`netterm-cli clear-keychain` removes every entry named `dev.netterm.app:*` or
-`dev.netterm.app.secret:*`; the uninstaller runs it when you tick its data
+`enodix-cli clear-keychain` removes every entry named `dev.enodix.app:*` or
+`dev.enodix.app.secret:*`; the uninstaller runs it when you tick its data
 box.
 
 ### The vault (if you turn it on)
@@ -170,13 +170,13 @@ may still hold a copy of them.
 ## How a script gets a login
 
 Scripts never need a password written in them. The Python package
-`netterm` asks the headless binary `netterm-cli` (`credentials`, `secret`),
+`enodix` asks the headless binary `enodix-cli` (`credentials`, `secret`),
 which asks the running app over its **credential agent**:
 
-- On Windows, a named pipe `\\.\pipe\netterm-agent-<id>` (the id is made
+- On Windows, a named pipe `\\.\pipe\enodix-agent-<id>` (the id is made
   from the data folder's path). Only your Windows account may open it (its
   access list grants your account alone), and connections from other
-  computers are refused. `netterm-cli` checks that the program serving the
+  computers are refused. `enodix-cli` checks that the program serving the
   pipe runs as you before asking it anything, so a program of another user
   that took the name first gets nothing.
 - On Linux, a socket `<data folder>/agent.sock` that only you may open
@@ -184,23 +184,23 @@ which asks the running app over its **credential agent**:
 
 The agent only answers: nothing can be listed, stored or changed through
 it. If the app is not running, or its vault is still locked,
-`netterm-cli` reads Credential Manager
+`enodix-cli` reads Credential Manager
 itself, or opens the vault after asking for the master password on the
 terminal (never on its command line or from the environment); with no
 terminal, as in a job the app runs, a locked vault is refused.
 
-The login travels from the app to `netterm-cli` over the pipe and from
-`netterm-cli` to the script over its output pipe. It is not written to disk
+The login travels from the app to `enodix-cli` over the pipe and from
+`enodix-cli` to the script over its output pipe. It is not written to disk
 and not put in the environment; the buffers that held it are wiped. Once
 the script has it, it is in the script's memory (and in Nornir's host
 objects, with the Nornir plugin) like any login your own code holds.
 
 When the app runs a script as a job, it gives it these environment
-variables, none of which holds a secret: `NETTERM_WORKSPACE` (the workspace
-folder), `NETTERM_CLI` (where `netterm-cli` is), `NETTERM_DATA_DIR` (so
-`netterm-cli` finds this app's agent), `NETTERM_JOB_TARGETS` (a temporary
+variables, none of which holds a secret: `ENODIX_WORKSPACE` (the workspace
+folder), `ENODIX_CLI` (where `enodix-cli` is), `ENODIX_DATA_DIR` (so
+`enodix-cli` finds this app's agent), `ENODIX_JOB_TARGETS` (a temporary
 file listing the job's hosts, removed when the job ends) and, for **Fill in
-from devices**, `NETTERM_FACTS_FILE`. `netterm-cli` then hands out only the
+from devices**, `ENODIX_FACTS_FILE`. `enodix-cli` then hands out only the
 logins of the job's hosts. That limit guards against mistakes; it is not a
 sandbox: a script can drop the variable, and any program running as you
 can ask the agent for any login of any workspace while the app runs.
@@ -217,7 +217,7 @@ can ask the agent for any login of any workspace while the app runs.
 | A Files tab, a file job                | You                                                                   | The host over SSH (SFTP, or SCP)                               |
 | A job (snippet, config backup)         | You, with **Start**                                                   | Each host of the job                                           |
 | A script job, **Fill in from devices** | You, with **Start**                                                   | Whatever the script connects to (your code)                    |
-| A tunnel for a script                  | A script, through `netterm-cli tunnel`                                | Listens on `127.0.0.1`; reaches the device through the jump hosts |
+| A tunnel for a script                  | A script, through `enodix-cli tunnel`                                | Listens on `127.0.0.1`; reaches the device through the jump hosts |
 | The Python setup                       | You, after confirming its list                                        | The package index, only for libraries you ticked               |
 | A web link, a release's page           | You, with a click                                                     | Your web browser opens it, not the app                         |
 | The SSH agent                          | You, with a profile that uses it                                      | The agent on this computer (a pipe, not the network)           |
@@ -243,7 +243,7 @@ revocation status from its issuer to do so).
 - Only a build made by the release script with a release server's address
   knows one. Development builds and unsigned pre-releases (the releases so
   far) have none and check nothing, unless the
-  environment variable `NETTERM_UPDATE_ENDPOINT` names one (the tests use
+  environment variable `ENODIX_UPDATE_ENDPOINT` names one (the tests use
   it). That address must be HTTPS, or plain HTTP to this computer.
 - Nothing is downloaded until you click **Install and restart**, and only
   an installed copy offers that. The updater then fetches `latest.json`
@@ -254,7 +254,7 @@ revocation status from its issuer to do so).
 
 ### Tunnels for scripts
 
-`netterm-cli tunnel` (which the Python package and its Nornir plugin start
+`enodix-cli tunnel` (which the Python package and its Nornir plugin start
 for hosts behind jump hosts) listens on `127.0.0.1` only, on a port the
 system picks, one per host and per device port the script names. It
 connects to the jump hosts first and to the device only when a program
@@ -491,6 +491,5 @@ The end-to-end smoke test (`scripts/smoke.mjs`) runs the built app through
 everything it can do: sessions, jump hosts, files, jobs, scripts, the
 Python setup, the vault, restarts. All along it watches the connections of
 the app's processes (the app, WebView2, the Python it runs and
-`netterm-cli`) and the names WebView2 looks up, and fails if any of them
-reaches anything but the test's own servers on this computer. How it
-measures, and what it cannot see, is in the testing notes.
+`enodix-cli`) and the names WebView2 looks up, and fails if any of them
+reaches anything but the test's own servers on this computer.

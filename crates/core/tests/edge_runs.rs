@@ -8,11 +8,11 @@ mod support;
 use std::fs;
 use std::time::{Duration, Instant, SystemTime};
 
-use netterm_core::job::results::{
+use enodix_core::job::results::{
     OutputRef, ResultsError, RunList, RunStore, StoredRun, RUN_FILE, SAVE_EVERY,
 };
-use netterm_core::job::{HostResult, HostState, JobEvent, JobPlan, JobReport};
-use netterm_core::workspace::HostId;
+use enodix_core::job::{HostResult, HostState, JobEvent, JobPlan, JobReport};
+use enodix_core::workspace::HostId;
 use support::jobs::{folder, host_at, snippet, Lab};
 
 /// A workspace of `hosts` hosts (never connected to) with a snippet.
@@ -477,7 +477,7 @@ fn a_second_listing_sees_every_change_since_the_first() {
 }
 
 #[test]
-#[ignore = "heavy: 5 000 run folders written to disk (a minute); `cargo test -p netterm-core --test edge_runs -- --ignored --nocapture`"]
+#[ignore = "heavy: 5 000 run folders written to disk (a minute); `cargo test -p enodix-core --test edge_runs -- --ignored --nocapture`"]
 fn five_thousand_kept_runs_list() {
     let took = list_many(5000).first;
     assert!(took < Duration::from_secs(30), "{took:?}");

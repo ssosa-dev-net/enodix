@@ -1,4 +1,4 @@
-//! The UI-free core of netterm.
+//! The UI-free core of enodix.
 //!
 //! All behaviour lives in this crate. The Tauri shell is a thin adapter over
 //! its public API and the interface only renders; that public API is also the

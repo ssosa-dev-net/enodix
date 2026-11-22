@@ -6,7 +6,7 @@
 //! terminal" is a pseudo terminal the test types into.
 //!
 //! Every run gets its own data folder and its own keychain prefix
-//! (`netterm-test-<hex>`), so nothing here touches the app's real entries.
+//! (`enodix-test-<hex>`), so nothing here touches the app's real entries.
 
 use std::fs;
 use std::hash::BuildHasher;
@@ -16,7 +16,7 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     vault_file, ActiveStore, AgentEndpoint, AgentServer, CredentialProfile, CredentialStore,
     KdfParams, MemoryStore, ProfileAuth, ScopedProfile, ScopedSecret, SecretValue, StoreContents,
     Vault,
@@ -29,7 +29,7 @@ use tempfile::TempDir;
 #[path = "../../core/tests/support/keychain.rs"]
 mod keychain_support;
 
-const BINARY: &str = env!("CARGO_BIN_EXE_netterm-cli");
+const BINARY: &str = env!("CARGO_BIN_EXE_enodix-cli");
 const SCOPE: &str = "cli-credentials-test";
 const PASSWORD: &str = "correct horse battery";
 
@@ -70,7 +70,7 @@ impl Setup {
             _temp: temp,
             workspace,
             data,
-            keychain_prefix: format!("netterm-test-{random:016x}"),
+            keychain_prefix: format!("enodix-test-{random:016x}"),
         }
     }
 
@@ -78,8 +78,8 @@ impl Setup {
         let mut command = Command::new(BINARY);
         command
             .args(args)
-            .env("NETTERM_DATA_DIR", &self.data)
-            .env("NETTERM_KEYCHAIN_PREFIX", &self.keychain_prefix);
+            .env("ENODIX_DATA_DIR", &self.data)
+            .env("ENODIX_KEYCHAIN_PREFIX", &self.keychain_prefix);
         command
     }
 
@@ -295,7 +295,7 @@ fn with_a_vault_no_app_and_no_terminal_it_is_refused() {
     ] {
         let output = setup.run(&args);
         refused(&output, "no terminal to ask for its master password on");
-        assert!(stderr(&output).contains("start netterm and unlock it"));
+        assert!(stderr(&output).contains("start enodix and unlock it"));
     }
 }
 
@@ -422,7 +422,7 @@ fn run_by_a_script_job_it_gives_only_the_jobs_hosts_credentials() {
     };
     let as_job = |args: &[&str]| {
         let mut command = setup.command(args);
-        command.env("NETTERM_JOB_TARGETS", &targets);
+        command.env("ENODIX_JOB_TARGETS", &targets);
         without_terminal(&mut command);
         command.output().unwrap()
     };
@@ -457,7 +457,7 @@ fn run_by_a_script_job_it_gives_only_the_jobs_hosts_credentials() {
 #[cfg(windows)]
 #[test]
 fn with_the_app_closed_it_reads_the_keychain() {
-    use netterm_core::credentials::KeychainStore;
+    use enodix_core::credentials::KeychainStore;
 
     struct Cleanup(KeychainStore);
     impl Drop for Cleanup {
@@ -490,7 +490,7 @@ fn with_the_app_closed_it_reads_the_keychain() {
 #[cfg(windows)]
 #[test]
 fn clear_keychain_removes_every_saved_login_and_only_those() {
-    use netterm_core::credentials::KeychainStore;
+    use enodix_core::credentials::KeychainStore;
 
     /// Removes everything under its prefix when dropped.
     struct Cleanup(KeychainStore);
@@ -565,7 +565,7 @@ fn clear_keychain_takes_only_yes_and_is_refused_to_a_script_job() {
         assert_eq!(setup.run(args).status.code(), Some(2), "{args:?}");
     }
     let mut command = setup.command(&["clear-keychain", "--yes"]);
-    command.env("NETTERM_JOB_TARGETS", setup.data.join("targets.json"));
+    command.env("ENODIX_JOB_TARGETS", setup.data.join("targets.json"));
     without_terminal(&mut command);
     refused(
         &command.output().unwrap(),
@@ -611,8 +611,8 @@ impl Terminal {
             .unwrap();
         let mut command = CommandBuilder::new(BINARY);
         command.args(args);
-        command.env("NETTERM_DATA_DIR", &setup.data);
-        command.env("NETTERM_KEYCHAIN_PREFIX", &setup.keychain_prefix);
+        command.env("ENODIX_DATA_DIR", &setup.data);
+        command.env("ENODIX_KEYCHAIN_PREFIX", &setup.keychain_prefix);
         command.cwd(setup.workspace.parent().unwrap());
         let child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
@@ -730,7 +730,7 @@ fn with_a_vault_and_no_app_it_asks_on_the_terminal() {
     let before = files(&setup.data);
 
     let mut terminal = Terminal::start(&setup, &["credentials", setup.ws(), "site/r1.yaml"]);
-    terminal.wait_for("Master password of netterm's vault: ", 1);
+    terminal.wait_for("Master password of enodix's vault: ", 1);
     terminal.type_text("not-it\r");
     terminal.wait_for("Wrong password. Master password", 1);
     terminal.type_text(&format!("{PASSWORD}\r"));
@@ -753,7 +753,7 @@ fn three_wrong_master_passwords_give_up() {
     setup.create_vault();
     let mut terminal = Terminal::start(&setup, &["secret", setup.ws(), "netbox-token"]);
     for attempt in 1..=3 {
-        terminal.wait_for("Master password of netterm's vault: ", attempt);
+        terminal.wait_for("Master password of enodix's vault: ", attempt);
         terminal.type_text("wrong\r");
     }
     assert_eq!(terminal.exit_code(), 1);

@@ -8,9 +8,9 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use netterm_core::logging::LogFolder;
-use netterm_core::paste::{plan_paste, PasteSafety};
-use netterm_core::session::{
+use enodix_core::logging::LogFolder;
+use enodix_core::paste::{plan_paste, PasteSafety};
+use enodix_core::session::{
     CloseReason, ConnectStage, OpenError, OutputOptions, SessionEvent, SessionEvents, SessionId,
     SessionManager, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
 };
@@ -120,7 +120,7 @@ async fn a_flood_read_as_fast_as_it_comes_arrives_whole_and_stops_on_ctrl_c() {
     stop_flood(&manager, id, &mut events).await;
 }
 
-/// Hundreds of megabytes: `cargo test -p netterm-core --test edge_ssh -- --ignored`.
+/// Hundreds of megabytes: `cargo test -p enodix-core --test edge_ssh -- --ignored`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "heavy: 512 MiB through one session (about a minute)"]
 async fn a_flood_of_hundreds_of_megabytes_arrives_whole() {
@@ -198,7 +198,7 @@ async fn a_paused_session_whose_reader_goes_away_ends_and_lets_go_of_the_device(
     .await;
     assert_eq!(
         manager.write(id, b"x".to_vec()),
-        Err(netterm_core::session::SessionError::NotFound)
+        Err(enodix_core::session::SessionError::NotFound)
     );
 }
 
@@ -226,8 +226,7 @@ async fn a_link_that_goes_silent_mid_command_ends_the_session_as_lost_in_bounded
 /// connection loop hands each data packet to the channel's bounded queue
 /// and waits there when it is full, sending no keepalive meanwhile, and it
 /// reopens the SSH window as it decodes, not as the session reads, so
-/// taking packets to keep it going would hold output without bound
-/// (the sessions notes, "Links that go silent").
+/// taking packets to keep it going would hold output without bound.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_link_that_goes_silent_while_output_is_paused_is_noticed_once_reading_resumes() {
     let server = TestSshServer::start().await;
@@ -783,7 +782,7 @@ async fn a_large_paste_into_a_slow_device_comes_back_whole_and_in_order() {
 }
 
 /// A megabyte, the device also taking 1 ms (on Windows, a timer tick)
-/// over each piece of input: `cargo test -p netterm-core --test edge_ssh
+/// over each piece of input: `cargo test -p enodix-core --test edge_ssh
 /// -- --ignored`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "slow: a megabyte echoed a byte at a time by a slow device (about five minutes)"]

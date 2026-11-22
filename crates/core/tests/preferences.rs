@@ -3,7 +3,7 @@
 
 use std::fs;
 
-use netterm_core::preferences::{
+use enodix_core::preferences::{
     FontZoom, Preferences, SideView, Theme, DEFAULT_FONT_SIZE, DEFAULT_LEFT_PANEL_WIDTH,
     MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_PANEL_WIDTH,
 };

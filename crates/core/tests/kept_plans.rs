@@ -5,13 +5,13 @@
 
 use std::fs;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::job::{
+use enodix_core::job::{
     self, JobStep, JobTarget, KeptPlan, KeptPlans, PlanRefused, MAX_KEPT_PLANS,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use tempfile::TempDir;
 
 /// A workspace with a Lab folder (two hosts) and a Production folder (two

@@ -18,14 +18,14 @@ use std::time::{Duration, Instant};
 
 use std::net::{TcpListener, TcpStream};
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     vault_file, AgentEndpoint, AgentServer, CredentialProfile, CredentialStore, KdfParams,
     MemoryStore, ProfileAuth, StoreContents, Vault,
 };
 use serde_json::Value;
 use tempfile::TempDir;
 
-const BINARY: &str = env!("CARGO_BIN_EXE_netterm-cli");
+const BINARY: &str = env!("CARGO_BIN_EXE_enodix-cli");
 const SCOPE: &str = "cli-tunnel-test";
 /// A host key (the core's RSA test fixture's public key), as the app
 /// would have trusted it. [`JumpHost`] shows it too.
@@ -67,9 +67,9 @@ impl Setup {
         let mut command = Command::new(BINARY);
         command
             .args(args)
-            .env("NETTERM_DATA_DIR", &self.data)
-            .env("NETTERM_KEYCHAIN_PREFIX", "netterm-test-tunnel-never-used")
-            .env_remove("NETTERM_JOB_TARGETS");
+            .env("ENODIX_DATA_DIR", &self.data)
+            .env("ENODIX_KEYCHAIN_PREFIX", "enodix-test-tunnel-never-used")
+            .env_remove("ENODIX_JOB_TARGETS");
         without_terminal(&mut command);
         command
     }
@@ -626,7 +626,7 @@ fn a_script_job_s_scope_applies() {
     .unwrap();
     let output = setup
         .command(&["tunnel", setup.ws()])
-        .env("NETTERM_JOB_TARGETS", &targets)
+        .env("ENODIX_JOB_TARGETS", &targets)
         .stdin(Stdio::null())
         .output()
         .unwrap();

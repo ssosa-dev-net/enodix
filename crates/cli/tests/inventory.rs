@@ -14,7 +14,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_netterm-cli"))
+    Command::new(env!("CARGO_BIN_EXE_enodix-cli"))
         .args(args)
         .output()
         .expect("the binary starts")
@@ -283,7 +283,7 @@ fn values_that_start_with_a_dash_come_after_a_double_dash_or_an_equals_sign() {
     std::fs::write(root.join("-old/-spare.yaml"), "address: 192.0.2.7\n").unwrap();
     std::fs::write(root.join("r1.yaml"), "address: 192.0.2.1\n").unwrap();
     let in_temp = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_netterm-cli"))
+        Command::new(env!("CARGO_BIN_EXE_enodix-cli"))
             .args(args)
             .current_dir(temp.path())
             .output()
@@ -372,9 +372,9 @@ fn as_job(hosts: &[&str], workspace: Option<&Path>, limit: &[&str]) -> Output {
     .unwrap();
     let mut args = vec!["inventory", root.to_str().unwrap()];
     args.extend_from_slice(limit);
-    Command::new(env!("CARGO_BIN_EXE_netterm-cli"))
+    Command::new(env!("CARGO_BIN_EXE_enodix-cli"))
         .args(&args)
-        .env("NETTERM_JOB_TARGETS", &targets)
+        .env("ENODIX_JOB_TARGETS", &targets)
         .output()
         .expect("the binary starts")
 }
@@ -425,9 +425,9 @@ fn run_by_a_script_job_it_refuses_other_hosts_and_workspaces() {
 
     // A targets file that cannot be read never shows everything.
     let root = fixture("export");
-    let missing = Command::new(env!("CARGO_BIN_EXE_netterm-cli"))
+    let missing = Command::new(env!("CARGO_BIN_EXE_enodix-cli"))
         .args(["inventory", root.to_str().unwrap()])
-        .env("NETTERM_JOB_TARGETS", root.join("no-such-targets.json"))
+        .env("ENODIX_JOB_TARGETS", root.join("no-such-targets.json"))
         .output()
         .unwrap();
     assert_eq!(missing.status.code(), Some(1));

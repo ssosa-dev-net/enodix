@@ -34,7 +34,7 @@ export interface Preferences {
   leftPanelHidden: boolean;
 }
 
-/** The core's limits (`netterm_core::preferences`), for the form. */
+/** The core's limits (`enodix_core::preferences`), for the form. */
 export const FONT_SIZES = { min: 8, max: 36 } as const;
 export const MAX_SCROLLBACK = 100_000;
 export const PANEL_WIDTHS = {

@@ -5,11 +5,11 @@
 
 use std::fs;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     prepare_workspace, AuthDraft, CredentialStore, MemoryStore, ProfileDraft, Profiles,
     SecretError, SecretValue, Secrets, MAX_SECRET_NAME,
 };
-use netterm_core::workspace::Workspace;
+use enodix_core::workspace::Workspace;
 use tempfile::TempDir;
 
 fn workspace(name: &str) -> (TempDir, Workspace) {

@@ -7,8 +7,8 @@ mod support;
 use std::fs;
 use std::time::Instant;
 
-use netterm_core::highlight::{HighlightRule, HighlightSource, Highlighter, Span, BUILT_IN_RULES};
-use netterm_core::workspace::{EditError, Workspace, HIGHLIGHTS_FILE};
+use enodix_core::highlight::{HighlightRule, HighlightSource, Highlighter, Span, BUILT_IN_RULES};
+use enodix_core::workspace::{EditError, Workspace, HIGHLIGHTS_FILE};
 use support::workspaces::read;
 use tempfile::TempDir;
 

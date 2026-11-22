@@ -1270,7 +1270,7 @@ fn failed(reason: String) -> HostState {
 /// ([`JobOptions::output_limit`]).
 pub fn output_cut(limit: usize) -> String {
     format!(
-        "[netterm: the output went on past {}, the most a job keeps of it; the rest was not kept]\n",
+        "[enodix: the output went on past {}, the most a job keeps of it; the rest was not kept]\n",
         bytes(limit)
     )
 }

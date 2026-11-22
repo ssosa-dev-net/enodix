@@ -2,7 +2,7 @@
 //! from the devices themselves.
 //!
 //! A [`crate::job::JobStep::Enrich`] job runs the script the app ships in
-//! its Python package (`python -m netterm.enrich`, [`ENRICH_MODULE`]) as a
+//! its Python package (`python -m enodix.enrich`, [`ENRICH_MODULE`]) as a
 //! script job. Pre-flight keeps the hosts it can reach: SSH, a platform
 //! definition with a NAPALM driver ([`napalm_driver`]), a stored credential
 //! profile, no jump host. The script asks NAPALM for each host's facts
@@ -32,9 +32,9 @@ use crate::workspace::import::{HostWrite, ImportedValues, WriteOutcome};
 use crate::workspace::{Host, HostId, Workspace};
 
 /// The Python module the app ships that fetches the facts.
-pub const ENRICH_MODULE: &str = "netterm.enrich";
+pub const ENRICH_MODULE: &str = "enodix.enrich";
 /// Names the file the script writes the facts to.
-pub const FACTS_VARIABLE: &str = "NETTERM_FACTS_FILE";
+pub const FACTS_VARIABLE: &str = "ENODIX_FACTS_FILE";
 /// The version of the facts file's format.
 pub const FACTS_FORMAT: u32 = 1;
 /// The custom field the OS version goes to.

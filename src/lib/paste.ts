@@ -1,4 +1,4 @@
-// Paste safety, as the core decides it (`netterm_core::paste`): how a
+// Paste safety, as the core decides it (`enodix_core::paste`): how a
 // paste or snippet is split into lines, whether the user confirms it first,
 // and the delay between its lines.
 

@@ -6,18 +6,18 @@ mod support;
 
 use std::fs;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::diff::DiffLine;
-use netterm_core::job::results::{
+use enodix_core::diff::DiffLine;
+use enodix_core::job::results::{
     OutputRef, ResultsError, RunRecorder, RunStore, OUTPUT_FOLDER, RUN_FILE,
 };
-use netterm_core::job::{
+use enodix_core::job::{
     self, HostResult, HostState, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget,
     RunningJobs, SkipReason, APP_CLOSED, APP_CLOSE_WAIT,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use support::workspaces::files;
 use support::{TestSshServer, PASSWORD, USERNAME, WAIT};
 use tempfile::TempDir;

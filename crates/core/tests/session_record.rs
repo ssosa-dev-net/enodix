@@ -4,9 +4,9 @@
 
 use std::fs;
 
-use netterm_core::paste::PasteSafety;
-use netterm_core::session::{SessionId, SessionRecord, SessionRecords, Transport};
-use netterm_core::workspace::{Environment, HostId, Workspace};
+use enodix_core::paste::PasteSafety;
+use enodix_core::session::{SessionId, SessionRecord, SessionRecords, Transport};
+use enodix_core::workspace::{Environment, HostId, Workspace};
 use serde_json::json;
 use tempfile::TempDir;
 

@@ -4,8 +4,8 @@
 
 use std::fs;
 
-use netterm_core::template::Variables;
-use netterm_core::workspace::{
+use enodix_core::template::Variables;
+use enodix_core::workspace::{
     web_url, HostId, HostWebLink, Origin, ResolvedHost, WebLink, WebLinkError, Workspace,
 };
 use tempfile::TempDir;

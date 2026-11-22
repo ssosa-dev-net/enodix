@@ -1,14 +1,14 @@
-; netterm's additions to the NSIS installer Tauri generates (bundle >
+; enodix's additions to the NSIS installer Tauri generates (bundle >
 ; windows > nsis > installerHooks). scripts/release.mjs gives Tauri a file
 ; that defines these, then includes this one:
 ;
-;   NETTERM_PRODUCT      the product name (also Tauri's PRODUCTNAME)
-;   NETTERM_PUBLISHER    the publisher (bundle > publisher, Tauri's MANUFACTURER)
-;   NETTERM_DESCRIPTION  the short description (bundle > shortDescription)
-;   NETTERM_OLD_VENDOR   the vendor key's name before the publisher was set
+;   ENODIX_PRODUCT      the product name (also Tauri's PRODUCTNAME)
+;   ENODIX_PUBLISHER    the publisher (bundle > publisher, Tauri's MANUFACTURER)
+;   ENODIX_DESCRIPTION  the short description (bundle > shortDescription)
+;   ENODIX_OLD_VENDOR   the vendor key's name before the publisher was set
 ;                        (the identifier's second part, Tauri's default)
-;   NETTERM_CLI          the headless binary beside the app
-;   NETTERM_WHEEL        this version's Python wheel, in python\
+;   ENODIX_CLI          the headless binary beside the app
+;   ENODIX_WHEEL        this version's Python wheel, in python\
 ;
 ; Tauri includes this file before its own defines and variables, so what is
 ; here runs only inside its sections (the four hook macros) or uses none of
@@ -18,8 +18,8 @@
 
 ; The installer's own version details (Tauri sets the name, version and
 ; copyright).
-VIAddVersionKey "CompanyName" "${NETTERM_PUBLISHER}"
-VIAddVersionKey "Comments" "${NETTERM_DESCRIPTION}"
+VIAddVersionKey "CompanyName" "${ENODIX_PUBLISHER}"
+VIAddVersionKey "Comments" "${ENODIX_DESCRIPTION}"
 
 ; Copies installed before the publisher was set remember their folder under
 ; the old vendor key, which this installer does not read: an upgrade would
@@ -27,15 +27,15 @@ VIAddVersionKey "Comments" "${NETTERM_DESCRIPTION}"
 ; the old copy. Before the first page, take the folder over from there (not
 ; over a folder given with /D=). Not run in silent mode, which shows no
 ; window: a silent upgrade of a copy in another folder needs /D=.
-!if "${NETTERM_OLD_VENDOR}" != "${NETTERM_PUBLISHER}"
-  !define MUI_CUSTOMFUNCTION_GUIINIT NettermOldInstallLocation
-  Function NettermOldInstallLocation
-    ReadRegStr $0 HKCU "Software\${NETTERM_PUBLISHER}\${NETTERM_PRODUCT}" ""
-    ReadRegStr $1 HKCU "Software\${NETTERM_OLD_VENDOR}\${NETTERM_PRODUCT}" ""
+!if "${ENODIX_OLD_VENDOR}" != "${ENODIX_PUBLISHER}"
+  !define MUI_CUSTOMFUNCTION_GUIINIT EnodixOldInstallLocation
+  Function EnodixOldInstallLocation
+    ReadRegStr $0 HKCU "Software\${ENODIX_PUBLISHER}\${ENODIX_PRODUCT}" ""
+    ReadRegStr $1 HKCU "Software\${ENODIX_OLD_VENDOR}\${ENODIX_PRODUCT}" ""
     ${If} $0 == ""
     ${AndIf} $1 != ""
-      WriteRegStr HKCU "Software\${NETTERM_PUBLISHER}\${NETTERM_PRODUCT}" "" $1
-      ${If} $INSTDIR == "$LOCALAPPDATA\${NETTERM_PRODUCT}"
+      WriteRegStr HKCU "Software\${ENODIX_PUBLISHER}\${ENODIX_PRODUCT}" "" $1
+      ${If} $INSTDIR == "$LOCALAPPDATA\${ENODIX_PRODUCT}"
         StrCpy $INSTDIR $1
       ${EndIf}
     ${EndIf}
@@ -47,7 +47,7 @@ VIAddVersionKey "Comments" "${NETTERM_DESCRIPTION}"
 ; in silent and passive mode. Otherwise the old one would stay, beside a new
 ; app.
 !macro NSIS_HOOK_PREINSTALL
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${NETTERM_CLI}" "${NETTERM_CLI}"
+  !insertmacro CheckIfAppIsRunning "$INSTDIR\${ENODIX_CLI}" "${ENODIX_CLI}"
 !macroend
 
 ; After the files are in place: the wheels of other versions go (their
@@ -55,18 +55,18 @@ VIAddVersionKey "Comments" "${NETTERM_DESCRIPTION}"
 ; them); the old vendor key goes, the folder being remembered under the
 ; new one now.
 !macro NSIS_HOOK_POSTINSTALL
-  FindFirst $R8 $R9 "$INSTDIR\python\${NETTERM_PRODUCT}-*-py3-none-any.whl"
+  FindFirst $R8 $R9 "$INSTDIR\python\${ENODIX_PRODUCT}-*-py3-none-any.whl"
   ${DoWhile} $R9 != ""
-    ${If} $R9 != "${NETTERM_WHEEL}"
+    ${If} $R9 != "${ENODIX_WHEEL}"
       Delete "$INSTDIR\python\$R9"
     ${EndIf}
     FindNext $R8 $R9
   ${Loop}
   FindClose $R8
-  WriteRegStr SHCTX "${UNINSTKEY}" "Comments" "${NETTERM_DESCRIPTION}"
-  !if "${NETTERM_OLD_VENDOR}" != "${MANUFACTURER}"
-    DeleteRegKey HKCU "Software\${NETTERM_OLD_VENDOR}\${PRODUCTNAME}"
-    DeleteRegKey /ifempty HKCU "Software\${NETTERM_OLD_VENDOR}"
+  WriteRegStr SHCTX "${UNINSTKEY}" "Comments" "${ENODIX_DESCRIPTION}"
+  !if "${ENODIX_OLD_VENDOR}" != "${MANUFACTURER}"
+    DeleteRegKey HKCU "Software\${ENODIX_OLD_VENDOR}\${PRODUCTNAME}"
+    DeleteRegKey /ifempty HKCU "Software\${ENODIX_OLD_VENDOR}"
   !endif
 !macroend
 
@@ -82,15 +82,15 @@ VIAddVersionKey "Comments" "${NETTERM_DESCRIPTION}"
 ; (`--yes`: without it, the binary only says what it would remove).
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
-  !insertmacro CheckIfAppIsRunning "$INSTDIR\${NETTERM_CLI}" "${NETTERM_CLI}"
+  !insertmacro CheckIfAppIsRunning "$INSTDIR\${ENODIX_CLI}" "${ENODIX_CLI}"
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
-    DetailPrint "$(nettermClearKeychain)"
-    nsExec::ExecToLog '"$INSTDIR\${NETTERM_CLI}" clear-keychain --yes'
+    DetailPrint "$(enodixClearKeychain)"
+    nsExec::ExecToLog '"$INSTDIR\${ENODIX_CLI}" clear-keychain --yes'
     Pop $0
     ${If} $0 != "0"
-      DetailPrint "$(nettermKeychainNotCleared)"
-      MessageBox MB_ICONEXCLAMATION|MB_OK "$(nettermKeychainNotCleared)"
+      DetailPrint "$(enodixKeychainNotCleared)"
+      MessageBox MB_ICONEXCLAMATION|MB_OK "$(enodixKeychainNotCleared)"
     ${EndIf}
   ${EndIf}
 !macroend
@@ -99,7 +99,7 @@ VIAddVersionKey "Comments" "${NETTERM_DESCRIPTION}"
 ; python\ (only those: other files there are not touched), then the folder,
 ; then the install folder if it is empty.
 !macro NSIS_HOOK_POSTUNINSTALL
-  FindFirst $R8 $R9 "$INSTDIR\python\${NETTERM_PRODUCT}-*-py3-none-any.whl"
+  FindFirst $R8 $R9 "$INSTDIR\python\${ENODIX_PRODUCT}-*-py3-none-any.whl"
   ${DoWhile} $R9 != ""
     Delete "$INSTDIR\python\$R9"
     FindNext $R8 $R9

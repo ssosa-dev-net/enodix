@@ -11,7 +11,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use netterm_core::files::{FileConnection, Link, Outcome, Transfer, Transfers};
+use enodix_core::files::{FileConnection, Link, Outcome, Transfer, Transfers};
 use support::memory::{resident, Peak, MIB};
 use support::{known_hosts, TestSshServer};
 use tempfile::TempDir;

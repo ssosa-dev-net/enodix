@@ -11,11 +11,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use netterm_core::files::{
+use enodix_core::files::{
     FileConnection, FileError, Files, NoSftp, Protocol, Scp, ScpError, StartError,
 };
-use netterm_core::platform::built_in_platform;
-use netterm_core::session::{SshAuth, SshTarget};
+use enodix_core::platform::built_in_platform;
+use enodix_core::session::{SshAuth, SshTarget};
 use support::scp::{ScpQuirk, NOT_FOUND, PLAIN_TEXT_REFUSAL};
 use support::{known_hosts, TestSshServer, PASSWORD, USERNAME, WAIT};
 use tempfile::TempDir;
@@ -116,7 +116,7 @@ async fn a_file_goes_and_comes_back_through_a_jump_host() {
     let bastion = TestSshServer::start().await;
     let (router, folder) = scp_server().await;
     let mut target = router.target();
-    target.jump_hosts.push(netterm_core::session::JumpHost {
+    target.jump_hosts.push(enodix_core::session::JumpHost {
         name: "bastion".into(),
         host: "127.0.0.1".into(),
         port: bastion.port(),

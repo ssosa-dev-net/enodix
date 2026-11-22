@@ -9,8 +9,8 @@ mod support;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use netterm_core::paste::{plan_paste, PasteSafety};
-use netterm_core::session::{
+use enodix_core::paste::{plan_paste, PasteSafety};
+use enodix_core::session::{
     CloseReason, OpenError, OutputOptions, SerialParameters, SerialTarget, SessionEvent,
     SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, TerminalSize,
 };

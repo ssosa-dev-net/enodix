@@ -457,7 +457,7 @@ async function startXfce(env, children, log) {
 // --- GNOME Shell on Wayland ----------------------------------------------
 
 async function startGnome(env, children, log) {
-  const socket = "netterm-check-wayland";
+  const socket = "enodix-check-wayland";
   env.GDK_BACKEND = "wayland";
   env.XDG_SESSION_TYPE = "wayland";
   env.XDG_CURRENT_DESKTOP = "GNOME";

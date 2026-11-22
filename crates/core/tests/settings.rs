@@ -7,9 +7,9 @@ mod support;
 use std::fs;
 use std::time::Duration;
 
-use netterm_core::credentials::{MemoryStore, Profiles};
-use netterm_core::session::{SessionState, SessionTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT};
-use netterm_core::workspace::{
+use enodix_core::credentials::{MemoryStore, Profiles};
+use enodix_core::session::{SessionState, SessionTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT};
+use enodix_core::workspace::{
     EditError, Effective, EffectiveSettings, Environment, FlowControl, HostId, Origin, Parity,
     Protocol, ResolvedHost, Settings, WebLink, Workspace,
 };

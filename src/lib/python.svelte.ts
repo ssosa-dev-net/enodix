@@ -1,4 +1,4 @@
-// The Python environment, as the core checks it (`netterm_core::python`):
+// The Python environment, as the core checks it (`enodix_core::python`):
 // which interpreter the Python features use, and the app's own environment
 // set up on request. Until an interpreter is chosen every Python feature is
 // off: a feature asks `pythonOff()` and shows its message (which says how

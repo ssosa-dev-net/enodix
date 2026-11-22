@@ -34,13 +34,13 @@ two commands above, and there is no `latest.json` to publish.
 
 | File                                 | Purpose                                                                          |
 | ------------------------------------ | -------------------------------------------------------------------------------- |
-| `netterm_<version>_x64-setup.exe`    | NSIS installer, per user (no administrator rights); installs `netterm-cli.exe` and `LICENSE` beside the app and the Python wheel in `python\` (see "The installer" below). |
-| `netterm_<version>_x64-setup.exe.sig`| The updater signature of the installer (made with the release key).              |
-| `netterm_<version>_x64-portable.zip` | `netterm.exe`, `netterm-cli.exe`, `python\netterm-<version>-py3-none-any.whl` (the Python bridge), `portable.txt` (makes the copy portable: it only notifies), README.|
+| `enodix_<version>_x64-setup.exe`    | NSIS installer, per user (no administrator rights); installs `enodix-cli.exe` and `LICENSE` beside the app and the Python wheel in `python\` (see "The installer" below). |
+| `enodix_<version>_x64-setup.exe.sig`| The updater signature of the installer (made with the release key).              |
+| `enodix_<version>_x64-portable.zip` | `enodix.exe`, `enodix-cli.exe`, `python\enodix-<version>-py3-none-any.whl` (the Python bridge), `portable.txt` (makes the copy portable: it only notifies), README.|
 | `latest.json`                        | The update manifest the app checks (Tauri updater format, plus `page`).          |
-| `netterm_<version>_amd64.deb`        | Debian/Ubuntu package: `/usr/bin/netterm`, `/usr/bin/netterm-cli`, the wheel in `/usr/lib/netterm/python/`. |
-| `netterm-<version>-1.x86_64.rpm`     | Fedora/RHEL/openSUSE package, the same files.                                    |
-| `netterm_<version>_amd64.AppImage`   | One file that runs without installing; `netterm-cli` and the wheel are inside it. |
+| `enodix_<version>_amd64.deb`        | Debian/Ubuntu package: `/usr/bin/enodix`, `/usr/bin/enodix-cli`, the wheel in `/usr/lib/enodix/python/`. |
+| `enodix-<version>-1.x86_64.rpm`     | Fedora/RHEL/openSUSE package, the same files.                                    |
+| `enodix_<version>_amd64.AppImage`   | One file that runs without installing; `enodix-cli` and the wheel are inside it. |
 | `SHA256SUMS.txt`                     | SHA-256 of every other file, in `sha256sum` format.                              |
 
 Each platform's build replaces only its own files in the folder, and
@@ -71,11 +71,11 @@ software. So:
 1. Create it outside the repository, with a strong password:
 
    ```
-   npx tauri signer generate -w "%USERPROFILE%\.netterm-release\netterm-updater.key"
+   npx tauri signer generate -w "%USERPROFILE%\.enodix-release\enodix-updater.key"
    ```
 
-   This writes `netterm-updater.key` (private, encrypted with the password)
-   and `netterm-updater.key.pub` (public).
+   This writes `enodix-updater.key` (private, encrypted with the password)
+   and `enodix-updater.key.pub` (public).
 
 2. Keep the password in your password manager.
 
@@ -89,11 +89,11 @@ software. So:
 5. Copy the public key into the repository and commit it:
 
    ```
-   copy "%USERPROFILE%\.netterm-release\netterm-updater.key.pub" src-tauri\updater-key.pub
+   copy "%USERPROFILE%\.enodix-release\enodix-updater.key.pub" src-tauri\updater-key.pub
    ```
 
    The release script builds it into the app. (It can also be given with
-   `NETTERM_UPDATER_PUBKEY`.)
+   `ENODIX_UPDATER_PUBKEY`.)
 
 6. Write down here where the key and its backups are (not the password):
 
@@ -121,22 +121,22 @@ equivalent, or publish the file at a fixed address yourself.
 3. Build the Windows files, in a shell where the key is set (PowerShell shown):
 
    ```powershell
-   $env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.netterm-release\netterm-updater.key"
+   $env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.enodix-release\enodix-updater.key"
    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<from the password manager>"
-   $env:NETTERM_UPDATE_ENDPOINT = "https://<host>/<owner>/netterm/releases/latest/download/latest.json"
-   $env:NETTERM_RELEASE_URL = "https://<host>/<owner>/netterm/releases/download/v0.2.0/"
-   $env:NETTERM_RELEASE_PAGE = "https://<host>/<owner>/netterm/releases/tag/v0.2.0"   # optional
-   $env:NETTERM_RELEASE_NOTES = "Serial break works on FTDI adapters."                 # optional
+   $env:ENODIX_UPDATE_ENDPOINT = "https://<host>/<owner>/enodix/releases/latest/download/latest.json"
+   $env:ENODIX_RELEASE_URL = "https://<host>/<owner>/enodix/releases/download/v0.2.0/"
+   $env:ENODIX_RELEASE_PAGE = "https://<host>/<owner>/enodix/releases/tag/v0.2.0"   # optional
+   $env:ENODIX_RELEASE_NOTES = "Serial break works on FTDI adapters."                 # optional
    npm run release
    ```
 
-   `NETTERM_UPDATE_ENDPOINT` is built into the app: keep it the same for
-   every release. `NETTERM_RELEASE_URL` is where this release's files will
+   `ENODIX_UPDATE_ENDPOINT` is built into the app: keep it the same for
+   every release. `ENODIX_RELEASE_URL` is where this release's files will
    be downloadable; `latest.json` points the updater at the installer there.
    The first build downloads NSIS into Tauri's cache.
 
    Then the Linux packages, in the same shell (only
-   `NETTERM_UPDATE_ENDPOINT` is used; no key). Build both from the same
+   `ENODIX_UPDATE_ENDPOINT` is used; no key). Build both from the same
    commit: the folder keeps the other platform's files, and a failed build
    leaves the other platform's files there.
 
@@ -144,29 +144,29 @@ equivalent, or publish the file at a fixed address yourself.
    npm run release:linux
    ```
 
-   It copies the working tree into WSL (`~/netterm-linux-check`, see
+   It copies the working tree into WSL (`~/enodix-linux-check`, see
    `docs/linux.md` for the packages the distribution needs), runs
    `npm ci` and `npm run release` there and copies the .deb, .rpm and
    .AppImage into `target/dist/<version>/`. On a Linux machine, run
    `npm run release` there instead. The first build downloads the AppImage
    tools into Tauri's cache.
 
-4. Check the installer, on a Windows computer where netterm is not
+4. Check the installer, on a Windows computer where enodix is not
    installed for your user (the script stops otherwise), with the previous
    release's installer:
 
    ```
-   npm run test:installer -- -Old <folder>\netterm_<previous>_x64-setup.exe
+   npm run test:installer -- -Old <folder>\enodix_<previous>_x64-setup.exe
    ```
 
    `scripts/check-installer.ps1` installs the previous release, upgrades it
-   to this one while the installed `netterm-cli.exe` runs, uninstalls
+   to this one while the installed `enodix-cli.exe` runs, uninstalls
    (again with it running), installs this one fresh and uninstalls it, and
    upgrades a copy in another folder in passive mode, all silently or
    passively. After each step it lists the install folder, the uninstall
    entry, the vendor registry keys, the shortcuts and the version details,
    then puts the computer back. Check that each upgrade leaves one wheel,
-   `LICENSE` and the new `netterm-cli.exe`, that the running one was
+   `LICENSE` and the new `enodix-cli.exe`, that the running one was
    closed (Windows takes about 30 seconds to end it), that each uninstall
    leaves no install folder, entry or shortcut, and that the last lines say
    the data folders are as they were. It never
@@ -175,11 +175,11 @@ equivalent, or publish the file at a fixed address yourself.
    the release's ticket.
 
    Then the install-and-run check, on a clean Windows: in Windows Sandbox
-   (the feature turned on once, see the testing notes), with
+   (the feature turned on once), with
    nothing of yours at risk:
 
    ```
-   npm run test:installer:sandbox -- --old <folder>\netterm_<previous>_x64-setup.exe
+   npm run test:installer:sandbox -- --old <folder>\enodix_<previous>_x64-setup.exe
    ```
 
    It runs the check above inside the sandbox. Then it installs the
@@ -202,7 +202,7 @@ equivalent, or publish the file at a fixed address yourself.
 
 5. Publish by hand: create the release (tag `v<version>`), upload every file
    from `target/dist/<version>/`, and paste the version's section of
-   `CHANGELOG.md` and `SHA256SUMS.txt` into the release notes. Make `latest.json` reachable at `NETTERM_UPDATE_ENDPOINT` **last**,
+   `CHANGELOG.md` and `SHA256SUMS.txt` into the release notes. Make `latest.json` reachable at `ENODIX_UPDATE_ENDPOINT` **last**,
    once the installer can be downloaded.
 
 6. Check: an installed copy of the previous version shows the notice
@@ -218,10 +218,10 @@ equivalent, or publish the file at a fixed address yourself.
      `setup.exe` as the previous version) and remove the older ones
      and the `stage-*` folders;
    - remove `target/debug`, `target/release` and `target/sandbox`;
-   - in WSL, remove `~/netterm-linux-check/target` and the packages
+   - in WSL, remove `~/enodix-linux-check/target` and the packages
      the Linux build left there.
 
-The release build replaces `target/release/netterm.exe` with one that
+The release build replaces `target/release/enodix.exe` with one that
 has the updater; run `npm run app:build` again before the smoke test.
 
 ## The installer
@@ -229,11 +229,11 @@ has the updater; run `npm run app:build` again before the smoke test.
 Tauri generates the NSIS installer; `scripts/release.mjs` adds to it:
 
 - `src-tauri/installer/hooks.nsh` (Tauri's `installerHooks`): a running
-  `netterm-cli.exe` is closed like the app before installing or
+  `enodix-cli.exe` is closed like the app before installing or
   uninstalling; installing removes the wheels of other versions from
   `python\`, uninstalling every wheel there, then `python\` and the program
   folder if empty; with "Delete the application data" ticked, the
-  uninstaller runs `netterm-cli clear-keychain --yes` before removing files. It
+  uninstaller runs `enodix-cli clear-keychain --yes` before removing files. It
   also moves the remembered install folder from the vendor key of releases
   before the publisher was set (below).
 - `src-tauri/installer/English.nsh` (`customLanguageFiles`): the
@@ -247,19 +247,19 @@ The publisher, who is also the copyright holder, is set once:
 publisher, the programs' company name and the copyright line ("Copyright
 (C) 2026 <publisher>", made by `release.mjs` and by `crates/cli/build.rs`).
 Tauri also names the installer's vendor registry key after it
-(`HKCU\Software\<publisher>\netterm`, where the install folder is
+(`HKCU\Software\<publisher>\enodix`, where the install folder is
 remembered): changing it moves that key. Releases up to 0.4.1 had no
-publisher and used `HKCU\Software\netterm`; an upgrade from them takes the
+publisher and used `HKCU\Software\enodix`; an upgrade from them takes the
 folder over from there in its window and in passive mode, and removes the
 old key. A silent upgrade (`/S`) of a copy installed elsewhere than
-`%LOCALAPPDATA%\netterm` needs `/D=`.
+`%LOCALAPPDATA%\enodix` needs `/D=`.
 
 ## How the update check behaves
 
 - Only builds made by the release script have the updater and a release
   server. Development builds (`app:dev`, `app:build`) check nothing.
 - At start, if **Check for a new version at start** is on (default), the app
-  fetches `latest.json` once (`netterm_core::update`). Off, it makes no
+  fetches `latest.json` once (`enodix_core::update`). Off, it makes no
   connection on its own; **Check now** in the preferences still works.
 - Installed copy: a notice offers **Install and restart**. Nothing is
   downloaded before that click (with open sessions it asks again). The
@@ -268,14 +268,14 @@ old key. A silent upgrade (`/S`) of a copy installed elsewhere than
   signed version, so an old release cannot be passed off as new) and runs
   it in passive mode; the app ends and the installer starts it again.
 - A copy counts as installed only when the installer's `uninstall.exe` is
-  beside `netterm.exe` and `portable.txt` is not. Every other copy (the
+  beside `enodix.exe` and `portable.txt` is not. Every other copy (the
   portable zip, a program copied out of an installation, a development
   build) only announces the version and links to `page`; it never installs,
   so an update never adds a second installation.
 - On Linux every copy (package or AppImage) only announces: only Windows
   has an installer the app updates itself with, so there the updater
   plugin is not even loaded.
-- `NETTERM_UPDATE_ENDPOINT` set when the app runs overrides the release
+- `ENODIX_UPDATE_ENDPOINT` set when the app runs overrides the release
   server (the smoke test points it at a local server). Plain http is
   accepted only for this computer, and a release build's updater refuses
   to install over http anyway.

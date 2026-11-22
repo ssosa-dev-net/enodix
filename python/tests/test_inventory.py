@@ -12,8 +12,8 @@ from nornir import InitNornir
 from nornir.core.filter import F
 from nornir.core.inventory import Inventory
 
-import netterm
-from netterm.nornir import NettermInventory
+import enodix
+from enodix.nornir import EnodixInventory
 
 from support import SCOPE, BridgeTest
 
@@ -30,10 +30,10 @@ ALL_HOSTS = {
 
 class Inventories(BridgeTest):
     def load(self, **options: object) -> Inventory:
-        return NettermInventory(str(self.workspace.root), **options).load()  # type: ignore[arg-type]
+        return EnodixInventory(str(self.workspace.root), **options).load()  # type: ignore[arg-type]
 
     def test_hosts_groups_and_data(self) -> None:
-        with self.assertLogs("netterm", "WARNING"):
+        with self.assertLogs("enodix", "WARNING"):
             inventory = self.load(credentials=False)
         self.assertEqual(set(inventory.hosts), ALL_HOSTS)
         self.assertEqual(set(inventory.groups), {"Madrid", "Madrid/Lab", "devices"})
@@ -56,14 +56,14 @@ class Inventories(BridgeTest):
         self.assertEqual(core["role"], "router")
         # A built-in field wins over a custom field of the same name.
         self.assertEqual(core["vendor"], "arista")
-        self.assertEqual(core["netterm"]["custom"]["vendor"], "not-the-vendor")
+        self.assertEqual(core["enodix"]["custom"]["vendor"], "not-the-vendor")
         # A secret-named custom field never reaches the inventory.
         self.assertNotIn("snmp_community", core.data)
-        self.assertNotIn("snmp_community", core["netterm"]["custom"])
-        self.assertEqual(core["netterm"]["withheld"], ["custom.snmp_community"])
-        self.assertEqual(core["netterm"]["name"], "CORE-R1")
-        self.assertEqual(core["netterm"]["folders"], ["Madrid"])
-        self.assertEqual(core["netterm"]["settings"]["environment"], "production")
+        self.assertNotIn("snmp_community", core["enodix"]["custom"])
+        self.assertEqual(core["enodix"]["withheld"], ["custom.snmp_community"])
+        self.assertEqual(core["enodix"]["name"], "CORE-R1")
+        self.assertEqual(core["enodix"]["folders"], ["Madrid"])
+        self.assertEqual(core["enodix"]["settings"]["environment"], "production")
 
         bastion = inventory.hosts["bastion.yaml"]
         self.assertEqual(list(bastion.groups), [])
@@ -75,10 +75,10 @@ class Inventories(BridgeTest):
 
     def test_nornir_filters_on_tags_and_custom_fields(self) -> None:
         # By the plugin's registered name: the wheel's entry point.
-        with self.assertLogs("netterm", "WARNING"):
+        with self.assertLogs("enodix", "WARNING"):
             nr = InitNornir(
                 inventory={
-                    "plugin": "NettermInventory",
+                    "plugin": "EnodixInventory",
                     "options": {"workspace": str(self.workspace.root), "credentials": False},
                 },
                 logging={"enabled": False},
@@ -95,12 +95,12 @@ class Inventories(BridgeTest):
         )
 
     def test_limited_to_a_folder_a_filter_or_hosts(self) -> None:
-        with self.assertLogs("netterm", "WARNING"):
+        with self.assertLogs("enodix", "WARNING"):
             madrid = self.load(folder="Madrid", credentials=False)
         self.assertEqual(set(madrid.hosts), {"Madrid/core-r1.yaml", "Madrid/Lab/lab-sw1.yaml"})
         self.assertEqual(set(madrid.groups), {"Madrid", "Madrid/Lab"})
 
-        with self.assertLogs("netterm", "WARNING"):
+        with self.assertLogs("enodix", "WARNING"):
             edge = self.load(filter="edge", credentials=False)
         self.assertEqual(set(edge.hosts), {"Madrid/core-r1.yaml"})
 
@@ -111,39 +111,39 @@ class Inventories(BridgeTest):
         self.assertEqual(list(self.load(hosts="bastion.yaml").hosts), ["bastion.yaml"])
 
     def test_unknown_limits_and_workspaces_are_errors(self) -> None:
-        with self.assertRaises(netterm.CliFailed) as raised:
+        with self.assertRaises(enodix.CliFailed) as raised:
             self.load(folder="Lisbon")
         self.assertEqual(raised.exception.status, 1)
         self.assertIn("there is no folder", str(raised.exception))
         self.assertIn("Lisbon", str(raised.exception))
 
-        with self.assertRaises(netterm.CliFailed) as raised:
+        with self.assertRaises(enodix.CliFailed) as raised:
             self.load(filter="Nothing")
         self.assertIn("saved filters: Edge", str(raised.exception))
 
-        with self.assertRaises(netterm.CliFailed) as raised:
+        with self.assertRaises(enodix.CliFailed) as raised:
             self.load(hosts=["nope.yaml"])
         self.assertIn("nope.yaml", str(raised.exception))
 
-        with self.assertRaises(netterm.NettermError):
-            NettermInventory(str(self.workspace.root / "missing")).load()
+        with self.assertRaises(enodix.EnodixError):
+            EnodixInventory(str(self.workspace.root / "missing")).load()
 
         with self.assertRaises(ValueError):
-            netterm.inventory(self.workspace.root, folder="Madrid", filter="Edge")
+            enodix.inventory(self.workspace.root, folder="Madrid", filter="Edge")
 
     def test_hosts_behind_jump_hosts_are_marked(self) -> None:
-        with self.assertLogs("netterm", "WARNING") as logged:
+        with self.assertLogs("enodix", "WARNING") as logged:
             inventory = self.load(credentials=False)
-        core = inventory.hosts["Madrid/core-r1.yaml"]["netterm"]
+        core = inventory.hosts["Madrid/core-r1.yaml"]["enodix"]
         self.assertEqual(core["jump_hosts"], ["bastion.yaml"])
         self.assertTrue(core["behind_jump_host"])
-        lab = inventory.hosts["Madrid/Lab/lab-sw1.yaml"]["netterm"]
+        lab = inventory.hosts["Madrid/Lab/lab-sw1.yaml"]["enodix"]
         self.assertEqual(lab["jump_hosts"], [])
         self.assertIn("gone.yaml", lab["jump_chain_error"])
         self.assertTrue(lab["behind_jump_host"])
         for direct in ("bastion.yaml", "devices/r-pass.yaml"):
-            self.assertFalse(inventory.hosts[direct]["netterm"]["behind_jump_host"])
-            self.assertIsNone(inventory.hosts[direct]["netterm"]["tunnel_error"])
+            self.assertFalse(inventory.hosts[direct]["enodix"]["behind_jump_host"])
+            self.assertIsNone(inventory.hosts[direct]["enodix"]["tunnel_error"])
         # Without credentials no tunnel is opened (test_tunnels.py has them).
         self.assertIsNone(core["tunnel"])
         self.assertIn("tunnels off", core["tunnel_error"])
@@ -156,14 +156,14 @@ class Inventories(BridgeTest):
 
 class Logins(BridgeTest):
     def load(self, *hosts: str) -> Inventory:
-        return NettermInventory(str(self.workspace.root), hosts=list(hosts)).load()
+        return EnodixInventory(str(self.workspace.root), hosts=list(hosts)).load()
 
     def test_a_password_profile_hands_over_username_and_password(self) -> None:
         lab = self.server.profile("lab")
         host = self.load("devices/r-pass.yaml").hosts["devices/r-pass.yaml"]
         self.assertEqual(host.username, lab["username"])
         self.assertEqual(host.password, lab["auth"]["password"])
-        self.assertEqual(host["netterm"]["login"], "password")
+        self.assertEqual(host["enodix"]["login"], "password")
         netmiko = host.get_connection_parameters("netmiko")
         self.assertEqual(netmiko.username, lab["username"])
         self.assertEqual(netmiko.password, lab["auth"]["password"])
@@ -178,7 +178,7 @@ class Logins(BridgeTest):
         host = self.load("devices/r-key.yaml").hosts["devices/r-key.yaml"]
         self.assertEqual(host.username, keys["username"])
         self.assertIsNone(host.password)
-        self.assertEqual(host["netterm"]["login"], "private_key")
+        self.assertEqual(host["enodix"]["login"], "private_key")
         key_file = keys["auth"]["key_file"]
         passphrase = keys["auth"]["passphrase"]
         self.assertEqual(
@@ -198,7 +198,7 @@ class Logins(BridgeTest):
         host = self.load("devices/r-agent.yaml").hosts["devices/r-agent.yaml"]
         self.assertEqual(host.username, self.server.profile("agent")["username"])
         self.assertIsNone(host.password)
-        self.assertEqual(host["netterm"]["login"], "agent")
+        self.assertEqual(host["enodix"]["login"], "agent")
         self.assertEqual(
             host.get_connection_parameters("netmiko").extras,
             {"use_keys": True, "allow_agent": True},
@@ -208,10 +208,10 @@ class Logins(BridgeTest):
         host = self.load("bastion.yaml").hosts["bastion.yaml"]
         self.assertIsNone(host.username)
         self.assertIsNone(host.password)
-        self.assertIsNone(host["netterm"]["login"])
+        self.assertIsNone(host["enodix"]["login"])
 
     def test_a_profile_not_set_up_stops_the_load_and_says_which(self) -> None:
-        with self.assertRaises(netterm.NettermError) as raised:
+        with self.assertRaises(enodix.EnodixError) as raised:
             self.load("devices/r-pass.yaml", "devices/r-missing.yaml")
         message = str(raised.exception)
         self.assertIn("devices/r-missing.yaml", message)
@@ -220,7 +220,7 @@ class Logins(BridgeTest):
 
     def test_one_question_per_profile(self) -> None:
         self.workspace.write("devices/r-pass2.yaml", "address: 127.0.0.2\n")
-        with mock.patch("netterm.nornir.credentials", wraps=netterm.credentials) as asked:
+        with mock.patch("enodix.nornir.credentials", wraps=enodix.credentials) as asked:
             inventory = self.load("devices/r-pass.yaml", "devices/r-pass2.yaml", "devices/r-key.yaml")
         self.assertEqual(asked.call_count, 2)
         first, second, _ = inventory.hosts.values()
@@ -240,14 +240,14 @@ class DashedNames(BridgeTest):
         self.workspace.write("-spare.yaml", "address: 127.0.0.1\ncredential_profile: lab\n")
         root = self.workspace.root
         self.assertEqual(
-            [host["id"] for host in netterm.inventory(root, folder="-old")["hosts"]], ["-old/r9.yaml"]
+            [host["id"] for host in enodix.inventory(root, folder="-old")["hosts"]], ["-old/r9.yaml"]
         )
         self.assertEqual(
-            [host["id"] for host in netterm.inventory(root, hosts=["-spare.yaml"])["hosts"]], ["-spare.yaml"]
+            [host["id"] for host in enodix.inventory(root, hosts=["-spare.yaml"])["hosts"]], ["-spare.yaml"]
         )
-        login = netterm.credentials(root, "-spare.yaml")
+        login = enodix.credentials(root, "-spare.yaml")
         self.assertEqual(login["username"], self.server.profile("lab")["username"])
-        inventory = NettermInventory(str(root), hosts=["-spare.yaml"]).load()
+        inventory = EnodixInventory(str(root), hosts=["-spare.yaml"]).load()
         self.assertEqual(inventory.hosts["-spare.yaml"].username, login["username"])
         # A workspace folder given by a relative name that starts with -.
         previous = os.getcwd()
@@ -255,11 +255,11 @@ class DashedNames(BridgeTest):
         self.addCleanup(os.chdir, previous)
         os.rename(root, root.parent / "-lab")
         self.addCleanup(os.rename, root.parent / "-lab", root)
-        self.assertIn("-spare.yaml", [host["id"] for host in netterm.inventory("-lab")["hosts"]])
+        self.assertIn("-spare.yaml", [host["id"] for host in enodix.inventory("-lab")["hosts"]])
 
     def test_a_secret_named_with_a_dash_is_looked_for_by_that_name(self) -> None:
-        with self.assertRaises(netterm.CliFailed) as raised:
-            netterm.secret(self.workspace.root, "-ro")
+        with self.assertRaises(enodix.CliFailed) as raised:
+            enodix.secret(self.workspace.root, "-ro")
         # Looked for (status 1), not refused as an option (status 2).
         self.assertEqual(raised.exception.status, 1, raised.exception.reason)
         self.assertIn("there is no secret called -ro", str(raised.exception))
@@ -268,12 +268,12 @@ class DashedNames(BridgeTest):
 class Secrets(BridgeTest):
     def test_a_named_secret_is_read_by_name(self) -> None:
         expected = self.server.agent["secrets"]["netbox-token"]
-        self.assertEqual(netterm.secret(self.workspace.root, "netbox-token"), expected)
-        self.assertEqual(netterm.secret(str(self.workspace.root), "NETBOX-TOKEN"), expected)
+        self.assertEqual(enodix.secret(self.workspace.root, "netbox-token"), expected)
+        self.assertEqual(enodix.secret(str(self.workspace.root), "NETBOX-TOKEN"), expected)
 
     def test_an_unknown_secret_is_an_error(self) -> None:
-        with self.assertRaises(netterm.CliFailed) as raised:
-            netterm.secret(self.workspace.root, "nothing")
+        with self.assertRaises(enodix.CliFailed) as raised:
+            enodix.secret(self.workspace.root, "nothing")
         self.assertIn("there is no secret called nothing", str(raised.exception))
 
 

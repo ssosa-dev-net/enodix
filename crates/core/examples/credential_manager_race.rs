@@ -1,13 +1,13 @@
 //! Windows Credential Manager used by several processes at once, through
 //! the bare Win32 calls (`CredWriteW`, `CredReadW`, `CredEnumerateW`,
-//! `CredDeleteW`) and nothing of netterm's (#138).
+//! `CredDeleteW`) and nothing of enodix's (#138).
 //!
 //! ```text
-//! cargo run -p netterm-core --example credential_manager_race -- [processes] [rounds] [filler]
+//! cargo run -p enodix-core --example credential_manager_race -- [processes] [rounds] [filler]
 //! ```
 //!
 //! Starts `processes` copies of itself (default 8). Each takes a random
-//! prefix `netterm-test-race-<hex>` of its own, writes `filler` entries
+//! prefix `enodix-test-race-<hex>` of its own, writes `filler` entries
 //! under it that it leaves alone (default 0: more entries in the store),
 //! then for `rounds` rounds (default 300) writes an entry, reads it back,
 //! overwrites it, reads it back, lists its prefix (`<prefix>:*`), deletes
@@ -15,24 +15,24 @@
 //! from what the process itself just did is counted by kind and the first
 //! few printed. Each process removes what is under its prefix when it
 //! ends; the parent removes it again once they have all ended (also after
-//! a failure). Only targets under `netterm-test-race-` are written, read,
+//! a failure). Only targets under `enodix-test-race-` are written, read,
 //! listed or deleted.
 //!
 //! Environment variables change the run:
 //!
-//! - `NETTERM_RACE_THREADS=1`: the workers are threads of one process.
-//! - `NETTERM_RACE_LOCK=1`: every call holds an exclusive lock on one file
+//! - `ENODIX_RACE_THREADS=1`: the workers are threads of one process.
+//! - `ENODIX_RACE_LOCK=1`: every call holds an exclusive lock on one file
 //!   in the temporary folder, so no two calls overlap.
-//! - `NETTERM_RACE_SETTLE=1`: a read that missed is repeated every 5 ms
+//! - `ENODIX_RACE_SETTLE=1`: a read that missed is repeated every 5 ms
 //!   for up to 5 s, to see whether the store comes to show the write.
-//! - `NETTERM_RACE_LINGER_MS=<ms>`: a read-back that was right is repeated
+//! - `ENODIX_RACE_LINGER_MS=<ms>`: a read-back that was right is repeated
 //!   that much later, to see whether it stays right.
 //!
-//! `credential_manager_race count` prints how many `netterm-test-*`
+//! `credential_manager_race count` prints how many `enodix-test-*`
 //! entries the store holds, and how many were last written more than an
 //! hour ago, without reading any of their secrets' meaning;
 //! `credential_manager_race clean` removes what a stopped run left
-//! (`netterm-test-race-*` only).
+//! (`enodix-test-race-*` only).
 
 #[cfg(not(windows))]
 fn main() {
@@ -57,7 +57,7 @@ mod win {
         CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
     };
 
-    const RACE: &str = "netterm-test-race-";
+    const RACE: &str = "enodix-test-race-";
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(Some(0)).collect()
@@ -68,16 +68,16 @@ mod win {
         unsafe { GetLastError() }
     }
 
-    /// With `NETTERM_RACE_LOCK` set, every call holds an exclusive lock on
+    /// With `ENODIX_RACE_LOCK` set, every call holds an exclusive lock on
     /// one file in the temporary folder, so that no two calls of these
     /// processes overlap: the processes take turns, nothing else changes.
     fn turn() -> Option<std::fs::File> {
-        std::env::var_os("NETTERM_RACE_LOCK")?;
+        std::env::var_os("ENODIX_RACE_LOCK")?;
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(std::env::temp_dir().join("netterm-test-race.lock"))
+            .open(std::env::temp_dir().join("enodix-test-race.lock"))
             .unwrap();
         file.lock().unwrap();
         Some(file)
@@ -151,7 +151,7 @@ mod win {
 
     /// (target, secret, last written) of every credential matching `filter`.
     fn list(filter: &str) -> Result<Vec<(String, String, FILETIME)>, u32> {
-        assert!(filter.starts_with("netterm-test-"));
+        assert!(filter.starts_with("enodix-test-"));
         let _turn = turn();
         let filter = wide(filter);
         let mut count = 0;
@@ -244,13 +244,13 @@ mod win {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let found = list("netterm-test-*").expect("list");
+        let found = list("enodix-test-*").expect("list");
         let old = found
             .iter()
             .filter(|(_, _, written)| now.saturating_sub(filetime_seconds(*written)) > 3600)
             .count();
         println!(
-            "{} netterm-test-* entries, {old} last written more than an hour ago",
+            "{} enodix-test-* entries, {old} last written more than an hour ago",
             found.len()
         );
     }
@@ -265,7 +265,7 @@ mod win {
             .collect();
         let _cleanups: Vec<Cleanup> = prefixes.iter().cloned().map(Cleanup).collect();
         let started = Instant::now();
-        if std::env::var_os("NETTERM_RACE_THREADS").is_some() {
+        if std::env::var_os("ENODIX_RACE_THREADS").is_some() {
             // The same workers as threads of this one process.
             let threads: Vec<_> = prefixes
                 .iter()
@@ -443,14 +443,14 @@ mod win {
     }
 
     /// Whether a read that missed is followed until it shows what was
-    /// written (`NETTERM_RACE_SETTLE=1`).
+    /// written (`ENODIX_RACE_SETTLE=1`).
     static SETTLE: std::sync::LazyLock<bool> =
-        std::sync::LazyLock::new(|| std::env::var_os("NETTERM_RACE_SETTLE").is_some());
+        std::sync::LazyLock::new(|| std::env::var_os("ENODIX_RACE_SETTLE").is_some());
 
     /// How long after a right read-back it is read again
-    /// (`NETTERM_RACE_LINGER_MS`).
+    /// (`ENODIX_RACE_LINGER_MS`).
     static LINGER: std::sync::LazyLock<Option<Duration>> = std::sync::LazyLock::new(|| {
-        std::env::var("NETTERM_RACE_LINGER_MS")
+        std::env::var("ENODIX_RACE_LINGER_MS")
             .ok()
             .and_then(|ms| ms.parse().ok())
             .map(Duration::from_millis)

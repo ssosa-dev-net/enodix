@@ -1,6 +1,6 @@
 [package]
-name = "netterm-core"
-description = "UI-free core of netterm: all behaviour lives here."
+name = "enodix-core"
+description = "UI-free core of enodix: all behaviour lives here."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

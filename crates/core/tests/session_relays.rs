@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use netterm_core::layout::{
+use enodix_core::layout::{
     close_workspace_sessions, live_in_session_windows, take_over_dead_window, WindowId, Windows,
     WorkspaceClosed,
 };
-use netterm_core::session::{
+use enodix_core::session::{
     Consumer, ConsumerGone, ConsumerKey, OutputOptions, Reported, SessionEvent, SessionEvents,
     SessionId, SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState,
     SessionTarget, TerminalSize,
@@ -439,7 +439,7 @@ async fn what_a_session_reported_is_kept_for_a_window_taking_it_later() {
     let temp = tempfile::TempDir::new().unwrap();
     let blocked = temp.path().join("logs");
     std::fs::write(&blocked, "not a folder").unwrap();
-    let log = netterm_core::logging::LogFolder::new(&blocked).quick_log("127.0.0.1");
+    let log = enodix_core::logging::LogFolder::new(&blocked).quick_log("127.0.0.1");
     let (id, events) = manager.open_logged(SessionTarget::Ssh(server.target()), SIZE, Some(log));
     assert!(relays.reported(id).is_none());
     let mut main = show(&relays, id, events);

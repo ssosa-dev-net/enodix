@@ -2,7 +2,7 @@
 //! test processes killed part-way left behind.
 //!
 //! Every test that writes Credential Manager uses a random
-//! `netterm-test-<hex>` prefix and removes everything under it when it
+//! `enodix-test-<hex>` prefix and removes everything under it when it
 //! ends, a failed (panicking) test included. A test process that is killed
 //! (a command that timed out, a stopped run) removes nothing, and its
 //! entries stay: some hundreds of them made Credential Manager refuse every
@@ -19,10 +19,10 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use netterm_core::credentials::KeychainStore;
+use enodix_core::credentials::KeychainStore;
 
 /// What every test prefix starts with.
-pub const TEST_PREFIX: &str = "netterm-test-";
+pub const TEST_PREFIX: &str = "enodix-test-";
 
 /// How long ago a prefix's every entry must have been written for its
 /// entries to be leftovers. No test runs this long, so no running test's
@@ -37,9 +37,9 @@ pub fn sweep_leftovers() {
     ONCE.call_once(|| match sweep(LEFTOVER_AGE) {
         Ok(0) => {}
         Ok(removed) => {
-            eprintln!("removed {removed} leftover netterm-test-* prefixes from Credential Manager")
+            eprintln!("removed {removed} leftover enodix-test-* prefixes from Credential Manager")
         }
-        Err(error) => eprintln!("could not sweep leftover netterm-test-* entries: {error}"),
+        Err(error) => eprintln!("could not sweep leftover enodix-test-* entries: {error}"),
     });
 }
 

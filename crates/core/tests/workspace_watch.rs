@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use netterm_core::session::{SessionState, SessionTarget, TerminalSize};
-use netterm_core::workspace::{
+use enodix_core::session::{SessionState, SessionTarget, TerminalSize};
+use enodix_core::workspace::{
     Changes, HostId, WatchOptions, Workspace, WorkspaceWatcher, FOLDER_SETTINGS_FILE,
 };
 use support::workspaces::fixture_copy;

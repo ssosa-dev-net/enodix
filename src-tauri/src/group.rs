@@ -28,10 +28,10 @@
 
 use std::sync::atomic::Ordering;
 
-use netterm_core::layout::{TabId, WindowId};
-use netterm_core::paste::PasteSafety;
-use netterm_core::session::{SessionId, SessionRecords, SessionRelays, SessionState};
-use netterm_core::workspace::HostId;
+use enodix_core::layout::{TabId, WindowId};
+use enodix_core::paste::PasteSafety;
+use enodix_core::session::{SessionId, SessionRecords, SessionRelays, SessionState};
+use enodix_core::workspace::HostId;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 

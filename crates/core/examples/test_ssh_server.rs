@@ -2,7 +2,7 @@
 //! tried by hand without a real device:
 //!
 //! ```text
-//! cargo run -p netterm-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>] [--scp-only <port> <folder>] [--banner <port>]
+//! cargo run -p enodix-core --example test_ssh_server -- 2222 [--agent <pipe or socket>] [--old-device <port>] [--telnet <port>] [--device <port>] [--credential-agent <data folder> <workspace id>] [--sftp <folder>] [--scp-only <port> <folder>] [--banner <port>]
 //! ```
 //!
 //! Port 0 (for any of them) takes a free one; the lines printed name it.
@@ -21,7 +21,7 @@
 //! the same login whose shell runs in device mode as `lab-r1` (prompt
 //! `lab-r1# `, for jobs: the built-in `frr` platform's prompt matches it)
 //! listens on the given port. With `--credential-agent`, the app's
-//! credential agent (`netterm_core::credentials::AgentServer`) serves the
+//! credential agent (`enodix_core::credentials::AgentServer`) serves the
 //! data folder from memory, as a running app would, with test profiles
 //! for the workspace id: `lab` (password, with an enable secret), `keys`
 //! (the `--device` server's client key, written into the data folder with
@@ -234,8 +234,8 @@ fn serve_credentials(
     folder: &std::path::Path,
     scope: &str,
     server: &support::TestSshServer,
-) -> netterm_core::credentials::AgentServer {
-    use netterm_core::credentials::{
+) -> enodix_core::credentials::AgentServer {
+    use enodix_core::credentials::{
         AgentEndpoint, AgentServer, CredentialProfile, CredentialStore, MemoryStore, ProfileAuth,
         SecretValue,
     };

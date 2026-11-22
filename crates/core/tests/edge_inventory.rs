@@ -17,10 +17,10 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use netterm_core::highlight::HighlightRule;
-use netterm_core::job::{JobStep, JobTarget};
-use netterm_core::platform::PlatformDefinition;
-use netterm_core::workspace::{
+use enodix_core::highlight::HighlightRule;
+use enodix_core::job::{JobStep, JobTarget};
+use enodix_core::platform::PlatformDefinition;
+use enodix_core::workspace::{
     Condition, EditError, HostId, SavedFilter, SavedJob, Snippet, Workspace,
 };
 use serde_norway::{Mapping, Value};

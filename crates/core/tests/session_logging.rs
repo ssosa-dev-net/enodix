@@ -9,12 +9,12 @@ mod support;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use netterm_core::logging::{LogFolder, PlainText, SessionLog};
-use netterm_core::session::{
+use enodix_core::logging::{LogFolder, PlainText, SessionLog};
+use enodix_core::session::{
     CloseReason, SessionEvent, SessionEvents, SessionId, SessionManager, SessionState,
     SessionTarget, TerminalSize,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use support::{next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT, USERNAME, WAIT};
 use tempfile::TempDir;
 

@@ -8,8 +8,8 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use netterm_core::paste::{plan_paste, PasteSafety};
-use netterm_core::session::{
+use enodix_core::paste::{plan_paste, PasteSafety};
+use enodix_core::session::{
     CloseReason, SessionEvent, SessionEvents, SessionId, SessionManager, SessionState,
     SessionTarget, TelnetTarget, TerminalSize,
 };

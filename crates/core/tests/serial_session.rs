@@ -14,13 +14,13 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
-use netterm_core::credentials::{HostLogin, MemoryStore, ProfileError, Profiles};
-use netterm_core::session::{
+use enodix_core::credentials::{HostLogin, MemoryStore, ProfileError, Profiles};
+use enodix_core::session::{
     CloseReason, OpenError, OutputOptions, SerialParameters, SerialPorts, SerialTarget,
     SessionError, SessionEvents, SessionId, SessionManager, SessionState, SessionTarget,
     SystemSerialPorts, TerminalSize, Transport, BREAK_DURATION,
 };
-use netterm_core::workspace::{FlowControl, HostId, Parity, Protocol, Workspace};
+use enodix_core::workspace::{FlowControl, HostId, Parity, Protocol, Workspace};
 use support::serial::{VirtualDevice, VirtualSerialPorts};
 use support::{known_hosts, next_state, output_ending_with, unacknowledged_output};
 use tempfile::TempDir;
@@ -403,7 +403,7 @@ async fn unplugging_while_output_is_paused_still_ends_the_session() {
             .await
             .expect("the session did not notice the unplugged adapter")
         {
-            Some(netterm_core::session::SessionEvent::State(SessionState::Closed(reason))) => {
+            Some(enodix_core::session::SessionEvent::State(SessionState::Closed(reason))) => {
                 break reason
             }
             Some(_) => {}
@@ -456,7 +456,7 @@ async fn reading_pauses_while_output_is_unacknowledged_and_input_still_goes_out(
     let mut received = paused.len();
     while received < total {
         match tokio::time::timeout(support::WAIT, events.next()).await {
-            Ok(Some(netterm_core::session::SessionEvent::Output(bytes))) => {
+            Ok(Some(enodix_core::session::SessionEvent::Output(bytes))) => {
                 received += bytes.len();
                 events.acknowledge(bytes.len());
             }

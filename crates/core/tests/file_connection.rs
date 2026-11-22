@@ -1,5 +1,5 @@
 //! File connections: a login to a device that opens no terminal, as the
-//! Files tab and file transfers use (`netterm_core::files`). Logging in
+//! Files tab and file transfers use (`enodix_core::files`). Logging in
 //! with a stored profile and through a jump host, questions answered by the
 //! caller or refused when nobody can answer, a device that hangs up before
 //! its banner, a cut connection, closing, and terminal sessions beside it.
@@ -9,15 +9,15 @@ mod support;
 use std::fs;
 use std::time::Duration;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::files::{ConnectError, FileConnection, Lost, OpeningEvent, StartError};
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::{
+use enodix_core::files::{ConnectError, FileConnection, Lost, OpeningEvent, StartError};
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::{
     HostKeyDecision, OpenError, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use support::{
     known_hosts, manager, next_state, output_ending_with, target_at, HangUpServer, TestSshServer,
     CODE_QUESTION, ONE_TIME_CODE, OTP_USERNAME, PASSWORD, PROMPT, USERNAME, WAIT,
@@ -269,7 +269,7 @@ async fn unattended_a_jump_host_that_asks_for_a_password_is_refused() {
     let bastion = TestSshServer::start().await;
     let device = TestSshServer::start().await;
     let mut target = device.target();
-    target.jump_hosts.push(netterm_core::session::JumpHost {
+    target.jump_hosts.push(enodix_core::session::JumpHost {
         name: "bastion".into(),
         host: "127.0.0.1".into(),
         port: bastion.port(),
@@ -320,7 +320,7 @@ async fn a_terminal_session_says_so_too_when_the_device_closes_before_its_banner
     );
     assert_eq!(next_state(&mut events).await, SessionState::Connecting);
     match next_state(&mut events).await {
-        SessionState::Closed(netterm_core::session::CloseReason::Failed(
+        SessionState::Closed(enodix_core::session::CloseReason::Failed(
             OpenError::ClosedBeforeLogin,
         )) => {}
         other => panic!("expected the hang-up, got {other:?}"),
@@ -367,7 +367,7 @@ async fn dropping_a_file_connection_closes_it_and_its_jump_connections() {
     let folder = TempDir::new().unwrap();
     router.serve_sftp(folder.path());
     let mut target = router.target();
-    target.jump_hosts.push(netterm_core::session::JumpHost {
+    target.jump_hosts.push(enodix_core::session::JumpHost {
         name: "bastion".into(),
         host: "127.0.0.1".into(),
         port: bastion.port(),

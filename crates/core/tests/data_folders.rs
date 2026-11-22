@@ -17,28 +17,28 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-use netterm_core::configs::ConfigStore;
-use netterm_core::data_folders::{
+use enodix_core::configs::ConfigStore;
+use enodix_core::data_folders::{
     remove_left_environment, settle, settle_with, DataFolders, NoticeKind, SettleOptions, Step,
     CONFIGS, JOBS, MOVED, MOVING_LOCK, PYTHON, RUNNING_LOCK,
 };
-use netterm_core::job::results::RunStore;
-use netterm_core::python::{environment_interpreter, PythonChoice, Setup};
-use netterm_core::workspace::HostId;
+use enodix_core::job::results::RunStore;
+use enodix_core::python::{environment_interpreter, PythonChoice, Setup};
+use enodix_core::workspace::HostId;
 use support::processes;
 use tempfile::TempDir;
 
 /// The role of a helper that settles the folders the variables name.
 const SETTLE: &str = "settle";
-const SETTINGS_VARIABLE: &str = "NETTERM_TEST_SETTINGS";
-const LOCAL_VARIABLE: &str = "NETTERM_TEST_LOCAL";
+const SETTINGS_VARIABLE: &str = "ENODIX_TEST_SETTINGS";
+const LOCAL_VARIABLE: &str = "ENODIX_TEST_LOCAL";
 /// Set: copy, as across drives.
-const COPY_VARIABLE: &str = "NETTERM_TEST_COPY";
+const COPY_VARIABLE: &str = "ENODIX_TEST_COPY";
 /// The step (as `said` writes it) the helper stops at, printing
 /// [`STOPPED`] and waiting to be killed.
-const STOP_VARIABLE: &str = "NETTERM_TEST_STOP";
+const STOP_VARIABLE: &str = "ENODIX_TEST_STOP";
 /// A file the helper waits for before it starts (two start at once).
-const GO_VARIABLE: &str = "NETTERM_TEST_GO";
+const GO_VARIABLE: &str = "ENODIX_TEST_GO";
 const STOPPED: &str = "stopped at the step";
 const SETTLED: &str = "settled ";
 const WAITING: &str = "waiting for the other copy";
@@ -109,8 +109,8 @@ struct Folders {
 impl Folders {
     fn new() -> Self {
         let temp = TempDir::new().unwrap();
-        let settings = temp.path().join("Roaming").join("dev.netterm.app");
-        let local = temp.path().join("Local").join("dev.netterm.app");
+        let settings = temp.path().join("Roaming").join("dev.enodix.app");
+        let local = temp.path().join("Local").join("dev.enodix.app");
         fs::create_dir_all(&settings).unwrap();
         fs::create_dir_all(local.join("logs")).unwrap();
         fs::write(local.join("logs").join("session.log"), "a session\n").unwrap();
@@ -161,14 +161,11 @@ impl Folders {
         fs::create_dir_all(interpreter.parent().unwrap()).unwrap();
         fs::write(&interpreter, "interpreter").unwrap();
         fs::write(environment.join("pyvenv.cfg"), "home = C:\\Python\n").unwrap();
-        let package = environment
-            .join("Lib")
-            .join("site-packages")
-            .join("netterm");
+        let package = environment.join("Lib").join("site-packages").join("enodix");
         fs::create_dir_all(&package).unwrap();
         fs::write(package.join("__init__.py"), "__version__ = '0.5.0'\n").unwrap();
         let locked = package.join("RECORD");
-        fs::write(&locked, "netterm/__init__.py\n").unwrap();
+        fs::write(&locked, "enodix/__init__.py\n").unwrap();
         let mut permissions = fs::metadata(&locked).unwrap().permissions();
         permissions.set_readonly(true);
         fs::set_permissions(&locked, permissions).unwrap();
@@ -181,7 +178,7 @@ impl Folders {
         self
     }
 
-    fn settle(&self, copy: bool) -> netterm_core::data_folders::Settled {
+    fn settle(&self, copy: bool) -> enodix_core::data_folders::Settled {
         settle_with(
             &self.settings,
             &self.local,
@@ -352,7 +349,7 @@ fn check_stores_read(folders: &DataFolders) {
 
 /// The settings folder holds none of the three and the local folder only
 /// its logs: nothing changes, nothing is said, and the stores go to the
-/// local folder. One folder for both (`NETTERM_DATA_DIR`) is used as it
+/// local folder. One folder for both (`ENODIX_DATA_DIR`) is used as it
 /// is, with no lock file written.
 #[test]
 fn nothing_to_move_changes_nothing() {
@@ -395,7 +392,7 @@ fn everything_moves_whole_and_what_stays_stays() {
     let read_only = folders
         .local
         .join(PYTHON)
-        .join("Lib/site-packages/netterm/RECORD");
+        .join("Lib/site-packages/enodix/RECORD");
     assert!(fs::metadata(read_only).unwrap().permissions().readonly());
     drop(settled);
 
@@ -415,7 +412,7 @@ fn everything_moves_whole_and_what_stays_stays() {
 fn across_drives_the_data_is_copied_and_the_environment_set_up_again() {
     let folders = Folders::new().with_old_data(5);
     let before = tree(&folders.settings);
-    let read_only = Path::new("Lib/site-packages/netterm/RECORD");
+    let read_only = Path::new("Lib/site-packages/enodix/RECORD");
     // Read-only in the jobs too, to be copied.
     let run_file = folders
         .settings
@@ -786,7 +783,7 @@ fn a_copy_started_while_another_runs_leaves_the_data_where_it_is() {
 /// or Node.
 #[test]
 fn a_moved_python_environment_still_works() {
-    use netterm_core::python::{
+    use enodix_core::python::{
         create_environment, find_python, package_version, status, system_candidates,
         SetupCanceller, SetupOffer,
     };
@@ -804,7 +801,7 @@ fn a_moved_python_environment_still_works() {
     for copy in [false, true] {
         let folders = Folders::new();
         let offer = SetupOffer::find(
-            &[netterm_core::python::Candidate::new(&base.executable)],
+            &[enodix_core::python::Candidate::new(&base.executable)],
             &folders.settings.join(PYTHON),
             wheel.parent().unwrap(),
             version,

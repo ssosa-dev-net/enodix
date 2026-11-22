@@ -16,14 +16,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use netterm_core::opener;
-use netterm_core::python::BUNDLE_VARIABLE;
+use enodix_core::opener;
+use enodix_core::python::BUNDLE_VARIABLE;
 use tempfile::TempDir;
 
 #[test]
 fn the_opener_started_from_an_appimage_gets_none_of_the_bundles_variables() {
     let folder = TempDir::new().unwrap();
-    let bundle = folder.path().join(".mount_netterm");
+    let bundle = folder.path().join(".mount_enodix");
     let inside = |path: &str| bundle.join(path);
     let joined = |paths: &[PathBuf]| std::env::join_paths(paths).unwrap();
     let bin = folder.path().join("bin");
@@ -46,8 +46,8 @@ fn the_opener_started_from_an_appimage_gets_none_of_the_bundles_variables() {
     // the runtime's own variables set.
     std::env::set_current_dir(&bundle).unwrap();
     std::env::set_var(BUNDLE_VARIABLE, &bundle);
-    std::env::set_var("APPIMAGE", folder.path().join("netterm.AppImage"));
-    std::env::set_var("ARGV0", "./netterm.AppImage");
+    std::env::set_var("APPIMAGE", folder.path().join("enodix.AppImage"));
+    std::env::set_var("ARGV0", "./enodix.AppImage");
     std::env::set_var("OWD", folder.path());
     std::env::set_var("HOME", &home);
     std::env::set_var(
@@ -80,7 +80,7 @@ fn the_opener_started_from_an_appimage_gets_none_of_the_bundles_variables() {
     assert!(lines.contains(&"target=/home/someone/logs/r1"), "{given}");
     assert!(lines.contains(&"LD_LIBRARY_PATH=/opt/keep"), "{given}");
     assert!(
-        !given.contains(".mount_netterm"),
+        !given.contains(".mount_enodix"),
         "something points into the bundle: {given}"
     );
     for name in ["APPDIR", "APPIMAGE", "ARGV0", "OWD"] {

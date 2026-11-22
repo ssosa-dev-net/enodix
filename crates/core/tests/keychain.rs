@@ -1,6 +1,6 @@
 //! The keychain credential store against the real Windows Credential
 //! Manager. Every entry these tests write is named with a throwaway
-//! `netterm-test-<random>` prefix and deleted when the test ends, pass or
+//! `enodix-test-<random>` prefix and deleted when the test ends, pass or
 //! fail; nothing else in the user's keychain is read or changed.
 //!
 //! Several processes using the keychain at once (#138) are played by this
@@ -14,17 +14,17 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Instant;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     vault_file, ActiveStore, AuthDraft, CredentialProfile, CredentialStore, KeychainStore,
     ProfileAuth, ProfileDraft, Profiles, RemovedEntries, SecretValue, Secrets, StoreContents,
     Vault, VaultStatus,
 };
-use netterm_core::workspace::Workspace;
+use enodix_core::workspace::Workspace;
 use support::keychain::{prefix_of, sweep_leftovers, LEFTOVER_AGE, TEST_PREFIX};
 use support::processes;
 
-const SCOPE_A: &str = r"C:\netterm-test\customer-a";
-const SCOPE_B: &str = r"C:\netterm-test\customer-b";
+const SCOPE_A: &str = r"C:\enodix-test\customer-a";
+const SCOPE_B: &str = r"C:\enodix-test\customer-b";
 
 /// A keychain store under a fresh test prefix that deletes every entry
 /// (profiles and secrets) of the test scopes when dropped.
@@ -155,7 +155,7 @@ fn each_scope_keeps_its_own_profiles() {
         Some(password_profile("shared-name", "b"))
     );
     assert_eq!(store.list(SCOPE_B).unwrap().len(), 1);
-    assert!(store.list(r"C:\netterm-test\nobody").unwrap().is_empty());
+    assert!(store.list(r"C:\enodix-test\nobody").unwrap().is_empty());
 }
 
 #[test]
@@ -429,7 +429,7 @@ fn copies_left_in_the_real_keychain_go_at_the_next_unlock_and_with_a_start_over(
 #[test]
 fn everything_under_the_prefix_is_removed_and_nothing_else() {
     let suffix: u64 = rand::random();
-    let prefix = format!("netterm-test-{suffix:016x}");
+    let prefix = format!("enodix-test-{suffix:016x}");
     let keychain = TestKeychain::with_prefix(prefix.clone());
     // Names that start like the prefix's own but are another prefix's.
     let longer = TestKeychain::with_prefix(format!("{prefix}x"));
@@ -477,24 +477,24 @@ fn everything_under_the_prefix_is_removed_and_nothing_else() {
 #[test]
 fn a_test_entry_is_named_after_its_prefix_and_nothing_else_is_one() {
     assert_eq!(
-        prefix_of(r"netterm-test-0a1b:C:\ws:core"),
-        Some("netterm-test-0a1b")
+        prefix_of(r"enodix-test-0a1b:C:\ws:core"),
+        Some("enodix-test-0a1b")
     );
     assert_eq!(
-        prefix_of("netterm-test-0a1b.secret:ws:token"),
-        Some("netterm-test-0a1b")
+        prefix_of("enodix-test-0a1b.secret:ws:token"),
+        Some("enodix-test-0a1b")
     );
     assert_eq!(
-        prefix_of("netterm-test-0a1bx:ws:core"),
-        Some("netterm-test-0a1bx")
+        prefix_of("enodix-test-0a1bx:ws:core"),
+        Some("enodix-test-0a1bx")
     );
     for other in [
-        "dev.netterm.app:ws:core",
-        "dev.netterm.app.secret:ws:token",
-        "NETTERM-TEST-0a1b:ws:core",
-        "netterm-test-:ws:core",
-        "netterm-test-no-colon",
-        "x-netterm-test-0a1b:ws:core",
+        "dev.enodix.app:ws:core",
+        "dev.enodix.app.secret:ws:token",
+        "ENODIX-TEST-0a1b:ws:core",
+        "enodix-test-:ws:core",
+        "enodix-test-no-colon",
+        "x-enodix-test-0a1b:ws:core",
     ] {
         assert_eq!(prefix_of(other), None, "{other}");
     }
@@ -528,8 +528,8 @@ fn the_sweep_keeps_what_a_running_test_wrote() {
 /// The role of a helper that uses the keychain under its own prefix.
 const KEYCHAIN_USER: &str = "keychain-user";
 /// The helper's prefix and how many rounds it plays.
-const PREFIX_VARIABLE: &str = "NETTERM_TEST_KEYCHAIN_PREFIX";
-const ROUNDS_VARIABLE: &str = "NETTERM_TEST_KEYCHAIN_ROUNDS";
+const PREFIX_VARIABLE: &str = "ENODIX_TEST_KEYCHAIN_PREFIX";
+const ROUNDS_VARIABLE: &str = "ENODIX_TEST_KEYCHAIN_ROUNDS";
 /// What a helper prints for each answer that is not what it just did, and
 /// at the end.
 const INCONSISTENT: &str = "inconsistent";
@@ -718,9 +718,9 @@ fn several_processes_using_the_keychain_at_once_each_read_back_what_they_wrote()
 }
 
 /// The reproduction of #138, minutes of load on Credential Manager: run
-/// by hand (`cargo test -p netterm-core --test keychain under_load --
-/// --ignored --nocapture`; `NETTERM_TEST_KEYCHAIN_PROCESSES` and
-/// `NETTERM_TEST_KEYCHAIN_STRESS_ROUNDS` change its 16 processes and 100
+/// by hand (`cargo test -p enodix-core --test keychain under_load --
+/// --ignored --nocapture`; `ENODIX_TEST_KEYCHAIN_PROCESSES` and
+/// `ENODIX_TEST_KEYCHAIN_STRESS_ROUNDS` change its 16 processes and 100
 /// rounds). Before every call took turns, 16 processes saw old values,
 /// missing entries and lost changes in about one round in a hundred.
 #[test]
@@ -733,8 +733,8 @@ fn several_processes_using_the_keychain_at_once_each_read_back_what_they_wrote_u
             .unwrap_or(default)
     };
     let problems = several_processes_use_the_keychain(
-        number("NETTERM_TEST_KEYCHAIN_PROCESSES", 16),
-        number("NETTERM_TEST_KEYCHAIN_STRESS_ROUNDS", 100),
+        number("ENODIX_TEST_KEYCHAIN_PROCESSES", 16),
+        number("ENODIX_TEST_KEYCHAIN_STRESS_ROUNDS", 100),
     );
     assert!(
         problems.is_empty(),

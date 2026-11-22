@@ -118,8 +118,8 @@ use std::time::Duration;
 
 use std::sync::OnceLock;
 
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::{
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, OutputOptions, SessionEvent, SessionEvents,
     SessionManager, SessionState, SshAuth, SshTarget, DEFAULT_CONNECT_TIMEOUT,
 };
@@ -278,16 +278,16 @@ pub fn known_hosts() -> KnownHosts {
 /// A window's end of a session shown through a relay: each event it is
 /// delivered goes to the channel; gone once the receiver is dropped.
 #[allow(dead_code)]
-pub struct ToChannel(pub tokio::sync::mpsc::UnboundedSender<netterm_core::session::SessionEvent>);
+pub struct ToChannel(pub tokio::sync::mpsc::UnboundedSender<enodix_core::session::SessionEvent>);
 
-impl netterm_core::session::Consumer for ToChannel {
+impl enodix_core::session::Consumer for ToChannel {
     fn deliver(
         &mut self,
-        event: netterm_core::session::SessionEvent,
-    ) -> Result<(), netterm_core::session::ConsumerGone> {
+        event: enodix_core::session::SessionEvent,
+    ) -> Result<(), enodix_core::session::ConsumerGone> {
         self.0
             .send(event)
-            .map_err(|_| netterm_core::session::ConsumerGone)
+            .map_err(|_| enodix_core::session::ConsumerGone)
     }
 }
 
@@ -2360,7 +2360,7 @@ pub async fn output_of_at_least(events: &mut SessionEvents, bytes: usize) -> Vec
 pub async fn output_until_closed(
     events: &mut SessionEvents,
     bound: Duration,
-) -> (Vec<u8>, netterm_core::session::CloseReason) {
+) -> (Vec<u8>, enodix_core::session::CloseReason) {
     let mut received = Vec::new();
     let closed = tokio::time::timeout(bound, async {
         loop {

@@ -22,16 +22,16 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use netterm_core::configs::ConfigStore;
-use netterm_core::credentials::{
+use enodix_core::configs::ConfigStore;
+use enodix_core::credentials::{
     vault_file, ActiveStore, AgentEndpoint, AgentServer, AgentStore, CredentialProfile,
     CredentialStore, KdfParams, MemoryStore, ProfileAuth, Profiles, ScopedProfile, Secrets,
     StoreContents, Vault, VaultStatus,
 };
-use netterm_core::job::{self, JobStep, JobTarget, LoginBackup, SessionLogin, SkipReason};
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::tunnel::{self, Planned};
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::job::{self, JobStep, JobTarget, LoginBackup, SessionLogin, SkipReason};
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::tunnel::{self, Planned};
+use enodix_core::workspace::{HostId, Workspace};
 use support::credentials::{FailingStore, Failures, READ_REFUSED};
 use tempfile::TempDir;
 

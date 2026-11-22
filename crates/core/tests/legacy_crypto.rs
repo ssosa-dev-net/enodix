@@ -8,15 +8,15 @@ mod support;
 
 use std::fs;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::session::{
+use enodix_core::session::{
     offered_algorithms, AlgorithmKind, CloseReason, NegotiatedAlgorithms, NegotiationFailure,
     OpenError, SessionEvents, SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
     UNSUPPORTED_ALGORITHMS,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use russh::keys::Algorithm;
 use russh::{cipher, kex, mac, Preferred};
 use support::algorithms::{old_device, FakeDevice, Offer};
@@ -474,7 +474,7 @@ async fn an_old_jump_host_without_the_switch_fails_naming_it() {
 async fn other_failures_are_not_negotiation_failures() {
     let server = TestSshServer::start().await;
     let reason = close_reason(SshTarget {
-        auth: netterm_core::session::SshAuth::Password("wrong".into()),
+        auth: enodix_core::session::SshAuth::Password("wrong".into()),
         ..target(server.port(), false)
     })
     .await;

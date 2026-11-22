@@ -6,7 +6,7 @@ mod support;
 
 use std::fs;
 
-use netterm_core::workspace::{HostId, Role, RoleIcon, RoleSource, Workspace, NEUTRAL_ROLE_COLOR};
+use enodix_core::workspace::{HostId, Role, RoleIcon, RoleSource, Workspace, NEUTRAL_ROLE_COLOR};
 use support::workspaces::{fixture, fixture_copy, read};
 use tempfile::TempDir;
 

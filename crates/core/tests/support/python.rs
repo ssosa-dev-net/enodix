@@ -8,7 +8,7 @@
 //! fails; [`FakePython::sleeping`] does not end for a minute;
 //! [`FakePython::running`] runs given commands (script jobs' stand-ins).
 //!
-//! [`real_python`] is a Python 3.10+ of this machine (`NETTERM_TEST_PYTHON`,
+//! [`real_python`] is a Python 3.10+ of this machine (`ENODIX_TEST_PYTHON`,
 //! else where the app looks), for the tests that run only when one is
 //! present; [`build_wheel`] builds the app's wheel with
 //! `scripts/build-wheel.mjs` (needs Node).
@@ -17,7 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use netterm_core::python::{self, Candidate, Interpreter, PythonVersion};
+use enodix_core::python::{self, Candidate, Interpreter, PythonVersion};
 
 pub struct FakePython {
     pub path: PathBuf,
@@ -37,7 +37,7 @@ impl FakePython {
             "version": parts,
             "executable": path,
             "package": package,
-            "package_error": package.is_none().then_some("ModuleNotFoundError: No module named netterm"),
+            "package_error": package.is_none().then_some("ModuleNotFoundError: No module named enodix"),
         });
         write_script(
             &path,
@@ -103,7 +103,7 @@ fn write_script(path: &Path, windows: &str, unix: &str) {
 /// saying so).
 pub fn real_python() -> Option<Interpreter> {
     let mut candidates = Vec::new();
-    if let Some(chosen) = std::env::var_os("NETTERM_TEST_PYTHON") {
+    if let Some(chosen) = std::env::var_os("ENODIX_TEST_PYTHON") {
         candidates.push(Candidate::new(chosen));
     }
     candidates.extend(python::system_candidates());

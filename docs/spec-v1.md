@@ -1,6 +1,6 @@
-# netterm v1 spec
+# enodix v1 spec
 
-`netterm` is a working codename. The user-visible name is not chosen yet.
+`enodix` is a working codename. The user-visible name is not chosen yet.
 
 ## Problem Statement
 
@@ -164,7 +164,7 @@ v1 covers the terminal and the inventory. Later phases add jobs across many devi
 
 - Free and open source under GPLv3, funded by donations only. No paid tier, no hosted service, no contributor agreement.
 - Windows is the first-class target for v1. The core must contain no Windows-only assumptions so that macOS and Linux builds can follow.
-- The codename `netterm` is used for the repository and internal identifiers. The user-visible name is defined in one place so that renaming is a small change.
+- The codename `enodix` is used for the repository and internal identifiers. The user-visible name is defined in one place so that renaming is a small change.
 - The repository stays private until a name is chosen, then moves to a public organisation.
 
 ### Stack

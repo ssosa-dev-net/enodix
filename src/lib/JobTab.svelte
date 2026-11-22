@@ -413,7 +413,7 @@
         </label>
         <p class="note" data-job-script-note>
           The script runs once, on this computer, with the Python chosen in
-          Preferences, in the workspace folder. Its inventory (the netterm
+          Preferences, in the workspace folder. Its inventory (the enodix
           package and its Nornir plugin) holds only the hosts of this job, with
           the logins of their credential profiles; it connects to them itself.
           Nothing runs before you start.

@@ -12,8 +12,8 @@ mod support;
 use std::sync::Arc;
 use std::time::Duration;
 
-use netterm_core::layout::{InputOrigin, TabId, WindowId, Windows};
-use netterm_core::session::{
+use enodix_core::layout::{InputOrigin, TabId, WindowId, Windows};
+use enodix_core::session::{
     Fanout, OutputOptions, SerialParameters, SerialTarget, SessionEvents, SessionId,
     SessionManager, SessionState, SessionTarget, TerminalSize,
 };

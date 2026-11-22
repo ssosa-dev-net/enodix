@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::logging::LogFolder;
-use netterm_core::session::{
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::logging::LogFolder;
+use enodix_core::session::{
     Consumer, ConsumerGone, ConsumerKey, HandoverError, HostKeyDecision, OutputOptions, Relay,
     SerialTarget, SessionEvent, SessionId, SessionManager, SessionState, SessionTarget,
     TerminalSize,
@@ -76,7 +76,7 @@ fn window() -> (
 }
 
 /// Starts relaying `events` to a first window.
-fn relay(events: netterm_core::session::SessionEvents) -> (Relay, Window) {
+fn relay(events: enodix_core::session::SessionEvents) -> (Relay, Window) {
     let (consumer, events_rx, gone) = window();
     let (relay, key) = Relay::start(events, consumer);
     (

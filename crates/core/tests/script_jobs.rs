@@ -10,16 +10,16 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::job::results::{OutputRef, RunStore, OUTPUT_FOLDER};
-use netterm_core::job::script::{ScriptTargets, TARGETS_FORMAT};
-use netterm_core::job::{
+use enodix_core::job::results::{OutputRef, RunStore, OUTPUT_FOLDER};
+use enodix_core::job::script::{ScriptTargets, TARGETS_FORMAT};
+use enodix_core::job::{
     self, HostState, Job, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget, PlanError,
     RunningJobs, ScriptOptions, SkipReason, StartError, APP_CLOSED, APP_CLOSE_WAIT, SCRIPT_OUTPUT,
 };
-use netterm_core::workspace::{HostId, ScriptError, Workspace};
+use enodix_core::workspace::{HostId, ScriptError, Workspace};
 use support::processes;
 use support::python::{real_python, FakePython};
 use tempfile::TempDir;
@@ -119,8 +119,8 @@ fn options(interpreter: &Path) -> JobOptions {
     JobOptions {
         script: Some(ScriptOptions {
             interpreter: interpreter.to_path_buf(),
-            cli: Some("C:/somewhere/netterm-cli.exe".into()),
-            environment: vec![("NETTERM_TEST_EXTRA".into(), "extra-value".into())],
+            cli: Some("C:/somewhere/enodix-cli.exe".into()),
+            environment: vec![("ENODIX_TEST_EXTRA".into(), "extra-value".into())],
         }),
         ..JobOptions::default()
     }
@@ -160,8 +160,8 @@ fn printing(folder: &Path) -> FakePython {
     FakePython::running(
         folder,
         "printing",
-        "echo workspace=%NETTERM_WORKSPACE%\r\necho cli=%NETTERM_CLI%\r\necho extra=%NETTERM_TEST_EXTRA%\r\necho args=%1 %2\r\necho cwd=%CD%\r\ntype \"%NETTERM_JOB_TARGETS%\"\r\necho.\r\necho targets=%NETTERM_JOB_TARGETS%",
-        "echo \"workspace=$NETTERM_WORKSPACE\"\necho \"cli=$NETTERM_CLI\"\necho \"extra=$NETTERM_TEST_EXTRA\"\necho \"args=$1 $2\"\necho \"cwd=$(pwd)\"\ncat \"$NETTERM_JOB_TARGETS\"\necho\necho \"targets=$NETTERM_JOB_TARGETS\"",
+        "echo workspace=%ENODIX_WORKSPACE%\r\necho cli=%ENODIX_CLI%\r\necho extra=%ENODIX_TEST_EXTRA%\r\necho args=%1 %2\r\necho cwd=%CD%\r\ntype \"%ENODIX_JOB_TARGETS%\"\r\necho.\r\necho targets=%ENODIX_JOB_TARGETS%",
+        "echo \"workspace=$ENODIX_WORKSPACE\"\necho \"cli=$ENODIX_CLI\"\necho \"extra=$ENODIX_TEST_EXTRA\"\necho \"args=$1 $2\"\necho \"cwd=$(pwd)\"\ncat \"$ENODIX_JOB_TARGETS\"\necho\necho \"targets=$ENODIX_JOB_TARGETS\"",
     )
 }
 
@@ -375,7 +375,7 @@ async fn the_script_gets_exactly_the_jobs_hosts_and_succeeds_by_exit_status() {
     let root = workspace.root();
     assert_eq!(Path::new(&line("workspace")), root);
     assert_eq!(Path::new(&line("cwd")), root);
-    assert_eq!(line("cli"), "C:/somewhere/netterm-cli.exe");
+    assert_eq!(line("cli"), "C:/somewhere/enodix-cli.exe");
     assert_eq!(line("extra"), "extra-value");
     let args = line("args");
     assert!(args.starts_with("-u "), "{args}");
@@ -572,7 +572,7 @@ async fn the_processes_a_script_leaves_behind_end_when_it_exits() {
         &format!(
             "start \"\" /b {line}\r\n\
              :wait\r\n\
-             if not exist \"%NETTERM_TEST_PIDS%\\{grandchild}\" (\r\n\
+             if not exist \"%ENODIX_TEST_PIDS%\\{grandchild}\" (\r\n\
              ping -n 2 127.0.0.1 > nul\r\n\
              goto wait\r\n\
              )\r\n\
@@ -582,7 +582,7 @@ async fn the_processes_a_script_leaves_behind_end_when_it_exits() {
         ),
         &format!(
             "{line} &\n\
-             while [ ! -f \"$NETTERM_TEST_PIDS/{grandchild}\" ]; do sleep 0.05; done\n\
+             while [ ! -f \"$ENODIX_TEST_PIDS/{grandchild}\" ]; do sleep 0.05; done\n\
              echo leaving\n\
              exit 0",
             grandchild = processes::GRANDCHILD
@@ -810,7 +810,7 @@ async fn a_real_python_script_prints_its_targets() {
     fs::write(
         workspace.root().join("scripts/targets.py"),
         "import json, os, sys\n\
-         with open(os.environ['NETTERM_JOB_TARGETS'], encoding='utf-8') as f:\n\
+         with open(os.environ['ENODIX_JOB_TARGETS'], encoding='utf-8') as f:\n\
          \x20   targets = json.load(f)\n\
          for host in targets['hosts']:\n\
          \x20   print('target', host)\n\

@@ -9,27 +9,27 @@
 
 use std::path::{Path, PathBuf};
 
-use netterm_core::app_state::resolved_path;
-use netterm_core::credentials::{
+use enodix_core::app_state::resolved_path;
+use enodix_core::credentials::{
     vault_file, AgentEndpoint, AgentStore, CredentialStore, HostCredentials, KeychainStore,
     NamedSecret, Profiles, Secrets, Vault, VaultError, VaultStatus,
 };
-use netterm_core::job::script::ScriptTargets;
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::job::script::ScriptTargets;
+use enodix_core::workspace::{HostId, Workspace};
 use zeroize::Zeroize;
 
 use crate::{print, unknown_option, Failure, END_OF_OPTIONS};
 
 /// The app's user-visible name, for messages.
-pub const PRODUCT: &str = env!("NETTERM_PRODUCT_NAME");
+pub const PRODUCT: &str = env!("ENODIX_PRODUCT_NAME");
 /// The app's identifier: its data folder's name and its keychain entries'
 /// prefix.
-const IDENTIFIER: &str = env!("NETTERM_IDENTIFIER");
+const IDENTIFIER: &str = env!("ENODIX_IDENTIFIER");
 /// Overrides the per-user data folder, as for the app.
-const DATA_DIR_VARIABLE: &str = "NETTERM_DATA_DIR";
+const DATA_DIR_VARIABLE: &str = "ENODIX_DATA_DIR";
 /// Overrides the keychain entries' prefix (the tests' own, never the app's
 /// real entries).
-const KEYCHAIN_PREFIX_VARIABLE: &str = "NETTERM_KEYCHAIN_PREFIX";
+const KEYCHAIN_PREFIX_VARIABLE: &str = "ENODIX_KEYCHAIN_PREFIX";
 /// How many times a wrong master password may be typed.
 const PASSWORD_ATTEMPTS: usize = 3;
 
@@ -165,7 +165,7 @@ fn print_secret(value: &impl serde::Serialize) -> Result<(), Failure> {
 }
 
 /// The app's per-user data folder: as the app finds it (Tauri's app data
-/// folder, named after the identifier), or `NETTERM_DATA_DIR`.
+/// folder, named after the identifier), or `ENODIX_DATA_DIR`.
 pub(crate) fn data_folder() -> Result<PathBuf, Failure> {
     if let Some(folder) = std::env::var_os(DATA_DIR_VARIABLE) {
         return Ok(PathBuf::from(folder));

@@ -1,11 +1,11 @@
 # Watches the network endpoints of the app's processes for the smoke test
-# (scripts/connections.mjs starts it; see the testing notes).
+# (scripts/connections.mjs starts it).
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/watch-connections.ps1 -Root <pid>
 #
-# The processes watched: every netterm.exe and netterm-cli.exe that process
+# The processes watched: every enodix.exe and enodix-cli.exe that process
 # <Root> (the smoke test's node) starts, and everything they start in turn
-# (WebView2's msedgewebview2.exe, the Python the app runs, the netterm-cli
+# (WebView2's msedgewebview2.exe, the Python the app runs, the enodix-cli
 # a script runs), followed by parent process id and start time. Every
 # <IntervalMs> it reads the system's TCP tables (IPv4 and IPv6) and UDP
 # tables with their owning process ids (iphlpapi's GetExtendedTcpTable /
@@ -290,7 +290,7 @@ public static class ConnectionWatcher
                 foreach (var p in processes.Values)
                 {
                     if (watched.ContainsKey(p.Pid) || p.Pid == 0) continue;
-                    bool rootApp = p.Parent == rootPid && (string.Equals(p.Name, "netterm.exe", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Name, "netterm-cli.exe", StringComparison.OrdinalIgnoreCase));
+                    bool rootApp = p.Parent == rootPid && (string.Equals(p.Name, "enodix.exe", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Name, "enodix-cli.exe", StringComparison.OrdinalIgnoreCase));
                     Proc parent;
                     bool childOfWatched = watched.TryGetValue(p.Parent, out parent);
                     if (rootApp || childOfWatched)

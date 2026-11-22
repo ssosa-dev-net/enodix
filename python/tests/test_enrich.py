@@ -1,4 +1,4 @@
-"""Fill in from devices (``python -m netterm.enrich``): the facts of the
+"""Fill in from devices (``python -m enodix.enrich``): the facts of the
 job's hosts fetched with each host's own login and written to the facts
 file. NAPALM is stood in for by a recording driver; the inventory and the
 logins come from the real binary and the test credential agent."""
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 from unittest import mock
 
-from netterm import enrich
+from enodix import enrich
 
 from support import BridgeTest, JumpServer
 
@@ -70,9 +70,9 @@ class FillIn(BridgeTest):
         return mock.patch.dict(
             os.environ,
             {
-                "NETTERM_WORKSPACE": str(self.workspace.root),
-                "NETTERM_JOB_TARGETS": str(path),
-                "NETTERM_FACTS_FILE": str(self.facts_file),
+                "ENODIX_WORKSPACE": str(self.workspace.root),
+                "ENODIX_JOB_TARGETS": str(path),
+                "ENODIX_FACTS_FILE": str(self.facts_file),
             },
         )
 
@@ -235,9 +235,9 @@ class FillIn(BridgeTest):
         self.assertEqual(junos["port"], 50022)
 
     def test_run_by_hand_it_says_what_runs_it(self) -> None:
-        environment = {k: v for k, v in os.environ.items() if k not in ("NETTERM_JOB_TARGETS", "NETTERM_FACTS_FILE")}
+        environment = {k: v for k, v in os.environ.items() if k not in ("ENODIX_JOB_TARGETS", "ENODIX_FACTS_FILE")}
         done = subprocess.run(
-            [sys.executable, "-m", "netterm.enrich"],
+            [sys.executable, "-m", "enodix.enrich"],
             env=environment,
             capture_output=True,
             text=True,

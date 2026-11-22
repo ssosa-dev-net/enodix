@@ -1,5 +1,5 @@
 //! The Files tab's commands (#103, #106): thin over the core's
-//! `netterm_core::files::FileBrowsers`. A browser's events reach the
+//! `enodix_core::files::FileBrowsers`. A browser's events reach the
 //! interface on a `Channel`; it belongs to the app, is closed when its tab
 //! closes (`files_close_host`, with the host's transfers), and all are
 //! closed with the main window. Each call adding transfers gives a
@@ -8,19 +8,19 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use netterm_core::files::{
+use enodix_core::files::{
     existing_locally, follow, Added, BrowserEvent, BrowserId, EntryKind, FileBrowsers, Listing,
     TransferId, TransferState, TransferWatch,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::HostKeyDecision;
-use netterm_core::workspace::HostId;
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::HostKeyDecision;
+use enodix_core::workspace::HostId;
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
 use super::{calling_window, with_open_profiles, Prompted, Shell};
-use netterm_core::layout::WindowId;
+use enodix_core::layout::WindowId;
 
 /// The open browsers, and the trusted host keys they check against (the
 /// sessions' own).

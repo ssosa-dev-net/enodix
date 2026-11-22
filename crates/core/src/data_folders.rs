@@ -102,7 +102,7 @@ pub struct DataFolders {
 
 impl DataFolders {
     /// Every piece in one folder (the tests' and the smoke's
-    /// `NETTERM_DATA_DIR`, and systems with a single data folder).
+    /// `ENODIX_DATA_DIR`, and systems with a single data folder).
     pub fn in_one(folder: &Path) -> Self {
         Self::placed(folder, [folder, folder, folder])
     }

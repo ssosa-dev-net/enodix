@@ -4,7 +4,7 @@
 //!
 //! Opt-in. The `lab_*` tests are `#[ignore]`d, so `cargo test` and
 //! `npm run check` never run them; `npm run test:lab` does. They read the lab
-//! from the file `NETTERM_LAB_CONFIG` names, or `lab/lab.yaml` (ignored by
+//! from the file `ENODIX_LAB_CONFIG` names, or `lab/lab.yaml` (ignored by
 //! git); with neither, each prints [`lab::SKIP_MESSAGE`] and passes. A lab
 //! file that is present but unusable (a missing password, a typo) fails.
 //! See `docs/containerlab.md`.
@@ -20,9 +20,9 @@ mod support;
 use std::path::Path;
 use std::time::Duration;
 
+use enodix_core::credentials::ProfileAuth;
 use lab::Platform;
 use lab::{Check, Lab, LabRun, Outcome, ALL_CHECKS};
-use netterm_core::credentials::ProfileAuth;
 use support::scp::ScpQuirk;
 use support::telnet::TestTelnetServer;
 use support::TestSshServer;
@@ -244,11 +244,11 @@ fn the_example_lab_file_parses_with_the_passwords_in_the_environment() {
     let lab = Lab::parse(
         &text,
         &env_with(&[
-            ("NETTERM_LAB_SRL_PASSWORD", "srl secret"),
-            ("NETTERM_LAB_CEOS_PASSWORD", "ceos secret"),
-            ("NETTERM_LAB_PASSWORD", "frr secret"),
-            ("NETTERM_LAB_CSR_PASSWORD", "csr secret"),
-            ("NETTERM_LAB_JUNOS_PASSWORD", "junos secret"),
+            ("ENODIX_LAB_SRL_PASSWORD", "srl secret"),
+            ("ENODIX_LAB_CEOS_PASSWORD", "ceos secret"),
+            ("ENODIX_LAB_PASSWORD", "frr secret"),
+            ("ENODIX_LAB_CSR_PASSWORD", "csr secret"),
+            ("ENODIX_LAB_JUNOS_PASSWORD", "junos secret"),
         ]),
     )
     .unwrap();
@@ -275,7 +275,7 @@ fn the_example_lab_file_parses_with_the_passwords_in_the_environment() {
     // enable secret their device asks for.
     for device in &lab.devices[6..] {
         assert_eq!(device.username, "labuser");
-        assert_eq!(device.enable_secret.as_deref(), Some("netterm-enable"));
+        assert_eq!(device.enable_secret.as_deref(), Some("enodix-enable"));
         assert_eq!(
             device.only.as_deref(),
             Some(
@@ -360,7 +360,7 @@ fn the_example_lab_file_parses_with_the_passwords_in_the_environment() {
 fn a_device_without_a_password_names_the_variable_to_set() {
     let text = "devices:\n  - name: r1\n    platform: frr\n    address: 192.0.2.1\n";
     let error = Lab::parse(text, &env_with(&[])).unwrap_err();
-    assert!(error.contains("NETTERM_LAB_PASSWORD"), "{error}");
+    assert!(error.contains("ENODIX_LAB_PASSWORD"), "{error}");
 
     let text = format!("{text}    password_env: R1_PASSWORD\n");
     let error = Lab::parse(&text, &env_with(&[])).unwrap_err();
@@ -415,7 +415,7 @@ devices:
 
 #[test]
 fn mistakes_in_a_lab_file_are_refused() {
-    let env = env_with(&[("NETTERM_LAB_PASSWORD", "x")]);
+    let env = env_with(&[("ENODIX_LAB_PASSWORD", "x")]);
     let device = "devices:\n  - name: r1\n    address: 192.0.2.1\n";
     for (text, says) in [
         (format!("{device}    platform: frr\n    pasword: x\n"), "pasword"),

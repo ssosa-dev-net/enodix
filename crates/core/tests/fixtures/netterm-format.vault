@@ -1,0 +1,15 @@
+{
+  "format": "netterm-vault",
+  "version": 1,
+  "kdf": {
+    "algorithm": "argon2id",
+    "memory_kib": 8192,
+    "iterations": 1,
+    "parallelism": 1
+  },
+  "salt": "a132c2839d0acae6bfd2da59efadcad3e9170cf8a8c8dada730f757c6c3000df",
+  "check": "4d8926cb4111a2ee7da56c36d9208e8b0da032d88357d4bcd5864f382d282dbdb08106f6237da586",
+  "nonce": "a7cde29eff4c00b7c5622b925abd206a2d4f52890303b0c8",
+  "body": "b55dfa64e33e4b7d8781039a0029adfb147eb325ba8b6fae85ab094b1dd3349d952585a5f08aa852b2a14fbb47846cd1924b8ca808da557bfb880fcc433dbb200356dae62dd9959044daa4b00c489a5ea316abcadb22cb456d03eb998b534f284ec1b107086d4ec5fed2b8fcde32a1448fbf888ae9b5766698d3406cae0d178c190e4d5e36cf1b7bb175e6baa97ff2b453fdf35d5a25adc8e4f875efa1d991ca046093ba024dee6ac4777a073535",
+  "checksum": "60b8056f0e3d05a1d9f5aeb439208e9f6789cfd9ec72db2ab6b99c6c3dacfdc5"
+}

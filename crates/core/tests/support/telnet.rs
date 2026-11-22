@@ -27,7 +27,7 @@
 //! Login takes [`USERNAME`] and [`PASSWORD`]; anything else prints
 //! [`LOGIN_INCORRECT`] and asks again. The password is never echoed.
 
-use netterm_core::session::{TelnetTarget, DEFAULT_CONNECT_TIMEOUT};
+use enodix_core::session::{TelnetTarget, DEFAULT_CONNECT_TIMEOUT};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

@@ -17,7 +17,7 @@ class NornirTask(BridgeTest):
         nr = InitNornir(
             runner={"plugin": "threaded", "options": {"num_workers": 2}},
             inventory={
-                "plugin": "NettermInventory",
+                "plugin": "EnodixInventory",
                 "options": {
                     "workspace": str(self.workspace.root),
                     "hosts": ["devices/r-pass.yaml", "devices/r-key.yaml"],

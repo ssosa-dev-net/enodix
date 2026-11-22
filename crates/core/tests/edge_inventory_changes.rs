@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use netterm_core::workspace::{
+use enodix_core::workspace::{
     Changes, Condition, EditError, HostId, SavedFilter, Unavailable, WatchOptions, Workspace,
     WorkspaceWatcher,
 };
@@ -247,7 +247,7 @@ fn a_folder_renamed_outside_is_followed_and_no_edit_of_its_old_path_recreates_it
 
 /// Every edit the app can make, each refused while the workspace folder is
 /// gone.
-fn every_edit_is_refused(workspace: &mut Workspace, host: &netterm_core::workspace::Host) {
+fn every_edit_is_refused(workspace: &mut Workspace, host: &enodix_core::workspace::Host) {
     let mut edited = host.clone();
     edited.description = Some("edited while gone".into());
     let results: Vec<(&str, Result<(), EditError>)> = vec![

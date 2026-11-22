@@ -3,13 +3,13 @@
 //! shows no view tabs, and the group routes input by session whichever
 //! window a member is in.
 
-use netterm_core::layout::{
+use enodix_core::layout::{
     GroupPasteRefused, InputOrigin, LayoutError, Member, PaneId, Split, TabId, Taken, Used, View,
     WindowId, Windows,
 };
-use netterm_core::paste::PasteSafety;
-use netterm_core::session::SessionId;
-use netterm_core::workspace::Environment;
+use enodix_core::paste::PasteSafety;
+use enodix_core::session::SessionId;
+use enodix_core::workspace::Environment;
 use serde_json::json;
 
 const MAIN: WindowId = WindowId::MAIN;

@@ -5,7 +5,7 @@ mod support;
 
 use std::fs;
 
-use netterm_core::workspace::{CustomField, EditError, FolderDeletion, Host, HostId, Workspace};
+use enodix_core::workspace::{CustomField, EditError, FolderDeletion, Host, HostId, Workspace};
 use support::workspaces::{files, fixture_copy, read};
 use tempfile::TempDir;
 

@@ -23,14 +23,14 @@
 //                                       of the key file (never inside the
 //                                       repository) or its contents
 //   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password
-//   NETTERM_UPDATE_ENDPOINT             https address of `latest.json`, which
+//   ENODIX_UPDATE_ENDPOINT             https address of `latest.json`, which
 //                                       the app checks (built into the app)
-//   NETTERM_RELEASE_URL                 https address of the folder this
+//   ENODIX_RELEASE_URL                 https address of the folder this
 //                                       release's files will be downloaded from
-//   NETTERM_RELEASE_PAGE                optional: the release's web page
-//                                       (default NETTERM_RELEASE_URL)
-//   NETTERM_RELEASE_NOTES               optional: a short text for the notice
-//   NETTERM_UPDATER_PUBKEY              optional: the public key (path or
+//   ENODIX_RELEASE_PAGE                optional: the release's web page
+//                                       (default ENODIX_RELEASE_URL)
+//   ENODIX_RELEASE_NOTES               optional: a short text for the notice
+//   ENODIX_UPDATER_PUBKEY              optional: the public key (path or
 //                                       contents); default
 //                                       src-tauri/updater-key.pub
 
@@ -54,16 +54,16 @@ import { writeChecksums } from "./release-files.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_KEY_FILE = join(ROOT, "src-tauri", "updater-key.pub");
-/** The file that makes a copy portable (`netterm_core::update::PORTABLE_MARKER`). */
+/** The file that makes a copy portable (`enodix_core::update::PORTABLE_MARKER`). */
 const PORTABLE_MARKER = "portable.txt";
-/** Marks the Linux packages' copies (`netterm_core::update::PACKAGE_MARKER`). */
+/** Marks the Linux packages' copies (`enodix_core::update::PACKAGE_MARKER`). */
 const PACKAGE_MARKER = "package.txt";
 /** The updater's name for 64-bit Windows in `latest.json`. */
 const PLATFORM = "windows-x86_64";
 /** The headless binary, shipped beside the app (`crates/cli`). */
-const CLI_EXE = "netterm-cli.exe";
+const CLI_EXE = "enodix-cli.exe";
 /** The Linux build of it, installed in /usr/bin (on the PATH). */
-const CLI_LINUX = "netterm-cli";
+const CLI_LINUX = "enodix-cli";
 /** What each platform's build leaves in the release folder. */
 const WINDOWS_FILES = /(-setup\.exe(\.sig)?|-portable\.zip|^latest\.json)$/;
 const LINUX_FILES = /\.(deb|rpm|AppImage)$/;
@@ -184,7 +184,7 @@ const LINUX_LICENCE = {
 };
 /** The AppRun hook (src-tauri/appimage/desktop-style.sh) that makes the
  * AppImage start dark on a desktop whose dark look is a style (#143). */
-const APPIMAGE_STYLE_HOOK = "/apprun-hooks/netterm-desktop-style.sh";
+const APPIMAGE_STYLE_HOOK = "/apprun-hooks/enodix-desktop-style.sh";
 const version = readFileSync(join(ROOT, "Cargo.toml"), "utf8").match(
   /\[workspace\.package\][^[]*?\nversion\s*=\s*"([^"]+)"/,
 )?.[1];
@@ -201,7 +201,7 @@ if (npmVersion !== version) {
 const wheel = wheelName(version);
 /** The publisher, who is also the copyright holder: set once, as
  * `bundle.publisher` in tauri.conf.json (the headless binary's build.rs
- * makes the same copyright line for netterm-cli.exe). */
+ * makes the same copyright line for enodix-cli.exe). */
 const publisher = tauriConfig.bundle?.publisher;
 if (!publisher) fail("tauri.conf.json has no bundle.publisher");
 const copyright = `Copyright (C) 2026 ${publisher}`;
@@ -210,7 +210,7 @@ const copyright = `Copyright (C) 2026 ${publisher}`;
 const unsigned = process.argv.includes("--unsigned");
 const endpoint = unsigned
   ? null
-  : httpsUrl("NETTERM_UPDATE_ENDPOINT", required("NETTERM_UPDATE_ENDPOINT"));
+  : httpsUrl("ENODIX_UPDATE_ENDPOINT", required("ENODIX_UPDATE_ENDPOINT"));
 const dist = join(
   ROOT,
   "target",
@@ -253,7 +253,7 @@ function signing() {
     );
   }
   const pubkeySource =
-    process.env.NETTERM_UPDATER_PUBKEY?.trim() || PUBLIC_KEY_FILE;
+    process.env.ENODIX_UPDATER_PUBKEY?.trim() || PUBLIC_KEY_FILE;
   if (pubkeySource === PUBLIC_KEY_FILE && !existsSync(PUBLIC_KEY_FILE)) {
     fail(
       `no public key: create the release key and commit ${relative(ROOT, PUBLIC_KEY_FILE)}`,
@@ -262,14 +262,14 @@ function signing() {
   const pubkey = contentsOf(pubkeySource);
   const pub = publicKey(pubkey);
   const releaseUrl = httpsUrl(
-    "NETTERM_RELEASE_URL",
-    required("NETTERM_RELEASE_URL"),
+    "ENODIX_RELEASE_URL",
+    required("ENODIX_RELEASE_URL"),
   );
   const base = releaseUrl.href.endsWith("/")
     ? releaseUrl.href
     : `${releaseUrl.href}/`;
-  const page = process.env.NETTERM_RELEASE_PAGE?.trim()
-    ? httpsUrl("NETTERM_RELEASE_PAGE", process.env.NETTERM_RELEASE_PAGE.trim())
+  const page = process.env.ENODIX_RELEASE_PAGE?.trim()
+    ? httpsUrl("ENODIX_RELEASE_PAGE", process.env.ENODIX_RELEASE_PAGE.trim())
         .href
     : releaseUrl.href;
   return { pubkey, pub, base, page };
@@ -282,18 +282,18 @@ function nsisText(text) {
   return text.replaceAll("$", "$$$$");
 }
 
-/** Writes the installer hooks Tauri is given: netterm's values, then
+/** Writes the installer hooks Tauri is given: enodix's values, then
  * src-tauri/installer/hooks.nsh (which explains them); returns the path. */
 function writeInstallerHooks() {
   const defines = {
-    NETTERM_PRODUCT: productName,
-    NETTERM_PUBLISHER: publisher,
-    NETTERM_DESCRIPTION: tauriConfig.bundle?.shortDescription ?? productName,
+    ENODIX_PRODUCT: productName,
+    ENODIX_PUBLISHER: publisher,
+    ENODIX_DESCRIPTION: tauriConfig.bundle?.shortDescription ?? productName,
     // Tauri's MANUFACTURER when no publisher is set: the vendor key of the
     // releases made before one was.
-    NETTERM_OLD_VENDOR: tauriConfig.identifier.split(".")[1],
-    NETTERM_CLI: CLI_EXE,
-    NETTERM_WHEEL: wheel,
+    ENODIX_OLD_VENDOR: tauriConfig.identifier.split(".")[1],
+    ENODIX_CLI: CLI_EXE,
+    ENODIX_WHEEL: wheel,
   };
   const file = join(ROOT, "target", "installer-hooks.nsh");
   const lines = Object.entries(defines).map(
@@ -388,7 +388,7 @@ function windows() {
   // The portable zip: the program, the headless binary, the Python bridge's
   // wheel, the marker that makes it portable (it only announces updates), the
   // README and the licence.
-  const exeName = `${tauriConfig.mainBinaryName ?? "netterm"}.exe`;
+  const exeName = `${tauriConfig.mainBinaryName ?? "enodix"}.exe`;
   const portableName = `${productName}_${version}_x64-portable`;
   const stage = join(ROOT, "target", "dist", "stage", portableName);
   rmSync(dirname(stage), { recursive: true, force: true });
@@ -428,7 +428,7 @@ function windows() {
   const manifest = {
     version,
     notes:
-      process.env.NETTERM_RELEASE_NOTES?.trim() || `${productName} ${version}`,
+      process.env.ENODIX_RELEASE_NOTES?.trim() || `${productName} ${version}`,
     pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
     page,
     platforms: {
@@ -510,7 +510,7 @@ function linux() {
   }
 }
 
-/** Adds netterm's AppRun hook (src-tauri/appimage/desktop-style.sh, #143)
+/** Adds enodix's AppRun hook (src-tauri/appimage/desktop-style.sh, #143)
  * to the AppImage Tauri made, after linuxdeploy's GTK hook. Tauri's
  * `appimage.files` reach only the AppDir's `usr/`, so the AppImage is
  * unpacked, the hook put in `apprun-hooks/` and sourced by AppRun, and
@@ -588,7 +588,7 @@ function linuxPackageFiles(format, file) {
   };
   let listed;
   if (format === "deb") {
-    // Lines like `-rw-r--r-- 0/0 1234 2026-11-19 20:27 ./usr/bin/netterm`.
+    // Lines like `-rw-r--r-- 0/0 1234 2026-11-19 20:27 ./usr/bin/enodix`.
     listed = output("dpkg-deb", ["--contents", file])
       .split("\n")
       .map((line) => line.split(/\s+/).slice(5).join(" "));

@@ -1,8 +1,8 @@
-// Builds the Python bridge's wheel (`python/netterm`, pure Python) without
+// Builds the Python bridge's wheel (`python/enodix`, pure Python) without
 // Python: the app build runs on machines that may have none. The version is
 // the app's (`Cargo.toml`'s `[workspace.package] version`), so the package
 // always matches the headless binary it ships with; the app's name and the
-// binary's name go into `netterm/_build.py`, which exists only in the wheel.
+// binary's name go into `enodix/_build.py`, which exists only in the wheel.
 //
 //   node scripts/build-wheel.mjs [output folder]   (default target/release/python)
 //
@@ -17,7 +17,7 @@ import { crc32, deflateRawSync } from "node:zlib";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE = join(ROOT, "python");
 /** The distribution and its import package. */
-export const DISTRIBUTION = "netterm";
+export const DISTRIBUTION = "enodix";
 
 /** The app's version, from the Cargo workspace. */
 export function appVersion() {
@@ -197,7 +197,7 @@ export function buildWheel(outDir = RELEASE_FOLDER) {
       data: Buffer.from(
         [
           "Wheel-Version: 1.0",
-          "Generator: netterm build-wheel.mjs",
+          "Generator: enodix build-wheel.mjs",
           "Root-Is-Purelib: true",
           "Tag: py3-none-any",
           "",
@@ -209,7 +209,7 @@ export function buildWheel(outDir = RELEASE_FOLDER) {
       data: Buffer.from(
         [
           "[nornir.plugins.inventory]",
-          `NettermInventory = ${DISTRIBUTION}.nornir:NettermInventory`,
+          `EnodixInventory = ${DISTRIBUTION}.nornir:EnodixInventory`,
           "",
         ].join("\n"),
       ),

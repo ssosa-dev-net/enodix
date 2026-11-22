@@ -7,11 +7,11 @@ mod support;
 
 use std::fs;
 
-use netterm_core::import::nornir::{
+use enodix_core::import::nornir::{
     NornirError, NornirFile, NornirImport, NornirImportError, NornirInventory,
 };
-use netterm_core::import::{ImportReport, PreviewOutcome, ReportEntry};
-use netterm_core::workspace::{CustomField, HostId, Workspace};
+use enodix_core::import::{ImportReport, PreviewOutcome, ReportEntry};
+use enodix_core::workspace::{CustomField, HostId, Workspace};
 use support::workspaces::{files, fixture_copy, read};
 use tempfile::TempDir;
 

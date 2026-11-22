@@ -7,14 +7,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::job::{
+use enodix_core::job::{
     self, HostResult, HostState, Job, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget,
 };
-use netterm_core::session::SessionManager;
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::session::SessionManager;
+use enodix_core::workspace::{HostId, Workspace};
 use tempfile::TempDir;
 
 use super::{TestSshServer, PASSWORD, USERNAME};

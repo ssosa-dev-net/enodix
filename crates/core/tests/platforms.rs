@@ -6,8 +6,8 @@ mod support;
 
 use std::fs;
 
-use netterm_core::platform::{PlatformDefinition, PlatformSource, BUILT_IN_PLATFORMS};
-use netterm_core::workspace::{EditError, HostId, Workspace, PLATFORMS_FILE};
+use enodix_core::platform::{PlatformDefinition, PlatformSource, BUILT_IN_PLATFORMS};
+use enodix_core::workspace::{EditError, HostId, Workspace, PLATFORMS_FILE};
 use support::workspaces::{fixture, fixture_copy, read};
 use tempfile::TempDir;
 
@@ -34,7 +34,7 @@ fn definition(name: &str, prompt: &str) -> PlatformDefinition {
     }
 }
 
-fn listed<'a>(workspace: &'a Workspace, name: &str) -> &'a netterm_core::platform::ListedPlatform {
+fn listed<'a>(workspace: &'a Workspace, name: &str) -> &'a enodix_core::platform::ListedPlatform {
     workspace
         .platforms()
         .iter()

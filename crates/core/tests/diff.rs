@@ -1,6 +1,6 @@
 //! Line diffs, as the jobs view and config history show them.
 
-use netterm_core::diff::{diff_lines, lines, DiffLine, MAX_DIFF_EDITS};
+use enodix_core::diff::{diff_lines, lines, DiffLine, MAX_DIFF_EDITS};
 
 fn same(old: usize, new: usize, text: &str) -> DiffLine {
     DiffLine::Same {

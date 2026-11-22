@@ -20,7 +20,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use netterm_core::session::{
+use enodix_core::session::{
     SerialLine, SerialParameters, SerialPortInfo, SerialPortKind, SerialPorts, SERIAL_POLL,
 };
 

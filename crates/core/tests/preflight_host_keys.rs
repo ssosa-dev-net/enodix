@@ -7,12 +7,12 @@ mod support;
 
 use std::time::Duration;
 
-use netterm_core::job::{
+use enodix_core::job::{
     self, HostState, JobOptions, JobPlan, JobStep, JobTarget, PlannedHost, UntrustedKey,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::SessionManager;
-use netterm_core::workspace::HostId;
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::SessionManager;
+use enodix_core::workspace::HostId;
 use support::jobs::{folder, host_at, run, snippet, Lab};
 use support::TestSshServer;
 

@@ -76,7 +76,7 @@ impl AgentEndpoint {
         let digest = Sha256::digest(spelling.join("\\").as_bytes());
         let id: String = digest[..12].iter().map(|b| format!("{b:02x}")).collect();
         Self {
-            path: PathBuf::from(format!(r"\\.\pipe\netterm-agent-{id}")),
+            path: PathBuf::from(format!(r"\\.\pipe\enodix-agent-{id}")),
         }
     }
 

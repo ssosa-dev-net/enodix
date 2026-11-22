@@ -10,7 +10,7 @@
 // (`npm run smoke:sandbox`, scripts/sandbox.mjs, #139); none set, it builds
 // and runs everything from this checkout as always:
 //
-//   SMOKE_APP_FOLDER   the folder of netterm.exe, netterm-cli.exe and
+//   SMOKE_APP_FOLDER   the folder of enodix.exe, enodix-cli.exe and
 //                      python\ (default target/release); written to (the
 //                      installed and portable markers)
 //   SMOKE_TEST_SERVER  a test_ssh_server.exe built beforehand: run as it
@@ -86,7 +86,7 @@ const OTP_USERNAME = "engineer-otp";
 const ONE_TIME_CODE = "424242";
 // The test server's SSH agent, which the app reaches through SSH_AUTH_SOCK:
 // the user's own agent is never used.
-const AGENT_PIPE = String.raw`\\.\pipe\netterm-smoke-agent-${process.pid}`;
+const AGENT_PIPE = String.raw`\\.\pipe\enodix-smoke-agent-${process.pid}`;
 const TIMEOUT_MS = 15000;
 /** The session the keyboard goes to: the one the active pane shows. */
 const SHOWN_SESSION = ".slot[data-active]";
@@ -164,7 +164,7 @@ const apps = [];
 const netLogs = { file: "", copies: 0, found: [] };
 /** The watch on the app's connections over the whole run (#115). */
 let connections = null;
-const userData = mkdtempSync(join(tmpdir(), "netterm-smoke-"));
+const userData = mkdtempSync(join(tmpdir(), "enodix-smoke-"));
 // The app's own data folder, listing workspaces but none to reopen, so the
 // first window is the welcome view.
 const appData = join(userData, "app-data");
@@ -186,9 +186,9 @@ const INSTALLED_MARKER = join(APP_FOLDER, "uninstall.exe");
 const PORTABLE_MARKER = join(APP_FOLDER, "portable.txt");
 // The release the smoke's own release server announces.
 const NEWER_VERSION = "99.0.0";
-const RELEASE_PAGE = `https://example.invalid/netterm/releases/tag/v${NEWER_VERSION}`;
+const RELEASE_PAGE = `https://example.invalid/enodix/releases/tag/v${NEWER_VERSION}`;
 /** The local release server (the app is pointed at it through
- * NETTERM_UPDATE_ENDPOINT): no real server is ever asked. */
+ * ENODIX_UPDATE_ENDPOINT): no real server is ever asked. */
 const releaseServer = { url: "", requests: 0, close: () => {} };
 
 function startReleaseServer() {
@@ -200,7 +200,7 @@ function startReleaseServer() {
     platforms: {
       "windows-x86_64": {
         signature: "bm90IGEgc2lnbmF0dXJl",
-        url: "https://example.invalid/netterm-setup.exe",
+        url: "https://example.invalid/enodix-setup.exe",
       },
     },
   });
@@ -252,25 +252,25 @@ function createWorkspace() {
  * workspace's inventory, its problem reported but not fatal. */
 function headlessInventory() {
   const result = spawnSync(
-    join(APP_FOLDER, "netterm-cli.exe"),
+    join(APP_FOLDER, "enodix-cli.exe"),
     ["inventory", workspace, "--folder", "Lab"],
     { encoding: "utf8" },
   );
-  if (result.error) fail(`netterm-cli did not start: ${result.error.message}`);
+  if (result.error) fail(`enodix-cli did not start: ${result.error.message}`);
   if (result.status !== 0) {
-    fail(`netterm-cli exited with ${result.status}: ${result.stderr}`);
+    fail(`enodix-cli exited with ${result.status}: ${result.stderr}`);
   }
   const inventory = JSON.parse(result.stdout);
   const ids = inventory.hosts.map((host) => host.id).join(", ");
-  if (ids !== "Lab/smoke-r1.yaml") fail(`netterm-cli exported ${ids}`);
+  if (ids !== "Lab/smoke-r1.yaml") fail(`enodix-cli exported ${ids}`);
   if (inventory.hosts[0].settings.port !== SSH_PORT) {
-    fail(`netterm-cli gave port ${inventory.hosts[0].settings.port}`);
+    fail(`enodix-cli gave port ${inventory.hosts[0].settings.port}`);
   }
   if (!inventory.problems.some((problem) => problem.file === "broken.yaml")) {
-    fail("netterm-cli did not report broken.yaml");
+    fail("enodix-cli did not report broken.yaml");
   }
   if (!result.stderr.includes("warning: broken.yaml")) {
-    fail(`netterm-cli did not warn about broken.yaml: ${result.stderr}`);
+    fail(`enodix-cli did not warn about broken.yaml: ${result.stderr}`);
   }
   console.log("ok - the headless binary exports the inventory");
 }
@@ -280,12 +280,12 @@ function headlessInventory() {
  * (`windowsHide`). */
 function headlessCredentials(host) {
   return spawnSync(
-    join(APP_FOLDER, "netterm-cli.exe"),
+    join(APP_FOLDER, "enodix-cli.exe"),
     ["credentials", workspace, host],
     {
       encoding: "utf8",
       windowsHide: true,
-      env: { ...process.env, NETTERM_DATA_DIR: appData },
+      env: { ...process.env, ENODIX_DATA_DIR: appData },
       timeout: 30_000,
     },
   );
@@ -1257,7 +1257,7 @@ function startServer() {
   if (!program) {
     const build = spawnSync(
       "cargo",
-      ["build", "-p", "netterm-core", "--example", "test_ssh_server"],
+      ["build", "-p", "enodix-core", "--example", "test_ssh_server"],
       { stdio: "inherit" },
     );
     if (build.status !== 0) fail("could not build the test SSH server");
@@ -1296,7 +1296,7 @@ function startServer() {
  * WebView2 (runtime 150 and later) ignores WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
  * in an elevated process, and in Windows Sandbox every process is elevated
  * (no UAC): there the arguments go in the machine's WebView2 policy for
- * netterm.exe instead (SMOKE_WEBVIEW2_POLICY, set by the sandbox run only;
+ * enodix.exe instead (SMOKE_WEBVIEW2_POLICY, set by the sandbox run only;
  * it needs administrator rights, which only the sandbox's account has).
  */
 function webviewPolicy(browserArguments) {
@@ -1306,7 +1306,7 @@ function webviewPolicy(browserArguments) {
       "add",
       String.raw`HKLM\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments`,
       "/v",
-      "netterm.exe",
+      "enodix.exe",
       "/d",
       browserArguments,
       "/f",
@@ -1332,22 +1332,22 @@ function startApp(env = {}) {
   netLogs.copies += 1;
   const browserArguments = `--remote-debugging-port=${DEVTOOLS_PORT} ${netLogArguments(netLogs.file)}`;
   if (process.env.SMOKE_WEBVIEW2_POLICY) webviewPolicy(browserArguments);
-  const app = spawn(join(APP_FOLDER, "netterm.exe"), [], {
+  const app = spawn(join(APP_FOLDER, "enodix.exe"), [], {
     stdio: "inherit",
     env: {
       ...process.env,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArguments,
       WEBVIEW2_USER_DATA_FOLDER: userData,
-      NETTERM_DATA_DIR: appData,
+      ENODIX_DATA_DIR: appData,
       // Credential profiles stay in memory: the smoke test never touches
       // the keychain.
-      NETTERM_CREDENTIAL_STORE: "memory",
+      ENODIX_CREDENTIAL_STORE: "memory",
       // Web links are recorded, not opened in the browser.
-      NETTERM_WEB_LINKS_TO: openedLinks,
+      ENODIX_WEB_LINKS_TO: openedLinks,
       // Agent profiles use the test server's agent.
       SSH_AUTH_SOCK: AGENT_PIPE,
       // The update check asks the smoke's own release server.
-      NETTERM_UPDATE_ENDPOINT: releaseServer.url,
+      ENODIX_UPDATE_ENDPOINT: releaseServer.url,
       ...env,
     },
   });
@@ -2934,7 +2934,7 @@ async function main() {
   step("double-clicking a host opened a session to it on its folder's port");
 
   // Sessions are logged as plain text under the data folder's logs (the
-  // app's per-user log folder when NETTERM_DATA_DIR is not set): by
+  // app's per-user log folder when ENODIX_DATA_DIR is not set): by
   // workspace, tree path and host, and quick connections by address.
   await type("colors\r");
   await until("coloured output in the host session", async () =>
@@ -3590,7 +3590,7 @@ async function vault({ app, devtools, evaluate, step }) {
     !whileLocked.stderr.includes("running but its vault is locked")
   ) {
     fail(
-      `netterm-cli with the vault locked: ${whileLocked.status} ${whileLocked.stderr} ${whileLocked.error ?? ""}`,
+      `enodix-cli with the vault locked: ${whileLocked.status} ${whileLocked.stderr} ${whileLocked.error ?? ""}`,
     );
   }
   if (await shown("nav [data-host]")) {
@@ -3655,12 +3655,12 @@ async function vault({ app, devtools, evaluate, step }) {
   const unlocked = headlessCredentials("vault-r1.yaml");
   if (unlocked.status !== 0) {
     fail(
-      `netterm-cli with the vault unlocked: ${unlocked.status} ${unlocked.stderr}`,
+      `enodix-cli with the vault unlocked: ${unlocked.status} ${unlocked.stderr}`,
     );
   }
   const login = JSON.parse(unlocked.stdout);
   if (login.username !== USERNAME || login.auth.password !== PASSWORD) {
-    fail(`netterm-cli got ${login.username} / ${login.auth.kind}`);
+    fail(`enodix-cli got ${login.username} / ${login.auth.kind}`);
   }
   step(
     "the headless binary was refused while the vault was locked, and got the login from the unlocked app",
@@ -3876,7 +3876,7 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
 
 /**
  * A system without a keychain (#57, Linux), played on Windows by starting
- * the app with `NETTERM_CREDENTIAL_STORE=none`: Preferences say the vault
+ * the app with `ENODIX_CREDENTIAL_STORE=none`: Preferences say the vault
  * is the only store; saving a profile explains it and offers the vault,
  * turned on from there, after which the profile typed is saved into it;
  * turning the vault off explains there is no other store and leaves it.
@@ -3884,7 +3884,7 @@ async function vaultUpkeep({ current, vaultFile, hostRow, step }) {
  */
 async function noKeychain({ current, vaultFile, step }) {
   const page = await restartApp(current.app, current.devtools, {
-    NETTERM_CREDENTIAL_STORE: "none",
+    ENODIX_CREDENTIAL_STORE: "none",
   });
   const ev = page.evaluate;
   const shown = (selector) =>
@@ -4075,9 +4075,9 @@ const SLOW_SCRIPT = "Jobs/bridge_slow.py";
 const BRIDGE_SCRIPT_TEXT = `import socket
 import sys
 
-import netterm
+import enodix
 
-export = netterm.inventory()
+export = enodix.inventory()
 print("hosts", len(export["hosts"]))
 for host in export["hosts"]:
     print("target", host["id"])
@@ -4086,7 +4086,7 @@ for host in export["hosts"]:
     with socket.create_connection((host["address"], host["settings"]["port"]), timeout=10) as s:
         banner = s.recv(256).decode("ascii", "replace").strip()
     print("banner", host["id"], banner)
-    print("login", host["id"], netterm.credentials(None, host["id"])["username"])
+    print("login", host["id"], enodix.credentials(None, host["id"])["username"])
 print("finished on stderr", file=sys.stderr)
 `;
 
@@ -4802,7 +4802,7 @@ async function pythonSetup({ evaluate, fillForm, screenshot, step }) {
   const installs = await evaluate(
     `[...document.querySelectorAll("[data-python-install]")].map((item) => item.dataset.pythonInstall + " " + item.dataset.source)`,
   );
-  if (installs.length !== 1 || !/^netterm-.*\.whl wheel$/.test(installs[0]))
+  if (installs.length !== 1 || !/^enodix-.*\.whl wheel$/.test(installs[0]))
     fail(`what the setup lists: ${json(installs)}`);
   if (existsSync(environment))
     fail("the environment exists before the setup was confirmed");
@@ -5406,7 +5406,7 @@ async function snippets({
 /**
  * Web links: links set on a folder and on the host are offered beside its
  * ways in, filled from its fields; clicking one hands the URL to the
- * browser (recorded in `openedLinks` here, through NETTERM_WEB_LINKS_TO),
+ * browser (recorded in `openedLinks` here, through ENODIX_WEB_LINKS_TO),
  * and a link that is not http/https, or lacks a field, is refused with a
  * message and nothing opened.
  */
@@ -7438,7 +7438,7 @@ async function jobs({
     step("one host's output from two runs compared as a line diff");
 
     // Saved to a folder: the description and one text file per host.
-    const saveTo = mkdtempSync(join(tmpdir(), "netterm-job-export-"));
+    const saveTo = mkdtempSync(join(tmpdir(), "enodix-job-export-"));
     try {
       await fillForm(
         { "run-export-folder": saveTo },
@@ -7716,7 +7716,7 @@ async function jobs({
     await screenshot("config-history");
     step("the host's config history lists both versions and diffs them");
 
-    const saveConfigTo = mkdtempSync(join(tmpdir(), "netterm-config-export-"));
+    const saveConfigTo = mkdtempSync(join(tmpdir(), "enodix-config-export-"));
     try {
       await fillForm(
         { "config-export-folder": saveConfigTo },

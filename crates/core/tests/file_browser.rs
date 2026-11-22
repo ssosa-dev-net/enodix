@@ -1,4 +1,4 @@
-//! The Files tab's browsing (`netterm_core::files::FileBrowsers`), against
+//! The Files tab's browsing (`enodix_core::files::FileBrowsers`), against
 //! the test SSH server's SFTP side: opening (stored login, host-key and
 //! login questions, cancelling), the starting folder, the listing's order,
 //! the path box, going up, rename, delete, new folder, a cut connection,
@@ -8,12 +8,12 @@ mod support;
 
 use std::fs;
 
-use netterm_core::files::{
+use enodix_core::files::{
     join_path, parent_folder, resolve_path, BrowseError, BrowserEvent, BrowserId, EntryKind,
     FileBrowsers, FileError, Listing,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::{HostKeyDecision, SessionState, SessionTarget, TerminalSize};
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::{HostKeyDecision, SessionState, SessionTarget, TerminalSize};
 use support::{
     known_hosts, manager, next_state, output_ending_with, TestSshServer, CODE_QUESTION,
     ONE_TIME_CODE, OTP_USERNAME, PROMPT, WAIT,

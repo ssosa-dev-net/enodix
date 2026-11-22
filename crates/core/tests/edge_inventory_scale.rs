@@ -10,7 +10,7 @@
 //! each piece. The measurements of 5 000 and 20 000 hosts are `#[ignore]`d,
 //! as writing 20 000 files takes a while; run them in a release build:
 //!
-//! `cargo test --release -p netterm-core --test edge_inventory_scale -- --ignored --nocapture`
+//! `cargo test --release -p enodix-core --test edge_inventory_scale -- --ignored --nocapture`
 //!
 //! Windows and Linux alike (the numbers differ: file creation and reading
 //! cost more on Windows).
@@ -20,12 +20,12 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::inventory::{self, Limit};
-use netterm_core::job::{self, JobStep, JobTarget};
-use netterm_core::workspace::Workspace;
+use enodix_core::inventory::{self, Limit};
+use enodix_core::job::{self, JobStep, JobTarget};
+use enodix_core::workspace::Workspace;
 use tempfile::TempDir;
 
 const SCOPE: &str = "edge-scale";

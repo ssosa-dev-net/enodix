@@ -1,5 +1,5 @@
 """Loopback tunnels to the hosts behind jump hosts, opened by the headless
-binary (``netterm-cli tunnel``) and kept open while this process runs.
+binary (``enodix-cli tunnel``) and kept open while this process runs.
 
 The binary connects each jump chain as the app would (the jump hosts'
 stored logins, the host keys the app trusts) and listens on ``127.0.0.1``,
@@ -31,19 +31,19 @@ from ._cli import (
     END_OF_OPTIONS,
     FORMAT,
     CliFailed,
-    NettermError,
+    EnodixError,
     compare_version,
     find_cli,
 )
 
-LOG = logging.getLogger("netterm")
+LOG = logging.getLogger("enodix")
 
 #: Every tunnel process this one started and has not closed.
 _OPEN: List["Tunnels"] = []
 _OPEN_LOCK = threading.Lock()
 
 
-class Unreachable(NettermError):
+class Unreachable(EnodixError):
     """:func:`endpoint` has no address for that port of that host; the
     message says why."""
 
@@ -70,7 +70,7 @@ def ports_of(ports: Optional[Iterable[int]]) -> Tuple[int, ...]:
 
 
 class Tunnels:
-    """A running ``netterm-cli tunnel``: ``hosts`` maps each host behind
+    """A running ``enodix-cli tunnel``: ``hosts`` maps each host behind
     jump hosts (host id) to ``{"address", "port", "host_keys",
     "known_hosts"}`` when it is tunnelled, with ``"extra_ports"`` (device
     port -> loopback port) when ports were named, or to ``{"error"}``
@@ -93,7 +93,7 @@ class Tunnels:
                 stderr=subprocess.PIPE,
             )
         except OSError as error:
-            raise NettermError(f"cannot start {cli}: {error}") from error
+            raise EnodixError(f"cannot start {cli}: {error}") from error
         self.hosts: Dict[str, Dict[str, Any]] = {}
         self._folder: Optional[Path] = None
         assert self._process.stdout is not None and self._process.stderr is not None
@@ -101,7 +101,7 @@ class Tunnels:
         # stderr pipe; kept until the first line is in, logged after.
         self._early: Optional[List[str]] = []
         self._early_lock = threading.Lock()
-        reader = threading.Thread(target=self._report, name="netterm tunnel stderr", daemon=True)
+        reader = threading.Thread(target=self._report, name="enodix tunnel stderr", daemon=True)
         reader.start()
         line = self._process.stdout.readline()
         if not line:
@@ -120,7 +120,7 @@ class Tunnels:
         try:
             answer = json.loads(line.decode("utf-8"))
             if not isinstance(answer, dict) or answer.get("format") != FORMAT:
-                raise NettermError(
+                raise EnodixError(
                     f"{cli} speaks another format than {FORMAT}: install the package that "
                     "ships with that version of the app"
                 )
@@ -136,7 +136,7 @@ class Tunnels:
                 self.hosts[host] = {"error": entry.get("reason") or "it is not tunnelled"}
                 continue
             if self._folder is None:
-                self._folder = Path(tempfile.mkdtemp(prefix="netterm-tunnels-"))
+                self._folder = Path(tempfile.mkdtemp(prefix="enodix-tunnels-"))
             address, port = entry["address"], entry["port"]
             extra = {int(device): loopback for device, loopback in (entry.get("extra_ports") or {}).items()}
             known_hosts = self._folder / f"known_hosts_{len(self.hosts)}"
@@ -162,7 +162,7 @@ class Tunnels:
 
     def endpoint(self, host: Mapping[str, Any], port: int) -> Endpoint:
         """Where to connect for the device port ``port`` of ``host`` (a host
-        of :func:`netterm.inventory`): see :func:`endpoint`."""
+        of :func:`enodix.inventory`): see :func:`endpoint`."""
         return endpoint(host, port, self)
 
     def _report(self) -> None:
@@ -267,7 +267,7 @@ def answer(
 
 def endpoint(host: Mapping[str, Any], port: int, tunnels: Optional[Tunnels] = None) -> Endpoint:
     """Where to connect for the device port ``port`` of ``host`` (a host of
-    :func:`netterm.inventory`), as ``(address, port)``: for a host behind
+    :func:`enodix.inventory`), as ``(address, port)``: for a host behind
     jump hosts, the loopback listener of its tunnel for that port (opened
     with ``tunnels``, with the port named, or the host's own SSH port); for
     any other host, its own address and ``port``. Raises
@@ -275,7 +275,7 @@ def endpoint(host: Mapping[str, Any], port: int, tunnels: Optional[Tunnels] = No
     not tunnelled and for a port that was not named."""
     (port,) = ports_of([port])
     if tunnels is None:
-        return answer(host, port, None, "no tunnels were opened (netterm.tunnels(...))")
+        return answer(host, port, None, "no tunnels were opened (enodix.tunnels(...))")
     return answer(
         host,
         port,
@@ -293,7 +293,7 @@ def ssh_config_for(known_hosts: str) -> Path:
 
 def host_key_options(tunnel: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
     """For a tunnelled host (an entry of :attr:`Tunnels.hosts`, or the
-    Nornir host data's ``netterm.tunnel``): the options that make each
+    Nornir host data's ``enodix.tunnel``): the options that make each
     library check the device's host key against the keys the app trusts,
     on the SSH port and on every extra port. By library: ``netmiko``,
     ``scrapli``, ``napalm``'s ``optional_args`` (which its Netmiko-based

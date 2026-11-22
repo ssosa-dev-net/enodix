@@ -1,20 +1,20 @@
 [package]
-name = "netterm"
-description = "Tauri shell of netterm: a thin adapter over netterm-core."
+name = "enodix"
+description = "Tauri shell of enodix: a thin adapter over enodix-core."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "netterm_app"
+name = "enodix_app"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-netterm-core = { path = "../crates/core" }
+enodix-core = { path = "../crates/core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

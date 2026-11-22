@@ -1,4 +1,4 @@
-//! SFTP on a file connection (`netterm_core::files::Sftp`) against the test
+//! SFTP on a file connection (`enodix_core::files::Sftp`) against the test
 //! SSH server's SFTP side, which serves a temporary folder: starting it (and
 //! telling a device without SFTP from a failed connection), the operations
 //! the Files tab needs, the read and write streams, and failures in the
@@ -8,7 +8,7 @@ mod support;
 
 use std::fs;
 
-use netterm_core::files::{EntryKind, FileConnection, FileError, NoSftp, Sftp, StartError};
+use enodix_core::files::{EntryKind, FileConnection, FileError, NoSftp, Sftp, StartError};
 use support::sftp::{SFTP_HOME, SFTP_LOCKED};
 use support::{known_hosts, TestSshServer, WAIT};
 use tempfile::TempDir;

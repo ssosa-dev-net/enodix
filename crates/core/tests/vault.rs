@@ -10,14 +10,14 @@ mod support;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     prepare_workspace, vault_file, ActiveStore, AuthDraft, CredentialProfile, CredentialStore,
     KdfParams, MemoryStore, ProfileAuth, ProfileDraft, ProfileError, Profiles, ScopedProfile,
     ScopedSecret, SecretValue, Secrets, StoreContents, Vault, VaultError, VaultStatus, VAULT_FILE,
     VAULT_LOCK_FILE,
 };
-use netterm_core::session::{SessionState, SessionTarget, TerminalSize};
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::session::{SessionState, SessionTarget, TerminalSize};
+use enodix_core::workspace::{HostId, Workspace};
 use support::credentials::{FailingStore, Failures, TOO_LARGE};
 use support::{next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT, USERNAME};
 use tempfile::TempDir;
@@ -354,6 +354,24 @@ fn a_truncated_or_altered_file_is_damaged_not_a_wrong_password() {
         .get(SCOPE_A, "core")
         .unwrap()
         .is_some());
+}
+
+#[test]
+fn a_vault_written_before_the_rename_opens_and_takes_the_new_name_when_saved() {
+    let data = DataFolder::new();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    fs::copy(fixtures.join("netterm-format.vault"), data.vault()).unwrap();
+
+    let vault = unlocked(&data.vault());
+    assert!(vault.get(SCOPE_A, "core").unwrap().is_some());
+    vault.put(SCOPE_A, &password_profile("edge", "pw")).unwrap();
+    drop(vault);
+
+    let text = fs::read_to_string(data.vault()).unwrap();
+    assert!(text.contains("\"format\": \"enodix-vault\""), "{text}");
+    let reopened = unlocked(&data.vault());
+    assert!(reopened.get(SCOPE_A, "core").unwrap().is_some());
+    assert!(reopened.get(SCOPE_A, "edge").unwrap().is_some());
 }
 
 #[test]
