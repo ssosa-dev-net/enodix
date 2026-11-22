@@ -323,8 +323,13 @@ async fn cancelling_a_flood_ends_it() {
     };
     let job = job::start(&support::manager(), plan, options).unwrap();
     let mut cancelled = None;
+    // Cancelled once the flood itself is under way: the helper is this test
+    // binary, whose harness prints its own lines before the helper runs (and
+    // writes its pid), so cancelling on the very first output could kill it
+    // before then on a slow computer.
     let ran = follow(job, Duration::from_secs(60), |job, event| {
-        if matches!(event, JobEvent::Output { .. }) && cancelled.is_none() {
+        let flooding = matches!(event, JobEvent::Output { text, .. } if text.contains("flood"));
+        if flooding && cancelled.is_none() {
             cancelled = Some(Instant::now());
             job.cancel();
         }

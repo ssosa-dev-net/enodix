@@ -160,7 +160,7 @@ fn printing(folder: &Path) -> FakePython {
     FakePython::running(
         folder,
         "printing",
-        "echo workspace=%ENODIX_WORKSPACE%\r\necho cli=%ENODIX_CLI%\r\necho extra=%ENODIX_TEST_EXTRA%\r\necho args=%1 %2\r\necho cwd=%CD%\r\ntype \"%ENODIX_JOB_TARGETS%\"\r\necho.\r\necho targets=%ENODIX_JOB_TARGETS%",
+        "echo workspace=%ENODIX_WORKSPACE%\r\necho cli=%ENODIX_CLI%\r\necho extra=%ENODIX_TEST_EXTRA%\r\necho args=%~1 %~2\r\necho cwd=%CD%\r\ntype \"%ENODIX_JOB_TARGETS%\"\r\necho.\r\necho targets=%ENODIX_JOB_TARGETS%",
         "echo \"workspace=$ENODIX_WORKSPACE\"\necho \"cli=$ENODIX_CLI\"\necho \"extra=$ENODIX_TEST_EXTRA\"\necho \"args=$1 $2\"\necho \"cwd=$(pwd)\"\ncat \"$ENODIX_JOB_TARGETS\"\necho\necho \"targets=$ENODIX_JOB_TARGETS\"",
     )
 }
