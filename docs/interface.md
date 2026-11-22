@@ -12,8 +12,11 @@ everything 0.2.0 could do, the app still does, reached differently.
   the window (and snaps it to screen edges), a double click maximizes or
   restores it; a tab, button or field never drags. Minimize, Maximize or
   Restore, and Close sit at the right end of the top-right pane's bar;
-  Close does what closing the window always did. The window resizes from
-  its edges as before. Run and config history windows have the same bar,
+  Close does what closing the window always did. They stay inside the
+  window at every size it can take (#120): as the window narrows, the side
+  view and the other panes give way, and the top-right pane keeps room for
+  one tab, an empty part to drag the window by, its "…" button and the
+  three buttons. The window resizes from its edges as before. Run and config history windows have the same bar,
   with their title. Windows 11's snap layouts menu on hovering Maximize is
   not offered (a drawn button cannot have it); Win+Z and Win+arrow keys
   still snap.
@@ -204,9 +207,14 @@ everything 0.2.0 could do, the app still does, reached differently.
   earlier output was lost, and the crashed window closes. A window that
   is only slow (minimised, or drawing a flood) is never taken for crashed.
   Checked on Windows; on Linux it is built but not yet tried on a desktop.
-  Not handled: a page that hangs without crashing (its sessions stay
-  stuck until the app is closed) and the web engine crashing as a whole,
-  which takes the main window's page too. Everything that protects you comes along (#86): the
+  A session window whose page hangs without crashing (#120: it has not
+  answered the app for 10 seconds) is named in a notice in the main
+  window: "Bring them here" takes its sessions, still connected, without
+  their earlier output, and closes the hung window; "Wait" leaves them
+  there. If the window answers again, the notice goes by itself. If the
+  web engine ends as a whole (every window's page with it), the app ends:
+  nothing could be shown or closed any more. Session logs keep every
+  line completed until then. Everything that protects you comes along (#86): the
   production colour and PROD mark, the unencrypted, legacy-crypto,
   logging-failed and backup markers, paste confirmation (over the pane
   pasted in, with the host's line delay), host-key and login questions of

@@ -88,8 +88,10 @@
     connectFromMain,
     dockAll,
     dockSession,
+    onAnswerCheck,
     onSnippetSend,
     onTabArrived,
+    sayAnswering,
     terminalUsed,
     openSessionWindow,
     takeSessions,
@@ -636,6 +638,10 @@
   }
 
   void onSnippetSend(({ tab, name }) => void sendSnippet(tab, name));
+  // The shell asks every 2 s whether this page runs (#120): one that hangs
+  // leaves it unanswered, and the main window offers to take its sessions
+  // until it answers again.
+  void onAnswerCheck(() => void sayAnswering().catch(() => {}));
 
   /** Asks the main window for something only it has, for `tab`'s session
    * (#86); it comes forward. */

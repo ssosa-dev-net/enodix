@@ -70,7 +70,7 @@
   button {
     display: grid;
     place-items: center;
-    width: 42px;
+    width: var(--window-control-width);
     min-height: 0;
     height: 100%;
     padding: 0;

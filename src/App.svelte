@@ -34,6 +34,7 @@
   import PanelResizer from "./lib/PanelResizer.svelte";
   import { PaneRects, sessionWindowSize } from "./lib/paneRects.svelte";
   import {
+    sessionWindows,
     trackSessionWindows,
     windowMoves,
   } from "./lib/sessionWindows.svelte";
@@ -51,11 +52,14 @@
     MAIN_WINDOW_ID,
     onMainWindowRequest,
     onSessionArrived,
+    onSessionWindowAnswering,
     onSnippetTarget,
     openSessionWindow,
     sendSnippetTo,
     snippetTarget as readSnippetTarget,
+    takeBackSessions,
     terminalUsed,
+    type NotAnswering,
     type SnippetTarget,
   } from "./lib/windows";
   import PythonSetup from "./lib/PythonSetup.svelte";
@@ -794,11 +798,21 @@
   const widest = $derived(
     Math.min(PANEL_WIDTHS.max, windowWidth - RAIL - MIN_CENTRE),
   );
+  // In a narrow window the side view gives way, not the terminals' area:
+  // that keeps what its top-right pane needs for the window's buttons
+  // (#120: they left the window), so the side view may be narrower than
+  // its width.
   const columns = $derived(
-    [`${RAIL}px`, leftShown ? `${leftWidth}px` : null, "minmax(0, 1fr)"]
+    [
+      `${RAIL}px`,
+      leftShown ? `minmax(0, ${leftWidth}px)` : null,
+      "minmax(min-content, 1fr)",
+    ]
       .filter(Boolean)
       .join(" "),
   );
+  /** The side view's width as shown, which a narrow window may cut. */
+  let shownLeft = $state<number | null>(null);
 
   function toggleSideView() {
     void changePreferences({
@@ -1257,6 +1271,32 @@
     focusRequest += 1;
   });
 
+  // A session window whose page stopped answering (#120), as the shell
+  // tells it: offered to bring its sessions here, until it answers again,
+  // is closed, or the user chooses to wait.
+  let notAnswering = $state<NotAnswering[]>([]);
+  void onSessionWindowAnswering((window, answers) => {
+    const others = notAnswering.filter((each) => each.window !== window.window);
+    notAnswering = answers ? others : [...others, window];
+  });
+  /** Those still open: one closed or taken back is no longer asked about. */
+  const hungWindows = $derived(
+    notAnswering.filter((each) =>
+      sessionWindows.list.some((open) => open.window === each.window),
+    ),
+  );
+  let takeBackError = $state<string | null>(null);
+
+  async function takeBack(window: number) {
+    notAnswering = notAnswering.filter((each) => each.window !== window);
+    takeBackError = null;
+    try {
+      await takeBackSessions(window);
+    } catch (error) {
+      takeBackError = String(error);
+    }
+  }
+
   /** Opens a second session like `original`'s (core session `id`) in a
    * new tab beside it. */
   function duplicate(original: TabId, id: number) {
@@ -1612,7 +1652,11 @@
       onpreferences={() => openViewTab({ view: "preferences", subject: null })}
     />
     {#if leftShown}
-      <aside class="side-view" data-side-view={sideView}>
+      <aside
+        class="side-view"
+        data-side-view={sideView}
+        bind:offsetWidth={shownLeft}
+      >
         {#if sideView === "hosts"}
           <div class="hosts-area" class:under-sheet={detailsShown}>
             <HostsView
@@ -1931,7 +1975,7 @@
     </section>
 
     {#if leftShown}
-      <div class="edge" style:left="{RAIL + leftWidth}px">
+      <div class="edge" style:left="{RAIL + (shownLeft ?? leftWidth)}px">
         <PanelResizer
           side="left"
           width={leftWidth}
@@ -1992,6 +2036,40 @@
       data-job-notice="dismiss"
       aria-label="Dismiss"
       onclick={() => (jobNotice = null)}
+      ><X size={14} aria-hidden="true" /></button
+    >
+  </div>
+{/if}
+
+{#each hungWindows as hung (hung.window)}
+  <div class="job-notice hung" role="alert" data-not-answering={hung.window}>
+    <span
+      >The window of {hung.names.join(", ")} is not answering. Its sessions stay open:
+      bring them here (without their earlier output), or wait for it.</span
+    >
+    <button
+      type="button"
+      data-not-answering-action="take-back"
+      onclick={() => void takeBack(hung.window)}>Bring them here</button
+    >
+    <button
+      type="button"
+      data-not-answering-action="wait"
+      onclick={() =>
+        (notAnswering = notAnswering.filter(
+          (each) => each.window !== hung.window,
+        ))}>Wait</button
+    >
+  </div>
+{/each}
+{#if takeBackError}
+  <div class="job-notice" role="alert" data-take-back-error>
+    <span>The sessions could not be brought here: {takeBackError}</span>
+    <button
+      type="button"
+      class="dismiss"
+      aria-label="Dismiss"
+      onclick={() => (takeBackError = null)}
       ><X size={14} aria-hidden="true" /></button
     >
   </div>
@@ -2159,6 +2237,12 @@
     border-radius: var(--radius-md);
     box-shadow: var(--shadow);
     font-size: var(--text-sm);
+  }
+
+  /* Above a job's notice, which sits where this would. */
+  .job-notice.hung {
+    bottom: calc(var(--space-8) + 4.5rem);
+    border-color: var(--warning);
   }
 
   .job-notice .dismiss {

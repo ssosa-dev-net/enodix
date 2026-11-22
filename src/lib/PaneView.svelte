@@ -157,7 +157,9 @@
     // Unfolded, the new-tab button comes back too (as wide as the "…").
     const button = (more?.offsetWidth ?? 0) + gap;
     const needed = natural + (connects ? button : 0);
-    if (needed <= spacer.clientWidth + button) folded = false;
+    // The spacer keeps its least width (room to drag the window, #120).
+    const kept = parseFloat(getComputedStyle(spacer).minWidth) || 0;
+    if (needed <= spacer.clientWidth - kept + button) folded = false;
   }
 
   $effect(() => {
@@ -290,7 +292,7 @@
 </script>
 
 {#if node.kind === "split"}
-  <div class="split {node.direction}">
+  <div class="split {node.direction}" class:corner={top && right}>
     {#each node.children as child, index (child.kind === "pane" ? `p${child.id}` : `s${panesOf(child)[0].id}`)}
       {@const last = index === node.children.length - 1}
       <PaneView
@@ -306,7 +308,12 @@
   </div>
 {:else}
   {@const pane = node}
-  <div class="pane" class:active={pane.id === activePane} data-pane={pane.id}>
+  <div
+    class="pane"
+    class:active={pane.id === activePane}
+    class:corner={top && right}
+    data-pane={pane.id}
+  >
     <!-- At the top, the bar's empty parts drag the window and a double
          click maximizes it; a tab, a button or a field never does (Tauri's
          drag region skips them). -->
@@ -530,6 +537,25 @@
     background: var(--border);
   }
 
+  /* The panes and splits give way in a narrow window, the top-right pane
+     last: it keeps room for one tab, an empty part that drags the window,
+     the "…" button and the window's buttons (#120: narrower, those left
+     the window). Its splits are as wide as it needs (their other panes
+     count for nothing, so tab names never widen them). */
+  .split,
+  .pane {
+    contain: inline-size;
+  }
+
+  .split.corner {
+    contain: none;
+    min-width: min-content;
+  }
+
+  .pane.corner {
+    min-width: var(--corner-pane-min);
+  }
+
   .split.right {
     flex-direction: row;
   }
@@ -545,6 +571,10 @@
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     background: var(--bg);
+    /* A pane squeezed narrower than its bar clips it rather than drawing
+       over the pane beside it (clip: never scrolled, as by a tab brought
+       into view). */
+    overflow: clip;
   }
 
   .bar {
@@ -754,8 +784,8 @@
     flex: 0 0 auto;
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: var(--pane-tool-size);
+    height: var(--pane-tool-size);
     padding: 0;
     color: var(--muted);
     background: none;
@@ -770,6 +800,11 @@
 
   .spacer {
     flex: 1 1 auto;
+  }
+
+  /* The top-right bar always keeps an empty part to drag the window by. */
+  .bar.framed .spacer {
+    min-width: var(--space-6);
   }
 
   .body {

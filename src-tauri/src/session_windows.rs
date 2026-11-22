@@ -21,14 +21,19 @@
 //! A session window destroyed without docking back (its page could not
 //! answer), or one whose page died while it stayed open (#89, `page_died`),
 //! has its sessions let go of and handed to the main window without their
-//! scrollback (`hand_over`); the latter is then closed.
+//! scrollback (`hand_over`); the latter is then closed. One whose page
+//! leaves the shell's questions unanswered (#120, `ask_pages`, the core's
+//! `PageAnswers`) is said to the main window, which offers to take its
+//! sessions the same way (`session_window_take_back`), and told again once
+//! it answers. The engine ending as a whole ends the app (`engine_gone`).
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use netterm_core::layout::{
     close_workspace_sessions, live_in_session_windows, place_session_window, take_over_dead_window,
-    Frame, PhysicalRect, TabId, WindowId, WindowView, Windows, SESSION_WINDOW_MIN_SIZE,
+    Answered, Frame, PageAnswers, PhysicalRect, TabId, WindowId, WindowView, Windows,
+    PAGE_ASK_EVERY, SESSION_WINDOW_MIN_SIZE,
 };
 use netterm_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, SessionId, SessionManager, SessionRecord,
@@ -42,6 +47,7 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
+use super::page_watch::Page;
 use super::{
     calling_window, focused_main, product_name, window_theme, window_view, Channels,
     LoginBackupOutcome, Shell, StateMessage, Tabs, UserPreferences, MAIN_WINDOW,
@@ -63,6 +69,13 @@ const SNIPPET_SEND_EVENT: &str = "snippet-send";
 /// The main window is asked to do something for a session window's
 /// session (#86): open the details sheet, or log in with a password.
 const MAIN_WINDOW_REQUEST_EVENT: &str = "main-window-request";
+/// The main window is told a session window's page stopped answering
+/// (#120), or answers again.
+const NOT_ANSWERING_EVENT: &str = "session-window-not-answering";
+const ANSWERING_EVENT: &str = "session-window-answering";
+/// The shell's question to a session window's page (#120), which it
+/// answers as soon as it runs (`session_window_answering`).
+const ANSWER_CHECK_EVENT: &str = "answer-check";
 /// How long a new session window's page waits for its session.
 const TAKE_WAIT: Duration = Duration::from_secs(10);
 
@@ -1026,6 +1039,138 @@ fn page_died(app: &AppHandle, window: WindowId) {
     }
 }
 
+/// A session window, as the main window is told it stopped answering or
+/// answers again (#120): the names of the sessions it shows.
+#[derive(Clone, Serialize)]
+struct Answering {
+    window: WindowId,
+    names: Vec<String>,
+}
+
+fn answering(app: &AppHandle, window: WindowId) -> Option<Answering> {
+    let records = app.state::<SessionRecords>();
+    let sessions = app.state::<Tabs>().lock().session_tabs(window);
+    if sessions.is_empty() {
+        return None;
+    }
+    Some(Answering {
+        window,
+        names: sessions
+            .into_iter()
+            .map(|(_, session)| {
+                records
+                    .get(session)
+                    .map(|record| record.name)
+                    .unwrap_or_default()
+            })
+            .collect(),
+    })
+}
+
+/// The questions asked of the session windows' pages (#120, the core's
+/// `PageAnswers`).
+#[derive(Default)]
+pub(super) struct Answers(std::sync::Mutex<PageAnswers>);
+
+impl Answers {
+    fn lock(&self) -> std::sync::MutexGuard<'_, PageAnswers> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Asks every session window's page a question every `PAGE_ASK_EVERY`
+/// (`answer-check`, which it answers with `session_window_answering`), for
+/// as long as the app runs; a page that leaves one unanswered for
+/// `PAGE_ANSWER_WAIT` is said to the main window (`page_not_answering`).
+pub(super) fn ask_pages(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(PAGE_ASK_EVERY).await;
+            let open: Vec<(WindowId, tauri::WebviewWindow)> = app
+                .webview_windows()
+                .into_iter()
+                .filter_map(|(label, webview)| Some((window_of(&label)?, webview)))
+                .collect();
+            let silent = {
+                let state = app.state::<Answers>();
+                let mut answers = state.lock();
+                answers.keep_only(&open.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+                let now = std::time::Instant::now();
+                for (id, _) in &open {
+                    answers.ask(*id, now);
+                }
+                answers.not_answering(now)
+            };
+            for (_, webview) in &open {
+                let _ = webview.emit_to(webview.label(), ANSWER_CHECK_EVENT, ());
+            }
+            for window in silent {
+                page_not_answering(&app, window);
+            }
+        }
+    });
+}
+
+/// The session window `window`'s page left the shell's question
+/// unanswered for `PAGE_ANSWER_WAIT` (#120): it hangs, or is very busy. It
+/// may recover, so nothing is taken from it: the main window is told and
+/// offers to take its sessions (`session_window_take_back`). Its sessions
+/// meanwhile stay where they are, paused by flow control once their output
+/// goes unacknowledged.
+fn page_not_answering(app: &AppHandle, window: WindowId) {
+    let Some(said) = answering(app, window) else {
+        return;
+    };
+    if let Some(main) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = main.emit_to(MAIN_WINDOW, NOT_ANSWERING_EVENT, said);
+    }
+}
+
+/// The calling session window's page answers the shell's question
+/// (#120); if it had been taken for not answering, the main window is told
+/// it answers again.
+#[tauri::command]
+pub(super) fn session_window_answering(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    answers: State<'_, Answers>,
+) -> Result<(), String> {
+    let from = calling_window(&window)?;
+    if from == WindowId::MAIN {
+        return Err("not a session window".into());
+    }
+    if answers.lock().answered(from) == Answered::AsBefore {
+        return Ok(());
+    }
+    let said = answering(&app, from).ok_or("this window shows no session")?;
+    let main = app
+        .get_webview_window(MAIN_WINDOW)
+        .ok_or("the main window is gone")?;
+    main.emit_to(MAIN_WINDOW, ANSWERING_EVENT, said)
+        .map_err(|error| error.to_string())
+}
+
+/// From the main window (#120): the session window `target`, whose page
+/// does not answer, gives its sessions to the main window as a dead one
+/// does (without their earlier output, `hand_over`) and is closed.
+#[tauri::command]
+pub(super) fn session_window_take_back(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    target: WindowId,
+) -> Result<(), String> {
+    if calling_window(&window)? != WindowId::MAIN {
+        return Err("only the main window takes sessions back".into());
+    }
+    if target == WindowId::MAIN || app.get_webview_window(&label_of(target)).is_none() {
+        return Err("that session window is gone".into());
+    }
+    page_died(&app, target);
+    Ok(())
+}
+
 /// Takes the session window `window`'s sessions away from it (the core's
 /// `take_over_dead_window`: moved to the main window, whoever held them let
 /// go of) and tells the main window of each (`session-arrived`, with the
@@ -1061,20 +1206,49 @@ fn hand_over(app: &AppHandle, window: WindowId) {
     }
 }
 
-/// Watches the page of the session window `webview` (#89): once its
-/// renderer is gone, `page_died`. Windows: WebView2's `ProcessFailed` with
-/// the render process exited. Linux: WebKitGTK's `web-process-terminated`.
-/// Elsewhere nothing is watched. A page that is only slow (a minimised
-/// window's throttled timers, a flood being drawn) raises neither.
+/// Watches the page of the session window `webview` (#89, #120): once its
+/// renderer is gone, `page_died`; once the engine is gone, `engine_gone`.
+/// Windows: WebView2's `ProcessFailed`. Linux: WebKitGTK's
+/// `web-process-terminated` (as the page's own). Elsewhere nothing is
+/// watched. A page that hangs or is only slow raises neither: the shell's
+/// questions find one that hangs (`ask_pages`).
 fn watch_page(webview: &tauri::WebviewWindow) {
     let Some(window) = window_of(webview.label()) else {
         return;
     };
     let app = webview.app_handle().clone();
-    let died = move || {
+    let died = move |page| {
         let app = app.clone();
         // Not from inside the webview's own event: the window is destroyed.
-        tauri::async_runtime::spawn(async move { page_died(&app, window) });
+        tauri::async_runtime::spawn(async move {
+            match page {
+                Page::Gone => page_died(&app, window),
+                Page::EngineGone => engine_gone(&app),
+            }
+        });
     };
     let _ = webview.with_webview(move |platform| super::page_watch::watch(platform, died));
+}
+
+/// Watches the main window's page for the engine's end (#120): its own
+/// renderer's end is not acted on (its sessions have nowhere to go).
+pub(super) fn watch_main(webview: &tauri::WebviewWindow) {
+    let app = webview.app_handle().clone();
+    let died = move |page| {
+        if page == Page::EngineGone {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { engine_gone(&app) });
+        }
+    };
+    let _ = webview.with_webview(move |platform| super::page_watch::watch(platform, died));
+}
+
+/// The webview engine's browser process is gone (#120), and every window's
+/// page with it: no session can be shown anywhere again, and no page is
+/// left to close a window (a window's close waits for its page, so the app
+/// could only be killed). The app ends as when its main window closes
+/// (`end_with_the_app`); each session's log has every line it completed.
+fn engine_gone(app: &AppHandle) {
+    eprintln!("the web engine ended: the app ends");
+    app.exit(0);
 }

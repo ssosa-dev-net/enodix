@@ -1579,6 +1579,134 @@ async function checkOwnFrame(evaluate, where, maximizeName = "Maximize") {
 }
 
 /**
+ * The window `evaluate` reaches at its narrowest (#120: below about 560 px
+ * with the side view open, the window's buttons left the window): its
+ * least width `least`, the window's minimum (DevTools sets any width, the
+ * minimum not kept: asked for 200 px, the page was 200 px wide; a user
+ * cannot make it narrower than `least`). Its three buttons are then
+ * whole inside the window at its top right, each the top element at its
+ * centre and at its corners, after everything else of their bar (nothing
+ * of the bar runs under them); the bar keeps an empty part that drags the
+ * window; Maximize maximizes there and Restore brings the narrow window
+ * back. Then the window's width as it was. Minimize is checked reachable,
+ * not clicked (a minimized window is hard to bring back from here, #80).
+ * Resolves to what was measured, for the step's words.
+ */
+async function narrowFrame(evaluate, where, least) {
+  const json = (value) => JSON.stringify(value);
+  const devtools = evaluate.devtools;
+  const { windowId, bounds } = await devtools.send(
+    "Browser.getWindowForTarget",
+  );
+  await devtools.send("Browser.setWindowBounds", {
+    windowId,
+    bounds: { width: least, height: bounds.height },
+  });
+  const width = await until(`${where} at its narrowest`, async () => {
+    const now = await evaluate("window.innerWidth");
+    return now >= least - 1 && now <= least + 1 && now;
+  });
+  // The bar folds its tools once it has measured itself.
+  await sleep(300);
+  const measure = () =>
+    evaluate(`(() => {
+      const controls = document.querySelector("[data-window-controls]");
+      const bar = controls?.closest("[data-window-bar]");
+      if (!bar) return { missing: true };
+      const box = controls.getBoundingClientRect();
+      const buttons = [...controls.querySelectorAll("[data-window-control]")].map((button) => {
+        const own = button.getBoundingClientRect();
+        // The centre and points 3 px in from each corner.
+        const points = [
+          [own.left + own.width / 2, own.top + own.height / 2],
+          [own.left + 3, own.top + 3],
+          [own.right - 3, own.top + 3],
+          [own.left + 3, own.bottom - 3],
+          [own.right - 3, own.bottom - 3],
+        ];
+        const covered = points
+          .map(([x, y]) => document.elementFromPoint(x, y))
+          .filter((top) => !top || !(top === button || button.contains(top)))
+          .map((top) => top ? top.cloneNode(false).outerHTML.slice(0, 120) : "nothing");
+        return {
+          control: button.dataset.windowControl,
+          left: Math.round(own.left),
+          right: Math.round(own.right),
+          top: Math.round(own.top),
+          width: Math.round(own.width),
+          covered,
+        };
+      });
+      // Everything else of the bar ends before the buttons begin.
+      const under = [...bar.children]
+        .filter((child) => child !== controls && child.checkVisibility())
+        .filter((child) => child.getBoundingClientRect().width > 0)
+        .filter((child) => child.getBoundingClientRect().right > box.left + 0.5)
+        .map((child) => child.cloneNode(false).outerHTML.slice(0, 120));
+      // An empty part of the bar that drags the window: its spacer (a
+      // pane's bar) or its title (a run or config window).
+      const empty = bar.querySelector(".spacer, [data-window-title]");
+      const room = empty?.getBoundingClientRect();
+      const at = room && document.elementFromPoint(room.left + room.width / 2, room.top + room.height / 2);
+      const drags = !!at?.closest("[data-tauri-drag-region]") &&
+        !at.closest("button, input, select, textarea, a, [role=tab]");
+      return {
+        width: window.innerWidth,
+        buttons,
+        under,
+        drag: { width: Math.round(room?.width ?? 0), drags },
+        barRight: Math.round(bar.getBoundingClientRect().right),
+      };
+    })()`);
+  const found = await measure();
+  const names = found.buttons?.map((button) => button.control) ?? [];
+  const inside = found.buttons?.every(
+    (button) =>
+      button.left >= 0 &&
+      button.right <= found.width &&
+      button.top === 0 &&
+      button.width >= 40 &&
+      button.covered.length === 0,
+  );
+  if (
+    found.missing ||
+    json(names) !== json(["minimize", "maximize", "close"]) ||
+    !inside ||
+    found.buttons[2].right !== found.width ||
+    found.under.length > 0 ||
+    found.drag.width < 16 ||
+    !found.drag.drags
+  )
+    fail(`${where} at ${width} px: ${json(found)}`);
+  await reachable(evaluate, "[data-window-control=minimize]");
+  const maximized = () => windowCommand(evaluate, "is_maximized");
+  await mouseClick(evaluate, "[data-window-control=maximize]");
+  await until(`${where} maximized by its button at ${width} px`, maximized);
+  await until(`${where}'s button offering Restore`, () =>
+    evaluate(
+      `document.querySelector("[data-window-control=maximize]").getAttribute("aria-label") === "Restore"`,
+    ),
+  );
+  await mouseClick(evaluate, "[data-window-control=maximize]");
+  // Restored to the size Windows kept for it, which is not the one
+  // DevTools set (the first run waited for the narrow width in vain).
+  await until(
+    `${where} restored by its button`,
+    async () => !(await maximized()),
+  );
+  await devtools.send("Browser.setWindowBounds", {
+    windowId,
+    bounds: { width: bounds.width, height: bounds.height },
+  });
+  await until(
+    `${where} as wide as before`,
+    async () =>
+      Math.abs((await evaluate("window.innerWidth")) - bounds.width) <= 1,
+  );
+  return width;
+}
+
+/**
  * The app's own frame (#80): no system title bar; the top bar's buttons
  * minimize (not clicked: a minimized window is hard to bring back from
  * here), maximize and restore; a double click on the bar's empty part
@@ -2821,6 +2949,8 @@ async function main() {
   await closingSessionWindows({ evaluate, screenshot, step });
 
   await crashedSessionWindow({ evaluate, devtools, step });
+
+  await hungSessionWindow({ evaluate, devtools, step });
 
   await webLinks({ evaluate, text, screenshot, step });
 
@@ -5719,6 +5849,12 @@ async function detachedRunWindow({ evaluate, exists, clickOn, run, step }) {
     })()`),
   );
   step(`the run's window has the app's own frame, titled "${titled}"`);
+  {
+    const least = await narrowFrame(window.evaluate, "the run's window", 420);
+    step(
+      `at its narrowest (${least} px) the run's window's three buttons stayed whole inside it at its top right, over nothing, beside its title that drags it, and Maximize and Restore answered`,
+    );
+  }
   const main = await look(evaluate);
   const detached = await look(window.evaluate);
   if (json(main) !== json(detached) || !main.font.includes("Cascadia Mono"))
@@ -5809,6 +5945,14 @@ async function closingTheMainWindow({ app, evaluate, step }) {
   );
   if (!titled.includes("config history"))
     fail(`the config history's window bar says "${titled}"`);
+  const least = await narrowFrame(
+    configWindow.evaluate,
+    "the config history's window",
+    420,
+  );
+  step(
+    `at its narrowest (${least} px) the config history's window's three buttons stayed whole inside it at its top right, over nothing, beside its title that drags it, and Maximize and Restore answered`,
+  );
   configWindow.devtools.close();
   // The main window's own Close button (#80) ends the app.
   await mouseClick(evaluate, `[data-window-control=close]`, { mayClose: true });
@@ -6204,6 +6348,174 @@ async function crashedSessionWindow({ evaluate, devtools, step }) {
   );
   step(
     "the session flooding when its window crashed kept flowing in the main window and stopped with Ctrl+C",
+  );
+}
+
+/**
+ * A session window whose page hangs without crashing (#120), after
+ * crashedSessionWindow (lab-r9 in the main window, connected). Its page is
+ * stopped on purpose (an endless loop run there);
+ * it leaves the shell's question unanswered for 10 s (the core's
+ * `PAGE_ANSWER_WAIT`, asked every 2 s), and the main window says so and
+ * offers to bring its sessions back. First a page busy
+ * for a moment only (2 s), which is not taken for hung; then one hung
+ * that recovers (the offer withdrawn once it answers); then one that stays
+ * hung, whose session Bring them here takes into the main window,
+ * connected, saying earlier output was lost, and taking typing; its window
+ * is closed. Nothing is evaluated in a hung page (it would never answer).
+ */
+/** When a stopped page is said (PAGE_ANSWER_WAIT plus one question's
+ * period, PAGE_ASK_EVERY). */
+const HUNG_AFTER_MS = 12_000;
+
+async function hungSessionWindow({ evaluate, devtools, step }) {
+  const json = (value) => JSON.stringify(value);
+  const typeIn = async (client, text) => {
+    for (const char of text) {
+      const key =
+        char === "\r"
+          ? { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }
+          : { key: char };
+      await client.send("Input.dispatchKeyEvent", {
+        type: "keyDown",
+        text: char,
+        ...key,
+      });
+      await client.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+    }
+  };
+  const focusShown = (target) =>
+    target(
+      `document.querySelector(${json(`${SHOWN_SESSION} .terminal textarea`)}).focus()`,
+    );
+  const notice = () =>
+    evaluate(`(() => {
+      const notice = document.querySelector("[data-not-answering]");
+      return notice ? { window: Number(notice.dataset.notAnswering), text: notice.textContent } : null;
+    })()`);
+  /** Runs `loop` in the page of `window`, without waiting for it. */
+  const stop = (window, loop) => {
+    window.devtools
+      .send("Runtime.evaluate", {
+        expression: `setTimeout(() => { ${loop} }, 0); true`,
+      })
+      .catch(() => {});
+  };
+  const listed = () => invokeIn(evaluate, "session_windows_list");
+
+  const known = new Set((await tabsIn(evaluate)).map((each) => each.id));
+  const window = await moveToNewWindow(evaluate, "lab-r9");
+  const id = Number(window.label.replace("session-", ""));
+  await focusShown(window.evaluate);
+  await typeIn(window.devtools, "later 0 before-hang\r");
+  await until("before-hang in the session window", async () =>
+    /(^|\n|\$ )before-hang\s*(\n|$)/.test(
+      await screenOf(window.evaluate, SHOWN_SESSION),
+    ),
+  );
+
+  // Busy for a moment: not taken for hung.
+  stop(window, "const end = Date.now() + 2000; while (Date.now() < end) {}");
+  await until(
+    "the busy page answering again",
+    () => window.evaluate("true"),
+    20_000,
+  );
+  await sleep(HUNG_AFTER_MS + 2000);
+  if (await notice())
+    fail(`a page busy for 2 s was taken for hung: ${json(await notice())}`);
+  step(
+    "a session window's page busy for 2 s was not taken for one that does not answer",
+  );
+
+  // Hung, then recovered: the offer comes, and goes once it answers.
+  stop(
+    window,
+    `const end = Date.now() + ${HUNG_AFTER_MS + 15_000}; while (Date.now() < end) {}`,
+  );
+  const offered = await until(
+    "the main window saying the session window is not answering",
+    notice,
+    HUNG_AFTER_MS + 15_000,
+  );
+  if (offered.window !== id || !offered.text.includes("lab-r9"))
+    fail(`the main window says ${json(offered)}`);
+  await until(
+    "the recovered page answering",
+    () => window.evaluate("true"),
+    60_000,
+  );
+  await until(
+    "the offer withdrawn once the page answers",
+    async () => !(await notice()),
+  );
+  await focusShown(window.evaluate);
+  await typeIn(window.devtools, "later 0 recovered\r");
+  await until("typing in the recovered window", async () =>
+    /(^|\n|\$ )recovered\s*(\n|$)/.test(
+      await screenOf(window.evaluate, SHOWN_SESSION),
+    ),
+  );
+  step(
+    "a session window's page that stopped answering was said in the main window, with its session's name; once it answered again the offer went and its session took typing there",
+  );
+
+  // Hung for good: its session comes back.
+  stop(window, "for (;;) {}");
+  await until(
+    "the main window saying the session window is not answering",
+    notice,
+    HUNG_AFTER_MS + 15_000,
+  );
+  await mouseClick(evaluate, "[data-not-answering-action=take-back]");
+  await until(
+    "the hung window closed",
+    async () => (await listed()).length === 0,
+  );
+  window.devtools.close();
+  const arrived = await until(
+    "lab-r9 in the main window, connected",
+    async () =>
+      (await tabsIn(evaluate)).find(
+        (each) =>
+          !known.has(each.id) &&
+          each.name === "lab-r9" &&
+          each.state === "connected",
+      ),
+  ).catch(async (error) =>
+    fail(
+      `${error.message}: the main window shows ${json(await tabsIn(evaluate))}`,
+    ),
+  );
+  const slot = `.slot[data-tab="${arrived.id}"]`;
+  await mouseClick(evaluate, `[data-tab-bar] [data-tab="${arrived.id}"]`);
+  await until("lab-r9 shown", () =>
+    evaluate(`!!document.querySelector('${slot}[data-active]')`),
+  );
+  if (await notice()) fail("the offer stayed after the sessions came back");
+  const lines = await evaluate(`(() => {
+    const buffer = document.querySelector(${json(`${slot} .terminal`)}).xterm.buffer.normal;
+    const lines = [];
+    for (let y = 0; y < buffer.length; y++)
+      lines.push(buffer.getLine(y)?.translateToString(true) ?? "");
+    return lines;
+  })()`);
+  if (!lines.some((line) => line.includes("earlier output was lost")))
+    fail(
+      `the session taken from the hung window did not say its output was lost: ${json(lines)}`,
+    );
+  if (
+    (await invokeIn(evaluate, "session_windows_live", { workspace: null })) !==
+    0
+  )
+    fail("the hung window's session is still counted in a session window");
+  await focusShown(evaluate);
+  await typeIn(devtools, "later 0 after-hang\r");
+  await until("typing after the hang", async () =>
+    /(^|\n|\$ )after-hang\s*(\n|$)/.test(await screenOf(evaluate, slot)),
+  );
+  step(
+    "a session window's page hung for good: Bring them here took its session into the main window, connected, saying earlier output was lost, and taking typing; the hung window closed",
   );
 }
 
@@ -13620,6 +13932,35 @@ async function tabsAndPanes({
   step(
     "with panes side by side, the window's buttons end the top-right pane's bar, cover no tab, and the pane below has neither buttons nor a drag region",
   );
+  // At its narrowest, with the side view open and folded (#120), the
+  // three panes kept.
+  {
+    const sideShown = () =>
+      evaluate(`!!document.querySelector("[data-side-view]")`);
+    const toggleSide = async () => {
+      const before = await sideShown();
+      await pressIn(devtools, "B", "KeyB", 66, CTRL | SHIFT);
+      await until(
+        "the side view folded or back",
+        async () => (await sideShown()) !== before,
+      );
+    };
+    const widths = {};
+    for (const round of [0, 1]) {
+      const open = await sideShown();
+      widths[open ? "open" : "folded"] = await narrowFrame(
+        evaluate,
+        `the main window with three panes, the side view ${open ? "open" : "folded"}`,
+        480,
+      );
+      if ((await layout()).length !== 3) fail("the narrow window lost a pane");
+      if (round === 0) await toggleSide();
+    }
+    await toggleSide();
+    step(
+      `at its narrowest (${widths.open} px) with three panes, the side view open and folded, the main window's three buttons stayed whole inside it at its top right, over nothing, beside an empty part that drags it, and Maximize and Restore answered`,
+    );
+  }
 
   // A tab dragged into another pane moves there; its old pane, now empty,
   // goes. The terminal (and its session) move with it.
@@ -14565,6 +14906,16 @@ async function sessionWindows({ evaluate, devtools, screenshot, step }) {
     );
   await checkContrast(window.evaluate, "session window");
   await checkOwnFrame(window.evaluate, "the session window");
+  {
+    const least = await narrowFrame(
+      window.evaluate,
+      "a session window with one pane",
+      420,
+    );
+    step(
+      `at its narrowest (${least} px) with one pane, the session window's three buttons stayed whole inside it at its top right, over nothing, beside an empty part that drags it, and Maximize and Restore answered`,
+    );
+  }
 
   // It stays in the group (#87): every member, in both windows, counts
   // three.
@@ -15117,6 +15468,17 @@ async function severalInAWindow({
   await until("two panes", () =>
     window.evaluate(`document.querySelectorAll("[data-tab-bar]").length === 2`),
   );
+  // At its narrowest, two panes side by side (#120).
+  {
+    const least = await narrowFrame(
+      window.evaluate,
+      "a session window with two panes side by side",
+      420,
+    );
+    step(
+      `at its narrowest (${least} px) with two panes side by side, a session window's three buttons stayed whole inside it at its top right, over nothing, beside an empty part that drags it, and Maximize and Restore answered`,
+    );
+  }
   // Narrow, it folds its top-right pane's tools too (#100): no new tab or
   // multi-send there.
   {

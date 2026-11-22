@@ -94,6 +94,17 @@
   /* Control sizes. */
   --control-height: 30px;
   --control-height-small: 24px;
+  /* A window button (#80) and a pane's tool button in its tab bar. */
+  --window-control-width: 42px;
+  --pane-tool-size: 28px;
+  /* The narrowest the top-right pane gets (#120), so that the window's
+     three buttons never leave the window: the bar's padding, one tab, room
+     to drag the window by, the pane's "…" button, the gap before the
+     window's buttons and the buttons, with the bar's four gaps. */
+  --corner-pane-min: calc(
+    var(--space-1-5) + 3.5rem + var(--space-6) + var(--pane-tool-size) +
+      var(--space-1-5) + 3 * var(--window-control-width) + 4 * var(--space-0-5)
+  );
 
   color-scheme: dark;
   /* The rem is a layout unit only (dialog widths, field sizes); text
