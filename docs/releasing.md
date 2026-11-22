@@ -97,8 +97,11 @@ software. So:
 
 6. Write down here where the key and its backups are (not the password):
 
-   - Private key: _not created yet_
-   - Backups: _not created yet_
+   - Private key: created 2026-11-22 (key ID `9DF68927ED1EF3E2`, the public
+     half is `src-tauri/updater-key.pub`); kept by the maintainer outside
+     the repository, and as the repository secret
+     `TAURI_SIGNING_PRIVATE_KEY` for the release workflow
+   - Backups: with the password, in the maintainer's password manager
 
 Also decide once **where `latest.json` is published**: one address that
 never changes, because every installed copy keeps asking it. It must be
