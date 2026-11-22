@@ -5,6 +5,16 @@ in the project's tracker.
 
 ## Unreleased
 
+## 0.6.0
+
+The first release of enodix on GitHub, and the first with automatic
+updates: installed copies (the Windows installer's) check for a newer
+release and install it when you say so; the portable copy and the Linux
+packages only tell you a new version is out. The installer is not
+code-signed, so Windows SmartScreen may warn before it runs: choose
+**More info**, then **Run anyway**. Check the download against
+`SHA256SUMS.txt` below.
+
 The app is renamed **enodix** (it was netterm): the program, the
 `enodix-cli` command, the `enodix` Python package and every `ENODIX_*`
 environment variable. It is installed as a new app beside netterm and
