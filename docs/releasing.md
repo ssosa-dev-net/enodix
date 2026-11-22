@@ -115,14 +115,21 @@ that GitHub address: the release workflow below sets it from the
 repository, so a release must be a normal one, not a pre-release (GitHub's
 "latest" skips pre-releases).
 
-For the release workflow, the key is also kept as two secrets of the GitHub
-repository (Settings, Secrets and variables, Actions), set with `gh` so the
-password is pasted and never written down:
+For the release workflow, the key is also kept as two secrets of the
+repository's `release` environment (Settings, Environments, release), which
+only tags `v*` and the `main` branch may use: a workflow run from any other
+branch cannot read them. Set them with `gh`, so that the password is pasted
+and never written down:
 
 ```powershell
-Get-Content -Raw "$env:USERPROFILE\.enodix-release\enodix-updater.key" | gh secret set TAURI_SIGNING_PRIVATE_KEY --repo <owner>/enodix
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo <owner>/enodix
+Get-Content -Raw "$env:USERPROFILE\.enodix-release\enodix-updater.key" | gh secret set TAURI_SIGNING_PRIVATE_KEY --env release --repo <owner>/enodix
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env release --repo <owner>/enodix
 ```
+
+The release script itself takes the key and its password out of its
+environment before it builds anything, and gives them to one program only,
+`tauri signer sign`, run on the finished installer: the build (every crate's
+build script, the npm tools) never sees them.
 
 ## Releasing with GitHub Actions (the usual way)
 
@@ -141,8 +148,11 @@ no section for.
    suite (`npm run test:lab`) and the installer check in Windows Sandbox with
    the previous release (step 4 below, built with `npm run release -- --unsigned`).
 3. If the workflow changed since the last release, try it first: Actions,
-   Release, Run workflow, "publish" left unticked. The files are kept as the
-   run's artifacts.
+   Release, Run workflow, on `main`. It builds and signs every file and
+   keeps them as the run's artifacts; it never publishes (only a tag does).
+   The publish job takes from each platform only the files its build is
+   meant to give, under their names, and publishes nothing if one is
+   missing or anything else is there.
 4. Tag the merged commit and push the tag; the workflow publishes the release:
 
    ```

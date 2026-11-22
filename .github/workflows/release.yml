@@ -6,24 +6,22 @@
 #   the Linux .deb, .rpm and AppImage, then publishes them with the
 #   changelog's section for the version and SHA256SUMS.txt.
 # - Run by hand (Actions, Release, Run workflow), it builds the same files
-#   and keeps them as the run's artifacts, publishing nothing unless
-#   "publish" is ticked.
+#   and keeps them as the run's artifacts. It never publishes: only a tag
+#   does, so what is published is always a tagged commit.
 #
 # The updater key never leaves GitHub's secrets: TAURI_SIGNING_PRIVATE_KEY
-# (the key file's contents) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD. The
-# smoke test, the containerlab suite and the installer checks run on the
-# maintainer's computer before the tag is pushed.
+# (the key file's contents) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, kept in
+# the `release` environment (which only tags v* and main may use). The
+# release script takes them out of its environment before it builds and
+# gives them to the signer alone, after the build. The smoke test, the
+# containerlab suite and the installer checks run on the maintainer's
+# computer before the tag is pushed.
 name: Release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      publish:
-        description: Publish the release (otherwise the files are only kept as artifacts)
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -67,6 +65,8 @@ jobs:
     name: Windows files
     needs: version
     runs-on: windows-latest
+    # The environment holding the updater key.
+    environment: release
     timeout-minutes: 90
     env:
       ENODIX_RELEASE_URL: https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.version }}/
@@ -87,7 +87,7 @@ jobs:
         with:
           shared-key: release
       - run: npm ci
-      - name: Build and sign the Windows files
+      - name: Build, then sign the installer for the updater
         run: npm run release
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -145,7 +145,8 @@ jobs:
   publish:
     name: Publish
     needs: [version, windows, linux]
-    if: github.ref_type == 'tag' || inputs.publish
+    # Only a tag publishes.
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     # The only job that may write: it creates the release.
     permissions:
@@ -156,8 +157,31 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: dist
-          merge-multiple: true
+          path: built
+      # Each platform's own files only, under the names its build gives
+      # them: a build that left anything else, or lacks one, publishes
+      # nothing (a Linux build cannot put a latest.json or an installer in
+      # place of the Windows one).
+      - name: Take each platform's files
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          product=$(node -p "require('./src-tauri/tauri.conf.json').productName")
+          mkdir dist
+          take() {
+            platform=$1; shift
+            for name in "$@"; do
+              test -f "built/$platform/$name" || { echo "the $platform build lacks $name"; exit 1; }
+              cp "built/$platform/$name" dist/
+            done
+            extra=$(cd "built/$platform" && ls -A | grep -vxF "$(printf '%s\n' "$@")" || true)
+            test -z "$extra" || { echo "the $platform build left more than its files: $extra"; exit 1; }
+          }
+          take windows "${product}_${VERSION}_x64-setup.exe" "${product}_${VERSION}_x64-setup.exe.sig" \
+            "${product}_${VERSION}_x64-portable.zip" latest.json
+          take linux "${product}_${VERSION}_amd64.deb" "${product}-${VERSION}-1.x86_64.rpm" \
+            "${product}_${VERSION}_amd64.AppImage"
+          ls -l dist
       - name: Checksums and release notes
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -175,4 +199,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$product $VERSION" \
             --notes-file notes.md \
+            --verify-tag \
             --latest
