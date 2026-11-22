@@ -9,11 +9,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use netterm_core::files::{
+use enodix_core::files::{
     Done, FileConnection, Files, Hashes, Link, Lost, Outcome, Partial, Presence, SizeCheck, Status,
     Transfer, TransferError, TransferWatch, Transfers,
 };
-use netterm_core::session::SshTarget;
+use enodix_core::session::SshTarget;
 use sha2::Digest;
 use support::scp::ScpQuirk;
 use support::{known_hosts, TestSshServer, WAIT};
@@ -764,8 +764,8 @@ async fn an_scp_upload_that_stops_moving_fails_after_the_stall_time() {
 /// A caller's own way of connecting for SCP whose connection fails.
 struct Refusing;
 
-impl netterm_core::files::Connect for Refusing {
-    fn connect(&self) -> netterm_core::files::Connecting<'_> {
+impl enodix_core::files::Connect for Refusing {
+    fn connect(&self) -> enodix_core::files::Connecting<'_> {
         Box::pin(async { Err("the login was cancelled".to_owned().into()) })
     }
 }
@@ -777,18 +777,18 @@ struct DecliningOnce {
     target: SshTarget,
 }
 
-impl netterm_core::files::Connect for DecliningOnce {
-    fn connect(&self) -> netterm_core::files::Connecting<'_> {
+impl enodix_core::files::Connect for DecliningOnce {
+    fn connect(&self) -> enodix_core::files::Connecting<'_> {
         Box::pin(async move {
             if !self
                 .declined
                 .swap(true, std::sync::atomic::Ordering::SeqCst)
             {
-                return Err(netterm_core::files::ConnectFailure::Declined(
+                return Err(enodix_core::files::ConnectFailure::Declined(
                     "the login was cancelled".into(),
                 ));
             }
-            netterm_core::files::FileConnection::open_unattended(
+            enodix_core::files::FileConnection::open_unattended(
                 self.target.clone(),
                 support::known_hosts(),
             )

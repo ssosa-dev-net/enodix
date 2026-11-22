@@ -8,7 +8,7 @@ mod support;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use netterm_core::python::{
+use enodix_core::python::{
     self, create_environment, environment_folder, find_python, package_version, status, wheel_name,
     Candidate, FindError, InstallSource, Library, OfferError, PythonChoice, PythonProblem,
     PythonStatus, Setup, SetupCanceller, SetupError, SetupOffer, SetupProgress,
@@ -216,7 +216,7 @@ fn package_versions_follow_the_wheel_build() {
     assert_eq!(package_version("1.2.3-beta.1"), "1.2.3b1");
     assert_eq!(package_version("1.2.3-alpha.4"), "1.2.3a4");
     assert_eq!(package_version("1.2.3-rc.2+build.5"), "1.2.3rc2");
-    assert_eq!(wheel_name("1.0.0"), "netterm-1.0.0-py3-none-any.whl");
+    assert_eq!(wheel_name("1.0.0"), "enodix-1.0.0-py3-none-any.whl");
 }
 
 #[test]

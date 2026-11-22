@@ -1,7 +1,7 @@
 # The containerlab device suite's lab file (docs/containerlab.md).
 #
 # Copy this file to lab/lab.yaml (ignored by git) or anywhere else and point
-# NETTERM_LAB_CONFIG at it. Do not commit the copy. Prefer `password_env`
+# ENODIX_LAB_CONFIG at it. Do not commit the copy. Prefer `password_env`
 # (the name of an environment variable holding the password) over writing a
 # password here.
 
@@ -18,7 +18,7 @@ jump_host:
   port: 22
   username: root # the user you log in to the server as
 
-# The devices of lab/netterm-test.clab.yml (their fixed management addresses).
+# The devices of lab/enodix-test.clab.yml (their fixed management addresses).
 # `platform` sets the defaults of each check (srlinux, ceos, frr, vtysh,
 # ios, nxos, junos, other); every one can be overridden here: username,
 # prompt, setup, command, expect, large_command, large_min_bytes,
@@ -30,17 +30,17 @@ jump_host:
 # privilege_check + privilege_expect, config_end, enable_secret_env, and
 # checks (the only checks made on the entry, by the names the suite
 # prints). A device logs in with `password_env` (default
-# NETTERM_LAB_PASSWORD), or `agent: true`.
+# ENODIX_LAB_PASSWORD), or `agent: true`.
 devices:
   - name: srl1
     platform: srlinux
     address: 172.20.30.11
-    password_env: NETTERM_LAB_SRL_PASSWORD
+    password_env: ENODIX_LAB_SRL_PASSWORD
 
   - name: ceos1
     platform: ceos
     address: 172.20.30.12
-    password_env: NETTERM_LAB_CEOS_PASSWORD
+    password_env: ENODIX_LAB_CEOS_PASSWORD
     # The topology publishes cEOS's telnet on the server's port 2323;
     # telnet is not tunnelled through the jump host, so it goes there
     # directly.
@@ -49,7 +49,7 @@ devices:
     # The banner of lab/configs/ceos1.cfg.
     login_banner: &ceos_banner |
       =================================================================
-        NETTERM LAB - ceos1 (Arista EOS) - authorised users only
+        ENODIX LAB - ceos1 (Arista EOS) - authorised users only
         Report problems in the lab channel #
         Contact: Network Operations <noc@example.net>
         The word Password: in this banner is not a question.
@@ -58,7 +58,7 @@ devices:
   - name: frr1
     platform: frr
     address: 172.20.30.13
-    # No password_env: NETTERM_LAB_PASSWORD, which the topology also gives
+    # No password_env: ENODIX_LAB_PASSWORD, which the topology also gives
     # the container as its root password.
 
   # The same FRR container as its `vtysh` user, whose login shell is vtysh:
@@ -71,11 +71,11 @@ devices:
   - name: csr1
     platform: ios
     address: 172.20.30.14
-    password_env: NETTERM_LAB_CSR_PASSWORD
+    password_env: ENODIX_LAB_CSR_PASSWORD
     # lab/configs/csr1-banner.cfg, pasted after each deploy.
     login_banner: &csr_banner |
       ******************************************************************
-        NETTERM LAB - csr1 (IOS-XE) - authorised users only
+        ENODIX LAB - csr1 (IOS-XE) - authorised users only
         All sessions are logged. Questions go to the NOC queue #
         Contact: Network Operations <noc@example.net>
         Never type your Password: into a chat window or a ticket.
@@ -92,7 +92,7 @@ devices:
   - name: cjunos1
     platform: junos
     address: 172.20.30.15
-    password_env: NETTERM_LAB_JUNOS_PASSWORD
+    password_env: ENODIX_LAB_JUNOS_PASSWORD
 
   # A second login to cEOS and to the CSR 1000v, at privilege 1, where
   # `enable` asks for a password: the privileged mode check answers it with
@@ -106,7 +106,7 @@ devices:
     address: 172.20.30.12
     username: labuser
     password: labuser
-    enable_secret: netterm-enable
+    enable_secret: enodix-enable
     login_banner: *ceos_banner
     checks: &enable_checks
       - privileged mode
@@ -119,7 +119,7 @@ devices:
     address: 172.20.30.14
     username: labuser
     password: labuser
-    enable_secret: netterm-enable
+    enable_secret: enodix-enable
     login_banner: *csr_banner
     motd: *csr_motd
     checks: *enable_checks
@@ -129,4 +129,4 @@ devices:
   # - name: nxos1
   #   platform: nxos
   #   address: 172.20.30.16
-  #   password_env: NETTERM_LAB_NXOS_PASSWORD
+  #   password_env: ENODIX_LAB_NXOS_PASSWORD

@@ -5,14 +5,14 @@ workspace, and the test SSH server with the app's credential agent.
 the example server and the wheel, installs the wheel into a virtual
 environment and runs these tests with:
 
-- ``NETTERM_CLI``: the built ``netterm-cli``;
-- ``NETTERM_TEST_SSH_SERVER``: the built ``test_ssh_server`` example
+- ``ENODIX_CLI``: the built ``enodix-cli``;
+- ``ENODIX_TEST_SSH_SERVER``: the built ``test_ssh_server`` example
   (``crates/core/examples``), started here with ``--credential-agent``: it
   serves test profiles from memory as the running app would, so the binary
   never reads a real keychain or vault.
 
-Every test runs with its own ``NETTERM_DATA_DIR`` and a
-``netterm-test-<hex>`` ``NETTERM_KEYCHAIN_PREFIX``.
+Every test runs with its own ``ENODIX_DATA_DIR`` and a
+``enodix-test-<hex>`` ``ENODIX_KEYCHAIN_PREFIX``.
 """
 
 from __future__ import annotations
@@ -54,17 +54,17 @@ class Workspace:
     keychain prefix of its own set in the environment while it lives."""
 
     def __init__(self) -> None:
-        self._temp = tempfile.TemporaryDirectory(prefix="netterm-bridge-")
+        self._temp = tempfile.TemporaryDirectory(prefix="enodix-bridge-")
         temp = Path(self._temp.name)
         self.root = temp / "workspace"
         shutil.copytree(FIXTURE, self.root)
         self.data = temp / "data"
         self.data.mkdir()
         self._saved = {
-            name: os.environ.get(name) for name in ("NETTERM_DATA_DIR", "NETTERM_KEYCHAIN_PREFIX")
+            name: os.environ.get(name) for name in ("ENODIX_DATA_DIR", "ENODIX_KEYCHAIN_PREFIX")
         }
-        os.environ["NETTERM_DATA_DIR"] = str(self.data)
-        os.environ["NETTERM_KEYCHAIN_PREFIX"] = f"netterm-test-{secrets.token_hex(8)}"
+        os.environ["ENODIX_DATA_DIR"] = str(self.data)
+        os.environ["ENODIX_KEYCHAIN_PREFIX"] = f"enodix-test-{secrets.token_hex(8)}"
 
     def write(self, relative: str, text: str) -> None:
         path = self.root / relative
@@ -85,7 +85,7 @@ class Server:
     the credential agent for ``workspace``'s data folder."""
 
     def __init__(self, workspace: Workspace) -> None:
-        program = required("NETTERM_TEST_SSH_SERVER")
+        program = required("ENODIX_TEST_SSH_SERVER")
         self.process = subprocess.Popen(
             [
                 program,
@@ -143,7 +143,7 @@ class JumpServer:
 
     def __init__(self) -> None:
         self.process = subprocess.Popen(
-            [required("NETTERM_TEST_SSH_SERVER"), "0"],
+            [required("ENODIX_TEST_SSH_SERVER"), "0"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -225,7 +225,7 @@ class BridgeTest(unittest.TestCase):
     the device-mode server and uses the ``lab`` profile."""
 
     def setUp(self) -> None:
-        required("NETTERM_CLI")
+        required("ENODIX_CLI")
         # A test that hangs ends the run with every thread's traceback.
         faulthandler.dump_traceback_later(HANG_AFTER, exit=True)
         self.addCleanup(faulthandler.cancel_dump_traceback_later)

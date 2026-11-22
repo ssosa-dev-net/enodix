@@ -2,10 +2,8 @@
 //! join the multi-send group, and how one paste is planned for every member
 //! of the group: one confirmation, each member its own line delay.
 
-use netterm_core::paste::{
-    confirm_joining, plan_group_paste, PasteSafety, MAX_PASTE_LINE_DELAY_MS,
-};
-use netterm_core::workspace::Environment;
+use enodix_core::paste::{confirm_joining, plan_group_paste, PasteSafety, MAX_PASTE_LINE_DELAY_MS};
+use enodix_core::workspace::Environment;
 
 fn safety(environment: Option<Environment>, line_delay_ms: u32) -> PasteSafety {
     PasteSafety {

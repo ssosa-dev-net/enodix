@@ -3,9 +3,9 @@
 //
 //   npm run test:python
 //
-// It needs Python 3.10 or newer (NETTERM_TEST_PYTHON, else `py -3` on
+// It needs Python 3.10 or newer (ENODIX_TEST_PYTHON, else `py -3` on
 // Windows, else `python3`, else `python`); without one it says SKIPPED and
-// succeeds. It builds `netterm-cli` and the `test_ssh_server` example
+// succeeds. It builds `enodix-cli` and the `test_ssh_server` example
 // (debug), builds the wheel (scripts/build-wheel.mjs), installs it into a
 // virtual environment in `target/python-test/venv-<version>` together with Nornir and
 // nornir_netmiko and ncclient (from the package index the first time, so that needs the
@@ -44,8 +44,8 @@ function run(command, args, options = {}) {
 /** A Python of at least 3.10 as [command, ...args], or null. */
 function findPython() {
   const candidates = [];
-  if (process.env.NETTERM_TEST_PYTHON)
-    candidates.push([process.env.NETTERM_TEST_PYTHON]);
+  if (process.env.ENODIX_TEST_PYTHON)
+    candidates.push([process.env.ENODIX_TEST_PYTHON]);
   if (WINDOWS) candidates.push(["py", "-3"]);
   candidates.push(["python3"], ["python"]);
   for (const [command, ...args] of candidates) {
@@ -70,7 +70,7 @@ const found = findPython();
 if (!found) {
   console.log(
     "test:python: Python suite SKIPPED: no Python 3.10 or newer found " +
-      "(set NETTERM_TEST_PYTHON to one)",
+      "(set ENODIX_TEST_PYTHON to one)",
   );
   process.exit(0);
 }
@@ -80,7 +80,7 @@ console.log(`test:python: using Python ${found.version}, ${python}`);
 // Two builds: with `--example`, cargo builds only that example of every
 // package named, so the binary was built only when something else had.
 run("cargo", ["build", "-p", cliName()]);
-run("cargo", ["build", "-p", "netterm-core", "--example", "test_ssh_server"]);
+run("cargo", ["build", "-p", "enodix-core", "--example", "test_ssh_server"]);
 const debug = join(ROOT, "target", "debug");
 const cli = join(debug, `${cliName()}${EXE}`);
 const server = join(debug, "examples", `test_ssh_server${EXE}`);
@@ -89,7 +89,7 @@ const dist = join(WORK, "dist");
 rmSync(dist, { recursive: true, force: true });
 const wheel = buildWheel(dist);
 
-// One environment per Python version, so that NETTERM_TEST_PYTHON can try
+// One environment per Python version, so that ENODIX_TEST_PYTHON can try
 // another one.
 const VENV = join(WORK, `venv-${found.version}`);
 const venvPython = join(VENV, WINDOWS ? "Scripts" : "bin", `python${EXE}`);
@@ -118,8 +118,8 @@ run(
     cwd: WORK,
     env: {
       ...process.env,
-      NETTERM_CLI: cli,
-      NETTERM_TEST_SSH_SERVER: server,
+      ENODIX_CLI: cli,
+      ENODIX_TEST_SSH_SERVER: server,
       PYTHONDONTWRITEBYTECODE: "1",
     },
   },

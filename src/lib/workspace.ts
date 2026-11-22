@@ -20,7 +20,7 @@ export type FlowControl = "none" | "hardware" | "software";
 
 /**
  * What applies to pastes into a host's sessions, and the environment that
- * colours them; see `netterm_core::paste`.
+ * colours them; see `enodix_core::paste`.
  */
 export interface PasteSafety {
   environment: Environment | null;
@@ -600,7 +600,7 @@ export function createHost(folder: string, name: string, address: string) {
   return invoke<Edited<string>>("host_create", { folder, name, address });
 }
 
-// --- CSV import (see `netterm_core::import::csv`) ---
+// --- CSV import (see `enodix_core::import::csv`) ---
 
 /** The built-in host fields a CSV column can fill, by file key. */
 export type HostField =

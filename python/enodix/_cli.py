@@ -20,9 +20,9 @@ except ImportError:  # the source tree, not an installed wheel
     _build = None  # type: ignore[assignment]
 
 #: The variable naming the binary (the app sets it for scripts it starts).
-CLI_VARIABLE = "NETTERM_CLI"
+CLI_VARIABLE = "ENODIX_CLI"
 #: The binary's name, without ``.exe``.
-CLI_NAME: str = getattr(_build, "CLI_NAME", "netterm-cli")
+CLI_NAME: str = getattr(_build, "CLI_NAME", "enodix-cli")
 #: The app's name, as the installer names its folder (``None`` in the
 #: source tree, which then has no default location).
 PRODUCT_NAME: Optional[str] = getattr(_build, "PRODUCT_NAME", None)
@@ -41,12 +41,12 @@ _COMPARED: Set[str] = set()
 _COMPARED_LOCK = threading.Lock()
 
 
-class NettermError(Exception):
+class EnodixError(Exception):
     """Something the headless binary could not do, or that went wrong
     talking to it. The message says why."""
 
 
-class CliNotFound(NettermError):
+class CliNotFound(EnodixError):
     """The headless binary is in none of the places looked at."""
 
 
@@ -56,7 +56,7 @@ class VersionWarning(UserWarning):
     may still work; the message says what to install."""
 
 
-class CliFailed(NettermError):
+class CliFailed(EnodixError):
     """The headless binary refused or failed. ``status`` is its exit
     status, ``reason`` what it said."""
 
@@ -74,7 +74,7 @@ def default_location() -> Optional[Path]:
     """Where the installer puts the binary: on Windows, beside the app in
     ``%LOCALAPPDATA%\\<app name>`` (the per-user install). ``None``
     elsewhere, where the binary is looked for on ``PATH`` (the Linux
-    packages install it in ``/usr/bin``; the AppImage needs ``NETTERM_CLI``)."""
+    packages install it in ``/usr/bin``; the AppImage needs ``ENODIX_CLI``)."""
     if sys.platform != "win32" or PRODUCT_NAME is None:
         return None
     local = os.environ.get("LOCALAPPDATA")
@@ -84,7 +84,7 @@ def default_location() -> Optional[Path]:
 
 
 def find_cli() -> Path:
-    """The headless binary: ``NETTERM_CLI`` if set, else the default
+    """The headless binary: ``ENODIX_CLI`` if set, else the default
     install location, else ``PATH``. Raises :class:`CliNotFound` saying
     where it looked."""
     configured = os.environ.get(CLI_VARIABLE, "").strip()
@@ -157,7 +157,7 @@ def compare_version(cli: Path) -> None:
     app = PRODUCT_NAME or "the app"
     warnings.warn(
         VersionWarning(
-            f"{cli} is version {binary} of {app}'s headless binary, and this netterm "
+            f"{cli} is version {binary} of {app}'s headless binary, and this enodix "
             f"package is version {PACKAGE_VERSION}: install the package that ships with "
             f"the app (pip install the wheel in the python folder beside it), or point "
             f"{CLI_VARIABLE} at the binary of this package's version"
@@ -198,7 +198,7 @@ def run(args: Sequence[str]) -> Any:
             check=False,
         )
     except OSError as error:
-        raise NettermError(f"cannot start {cli}: {error}") from error
+        raise EnodixError(f"cannot start {cli}: {error}") from error
     reason = done.stderr.decode("utf-8", errors="replace").strip()
     if done.returncode != 0:
         prefix = f"{CLI_NAME}: error: "
@@ -208,10 +208,10 @@ def run(args: Sequence[str]) -> Any:
     try:
         answer = json.loads(done.stdout.decode("utf-8"))
     except ValueError as error:
-        raise NettermError(f"{cli} printed something that is not JSON: {error}") from None
+        raise EnodixError(f"{cli} printed something that is not JSON: {error}") from None
     if not isinstance(answer, dict) or answer.get("format") != FORMAT:
         found = answer.get("format") if isinstance(answer, dict) else None
-        raise NettermError(
+        raise EnodixError(
             f"{cli} speaks format {found}, this package reads format {FORMAT}: "
             "install the package that ships with that version of the app"
         )

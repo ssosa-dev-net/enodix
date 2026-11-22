@@ -5,6 +5,12 @@ in the project's tracker.
 
 ## Unreleased
 
+The app is renamed **enodix** (it was netterm): the program, the
+`enodix-cli` command, the `enodix` Python package and every `ENODIX_*`
+environment variable. It is installed as a new app beside netterm and
+starts with an empty data folder; a vault file copied over from netterm
+still opens with its master password.
+
 ## 0.5.0
 
 A pre-release: not code-signed, and without automatic updates (install it
@@ -91,21 +97,21 @@ Checked on the lab's devices through its jump host: SFTP on Nokia SR Linux
   uninstalling removes every wheel and then the program folder [111].
   Before, each upgrade left the old wheel behind, and the uninstaller the
   folder with it.
-- A running `netterm-cli.exe` (a script using it) is closed like the app
+- A running `enodix-cli.exe` (a script using it) is closed like the app
   before an upgrade or an uninstall, asked about first when the installer
   has a window [111]. Before, an upgrade kept the old one beside the new
   app, and an uninstall left it.
 - The uninstaller's data box says what it deletes ("Also delete settings,
   saved logins and the vault, config backups, kept job results, session
   logs and the Python environment") and now removes the saved logins from
-  Windows Credential Manager too, with the new `netterm-cli clear-keychain`
+  Windows Credential Manager too, with the new `enodix-cli clear-keychain`
   [111]. Workspace folders are never touched.
 - The licence is installed beside the program and shown as a page of the
   installer. The installer, both programs and the Installed apps entry name
-  the publisher and carry a copyright line; `netterm-cli.exe` has version
+  the publisher and carry a copyright line; `enodix-cli.exe` has version
   details [111]. The installer remembers its folder under
-  `HKCU\Software\Sergio Sosa\netterm`; upgrading moves it from
-  `HKCU\Software\netterm`.
+  `HKCU\Software\Sergio Sosa\enodix`; upgrading moves it from
+  `HKCU\Software\enodix`.
 - The README says how to uninstall, what stays, and the installer's silent
   switches [111].
 
@@ -135,7 +141,7 @@ folder, and what stalled it was fixed [116].
   is written into it until the answer is yes [131]. Before, the app wrote
   its `_workspace.yaml` there and showed every subfolder as a host folder.
   A folder with host files, a workspace's own files or nothing in it opens
-  as before. `netterm-cli inventory` never wrote into such a folder and
+  as before. `enodix-cli inventory` never wrote into such a folder and
   now warns that it is not a workspace.
 - The CSV and Nornir imports check each address as New host does [131]:
   one with a space in it fails its row; in a CSV, so does one with a port
@@ -258,7 +264,7 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
 - A device that asks "Password:" again right after the login fails the
   host as a login question. Before, a job typed `enable` and then the
   enable secret into it [122].
-- Closing netterm while jobs run asks first and names them, then cancels
+- Closing enodix while jobs run asks first and names them, then cancels
   them as Cancel does. A script job's processes and the tunnels they hold
   end with the app, also when it crashes or is killed, and so does a Python
   setup in progress. Before, a script went on working against devices
@@ -324,18 +330,18 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
 - Planning a job on thousands of hosts in one folder, and exporting them,
   no longer slows down with the square of their number: 20 000 hosts plan
   in under half a second, not more than four [117].
-- A second copy of netterm notices when the first turns the vault on or
+- A second copy of enodix notices when the first turns the vault on or
   off or changes its master password, and says so. Before, it went on
   saving to a keychain nobody read, or called the vault damaged [117].
 - Saved logins in Windows Credential Manager: Windows loses changes, or
   hands back the value from before them, when two programs change the
   credentials at the same moment, whatever the entries are called. Copies
-  of the app and `netterm-cli` now take turns at it, and every save and
+  of the app and `enodix-cli` now take turns at it, and every save and
   delete is read back before it is called done; a change Windows did not
   keep is an error, never a save reported done [138]. A program that is
-  not netterm writing at the same moment can still undo a change a moment
+  not enodix writing at the same moment can still undo a change a moment
   later; Windows gives no way to prevent that.
-- Two copies of netterm saving to the vault at the same moment both keep
+- Two copies of enodix saving to the vault at the same moment both keep
   every change: they take turns through a lock file beside the vault, and
   two turning the vault on at once make one vault [125]. Before, about
   half of such changes were lost without a word. A temporary file left by
@@ -346,30 +352,30 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   over removes them too, so no profile comes back after it [125].
 - Turning the vault off names an entry too large for Credential Manager
   before anything is moved [125].
-- A copy starting, or `netterm-cli` reading, while another copy writes the
+- A copy starting, or `enodix-cli` reading, while another copy writes the
   vault no longer takes the vault for missing: on Windows the file's name
   can be gone for tens of milliseconds while it is replaced. A save waits
   for a program that holds the file for a moment (an antivirus scanner)
   and no longer fails [125].
 - The vault's plain contents are wiped from memory after turning on,
   after each write and after turning off, where copies were left before
-  [125]. `netterm-cli` says a damaged vault is damaged before it asks for
+  [125]. `enodix-cli` says a damaged vault is damaged before it asks for
   the master password [125].
 - A host or settings file that starts with a byte order mark, as some
   Windows editors write it, loads [117].
 - More names Windows reserves are refused for hosts and folders: `COM0`,
   `LPT0`, `COM¹` to `COM³`, `LPT¹` to `LPT³`, `CONIN$`, `CONOUT$` [117].
-- `netterm-cli` accepts `--` before values that start with `-` (a named
+- `enodix-cli` accepts `--` before values that start with `-` (a named
   secret called `-ro`, a folder `-old`), and `--option=<value>` [127].
-- `netterm-cli clear-keychain` removes only with `--yes`; without it, it
+- `enodix-cli clear-keychain` removes only with `--yes`; without it, it
   says what it would remove and removes nothing. The uninstaller passes it
   [127].
 - Where nobody can type the vault's master password (a scheduled task
-  while nobody is logged on), `netterm-cli` says so at once. Before, it
+  while nobody is logged on), `enodix-cli` says so at once. Before, it
   waited for ever [127].
 - Python: a telnet host behind a jump host is marked `behind_jump_host`
   and gets a `tunnel_error`, as the README said. The package warns once
-  (`netterm.VersionWarning`) when the binary is another version [127].
+  (`enodix.VersionWarning`) when the binary is another version [127].
 - On Linux, a script asks the credential agent only through a socket that
   is this user's and closed to others [127]. The .deb, the .rpm and the
   AppImage carry the licence [127].
@@ -385,7 +391,7 @@ sessions [117] [118], and by a review of the 0.2.0 work against its specs
   through git. Such an answer already in the file is never used or shown;
   the saved job names it so it can be removed from the file by hand (the
   app cannot remove it from the git history).
-- `netterm-cli.exe` starts on a Windows that has no Visual C++ runtime
+- `enodix-cli.exe` starts on a Windows that has no Visual C++ runtime
   (a freshly installed Windows) [139]. Before, it did not start there at
   all, in 0.4.1 too: script jobs, the Python package and the
   uninstaller's removal of saved logins failed on such a computer. Found
@@ -450,14 +456,14 @@ over 0.4.0 by hand).
 
 - Scripts reach more than a device's SSH port through the app's jump
   hosts. Name the ports when the tunnels open (the `ports` argument of
-  `netterm.tunnels`, the Nornir plugin's `tunnel_ports` option, or
-  `netterm-cli tunnel --port 830`) and NETCONF, eAPI, RESTCONF or any
+  `enodix.tunnels`, the Nornir plugin's `tunnel_ports` option, or
+  `enodix-cli tunnel --port 830`) and NETCONF, eAPI, RESTCONF or any
   other TCP service of the device goes through the same jump chain and
-  jump connection as the SSH port. `netterm.endpoint(host, port, tunnels)`
-  and the Nornir host data's `netterm.ports` say where to connect for a
+  jump connection as the SSH port. `enodix.endpoint(host, port, tunnels)`
+  and the Nornir host data's `enodix.ports` say where to connect for a
   port of a host, behind a jump host or not, so one script runs in both
   cases. ncclient and scrapli-netconf check the device's host key
-  against the keys the app trusts (`netterm.host_key_options`); the app
+  against the keys the app trusts (`enodix.host_key_options`); the app
   does not check TLS certificates (the README says what that means).
   Checked through the lab's jump host: NETCONF on cJunos Evolved's port
   830 and eAPI on cEOS's port 443.
@@ -621,7 +627,7 @@ automatic updates (install the next version over it by hand).
 
 ### Python
 
-- `netterm-cli`, a headless binary installed beside the app: the resolved
+- `enodix-cli`, a headless binary installed beside the app: the resolved
   inventory as JSON, a host's login, a named secret (#48, #49).
 - A Python package that presents a workspace as a Nornir inventory with the
   logins of its credential profiles (#50).

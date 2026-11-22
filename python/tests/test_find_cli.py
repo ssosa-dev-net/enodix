@@ -1,4 +1,4 @@
-"""Finding the headless binary: NETTERM_CLI, else the default install
+"""Finding the headless binary: ENODIX_CLI, else the default install
 location, else PATH, and a clear message when it is nowhere."""
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ import warnings
 from pathlib import Path
 from unittest import mock
 
-import netterm
-from netterm import _cli
+import enodix
+from enodix import _cli
 
 from support import required
 
@@ -24,7 +24,7 @@ APP = _cli.PRODUCT_NAME or "app"
 
 class FindCli(unittest.TestCase):
     def setUp(self) -> None:
-        self.cli = required("NETTERM_CLI")
+        self.cli = required("ENODIX_CLI")
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.temp = Path(temp.name)
@@ -34,19 +34,19 @@ class FindCli(unittest.TestCase):
         kept = {name: os.environ[name] for name in ("SYSTEMROOT", "PATHEXT") if name in os.environ}
         return mock.patch.dict(os.environ, {**kept, **values}, clear=True)
 
-    def test_netterm_cli_is_used_first(self) -> None:
+    def test_enodix_cli_is_used_first(self) -> None:
         local = self.temp / "local"
         (local / APP).mkdir(parents=True)
         (local / APP / EXE).write_bytes(b"")
-        with self.environment(NETTERM_CLI=self.cli, LOCALAPPDATA=str(local), PATH=""):
-            self.assertEqual(netterm.find_cli(), Path(self.cli))
+        with self.environment(ENODIX_CLI=self.cli, LOCALAPPDATA=str(local), PATH=""):
+            self.assertEqual(enodix.find_cli(), Path(self.cli))
 
-    def test_netterm_cli_naming_no_file_is_an_error(self) -> None:
+    def test_enodix_cli_naming_no_file_is_an_error(self) -> None:
         missing = self.temp / "nothing" / EXE
-        with self.environment(NETTERM_CLI=str(missing), PATH=str(Path(self.cli).parent)):
-            with self.assertRaises(netterm.CliNotFound) as raised:
-                netterm.find_cli()
-        self.assertIn("NETTERM_CLI is set to", str(raised.exception))
+        with self.environment(ENODIX_CLI=str(missing), PATH=str(Path(self.cli).parent)):
+            with self.assertRaises(enodix.CliNotFound) as raised:
+                enodix.find_cli()
+        self.assertIn("ENODIX_CLI is set to", str(raised.exception))
         self.assertIn(str(missing), str(raised.exception))
 
     @unittest.skipUnless(sys.platform == "win32", "the default location is the Windows installer's")
@@ -59,8 +59,8 @@ class FindCli(unittest.TestCase):
         elsewhere.mkdir()
         (elsewhere / EXE).write_bytes(b"")
         with self.environment(LOCALAPPDATA=str(local), PATH=str(elsewhere)):
-            self.assertEqual(netterm.default_location(), installed)
-            self.assertEqual(netterm.find_cli(), installed)
+            self.assertEqual(enodix.default_location(), installed)
+            self.assertEqual(enodix.find_cli(), installed)
 
     def test_then_path(self) -> None:
         elsewhere = self.temp / "path"
@@ -70,14 +70,14 @@ class FindCli(unittest.TestCase):
         if sys.platform != "win32":
             on_path.chmod(0o755)
         with self.environment(LOCALAPPDATA=str(self.temp / "none"), PATH=str(elsewhere)):
-            self.assertEqual(Path(netterm.find_cli()).resolve(), on_path.resolve())
+            self.assertEqual(Path(enodix.find_cli()).resolve(), on_path.resolve())
 
     def test_nowhere_says_where_it_looked(self) -> None:
         with self.environment(LOCALAPPDATA=str(self.temp / "none"), PATH=str(self.temp)):
-            with self.assertRaises(netterm.CliNotFound) as raised:
-                netterm.inventory(self.temp)
+            with self.assertRaises(enodix.CliNotFound) as raised:
+                enodix.inventory(self.temp)
         message = str(raised.exception)
-        self.assertIn("NETTERM_CLI", message)
+        self.assertIn("ENODIX_CLI", message)
         self.assertIn(f"{_cli.CLI_NAME} on PATH", message)
         if sys.platform == "win32":
             self.assertIn(str(self.temp / "none" / APP / EXE), message)
@@ -91,8 +91,8 @@ class FindCli(unittest.TestCase):
         version = printed[1].split("+")[0]
         for stage, short in (("-alpha.", "a"), ("-beta.", "b"), ("-rc.", "rc")):
             version = version.replace(stage, short)
-        self.assertEqual(netterm.__version__, version)
-        self.assertEqual(_cli.python_version(printed[1]), netterm.__version__)
+        self.assertEqual(enodix.__version__, version)
+        self.assertEqual(_cli.python_version(printed[1]), enodix.__version__)
 
     def test_app_versions_are_written_as_python_writes_them(self) -> None:
         for app, python in (
@@ -106,14 +106,14 @@ class FindCli(unittest.TestCase):
 
     def compared(self) -> "list[warnings.WarningMessage]":
         """The version warnings of a first run of the binary, through
-        :func:`netterm.inventory` (which then fails: no workspace there)."""
-        with self.environment(NETTERM_CLI=self.cli), mock.patch.object(_cli, "_COMPARED", set()):
+        :func:`enodix.inventory` (which then fails: no workspace there)."""
+        with self.environment(ENODIX_CLI=self.cli), mock.patch.object(_cli, "_COMPARED", set()):
             with warnings.catch_warnings(record=True) as seen:
                 warnings.simplefilter("always")
                 for _ in range(2):
-                    with self.assertRaises(netterm.CliFailed):
-                        netterm.inventory(self.temp / "nothing")
-        return [warning for warning in seen if issubclass(warning.category, netterm.VersionWarning)]
+                    with self.assertRaises(enodix.CliFailed):
+                        enodix.inventory(self.temp / "nothing")
+        return [warning for warning in seen if issubclass(warning.category, enodix.VersionWarning)]
 
     def test_a_binary_of_another_version_is_warned_about_once(self) -> None:
         if _cli.PACKAGE_VERSION is None:
@@ -123,7 +123,7 @@ class FindCli(unittest.TestCase):
         self.assertEqual(len(warned), 1, warned)
         message = str(warned[0].message)
         self.assertIn("0.0.1", message)
-        self.assertIn(netterm.__version__, message)
+        self.assertIn(enodix.__version__, message)
         self.assertIn(self.cli, message)
         self.assertIn("install the package that ships with the app", message)
 

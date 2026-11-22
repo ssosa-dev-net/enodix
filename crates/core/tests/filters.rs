@@ -5,7 +5,7 @@ mod support;
 
 use std::fs;
 
-use netterm_core::workspace::{
+use enodix_core::workspace::{
     Condition, EditError, FilterView, HostId, SavedFilter, Workspace, FILTERS_FILE,
 };
 use support::workspaces::{files, fixture, fixture_copy, read};

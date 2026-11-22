@@ -1,4 +1,4 @@
-// The window's tabs and panes, kept by the core (`netterm_core::layout`).
+// The window's tabs and panes, kept by the core (`enodix_core::layout`).
 // Each edit returns the whole layout; the interface renders it and keeps
 // what each tab holds (its session) itself, by tab id.
 

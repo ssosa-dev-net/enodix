@@ -13,20 +13,20 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use netterm_core::job::results::{OutputRef, RunStore};
-use netterm_core::job::{
+use enodix_core::job::results::{OutputRef, RunStore};
+use enodix_core::job::{
     self, output_cut, HostState, JobEvent, JobOptions, JobStep, ScriptOptions, SCRIPT_OUTPUT,
 };
-use netterm_core::workspace::HostId;
+use enodix_core::workspace::HostId;
 use support::jobs::{folder, follow, Lab, Ran};
 use support::memory::{self, MIB};
 use support::processes::{self, PIDS_VARIABLE, ROLE_VARIABLE};
 use support::python::{real_python, FakePython};
 
 /// How much a flood writes to each stream, and the exit status to end with.
-const SIZE_VARIABLE: &str = "NETTERM_TEST_SIZE";
-const CODE_VARIABLE: &str = "NETTERM_TEST_CODE";
-const PORT_VARIABLE: &str = "NETTERM_TEST_PORT";
+const SIZE_VARIABLE: &str = "ENODIX_TEST_SIZE";
+const CODE_VARIABLE: &str = "ENODIX_TEST_CODE";
+const PORT_VARIABLE: &str = "ENODIX_TEST_PORT";
 
 const FLOOD: &str = "flood";
 const NOT_UTF8: &str = "not utf8";
@@ -279,7 +279,7 @@ async fn a_flood_on_both_streams_is_kept_up_to_the_limit_and_says_so() {
 /// The ticket's size: hundreds of megabytes on both streams, with the
 /// default limit.
 #[tokio::test]
-#[ignore = "heavy: 2 x 256 MiB through a pipe (about a minute in a debug build); `cargo test -p netterm-core --test edge_scripts -- --ignored --nocapture`"]
+#[ignore = "heavy: 2 x 256 MiB through a pipe (about a minute in a debug build); `cargo test -p enodix-core --test edge_scripts -- --ignored --nocapture`"]
 async fn a_flood_of_hundreds_of_megabytes_stays_bounded() {
     let _alone = memory::exclusive().await;
     let lab = lab();
@@ -519,7 +519,7 @@ async fn a_package_the_script_needs_missing_shows_pythons_words() {
         ("r1.yaml", "address: 10.0.0.1\n".into()),
         (
             "needs.py",
-            "import netterm_no_such_package_119\nprint('never')\n".into(),
+            "import enodix_no_such_package_119\nprint('never')\n".into(),
         ),
     ]);
     let plan = lab.plan(
@@ -550,7 +550,7 @@ async fn a_package_the_script_needs_missing_shows_pythons_words() {
     assert!(
         result
             .output
-            .contains("ModuleNotFoundError: No module named 'netterm_no_such_package_119'"),
+            .contains("ModuleNotFoundError: No module named 'enodix_no_such_package_119'"),
         "{}",
         result.output
     );

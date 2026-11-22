@@ -3,11 +3,11 @@
     python tunnel_ports.py <workspace> <netconf host id or -> <eapi host id or ->
 
 Opens the workspace's tunnels with ports 830 and 443 named, as a script
-would (``netterm.tunnels(..., ports=[830, 443])``), and checks:
+would (``enodix.tunnels(..., ports=[830, 443])``), and checks:
 
 - netconf: ncclient reaches the host's NETCONF port (830) through its
   tunnel with the device's host key checked against the keys the app
-  trusts (``netterm.host_key_options``), gets the running configuration,
+  trusts (``enodix.host_key_options``), gets the running configuration,
   and is refused when the known-hosts file holds another key;
 - eapi: an HTTPS eAPI call (``requests``) to the host's port 443 through
   its tunnel runs ``show version``.
@@ -25,14 +25,14 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict
 
-import netterm
+import enodix
 
 
 def say(check: str, host: str, result: str, detail: str) -> None:
     print(json.dumps({"check": check, "host": host, "result": result, "detail": detail}), flush=True)
 
 
-def netconf(workspace: str, host: Dict[str, Any], opened: netterm.Tunnels) -> None:
+def netconf(workspace: str, host: Dict[str, Any], opened: enodix.Tunnels) -> None:
     try:
         from ncclient import manager
         from ncclient.transport.errors import SSHUnknownHostError
@@ -44,7 +44,7 @@ def netconf(workspace: str, host: Dict[str, Any], opened: netterm.Tunnels) -> No
     address, port = opened.endpoint(host, 830)
     tunnel = opened.hosts[host["id"]]
     trusted = ", ".join(sorted({key.split()[0] for key in tunnel["host_keys"]}))
-    login = netterm.credentials(workspace, host["id"])
+    login = enodix.credentials(workspace, host["id"])
     common = dict(
         host=address,
         port=port,
@@ -56,7 +56,7 @@ def netconf(workspace: str, host: Dict[str, Any], opened: netterm.Tunnels) -> No
         device_params={"name": "junos"},
     )
     try:
-        session = manager.connect(**common, **netterm.host_key_options(tunnel)["ncclient"])
+        session = manager.connect(**common, **enodix.host_key_options(tunnel)["ncclient"])
     except Exception as error:
         say("netconf", host["id"], "failed", f"keys trusted: {trusted}; {type(error).__name__}: {error}")
         return
@@ -90,7 +90,7 @@ def netconf(workspace: str, host: Dict[str, Any], opened: netterm.Tunnels) -> No
     say("netconf", host["id"], "passed", said)
 
 
-def eapi(workspace: str, host: Dict[str, Any], opened: netterm.Tunnels) -> None:
+def eapi(workspace: str, host: Dict[str, Any], opened: enodix.Tunnels) -> None:
     try:
         import requests
         import urllib3
@@ -98,7 +98,7 @@ def eapi(workspace: str, host: Dict[str, Any], opened: netterm.Tunnels) -> None:
         say("eapi", host["id"], "not checked", f"the lab Python has no requests ({error})")
         return
     address, port = opened.endpoint(host, 443)
-    login = netterm.credentials(workspace, host["id"])
+    login = enodix.credentials(workspace, host["id"])
     # The certificate is the device's own, self-signed, for its own name:
     # through a tunnel the name cannot match (see the package's README).
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -108,7 +108,7 @@ def eapi(workspace: str, host: Dict[str, Any], opened: netterm.Tunnels) -> None:
             "jsonrpc": "2.0",
             "method": "runCmds",
             "params": {"version": 1, "cmds": ["show version"], "format": "json"},
-            "id": "netterm-lab",
+            "id": "enodix-lab",
         },
         auth=(login["username"], login["auth"].get("password") or ""),
         verify=False,
@@ -130,8 +130,8 @@ def eapi(workspace: str, host: Dict[str, Any], opened: netterm.Tunnels) -> None:
 
 def main() -> None:
     workspace, netconf_host, eapi_host = sys.argv[1:4]
-    hosts = {host["id"]: host for host in netterm.inventory(workspace)["hosts"]}
-    with netterm.tunnels(workspace, ports=[830, 443]) as opened:
+    hosts = {host["id"]: host for host in enodix.inventory(workspace)["hosts"]}
+    with enodix.tunnels(workspace, ports=[830, 443]) as opened:
         for check, host_id, run in (("netconf", netconf_host, netconf), ("eapi", eapi_host, eapi)):
             if host_id == "-":
                 continue

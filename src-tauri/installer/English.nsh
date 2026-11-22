@@ -2,7 +2,7 @@
 ; It replaces Tauri's own English.nsh, so it must have every string of the
 ; Tauri version this repository pins: the lines up to deleteAppData are
 ; Tauri 2.12's file, deleteAppData says what the box really deletes, and the
-; strings after it are netterm's own (src-tauri/installer/hooks.nsh). On a
+; strings after it are enodix's own (src-tauri/installer/hooks.nsh). On a
 ; Tauri update, compare with the English.nsh it writes beside installer.nsi
 ; (target/release/nsis/x64/).
 LangString addOrReinstall ${LANG_ENGLISH} "Add/Reinstall components"
@@ -32,5 +32,5 @@ LangString webview2Downloading ${LANG_ENGLISH} "Downloading WebView2 bootstrappe
 LangString webview2InstallError ${LANG_ENGLISH} "Error: Installing WebView2 failed with exit code $1"
 LangString webview2InstallSuccess ${LANG_ENGLISH} "WebView2 installed successfully"
 LangString deleteAppData ${LANG_ENGLISH} "Also delete settings, saved logins and the vault, config backups, kept job results, session logs and the Python environment"
-LangString nettermClearKeychain ${LANG_ENGLISH} "Removing the saved logins from Windows Credential Manager..."
-LangString nettermKeychainNotCleared ${LANG_ENGLISH} "The saved logins could not be removed from Windows Credential Manager. Remove the entries whose names start with ${BUNDLEID} there."
+LangString enodixClearKeychain ${LANG_ENGLISH} "Removing the saved logins from Windows Credential Manager..."
+LangString enodixKeychainNotCleared ${LANG_ENGLISH} "The saved logins could not be removed from Windows Credential Manager. Remove the entries whose names start with ${BUNDLEID} there."

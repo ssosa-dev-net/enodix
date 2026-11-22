@@ -14,7 +14,7 @@
 // webkitgtk-webdriver, webkit2gtk-driver on older ones). WebDriver clicks,
 // double-clicks and types through the web view's own input path, and its
 // clicks fail when something is drawn over the control. The app is the
-// installed package's `/usr/bin/netterm` unless `--app` names another (an
+// installed package's `/usr/bin/enodix` unless `--app` names another (an
 // AppImage: its menu entry is then not checked, and its notice must call
 // it portable). `--backend` sets GDK_BACKEND (default: what the session
 // has; under WSLg that is Wayland). Under X11 the pictures include the
@@ -24,8 +24,8 @@
 // It starts, on ports 24722-24728 of 127.0.0.1: the example SSH server
 // (with telnet), a release server for the update check, and tauri-driver.
 // It starts an ssh-agent of its own holding the test key. The app gets a
-// temporary data folder (NETTERM_DATA_DIR) and temporary XDG folders, so
-// the user's ~/.local/share/dev.netterm.app is never touched. The
+// temporary data folder (ENODIX_DATA_DIR) and temporary XDG folders, so
+// the user's ~/.local/share/dev.enodix.app is never touched. The
 // desktop's openers are replaced on the app's PATH by scripts that record
 // what they were asked to open (see `fakeOpener`). Copy and paste use the
 // session's clipboard (under WSLg, Windows' clipboard). Pictures of the
@@ -52,7 +52,7 @@
 // GPU through /dev/dxg) and requires WebGL's renderer to name it.
 //
 // `--cli <program>` runs the headless binary from the shell (default
-// /usr/bin/netterm-cli) and `--packaged rpm` says `--app` is a package's
+// /usr/bin/enodix-cli) and `--packaged rpm` says `--app` is a package's
 // copy: scripts/linux-fedora-check.mjs runs both in a Fedora container.
 //
 // Without --desktop, not checked here (see docs/linux.md): dragging the
@@ -61,7 +61,7 @@
 //
 // Needs, besides those two: Rust (to build the example server),
 // openssh-client (ssh-agent, ssh-add), python3 with venv, socat, and the
-// app's package installed (/usr/bin/netterm-cli, used from the shell).
+// app's package installed (/usr/bin/enodix-cli, used from the shell).
 
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -110,14 +110,14 @@ function fail(message) {
 }
 
 const options = {
-  app: "/usr/bin/netterm",
+  app: "/usr/bin/enodix",
   backend: null,
   pictures: null,
   desktop: null,
   "gallium-driver": null,
   // The headless binary run from a shell, and whether `--app` is a
   // package's copy (`--packaged rpm`: scripts/linux-fedora-check.mjs).
-  cli: "/usr/bin/netterm-cli",
+  cli: "/usr/bin/enodix-cli",
   packaged: null,
 };
 for (let at = 2; at < process.argv.length; at++) {
@@ -148,7 +148,7 @@ if (process.platform === "win32") {
   process.exit(2);
 }
 
-const temp = mkdtempSync(join(tmpdir(), "netterm-desktop-"));
+const temp = mkdtempSync(join(tmpdir(), "enodix-desktop-"));
 const dataFolder = join(temp, "data");
 const workspace = join(temp, "workspace");
 const keyFile = join(temp, "keys", "rsa_client");
@@ -254,11 +254,11 @@ function createWorkspace() {
     join(workspace, "Jobs", "linux_check.py"),
     [
       "import platform",
-      "import netterm",
-      'hosts = netterm.inventory()["hosts"]',
+      "import enodix",
+      'hosts = enodix.inventory()["hosts"]',
       'print("hosts", len(hosts))',
       'print("system", platform.system())',
-      'print("login", netterm.credentials(None, hosts[0]["id"])["username"])',
+      'print("login", enodix.credentials(None, hosts[0]["id"])["username"])',
       "",
     ].join("\n"),
   );
@@ -335,7 +335,7 @@ function startProcess(command, args, env = process.env, ready = null) {
 async function startServers() {
   const build = spawnSync(
     "cargo",
-    ["build", "-p", "netterm-core", "--example", "test_ssh_server"],
+    ["build", "-p", "enodix-core", "--example", "test_ssh_server"],
     { stdio: "inherit", cwd: ROOT },
   );
   if (build.status !== 0) fail("could not build the example SSH server");
@@ -383,7 +383,7 @@ async function startServers() {
     });
     response.writeHead(200, { "Content-Type": "text/html" });
     response.end(
-      `<!doctype html><title>netterm check ${request.url}</title><h1>${request.url}</h1>`,
+      `<!doctype html><title>enodix check ${request.url}</title><h1>${request.url}</h1>`,
     );
   });
   await new Promise((resolve) =>
@@ -400,14 +400,14 @@ async function startServers() {
 function appEnvironment(bin, extra = {}) {
   const env = {
     ...process.env,
-    NETTERM_DATA_DIR: dataFolder,
+    ENODIX_DATA_DIR: dataFolder,
     ...(!desktop && {
       XDG_DATA_HOME: join(temp, "xdg-data"),
       XDG_CACHE_HOME: join(temp, "xdg-cache"),
       XDG_CONFIG_HOME: join(temp, "xdg-config"),
     }),
     SSH_AUTH_SOCK: agentSocket,
-    NETTERM_UPDATE_ENDPOINT: `http://127.0.0.1:${RELEASE_PORT}/latest.json`,
+    ENODIX_UPDATE_ENDPOINT: `http://127.0.0.1:${RELEASE_PORT}/latest.json`,
     PATH: `${bin}:${process.env.PATH}`,
     ...extra,
   };
@@ -678,13 +678,13 @@ async function closeTab(page, selector) {
 /** 1. The package's menu entry and icon; the app starts and shows its
  * window. */
 async function started(page) {
-  if (options.app === "/usr/bin/netterm") {
+  if (options.app === "/usr/bin/enodix") {
     const entry = readFileSync(
-      "/usr/share/applications/netterm.desktop",
+      "/usr/share/applications/enodix.desktop",
       "utf8",
     );
     const field = (name) => entry.match(new RegExp(`^${name}=(.*)$`, "m"))?.[1];
-    if (field("Exec") !== "netterm")
+    if (field("Exec") !== "enodix")
       fail(`the menu entry's Exec: ${field("Exec")}`);
     const icon = field("Icon");
     for (const size of ["32x32", "128x128"])
@@ -693,7 +693,7 @@ async function started(page) {
     if (!field("Categories"))
       problem("the menu entry has no category (Categories= is empty)");
     step(
-      `the menu entry runs netterm with its icon (32 and 128 px), in ${field("Categories")}`,
+      `the menu entry runs enodix with its icon (32 and 128 px), in ${field("Categories")}`,
     );
   }
   await until("the welcome view", () =>
@@ -743,7 +743,7 @@ async function started(page) {
 
 // --- A desktop session (--desktop) ----------------------------------------
 
-const APP_CLASSES = ["netterm", "Netterm"];
+const APP_CLASSES = ["enodix", "Enodix"];
 
 /** The app's windows as the desktop's window manager has them. */
 function appWindows() {
@@ -781,7 +781,7 @@ const box = (window) =>
 async function desktopMenu() {
   const validated = spawnSync(
     "desktop-file-validate",
-    ["/usr/share/applications/netterm.desktop"],
+    ["/usr/share/applications/enodix.desktop"],
     { encoding: "utf8" },
   );
   if (validated.error)
@@ -804,7 +804,7 @@ async function desktopMenu() {
         "from gi.repository import Gtk",
         "theme = Gtk.IconTheme.get_default()",
         "for size in (16, 24, 32, 48, 64, 128, 256):",
-        "    info = theme.lookup_icon('netterm', size, 0)",
+        "    info = theme.lookup_icon('enodix', size, 0)",
         "    print(size, info.get_filename() if info else None, info.get_base_size() if info else 0)",
       ].join("\n"),
     ],
@@ -815,14 +815,14 @@ async function desktopMenu() {
     problem(`the icon theme lacks the icon: ${icons.stdout}${icons.stderr}`);
   else
     step(
-      `the icon theme finds the icon at every size: ${found.map((line) => line.replace(/ \/usr\/share\/icons\/hicolor\/(\S+)\/apps\/netterm.png/, " $1")).join(", ")}`,
+      `the icon theme finds the icon at every size: ${found.map((line) => line.replace(/ \/usr\/share\/icons\/hicolor\/(\S+)\/apps\/enodix.png/, " $1")).join(", ")}`,
     );
   const cache = "/usr/share/icons/hicolor/icon-theme.cache";
-  if (!existsSync(cache) || !readFileSync(cache).includes("netterm"))
-    problem("the hicolor icon cache does not list netterm");
+  if (!existsSync(cache) || !readFileSync(cache).includes("enodix"))
+    problem("the hicolor icon cache does not list enodix");
 
   if (desktop.menuEntry) {
-    const entry = desktop.menuEntry("netterm.desktop");
+    const entry = desktop.menuEntry("enodix.desktop");
     if (!entry?.shown) problem(`GNOME's app list: ${JSON.stringify(entry)}`);
     else step(`GNOME's app list has it: ${JSON.stringify(entry)}`);
   }
@@ -832,7 +832,7 @@ async function desktopMenu() {
   // still loading on a busy computer).
   let window = null;
   for (let attempt = 1; !window && attempt <= 2; attempt++) {
-    await desktop.searchMenu("netterm");
+    await desktop.searchMenu("enodix");
     desktop.picture(join(pictures, "0-menu-search-desktop.png"));
     await desktop.launchMenuHit();
     window = await settles(
@@ -850,12 +850,12 @@ async function desktopMenu() {
     .split("\0")
     .filter(Boolean)
     .join(" ");
-  if (window.app !== undefined && window.app !== "netterm.desktop")
+  if (window.app !== undefined && window.app !== "enodix.desktop")
     problem(
-      `GNOME ties the window to ${window.app}, not netterm.desktop (dock icon, StartupWMClass)`,
+      `GNOME ties the window to ${window.app}, not enodix.desktop (dock icon, StartupWMClass)`,
     );
   step(
-    `the menu's search found netterm and started it ("${startedBy}"): window "${window.title}" ${box(window)}` +
+    `the menu's search found enodix and started it ("${startedBy}"): window "${window.title}" ${box(window)}` +
       (window.app ? `, tied to ${window.app}` : ""),
   );
   desktop.close(window);
@@ -872,7 +872,7 @@ async function desktopMenu() {
 
 /** 2. Light and dark from the desktop's own switch, with the app's theme
  * on "system", while it runs. The AppImage pins its GTK theme at launch
- * (its GTK hook, and netterm's for the style: #143), so where the desktop's
+ * (its GTK hook, and enodix's for the style: #143), so where the desktop's
  * dark look is a style (XFCE) a switch while it runs is not expected to
  * reach it: only what it starts with is (light here, dark in `restart`). */
 async function desktopTheme(page) {
@@ -1886,11 +1886,11 @@ async function python(page) {
 
   const inventory = spawnSync(options.cli, ["inventory", workspace], {
     encoding: "utf8",
-    env: { ...process.env, NETTERM_DATA_DIR: dataFolder },
+    env: { ...process.env, ENODIX_DATA_DIR: dataFolder },
   });
   if (inventory.status !== 0 || !inventory.stdout.includes("r1-password"))
-    fail(`netterm-cli inventory: ${inventory.status} ${inventory.stderr}`);
-  step("netterm-cli inventory <workspace> worked from a shell");
+    fail(`enodix-cli inventory: ${inventory.status} ${inventory.stderr}`);
+  step("enodix-cli inventory <workspace> worked from a shell");
 }
 
 /** 7. The update notice only offers the release page. */
@@ -2129,7 +2129,7 @@ async function main() {
   const bin = fakeOpener();
   const release = await startServers();
   children.push({ kill: release.close });
-  if (desktop && options.app === "/usr/bin/netterm") await desktopMenu();
+  if (desktop && options.app === "/usr/bin/enodix") await desktopMenu();
   const page = await startApp(appEnvironment(bin));
   try {
     await started(page);

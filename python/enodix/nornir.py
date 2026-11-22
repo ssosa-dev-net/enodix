@@ -5,12 +5,12 @@
     from nornir import InitNornir
 
     nr = InitNornir(inventory={
-        "plugin": "NettermInventory",
+        "plugin": "EnodixInventory",
         "options": {"workspace": r"C:\\Work\\inventory", "folder": "Europe/Madrid"},
     })
 
 In a script job of the app, ``InitNornir(inventory={"plugin":
-"NettermInventory"})`` is enough: the workspace is the job's and the
+"EnodixInventory"})`` is enough: the workspace is the job's and the
 inventory holds only the job's hosts.
 
 Options: ``workspace`` (the folder; in a script job, the job's by default);
@@ -36,8 +36,8 @@ The mapping:
 - Host data: the custom fields, the built-in fields that are set
   (``vendor``, ``model``, ``serial_number``, ``site``, ``building``,
   ``room``, ``rack``, ``rack_unit``, ``role``, ``description``; a custom
-  field of the same name is only in ``netterm.custom``), ``tags`` (every
-  tag that applies, inherited ones included), and ``netterm``: ``id``,
+  field of the same name is only in ``enodix.custom``), ``tags`` (every
+  tag that applies, inherited ones included), and ``enodix``: ``id``,
   ``name``, ``folder``, ``folders``, ``settings`` (every resolved setting),
   ``login`` (``password``, ``private_key``, ``agent`` or ``None``),
   ``jump_hosts`` (ids, in connect order), ``jump_chain_error``,
@@ -45,7 +45,7 @@ The mapping:
   ``known_hosts`` of its tunnel, or ``None``), ``tunnel_error`` (why a host
   behind jump hosts is not tunnelled, or ``None``), ``ports`` (for each of
   ``tunnel_ports``, where to connect: ``address`` and ``port``, or the
-  ``error`` :func:`netterm.endpoint` gives), ``withheld``
+  ``error`` :func:`enodix.endpoint` gives), ``withheld``
   (secret-named custom fields left out) and ``custom``.
 - Logins: a password profile sets ``username`` and ``password``; a key
   profile ``username`` and, in the ``netmiko``, ``scrapli`` and ``napalm``
@@ -54,13 +54,13 @@ The mapping:
   enable secret goes to those options too (``secret``,
   ``auth_secondary``).
 
-Hosts reached through jump hosts are marked (``netterm.behind_jump_host``)
-and reached through loopback tunnels (:func:`netterm.tunnels`, opened by
+Hosts reached through jump hosts are marked (``enodix.behind_jump_host``)
+and reached through loopback tunnels (:func:`enodix.tunnels`, opened by
 ``load`` and kept until the process ends): their ``hostname`` is
 ``127.0.0.1`` and their ``port`` the tunnel's, and the ``netmiko``,
 ``scrapli`` and ``napalm`` connection options make the library check the
 device's host key against the keys the app trusts. A host that cannot be
-tunnelled keeps its own address and gets ``netterm.tunnel_error``, and a
+tunnelled keeps its own address and gets ``enodix.tunnel_error``, and a
 warning names it: a telnet host with a jump host too (only SSH is
 tunnelled), even when no tunnel is opened.
 """
@@ -81,7 +81,7 @@ from nornir.core.inventory import (
     ParentGroups,
 )
 
-from . import Folder, NettermError, Tunnels, credentials, inventory, tunnels
+from . import Folder, EnodixError, Tunnels, credentials, inventory, tunnels
 from ._tunnel import (
     TELNET_REASON,
     Unreachable,
@@ -92,9 +92,9 @@ from ._tunnel import (
     ports_of,
 )
 
-__all__ = ["NettermInventory", "build_inventory"]
+__all__ = ["EnodixInventory", "build_inventory"]
 
-LOG = logging.getLogger("netterm")
+LOG = logging.getLogger("enodix")
 
 #: Built-in host fields copied into the host data when set.
 BUILT_IN_FIELDS = (
@@ -113,10 +113,10 @@ BUILT_IN_FIELDS = (
 #: checks (they connect to the host's hostname and port).
 SSH_PORT_LIBRARIES = ("netmiko", "scrapli", "napalm")
 #: Host data keys of the package's own, which no field replaces.
-RESERVED = ("tags", "netterm")
+RESERVED = ("tags", "enodix")
 
 
-class NettermInventory:
+class EnodixInventory:
     """Nornir inventory plugin: the workspace's hosts and folders, with the
     logins of their credential profiles and tunnels to the hosts behind
     jump hosts (see the module documentation)."""
@@ -170,7 +170,7 @@ class NettermInventory:
                 hosts=self.hosts,
                 ports=self.tunnel_ports,
             )
-        except NettermError as error:
+        except EnodixError as error:
             return {}, f"the tunnels could not be opened: {error}"
         return self.opened.hosts, None
 
@@ -188,8 +188,8 @@ def _logins(exported: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
         if key not in by_profile:
             try:
                 by_profile[key] = credentials(root, host["id"])
-            except NettermError as error:
-                raise NettermError(
+            except EnodixError as error:
+                raise EnodixError(
                     f"cannot get the login of {host['id']} (credential profile {profile}): "
                     f"{error}. Set the profile up, limit the inventory to other hosts, "
                     "or load it with credentials=False"
@@ -205,12 +205,12 @@ def build_inventory(
     tunnel_failure: Optional[str] = None,
     tunnel_ports: Sequence[int] = (),
 ) -> Inventory:
-    """The Nornir inventory of an export (:func:`netterm.inventory`) with
-    the given logins (:func:`netterm.credentials`, by host id) and tunnels
-    (:attr:`netterm.Tunnels.hosts`); ``tunnel_failure`` says why a host
+    """The Nornir inventory of an export (:func:`enodix.inventory`) with
+    the given logins (:func:`enodix.credentials`, by host id) and tunnels
+    (:attr:`enodix.Tunnels.hosts`); ``tunnel_failure`` says why a host
     behind jump hosts that has no tunnel entry is not tunnelled;
     ``tunnel_ports`` are the extra device ports the tunnels were opened
-    with, answered for every host in ``netterm.ports``."""
+    with, answered for every host in ``enodix.ports``."""
     logins = logins or {}
     tunnelled = tunnelled or {}
     defaults = Defaults()
@@ -236,7 +236,7 @@ def build_inventory(
         ports = _ports(exported_host, tunnel_ports, tunnelled.get(exported_host["id"]), missing)
         host = _host(exported_host, logins.get(exported_host["id"]), tunnel, ports, groups, defaults)
         hosts[host.name] = host
-        error = host.data["netterm"]["tunnel_error"]
+        error = host.data["enodix"]["tunnel_error"]
         if error:
             refused.append(f"{host.name} ({error})")
     for problem in exported.get("problems", []):
@@ -244,7 +244,7 @@ def build_inventory(
     if refused:
         LOG.warning(
             "%d host(s) behind jump hosts could not be tunnelled and keep their own address "
-            "(netterm.tunnel_error): %s",
+            "(enodix.tunnel_error): %s",
             len(refused),
             "; ".join(refused),
         )
@@ -264,7 +264,7 @@ def _ports(
     missing: str,
 ) -> Dict[int, Dict[str, Any]]:
     """For each port, where to connect (``address``, ``port``) or why not
-    (``error``): the answers of :func:`netterm.endpoint`; ``missing`` says
+    (``error``): the answers of :func:`enodix.endpoint`; ``missing`` says
     why a host behind jump hosts with no tunnel entry is not tunnelled."""
     answers: Dict[int, Dict[str, Any]] = {}
     for port in ports:
@@ -294,7 +294,7 @@ def _host(
             data[field] = exported[field]
     data["tags"] = list(exported["tags"])
     listening = "port" in tunnel
-    data["netterm"] = {
+    data["enodix"] = {
         "id": exported["id"],
         "name": exported["name"],
         "folder": exported["folder"],

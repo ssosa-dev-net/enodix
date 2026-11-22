@@ -9,8 +9,8 @@ mod support;
 
 use std::time::Duration;
 
-use netterm_core::files::{ConnectError, FileConnection, StartError};
-use netterm_core::session::{
+use enodix_core::files::{ConnectError, FileConnection, StartError};
+use enodix_core::session::{
     CloseReason, JumpHost, OpenError, SessionManager, SessionTarget, SshAuth, SshTarget,
     TelnetTarget, TerminalSize,
 };

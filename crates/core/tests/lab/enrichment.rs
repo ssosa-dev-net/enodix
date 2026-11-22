@@ -1,19 +1,19 @@
 //! The lab check of host enrichment: the script the app ships
-//! (`python -m netterm.enrich`) run as a real job against the lab devices
+//! (`python -m enodix.enrich`) run as a real job against the lab devices
 //! NAPALM has a driver for, then the preview applied.
 //!
-//! Python is the developer's (`NETTERM_LAB_PYTHON`, with NAPALM); without it
+//! Python is the developer's (`ENODIX_LAB_PYTHON`, with NAPALM); without it
 //! the check prints why it is NOT CHECKED. The workspace, the trusted keys
 //! and the tunnels are those of `super::scripts`.
 
 use std::time::Duration;
 
-use netterm_core::credentials::Profiles;
-use netterm_core::enrich::{self, napalm_driver, EnrichField};
-use netterm_core::job::{self, JobEvent, JobOptions, JobStep, JobTarget, ScriptOptions};
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::SessionManager;
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::credentials::Profiles;
+use enodix_core::enrich::{self, napalm_driver, EnrichField};
+use enodix_core::job::{self, JobEvent, JobOptions, JobStep, JobTarget, ScriptOptions};
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::SessionManager;
+use enodix_core::workspace::{HostId, Workspace};
 use tempfile::TempDir;
 
 use super::scripts::{self, ScriptWorkspace};
@@ -94,7 +94,7 @@ pub async fn check(lab: &Lab) -> Result<Checked, String> {
             interpreter: python,
             cli: Some(cli),
             environment: vec![
-                ("NETTERM_DATA_DIR".into(), data.clone().into()),
+                ("ENODIX_DATA_DIR".into(), data.clone().into()),
                 ("PYTHONPATH".into(), scripts::package().into()),
             ],
         }),

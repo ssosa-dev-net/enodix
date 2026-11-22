@@ -3,13 +3,13 @@
 //! jump host whose keys are trusted as the app would have, with the
 //! app's credential agent serving their logins.
 //!
-//! Python is the developer's: `NETTERM_LAB_PYTHON` names an interpreter
-//! with the check's libraries installed (the package `netterm` comes from
+//! Python is the developer's: `ENODIX_LAB_PYTHON` names an interpreter
+//! with the check's libraries installed (the package `enodix` comes from
 //! this repository's `python/` folder, through `PYTHONPATH`). The headless
-//! binary is `NETTERM_CLI`, else the debug build (`npm run test:lab` builds
+//! binary is `ENODIX_CLI`, else the debug build (`npm run test:lab` builds
 //! it). With a jump host in the lab file, the hosts are behind it and a
 //! script reaches them through the binary's loopback tunnels
-//! (`netterm-cli tunnel`, opened by the package); the keys of the jump host
+//! (`enodix-cli tunnel`, opened by the package); the keys of the jump host
 //! and the devices are trusted first by a terminal session through the
 //! chain, into the workspace's own data folder.
 
@@ -17,13 +17,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     AgentEndpoint, AgentServer, CredentialProfile, CredentialStore, MemoryStore, ProfileAuth,
     Profiles,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::SessionManager;
-use netterm_core::workspace::Workspace;
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::SessionManager;
+use enodix_core::workspace::Workspace;
 use tempfile::TempDir;
 
 use super::{Conversation, Device, Lab};
@@ -33,9 +33,9 @@ pub const JUMP_FILE: &str = "jump.yaml";
 const JUMP_PROFILE: &str = "jump";
 
 /// Names the Python interpreter the checks run their scripts with.
-pub const PYTHON_ENV: &str = "NETTERM_LAB_PYTHON";
+pub const PYTHON_ENV: &str = "ENODIX_LAB_PYTHON";
 
-/// `NETTERM_LAB_PYTHON`, or why the check is not made (`needs` says what
+/// `ENODIX_LAB_PYTHON`, or why the check is not made (`needs` says what
 /// that Python must have).
 pub fn python(needs: &str) -> Result<PathBuf, String> {
     std::env::var_os(PYTHON_ENV)
@@ -46,13 +46,13 @@ pub fn python(needs: &str) -> Result<PathBuf, String> {
 
 /// The headless binary.
 pub fn cli() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("NETTERM_CLI").filter(|p| !p.is_empty()) {
+    if let Some(path) = std::env::var_os("ENODIX_CLI").filter(|p| !p.is_empty()) {
         return Ok(path.into());
     }
     let name = if cfg!(windows) {
-        "netterm-cli.exe"
+        "enodix-cli.exe"
     } else {
-        "netterm-cli"
+        "enodix-cli"
     };
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/debug")
@@ -61,13 +61,13 @@ pub fn cli() -> Result<PathBuf, String> {
         Ok(path)
     } else {
         Err(format!(
-            "no headless binary at {}: build it with cargo build -p netterm-cli, or set NETTERM_CLI",
+            "no headless binary at {}: build it with cargo build -p enodix-cli, or set ENODIX_CLI",
             path.display()
         ))
     }
 }
 
-/// This repository's `python/` folder: the package `netterm` a script
+/// This repository's `python/` folder: the package `enodix` a script
 /// imports (`PYTHONPATH`).
 pub fn package() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../python")

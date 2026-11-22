@@ -22,9 +22,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// The role a helper plays.
-pub const ROLE_VARIABLE: &str = "NETTERM_TEST_ROLE";
+pub const ROLE_VARIABLE: &str = "ENODIX_TEST_ROLE";
 /// The folder the helpers write their process ids to.
-pub const PIDS_VARIABLE: &str = "NETTERM_TEST_PIDS";
+pub const PIDS_VARIABLE: &str = "ENODIX_TEST_PIDS";
 pub const TREE: &str = "tree";
 pub const LEAF: &str = "leaf";
 /// What a [`TREE`] prints once its leaf is started.

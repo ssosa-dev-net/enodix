@@ -1,14 +1,14 @@
 //! The Python environment's commands (#51): a thin adapter over
-//! `netterm_core::python`. The setup runs exactly the plan the user
+//! `enodix_core::python`. The setup runs exactly the plan the user
 //! confirmed (kept here between `python_plan` and `python_setup`), on a
 //! blocking thread, its progress sent on a channel.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use netterm_core::data_folders::{self, DataFolders};
-use netterm_core::job::ScriptOptions;
-use netterm_core::python::{
+use enodix_core::data_folders::{self, DataFolders};
+use enodix_core::job::ScriptOptions;
+use enodix_core::python::{
     self, create_environment, package_version, status, system_candidates, Library, PythonChoice,
     PythonStatus, Setup, SetupCanceller, SetupOffer, SetupPlan, SetupProgress,
 };
@@ -87,7 +87,7 @@ impl PythonSetup {
         };
         let cli = self
             .program_folder
-            .join(format!("netterm-cli{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("enodix-cli{}", std::env::consts::EXE_SUFFIX));
         Ok(ScriptOptions {
             interpreter,
             cli: cli.is_file().then_some(cli),

@@ -1,15 +1,51 @@
+# Build output (Rust, the interface, Tauri's generated files). The wheel,
+# installers and Linux packages are all written under target/.
 /target/
 /node_modules/
 /dist/
 /src-tauri/gen/
-# Release signing keys never belong in the repository (see docs/releasing.md);
-# only the public key, src-tauri/updater-key.pub, is committed.
+
+# Release signing keys and certificates never belong in the repository (see
+# docs/releasing.md); only the public key, src-tauri/updater-key.pub, is
+# committed. The test fixtures' throwaway keys are tracked and stay so.
 *.key
+*.pfx
+*.p12
+*.jks
+
+# Secrets and local settings.
+.env
+.env.*
+/credentials.vault
+
 # The containerlab suite's lab file holds the lab's addresses and maybe
 # passwords (docs/containerlab.md); only lab/lab.example.yaml is committed.
 /lab/lab.yaml
 # What `containerlab deploy` leaves beside the topology.
 /lab/clab-*/
 /lab/.*.clab.yml.bak
-# Python bytecode (the Python bridge, python/).
+
+# Python (the Python bridge, python/).
 __pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+/python/build/
+
+# Logs, screenshots and session captures from local runs (SMOKE_SCREENSHOTS
+# and session logs belong outside the repository).
+*.log
+/screenshots/
+
+# Editors and operating systems.
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

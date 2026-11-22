@@ -45,7 +45,7 @@ pub const MIN_VERSION: PythonVersion = PythonVersion {
 };
 
 /// The app's Python package: its distribution and import name.
-pub const PACKAGE: &str = "netterm";
+pub const PACKAGE: &str = "enodix";
 
 /// The environment's folder inside the data folder.
 pub const ENVIRONMENT_FOLDER: &str = "python";
@@ -59,13 +59,13 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// What the check runs inside the interpreter. Passed hex-encoded on one
 /// line (`exec(bytes.fromhex(...))`), so that no shell or batch-file quoting
 /// can damage it. It leaves the current folder out of `sys.path`, so that a
-/// stray `netterm` folder there is not taken for the package.
+/// stray `enodix` folder there is not taken for the package.
 const PROBE: &str = r#"import json, sys
 sys.path[:] = [p for p in sys.path if p not in ("", ".")]
 info = {"probe": 1, "version": list(sys.version_info[:3]), "executable": sys.executable}
 try:
-    import netterm
-    info["package"] = str(getattr(netterm, "__version__", ""))
+    import enodix
+    info["package"] = str(getattr(enodix, "__version__", ""))
 except Exception as error:
     info["package"] = None
     info["package_error"] = "%s: %s" % (type(error).__name__, error)

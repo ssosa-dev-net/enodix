@@ -10,21 +10,21 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::enrich::{
+use enodix_core::enrich::{
     self, napalm_driver, ChangeKind, CollectedFacts, CollectedHost, DeviceFacts, EnrichError,
     EnrichField, EnrichPreview, PreviewOutcome, ENRICH_TITLE, FACTS_VARIABLE, OS_VERSION_FIELD,
 };
-use netterm_core::job::results::{RunSkipped, RunStore};
-use netterm_core::job::script::ScriptTargets;
-use netterm_core::job::{
+use enodix_core::job::results::{RunSkipped, RunStore};
+use enodix_core::job::script::ScriptTargets;
+use enodix_core::job::{
     self, HostState, Job, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget,
     ScriptOptions, SkipReason, StartError, SCRIPT_OUTPUT,
 };
-use netterm_core::platform::BUILT_IN_PLATFORMS;
-use netterm_core::workspace::{EditError, HostId, SavedJob, Workspace};
+use enodix_core::platform::BUILT_IN_PLATFORMS;
+use enodix_core::workspace::{EditError, HostId, SavedJob, Workspace};
 use support::python::FakePython;
 use tempfile::TempDir;
 
@@ -248,7 +248,7 @@ fn pre_flight_keeps_the_hosts_napalm_can_reach_with_their_own_profile() {
             (
                 "Site/t1.yaml",
                 &SkipReason::NotSsh {
-                    protocol: netterm_core::workspace::Protocol::Telnet
+                    protocol: enodix_core::workspace::Protocol::Telnet
                 }
             ),
             ("Site/x1.yaml", &SkipReason::NoPlatform { platform: None }),
@@ -568,13 +568,13 @@ async fn finish(job: &mut Job) -> (Vec<JobEvent>, JobReport) {
 }
 
 /// A stand-in for the shipped script: prints its arguments and targets,
-/// then copies `NETTERM_TEST_FACTS` to the facts file.
+/// then copies `ENODIX_TEST_FACTS` to the facts file.
 fn stand_in(folder: &Path) -> FakePython {
     FakePython::running(
         folder,
         "enrich",
-        "echo args=%1 %2 %3\r\ntype \"%NETTERM_JOB_TARGETS%\"\r\necho.\r\necho facts=%NETTERM_FACTS_FILE%\r\ncopy /y \"%NETTERM_TEST_FACTS%\" \"%NETTERM_FACTS_FILE%\" >nul",
-        "echo \"args=$1 $2 $3\"\ncat \"$NETTERM_JOB_TARGETS\"\necho\necho \"facts=$NETTERM_FACTS_FILE\"\ncp \"$NETTERM_TEST_FACTS\" \"$NETTERM_FACTS_FILE\"",
+        "echo args=%1 %2 %3\r\ntype \"%ENODIX_JOB_TARGETS%\"\r\necho.\r\necho facts=%ENODIX_FACTS_FILE%\r\ncopy /y \"%ENODIX_TEST_FACTS%\" \"%ENODIX_FACTS_FILE%\" >nul",
+        "echo \"args=$1 $2 $3\"\ncat \"$ENODIX_JOB_TARGETS\"\necho\necho \"facts=$ENODIX_FACTS_FILE\"\ncp \"$ENODIX_TEST_FACTS\" \"$ENODIX_FACTS_FILE\"",
     )
 }
 
@@ -583,7 +583,7 @@ fn options(interpreter: &Path, facts: &Path) -> JobOptions {
         script: Some(ScriptOptions {
             interpreter: interpreter.to_path_buf(),
             cli: None,
-            environment: vec![("NETTERM_TEST_FACTS".into(), facts.into())],
+            environment: vec![("ENODIX_TEST_FACTS".into(), facts.into())],
         }),
         ..JobOptions::default()
     }
@@ -636,7 +636,7 @@ async fn the_job_runs_the_shipped_script_and_keeps_its_facts_with_the_run() {
             .trim()
             .to_string()
     };
-    assert_eq!(line("args"), "-u -m netterm.enrich");
+    assert_eq!(line("args"), "-u -m enodix.enrich");
     assert!(
         !Path::new(&line("facts")).exists(),
         "the facts file is removed"
@@ -686,7 +686,7 @@ async fn the_job_runs_the_shipped_script_and_keeps_its_facts_with_the_run() {
         outcome(&preview, "Site/x1.yaml"),
         PreviewOutcome::Skipped { .. }
     ));
-    assert_eq!(FACTS_VARIABLE, "NETTERM_FACTS_FILE");
+    assert_eq!(FACTS_VARIABLE, "ENODIX_FACTS_FILE");
 }
 
 #[tokio::test]

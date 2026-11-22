@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use netterm_core::layout::{Answered, PageAnswers, WindowId, PAGE_ANSWER_WAIT, PAGE_ASK_EVERY};
+use enodix_core::layout::{Answered, PageAnswers, WindowId, PAGE_ANSWER_WAIT, PAGE_ASK_EVERY};
 
 const ONE: WindowId = WindowId(1);
 const TWO: WindowId = WindowId(2);

@@ -1,5 +1,5 @@
 // Views that open as tabs beside the terminals (#68). The core's layout
-// keeps which tab shows which view (`netterm_core::layout::View`); this
+// keeps which tab shows which view (`enodix_core::layout::View`); this
 // module names the views and lets any part of the interface open one.
 // `App.svelte` renders each view tab's content over its pane's body, as it
 // does terminals.

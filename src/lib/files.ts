@@ -1,6 +1,6 @@
 // The Files tab's IPC (#103, #106): a browser of one host's files over
 // SFTP (or, without SFTP, transfers by path over SCP), in the core
-// (`netterm_core::files::FileBrowsers`), and its transfers. Its events
+// (`enodix_core::files::FileBrowsers`), and its transfers. Its events
 // arrive on a Channel; each call adding transfers gives another for their
 // states. The shell closes them with `files_close_host` or with the window.
 

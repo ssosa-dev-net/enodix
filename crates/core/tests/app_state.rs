@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use netterm_core::app_state::{resolved_path, AppState, ForgetError, KnownWorkspace};
+use enodix_core::app_state::{resolved_path, AppState, ForgetError, KnownWorkspace};
 use tempfile::TempDir;
 
 #[test]

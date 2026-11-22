@@ -16,7 +16,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 
 use super::{known_hosts, target_at, TestSshServer};
-use netterm_core::session::SshTarget;
+use enodix_core::session::SshTarget;
 
 /// What the link does with the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -8,14 +8,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use netterm_core::credentials::Profiles;
-use netterm_core::credentials::{
+use enodix_core::credentials::Profiles;
+use enodix_core::credentials::{
     vault_file, ActiveStore, AgentEndpoint, AgentError, AgentServer, AgentStore, CredentialProfile,
     CredentialStore, HostCredentials, KdfParams, MemoryStore, NamedSecret, ProfileAuth,
     ProfileError, ScopedProfile, ScopedSecret, SecretValue, Secrets, StoreContents, Vault,
     VaultStatus,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use tempfile::TempDir;
 
 const SCOPE: &str = "agent-test";
@@ -405,7 +405,7 @@ mod windows {
             use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE};
 
             let suffix: u64 = rand::random();
-            let name = format!(r"\\.\pipe\netterm-test-default-{suffix:016x}");
+            let name = format!(r"\\.\pipe\enodix-test-default-{suffix:016x}");
             let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
             // SAFETY: a valid name; no security attributes (the default).
             let handle = unsafe {

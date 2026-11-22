@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "netterm",
-  "identifier": "dev.netterm.app",
+  "productName": "enodix",
+  "identifier": "dev.enodix.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build && cargo build --release -p netterm-cli && node scripts/build-wheel.mjs",
+    "beforeBuildCommand": "npm run build && cargo build --release -p enodix-cli && node scripts/build-wheel.mjs",
     "frontendDist": "../dist"
   },
   "app": {

@@ -9,9 +9,9 @@
 //
 // On Linux it runs in place. On Windows it runs in WSL: the working tree
 // (as .gitignore leaves it: no target/, no keys) is copied with rsync into
-// the distribution's own file system (NETTERM_WSL_DIR, default
-// ~/netterm-linux-check; building on /mnt is slow and would put a Linux
-// target/ into the checkout), and the checks run there. NETTERM_WSL_DISTRO
+// the distribution's own file system (ENODIX_WSL_DIR, default
+// ~/enodix-linux-check; building on /mnt is slow and would put a Linux
+// target/ into the checkout), and the checks run there. ENODIX_WSL_DISTRO
 // picks the distribution (default: WSL's default one). The distribution
 // needs rustup's Rust, build-essential, pkg-config, libudev-dev, rsync,
 // python3 with venv and Node.js: see docs/linux.md.
@@ -20,7 +20,7 @@ import { spawnSync } from "node:child_process";
 
 import { ROOT, syncIntoWsl, wsl, WSL_FOLDER } from "./wsl.mjs";
 
-const CRATES = ["-p", "netterm-core", "-p", "netterm-cli"];
+const CRATES = ["-p", "enodix-core", "-p", "enodix-cli"];
 const CHECKS = [
   `cargo clippy ${CRATES.join(" ")} --all-targets -- -D warnings`,
   `cargo test ${CRATES.join(" ")}`,

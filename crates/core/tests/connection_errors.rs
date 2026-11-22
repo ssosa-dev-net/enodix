@@ -5,7 +5,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use netterm_core::session::{
+use enodix_core::session::{
     AgentError, CloseReason, ConnectStage, JumpHost, OpenError, SessionManager, SessionState,
     SessionTarget, SshAuth, SshTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT,
 };

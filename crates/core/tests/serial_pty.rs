@@ -21,11 +21,11 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-use netterm_core::session::{
+use enodix_core::session::{
     CloseReason, SerialParameters, SerialTarget, SessionEvents, SessionId, SessionManager,
     SessionState, SessionTarget, TerminalSize, Transport,
 };
-use netterm_core::workspace::{FlowControl, Parity};
+use enodix_core::workspace::{FlowControl, Parity};
 use support::{known_hosts, next_state, output_ending_with};
 
 const SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
@@ -212,7 +212,7 @@ async fn send_break_is_accepted_and_the_input_after_it_follows_in_order() {
     );
     // The break was held before the input after it went out.
     assert!(
-        started.elapsed() >= netterm_core::session::BREAK_DURATION,
+        started.elapsed() >= enodix_core::session::BREAK_DURATION,
         "{:?}",
         started.elapsed()
     );

@@ -7,7 +7,7 @@
 
 mod support;
 
-use netterm_core::session::{
+use enodix_core::session::{
     SessionState, SessionTarget, SshAgent, SshAuth, SshTarget, TerminalSize,
 };
 use support::agent::TestAgent;

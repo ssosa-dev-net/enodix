@@ -1,47 +1,47 @@
-# netterm for Python
+# enodix for Python
 
-Your netterm workspace as a [Nornir](https://nornir.tech) inventory, so that
+Your enodix workspace as a [Nornir](https://nornir.tech) inventory, so that
 existing Nornir, Netmiko, scrapli and NAPALM scripts run against it from an
 ordinary shell, with the logins of your credential profiles: no password in
 a script, a file or an environment variable.
 
 The package is pure Python (3.10 or newer). It reads everything through the
-app's headless binary, `netterm-cli`, and needs nothing else; the Nornir
+app's headless binary, `enodix-cli`, and needs nothing else; the Nornir
 plugin needs Nornir, which you install yourself (with the libraries you
 use).
 
 ## Installing
 
-The wheel ships with the app, in the `python` folder beside `netterm.exe`
+The wheel ships with the app, in the `python` folder beside `enodix.exe`
 (and in the portable zip), so its version always matches the app's. Install
 it from that file, not from a package index:
 
 ```powershell
-pip install "$env:LOCALAPPDATA\netterm\python\netterm-<version>-py3-none-any.whl"
+pip install "$env:LOCALAPPDATA\enodix\python\enodix-<version>-py3-none-any.whl"
 pip install nornir nornir-netmiko   # or nornir-scrapli, nornir-napalm
 ```
 
 On Linux the .deb and .rpm packages put the wheel in
-`/usr/lib/netterm/python/` and `netterm-cli` in `/usr/bin`:
+`/usr/lib/enodix/python/` and `enodix-cli` in `/usr/bin`:
 
 ```sh
-pip install /usr/lib/netterm/python/netterm-<version>-py3-none-any.whl
+pip install /usr/lib/enodix/python/enodix-<version>-py3-none-any.whl
 ```
 
-The package finds `netterm-cli` through the `NETTERM_CLI` variable if set
+The package finds `enodix-cli` through the `ENODIX_CLI` variable if set
 (the app sets it for scripts it starts), else at the Windows installer's
-location (`%LOCALAPPDATA%\netterm\netterm-cli.exe`), else on `PATH` (where
+location (`%LOCALAPPDATA%\enodix\enodix-cli.exe`), else on `PATH` (where
 the Linux packages put it). If it is in none of them, it says where it
-looked: set `NETTERM_CLI` to the binary's path (for example inside the
+looked: set `ENODIX_CLI` to the binary's path (for example inside the
 portable folder). The AppImage keeps both inside the image: for scripts run
 outside the app, install a package instead, or unpack the image
-(`--appimage-extract`) and use `squashfs-root/usr/bin/netterm-cli` and the
-wheel in `squashfs-root/usr/lib/netterm/python/`.
+(`--appimage-extract`) and use `squashfs-root/usr/bin/enodix-cli` and the
+wheel in `squashfs-root/usr/lib/enodix/python/`.
 
 The package and the binary should be the same version. When they are not
 (the app was upgraded and the package in your own environment was not, say),
 the package warns once, when it first runs the binary, with a
-`netterm.VersionWarning` naming both versions: install the wheel of the
+`enodix.VersionWarning` naming both versions: install the wheel of the
 app's version. It goes on all the same; only a change of the binary's JSON
 format stops it. Names that start with `-` (a secret called `-ro`, a folder
 `-old`) are handed to the binary as names; a binary older than this package
@@ -55,7 +55,7 @@ from nornir_netmiko.tasks import netmiko_send_command
 
 nr = InitNornir(
     inventory={
-        "plugin": "NettermInventory",
+        "plugin": "EnodixInventory",
         "options": {"workspace": r"C:\Work\inventory", "folder": "Europe/Madrid"},
     }
 )
@@ -89,7 +89,7 @@ What you get:
 - **Host data**: the custom fields, the built-in fields that are set
   (`vendor`, `model`, `serial_number`, `site`, `building`, `room`, `rack`,
   `rack_unit`, `role`, `description`), `tags` (every tag that applies,
-  inherited ones included), and `netterm` with the rest: `id`, `name`,
+  inherited ones included), and `enodix` with the rest: `id`, `name`,
   `folder`, `folders`, `settings` (every resolved setting), `login`
   (`password`, `private_key`, `agent` or `None`), `jump_hosts`,
   `jump_chain_error`, `behind_jump_host`, `tunnel`, `tunnel_error`,
@@ -126,20 +126,20 @@ deliberately impossible.
 
 The libraries make their own SSH connections and know nothing of the app's
 jump hosts, so for the hosts behind them the plugin starts
-`netterm-cli tunnel`: it connects each jump chain as the app does (the
+`enodix-cli tunnel`: it connects each jump chain as the app does (the
 jump hosts' stored credential profiles or your agent, the host keys the
 app trusts, legacy crypto, connect timeouts) and listens on a port of
 `127.0.0.1` per host, only there. Those hosts get `hostname` `127.0.0.1`
 and that `port`, so scripts run unchanged; hosts behind the same jump host
-share its connection. The data keeps `netterm.behind_jump_host` and
-`netterm.jump_hosts`, and `netterm.tunnel` says where the tunnel listens.
+share its connection. The data keeps `enodix.behind_jump_host` and
+`enodix.jump_hosts`, and `enodix.tunnel` says where the tunnel listens.
 The tunnels close when the script ends, however it ends, killed included
 (the binary serves only while the pipe the plugin holds stays open).
-`netterm.tunnels(...)` opens them without Nornir.
+`enodix.tunnels(...)` opens them without Nornir.
 
 Nothing is asked and nothing is trusted on your behalf. A host is not
 tunnelled, keeps its own address and carries the reason in
-`netterm.tunnel_error` (and a warning names it) when:
+`enodix.tunnel_error` (and a warning names it) when:
 
 - its chain is broken, or a jump host on it has no stored credential
   profile, or asks a question at login (a one-time code, say);
@@ -149,11 +149,11 @@ tunnelled, keeps its own address and carries the reason in
   in the app (Trust and remember);
 - it is reached over telnet: only SSH is tunnelled, so telnet hosts behind
   jump hosts stay out of reach of scripts. They are marked
-  `netterm.behind_jump_host` all the same (`jump_hosts` stays empty: the
-  app works out a chain only for SSH; `netterm.settings.jump_host` names
+  `enodix.behind_jump_host` all the same (`jump_hosts` stays empty: the
+  app works out a chain only for SSH; `enodix.settings.jump_host` names
   the jump host).
 
-Leave such hosts out with `nr.filter(F(netterm__tunnel_error=None))`.
+Leave such hosts out with `nr.filter(F(enodix__tunnel_error=None))`.
 
 The device's host key is checked by the library, which now sees
 `127.0.0.1` and the tunnel's port: the plugin writes a known-hosts file per
@@ -170,23 +170,23 @@ through the tunnel.
 #### Other ports: NETCONF, HTTPS APIs
 
 A tunnel reaches the host's SSH port, and the other device ports you name
-with the `tunnel_ports` option (`netterm.tunnels(..., ports=[...])`
+with the `tunnel_ports` option (`enodix.tunnels(..., ports=[...])`
 without Nornir): any TCP port, such as 830 for NETCONF or 443 for eAPI,
 RESTCONF or NX-API. They go through the same jump chain and the same jump
 connection as the SSH port, for every tunnelled host of the inventory,
 each on a port of `127.0.0.1` of its own. `hostname` and `port` stay the
-SSH endpoint; `netterm.ports` in the host data says, for each named port,
+SSH endpoint; `enodix.ports` in the host data says, for each named port,
 where to connect (`{"address": ..., "port": ...}`) or why that host cannot
 be reached on it (`{"error": ...}`), for hosts behind jump hosts and hosts
 reached directly alike (those get their own address and the port itself),
 so the same task runs in a flat lab and behind a bastion:
 
 ```python
-nr = InitNornir(inventory={"plugin": "NettermInventory", "options": {
+nr = InitNornir(inventory={"plugin": "EnodixInventory", "options": {
     "workspace": r"C:\Work\inventory", "tunnel_ports": [830, 443]}})
 
 def facts(task):
-    where = task.host["netterm"]["ports"][830]   # {"address", "port"} or {"error"}
+    where = task.host["enodix"]["ports"][830]   # {"address", "port"} or {"error"}
     ...
 ```
 
@@ -196,15 +196,15 @@ unless given `optional_args: {transport: ssh}`, is still pointed at
 `hostname` and `port`, the SSH endpoint: run it over SSH, or give it
 the 443 answer's address and port yourself. Nothing is probed when the tunnels open:
 a port the device does not listen on fails when something connects to it,
-that connection only, and the reason is logged as a `netterm` warning
+that connection only, and the reason is logged as a `enodix` warning
 (`port 830: ...`). Naming ports changes nothing about which hosts are
 tunnelled: a host refused for its SSH port is refused for all of them.
 
 **Host keys on SSH-based ports.** The app keeps the keys it trusts for a
 device's SSH port; a device shows the same key on its NETCONF port, so the
 known-hosts file of a tunnelled host lists those keys for every loopback
-port of the host. `netterm.host_key_options(tunnel)` (with
-`task.host["netterm"]["tunnel"]` or an entry of `Tunnels.hosts`) gives the
+port of the host. `enodix.host_key_options(tunnel)` (with
+`task.host["enodix"]["tunnel"]` or an entry of `Tunnels.hosts`) gives the
 options that turn checking on, by library:
 
 - **ncclient** (`manager.connect`): `hostkey_verify=True` and an
@@ -243,11 +243,11 @@ ports (as with `ssh -L`); it still needs their logins.
 
 If a jump host goes down mid-run, the connections through it break at
 once (the library reports a closed socket) and the reason is logged as a
-`netterm` warning; the next connection tries the chain again.
+`enodix` warning; the next connection tries the chain again.
 
 Other limits: the libraries keep their own host-key handling for hosts
 reached directly (they do not read the app's known hosts); telnet and
-serial hosts are exported as they are (see `netterm.settings.protocol`),
+serial hosts are exported as they are (see `enodix.settings.protocol`),
 with no telnet-specific driver names.
 
 ## Script jobs
@@ -261,13 +261,13 @@ succeeded, anything else as failed. Cancel ends the process.
 
 The script finds the job in its environment:
 
-| Variable              | Meaning                                                   |
-| --------------------- | --------------------------------------------------------- |
-| `NETTERM_WORKSPACE`   | The workspace folder: the default `workspace` everywhere. |
-| `NETTERM_JOB_TARGETS` | A JSON file naming the job's hosts (`hosts`: host ids).   |
-| `NETTERM_CLI`         | The headless binary beside the app.                       |
+| Variable             | Meaning                                                   |
+| -------------------- | --------------------------------------------------------- |
+| `ENODIX_WORKSPACE`   | The workspace folder: the default `workspace` everywhere. |
+| `ENODIX_JOB_TARGETS` | A JSON file naming the job's hosts (`hosts`: host ids).   |
+| `ENODIX_CLI`         | The headless binary beside the app.                       |
 
-While `NETTERM_JOB_TARGETS` is set, the binary (and so this package) shows
+While `ENODIX_JOB_TARGETS` is set, the binary (and so this package) shows
 only the job's hosts and hands over only their logins: a folder, filter or
 host limit of the script's own narrows that further, a host outside the job
 is refused, and so is any other workspace (the workspace's named secrets
@@ -277,7 +277,7 @@ runs as you and could undo it. So in a job this is enough:
 ```python
 from nornir import InitNornir
 
-nr = InitNornir(inventory={"plugin": "NettermInventory"})
+nr = InitNornir(inventory={"plugin": "EnodixInventory"})
 ```
 
 The script has no console: a vault the running app has not unlocked is
@@ -289,7 +289,7 @@ profile, telnet), with the reason.
 
 "Fill in from devices…" on a folder (or "Fill in from device…" on a host)
 asks each device for its vendor, model, serial number and OS version. The
-app runs this package's own script, `python -m netterm.enrich`, as a script
+app runs this package's own script, `python -m enodix.enrich`, as a script
 job with the Python chosen in Preferences; it needs
 [NAPALM](https://napalm.readthedocs.io/) in that Python (`pip install
 napalm`, or tick NAPALM in the app's Python setup). Pre-flight keeps the
@@ -300,7 +300,7 @@ broken) (`ios`, `eos`,
 `junos`, `nxos_ssh`, `nxos`, `iosxr`, `iosxr_netconf`; NX-OS prefers
 `nxos_ssh`). Each device is asked with its own login, on the host's SSH
 port (EOS over SSH, not eAPI; Junos over NETCONF on that port), at most 10
-at once. The script writes what it found to the file `NETTERM_FACTS_FILE`
+at once. The script writes what it found to the file `ENODIX_FACTS_FILE`
 names; nothing is written to the workspace until you review it in the app
 and apply: empty fields are filled, typed values are replaced only on the
 hosts you tick. The OS version goes to the custom field `os_version`.
@@ -311,42 +311,42 @@ cJunos Evolved 25.4.
 ## Without Nornir
 
 ```python
-import netterm
+import enodix
 
-token = netterm.secret(r"C:\Work\inventory", "netbox-token")  # a named secret
-export = netterm.inventory(r"C:\Work\inventory", filter="Edge")  # the binary's JSON
-login = netterm.credentials(r"C:\Work\inventory", "Madrid/core-r1.yaml")
-with netterm.tunnels(r"C:\Work\inventory", folder="Madrid") as opened:
+token = enodix.secret(r"C:\Work\inventory", "netbox-token")  # a named secret
+export = enodix.inventory(r"C:\Work\inventory", filter="Edge")  # the binary's JSON
+login = enodix.credentials(r"C:\Work\inventory", "Madrid/core-r1.yaml")
+with enodix.tunnels(r"C:\Work\inventory", folder="Madrid") as opened:
     print(opened.hosts)  # host id -> address, port, known_hosts (or error)
 ```
 
-`netterm.tunnels(workspace, ..., ports=[830, 443])` also carries those
+`enodix.tunnels(workspace, ..., ports=[830, 443])` also carries those
 device ports: each tunnelled host's entry gains `extra_ports`, device port
 -> loopback port (without `ports` the entries are as above).
 
-**Where do I connect?** `netterm.endpoint(host, port, tunnels)` (or
-`tunnels.endpoint(host, port)`) takes a host of `netterm.inventory(...)`
+**Where do I connect?** `enodix.endpoint(host, port, tunnels)` (or
+`tunnels.endpoint(host, port)`) takes a host of `enodix.inventory(...)`
 and a device port and returns `(address, port)`: the tunnel's listener for
 a host behind jump hosts, the host's own address and `port` for a host
 reached directly (with or without tunnels). For a host behind jump hosts
 that is not tunnelled, or a port that was not named, it raises
-`netterm.Unreachable` (a `NettermError`) with the reason. The host's own
+`enodix.Unreachable` (a `EnodixError`) with the reason. The host's own
 SSH port is always answered.
 
 NETCONF on 830 with ncclient, the device's key checked:
 
 ```python
-import netterm
+import enodix
 from ncclient import manager
 
 ws = r"C:\Work\inventory"
-hosts = netterm.inventory(ws, folder="Madrid")["hosts"]
-with netterm.tunnels(ws, folder="Madrid", ports=[830]) as opened:
+hosts = enodix.inventory(ws, folder="Madrid")["hosts"]
+with enodix.tunnels(ws, folder="Madrid", ports=[830]) as opened:
     for host in hosts:
         address, port = opened.endpoint(host, 830)
-        login = netterm.credentials(ws, host["id"])
+        login = enodix.credentials(ws, host["id"])
         tunnel = opened.hosts.get(host["id"])
-        checks = netterm.host_key_options(tunnel)["ncclient"] if tunnel else {}
+        checks = enodix.host_key_options(tunnel)["ncclient"] if tunnel else {}
         with manager.connect(host=address, port=port, username=login["username"],
                              password=login["auth"]["password"], look_for_keys=False,
                              allow_agent=False, device_params={"name": "junos"},
@@ -358,14 +358,14 @@ eAPI on 443 over HTTPS with requests (the certificate is not checked: see
 "TLS ports" above):
 
 ```python
-import netterm, requests
+import enodix, requests
 
 ws = r"C:\Work\inventory"
-hosts = netterm.inventory(ws, filter="Arista")["hosts"]
-with netterm.tunnels(ws, filter="Arista", ports=[443]) as opened:
+hosts = enodix.inventory(ws, filter="Arista")["hosts"]
+with enodix.tunnels(ws, filter="Arista", ports=[443]) as opened:
     for host in hosts:
         address, port = opened.endpoint(host, 443)
-        login = netterm.credentials(ws, host["id"])
+        login = enodix.credentials(ws, host["id"])
         answer = requests.post(
             f"https://{address}:{port}/command-api",
             json={"jsonrpc": "2.0", "method": "runCmds", "id": 1,
@@ -374,8 +374,8 @@ with netterm.tunnels(ws, filter="Arista", ports=[443]) as opened:
         print(host["id"], answer.json()["result"][0]["version"])
 ```
 
-Errors are `netterm.NettermError` (`CliNotFound`, `CliFailed` with the
+Errors are `enodix.EnodixError` (`CliNotFound`, `CliFailed` with the
 binary's `status` and `reason`, or `Unreachable`). A binary of another
-version than the package is a `netterm.VersionWarning` (a `UserWarning`),
+version than the package is a `enodix.VersionWarning` (a `UserWarning`),
 given once; silence it with `warnings.filterwarnings("ignore",
-category=netterm.VersionWarning)`.
+category=enodix.VersionWarning)`.

@@ -11,7 +11,7 @@
 // there. The .rpm defaults to the newest in target/dist/ (built with
 // `npm run release:linux -- --unsigned`). The image
 // (scripts/linux-fedora/Containerfile: the .rpm, Python, xdg-utils,
-// Thunar and GNOME Web) is built each run as `netterm-fedora-check`.
+// Thunar and GNOME Web) is built each run as `enodix-fedora-check`.
 //
 // The container shares the host's network (the check's servers on
 // 127.0.0.1, the virtual display's abstract socket), /tmp (the check's
@@ -43,7 +43,7 @@ import { basename, join } from "node:path";
 
 import { quoted, ROOT, syncIntoWsl, wsl, WSL_FOLDER } from "./wsl.mjs";
 
-const IMAGE = "netterm-fedora-check";
+const IMAGE = "enodix-fedora-check";
 
 function stop(message) {
   console.error(`test:linux-fedora: ${message}`);
@@ -96,7 +96,7 @@ function newestRpm() {
 }
 
 const rpm = options.rpm ?? newestRpm();
-const temp = mkdtempSync(join(tmpdir(), "netterm-fedora-"));
+const temp = mkdtempSync(join(tmpdir(), "enodix-fedora-"));
 try {
   // The image: the .rpm installed by dnf.
   const context = join(temp, "image");
@@ -126,13 +126,13 @@ try {
       },
     ).trim();
   console.log(
-    `ok - in ${inImage("cat /etc/fedora-release")}: ${inImage("rpm -q netterm webkit2gtk4.1 gtk3 | tr '\\n' ' '")}`,
+    `ok - in ${inImage("cat /etc/fedora-release")}: ${inImage("rpm -q enodix webkit2gtk4.1 gtk3 | tr '\\n' ' '")}`,
   );
   // What the package put where (a menu entry, its icons, the binaries).
   const entry = inImage(
-    "desktop-file-validate /usr/share/applications/netterm.desktop && echo valid; " +
-      "grep -E '^(Exec|Icon|Categories)=' /usr/share/applications/netterm.desktop; " +
-      "ls /usr/share/icons/hicolor/*/apps/netterm.png; ls /usr/bin/netterm /usr/bin/netterm-cli /usr/lib/netterm/package.txt",
+    "desktop-file-validate /usr/share/applications/enodix.desktop && echo valid; " +
+      "grep -E '^(Exec|Icon|Categories)=' /usr/share/applications/enodix.desktop; " +
+      "ls /usr/share/icons/hicolor/*/apps/enodix.png; ls /usr/bin/enodix /usr/bin/enodix-cli /usr/lib/enodix/package.txt",
   );
   if (!entry.startsWith("valid")) stop(`the menu entry in the .rpm: ${entry}`);
   console.log(
@@ -173,10 +173,10 @@ try {
       `  ${IMAGE} ${program} "$@" 2>> ${quoted(log)}`,
       "",
     ].join("\n");
-  const app = join(temp, "netterm-in-fedora");
-  const cli = join(temp, "netterm-cli-in-fedora");
-  writeFileSync(app, container("/usr/bin/netterm"));
-  writeFileSync(cli, container("/usr/bin/netterm-cli"));
+  const app = join(temp, "enodix-in-fedora");
+  const cli = join(temp, "enodix-cli-in-fedora");
+  writeFileSync(app, container("/usr/bin/enodix"));
+  writeFileSync(cli, container("/usr/bin/enodix-cli"));
   chmodSync(app, 0o755);
   chmodSync(cli, 0o755);
 

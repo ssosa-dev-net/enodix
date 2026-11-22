@@ -13,7 +13,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     vault_file, ActiveStore, CredentialProfile, CredentialStore, ProfileAuth, ScopedProfile,
     ScopedSecret, SecretValue, StoreContents, StoreError,
 };

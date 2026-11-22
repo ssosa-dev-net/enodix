@@ -16,8 +16,7 @@
 //! other process names (#138): every call here takes turns with every
 //! other process of this program through one named mutex, and a write or
 //! delete is read back in its turn (a program that does not take turns can
-//! still undo it, now or a moment later; see
-//! the credentials notes).
+//! still undo it, now or a moment later).
 
 use super::{
     CredentialProfile, CredentialStore, ScopedProfile, ScopedSecret, SecretValue, StoreContents,
@@ -67,7 +66,7 @@ impl KeychainStore {
     /// Removes every entry under the prefix: the profiles and named secrets
     /// of every scope (every workspace), readable or not. Entries under any
     /// other name are not touched. What an uninstall that deletes the app's
-    /// data runs (`netterm-cli clear-keychain`).
+    /// data runs (`enodix-cli clear-keychain`).
     pub fn remove_all(&self) -> Result<RemovedEntries, StoreError> {
         let mut removed = RemovedEntries::default();
         for target in os::targets(&format!("{}:*", self.prefix))? {
@@ -84,7 +83,7 @@ impl KeychainStore {
     }
 
     /// How many entries [`remove_all`](Self::remove_all) would remove now,
-    /// removing nothing (`netterm-cli clear-keychain` without `--yes`).
+    /// removing nothing (`enodix-cli clear-keychain` without `--yes`).
     pub fn count_all(&self) -> Result<RemovedEntries, StoreError> {
         Ok(RemovedEntries {
             profiles: os::targets(&format!("{}:*", self.prefix))?.len(),
@@ -348,7 +347,7 @@ mod os {
     /// Credential Manager, in this logon session's namespace. Not named
     /// after the prefix: two prefixes (the app and a test, two tests) lose
     /// each other's changes as much as two copies of the app do.
-    const TURN: &str = r"Local\netterm-credential-manager";
+    const TURN: &str = r"Local\enodix-credential-manager";
 
     /// How long a call waits for its turn before it fails. A call takes
     /// milliseconds; this is a holder that hangs, not a queue.
@@ -380,7 +379,7 @@ mod os {
                     unsafe { CloseHandle(mutex) };
                     Err(StoreError(if waited == WAIT_TIMEOUT {
                         format!(
-                            "the Windows credentials are held by another netterm program (the app, netterm-cli or a script) for more than {} s",
+                            "the Windows credentials are held by another enodix program (the app, enodix-cli or a script) for more than {} s",
                             TURN_WAIT_MS / 1000
                         )
                     } else {

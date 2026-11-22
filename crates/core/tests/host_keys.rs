@@ -5,8 +5,8 @@
 
 mod support;
 
-use netterm_core::known_hosts::{HostKey, HostKeyStatus, KnownHosts, FILE_NAME};
-use netterm_core::session::{
+use enodix_core::known_hosts::{HostKey, HostKeyStatus, KnownHosts, FILE_NAME};
+use enodix_core::session::{
     CloseReason, HostKeyDecision, HostKeyQuestion, OpenError, SessionEvents, SessionId,
     SessionManager, SessionState, SessionTarget, TerminalSize,
 };

@@ -4,8 +4,8 @@
 
 mod support;
 
-use netterm_core::inventory::{export, ExportError, ExportedHost, InventoryExport, Limit};
-use netterm_core::workspace::{Environment, HostId, Protocol, Workspace};
+use enodix_core::inventory::{export, ExportError, ExportedHost, InventoryExport, Limit};
+use enodix_core::workspace::{Environment, HostId, Protocol, Workspace};
 use support::workspaces::fixture;
 
 fn workspace() -> Workspace {
@@ -41,7 +41,7 @@ fn every_host_is_exported_by_id_with_the_workspace_it_comes_from() {
             "old-sw1.yaml",
         ]
     );
-    assert_eq!(export.format, netterm_core::inventory::FORMAT);
+    assert_eq!(export.format, enodix_core::inventory::FORMAT);
     assert_eq!(export.workspace.id.as_deref(), Some("export-fixture"));
     assert_eq!(export.workspace.name, "export");
 }

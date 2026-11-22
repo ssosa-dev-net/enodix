@@ -17,7 +17,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandl
 use std::path::Path;
 use std::ptr;
 
-use netterm_core::credentials::{vault_file, KdfParams, StoreContents, Vault};
+use enodix_core::credentials::{vault_file, KdfParams, StoreContents, Vault};
 use tempfile::TempDir;
 use windows_sys::Win32::Foundation::{
     SetHandleInformation, GENERIC_ALL, HANDLE, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0,
@@ -31,7 +31,7 @@ use windows_sys::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW,
 };
 
-const BINARY: &str = env!("CARGO_BIN_EXE_netterm-cli");
+const BINARY: &str = env!("CARGO_BIN_EXE_enodix-cli");
 /// Every right on a window station (WinUser.h), READ_CONTROL included.
 const WINSTA_ALL_ACCESS: u32 = 0x037F | 0x0002_0000;
 /// Long enough for a busy machine; a binary that waits for typing waits
@@ -225,7 +225,7 @@ fn with_a_vault_and_nobody_to_type_it_is_refused_instead_of_waiting() {
         )
         .unwrap(),
     );
-    let prefix = temp.path().join("netterm-test-no-desktop-never-used");
+    let prefix = temp.path().join("enodix-test-no-desktop-never-used");
 
     let station = Station::new();
     for args in [
@@ -235,9 +235,9 @@ fn with_a_vault_and_nobody_to_type_it_is_refused_instead_of_waiting() {
         let (code, said) = station.run(
             &args,
             &[
-                ("NETTERM_DATA_DIR", &data),
+                ("ENODIX_DATA_DIR", &data),
                 (
-                    "NETTERM_KEYCHAIN_PREFIX",
+                    "ENODIX_KEYCHAIN_PREFIX",
                     Path::new(prefix.file_name().unwrap()),
                 ),
             ],
@@ -248,6 +248,6 @@ fn with_a_vault_and_nobody_to_type_it_is_refused_instead_of_waiting() {
             said.contains("nobody can type the vault's master password here"),
             "{said}"
         );
-        assert!(said.contains("start netterm and unlock it"), "{said}");
+        assert!(said.contains("start enodix and unlock it"), "{said}");
     }
 }

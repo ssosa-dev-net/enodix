@@ -1,15 +1,15 @@
 # The lab the containerlab device suite expects (docs/containerlab.md).
 # Deploy it on the containerlab server yourself:
 #
-#   docker build -t netterm-frr:latest lab/frr
-#   NETTERM_LAB_PASSWORD=... sudo -E containerlab deploy -t lab/netterm-test.clab.yml
+#   docker build -t enodix-frr:latest lab/frr
+#   ENODIX_LAB_PASSWORD=... sudo -E containerlab deploy -t lab/enodix-test.clab.yml
 #
 # Deployed and passing with these images (docs/containerlab.md).
 # cEOS must be imported into Docker first (Arista's download needs an account).
-name: netterm-test
+name: enodix-test
 
 mgmt:
-  network: netterm-test-mgmt
+  network: enodix-test-mgmt
   ipv4-subnet: 172.20.30.0/24
 
 topology:
@@ -37,7 +37,7 @@ topology:
 
     frr1:
       kind: linux
-      image: netterm-frr:latest
+      image: enodix-frr:latest
       mgmt-ipv4: 172.20.30.13
       binds:
         - configs/frr1/daemons:/etc/frr/daemons
@@ -45,7 +45,7 @@ topology:
       env:
         # The container's root password for SSH; taken from the environment
         # of `containerlab deploy`, never written here.
-        NETTERM_LAB_PASSWORD: ${NETTERM_LAB_PASSWORD}
+        ENODIX_LAB_PASSWORD: ${ENODIX_LAB_PASSWORD}
 
     # Cisco IOS-XE (the `ios` platform), a vrnetlab VM image built from the
     # CSR 1000v qcow2 (Cisco's download needs an account). Its default

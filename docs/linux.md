@@ -1,6 +1,6 @@
-# netterm on Linux
+# enodix on Linux
 
-The core, the headless binary `netterm-cli` and the Python bridge are
+The core, the headless binary `enodix-cli` and the Python bridge are
 checked on Linux as well as on Windows (#56), and the app is built and
 packaged for Linux (#57): a .deb, an .rpm and an .AppImage.
 
@@ -12,16 +12,16 @@ npm run test:linux
 
 runs, on Linux:
 
-1. `cargo clippy -p netterm-core -p netterm-cli --all-targets -- -D warnings`
-2. `cargo test -p netterm-core -p netterm-cli`
+1. `cargo clippy -p enodix-core -p enodix-cli --all-targets -- -D warnings`
+2. `cargo test -p enodix-core -p enodix-cli`
 3. `npm run test:python` (`node scripts/test-python.mjs`)
 
 On Linux it runs in the checkout. On Windows it runs in WSL: the working
 tree is copied with rsync (following `.gitignore`, so no `target/`, no
-`node_modules` and no keys) into `~/netterm-linux-check` inside the
+`node_modules` and no keys) into `~/enodix-linux-check` inside the
 distribution, and the checks run there. Building from `/mnt/<drive>` would
 be slow and would write a Linux `target/` into the Windows checkout.
-`NETTERM_WSL_DIR` changes the folder, `NETTERM_WSL_DISTRO` the
+`ENODIX_WSL_DIR` changes the folder, `ENODIX_WSL_DISTRO` the
 distribution (default: WSL's default one). `npm run release:linux` uses the
 same copy (see `docs/releasing.md`).
 
@@ -58,12 +58,12 @@ the first package build downloads the AppImage tools.
   app lists no profiles, and saving a profile explains that and offers to
   turn the vault on (the profile typed is then saved into it). Turning the
   vault off is refused with an explanation: there is no other store to
-  move the profiles to. `netterm-cli` with the app closed and no vault
+  move the profiles to. `enodix-cli` with the app closed and no vault
   says the same.
 - **Updates.** The update check only announces a new version (with a link
   to its page); it never installs. Packages are updated with the package
   manager, and the notice of a copy installed by the .deb or the .rpm says
-  so (the packages carry `/usr/lib/netterm/package.txt`); an AppImage is
+  so (the packages carry `/usr/lib/enodix/package.txt`); an AppImage is
   updated by downloading the new one, and its notice says it is a portable
   copy.
 - **AppImage.** Its runtime sets `PYTHONHOME`, `PYTHONPATH`,
@@ -85,18 +85,18 @@ the first package build downloads the AppImage tools.
   is no default otherwise).
 - **Serial ports** are the system's (`/dev/ttyUSB0`, `/dev/ttyS0`, ...);
   opening one usually needs the user in the `dialout` group.
-- **Where things are.** The packages install `/usr/bin/netterm`,
-  `/usr/bin/netterm-cli` (on the PATH, where the Python bridge finds it)
-  and the Python wheel in `/usr/lib/netterm/python/`, and the licence (the
-  GPL) as `/usr/share/doc/netterm/copyright` (.deb) or
-  `/usr/share/licenses/netterm/LICENSE` (.rpm, and inside the AppImage);
+- **Where things are.** The packages install `/usr/bin/enodix`,
+  `/usr/bin/enodix-cli` (on the PATH, where the Python bridge finds it)
+  and the Python wheel in `/usr/lib/enodix/python/`, and the licence (the
+  GPL) as `/usr/share/doc/enodix/copyright` (.deb) or
+  `/usr/share/licenses/enodix/LICENSE` (.rpm, and inside the AppImage);
   the release checks each package holds those. Settings, the vault,
   known hosts, logs, job results, config backups and the Python
-  environment live in `~/.local/share/dev.netterm.app` (`$XDG_DATA_HOME`),
+  environment live in `~/.local/share/dev.enodix.app` (`$XDG_DATA_HOME`),
   one folder (Windows splits them between a roaming and a local folder
   since 0.5.0; nothing moves on Linux). The AppImage carries
   the binary and the wheel inside it: scripts run outside the app need
-  `NETTERM_CLI` (see `python/README.md`).
+  `ENODIX_CLI` (see `python/README.md`).
 
 ## What is skipped on Linux
 
@@ -111,10 +111,10 @@ the first package build downloads the AppImage tools.
   not a socket, and the binary's terminal prompt have Unix tests of their
   own.
 - The Python package's default install location of the headless binary
-  is the Windows installer's; elsewhere it is found through `NETTERM_CLI`
+  is the Windows installer's; elsewhere it is found through `ENODIX_CLI`
   or `PATH`.
 - The smoke test drives WebView2 and is Windows-only. It plays the
-  keychain-less system on Windows (`NETTERM_CREDENTIAL_STORE=none`). On
+  keychain-less system on Windows (`ENODIX_CREDENTIAL_STORE=none`). On
   Linux the much smaller `npm run test:linux-desktop` drives the app
   (below).
 
@@ -134,15 +134,15 @@ npm run test:linux-desktop -- --app <file>.AppImage
 ```
 
 `scripts/linux-desktop-check.mjs` runs on Linux, or from Windows in WSL
-(the tree is copied as for `test:linux`, `NETTERM_WSL_DIR` and
-`NETTERM_WSL_DISTRO` apply). It drives the app over WebDriver:
+(the tree is copied as for `test:linux`, `ENODIX_WSL_DIR` and
+`ENODIX_WSL_DISTRO` apply). It drives the app over WebDriver:
 `tauri-driver` in front of WebKitGTK's `WebKitWebDriver`. WebDriver clicks,
 double-clicks and types through the web view's input path and refuses a
 click on a control something is drawn over, and the script reads the page
 to check what is shown. It starts the example SSH server (with telnet),
 an `ssh-agent` of its own holding the test key, a release server for the
 update check and the app with a temporary data folder and temporary XDG
-folders (`~/.local/share/dev.netterm.app` is never touched), on ports
+folders (`~/.local/share/dev.enodix.app` is never touched), on ports
 24722-24728. The desktop's openers (`xdg-open` and the others the app
 tries; under WSL first `powershell.exe`, which hands links to Windows'
 browser) are replaced on the app's PATH by scripts that record what they
@@ -156,11 +156,11 @@ apt-get install webkitgtk-webdriver xdotool imagemagick openssh-client
 ```
 
 and as the user `cargo install tauri-driver`, then the .deb installed
-(`sudo apt install ./netterm_<v>_amd64.deb`, built with
+(`sudo apt install ./enodix_<v>_amd64.deb`, built with
 `npm run release:linux -- --unsigned`).
 
 Verified on 2026-11-21: Windows 11, WSL 3.0.5, WSLg 1.0.79, Ubuntu 26.04.1,
-WebKitGTK 2.52.6, GTK 3.24.52, tauri-driver 2.1.0, Python 3.14.4; netterm
+WebKitGTK 2.52.6, GTK 3.24.52, tauri-driver 2.1.0, Python 3.14.4; enodix
 0.4.1's .deb and AppImage; Wayland, X11 (`GDK_BACKEND=x11`) and the
 AppImage on Wayland each passed every check the script makes. Nothing
 had to be set for the app to show: no `WEBKIT_DISABLE_DMABUF_RENDERER`,
@@ -172,12 +172,12 @@ up 1100x757 for the 1100x720 asked (X11: 1100x720); nothing is cut off.
 
 | Point                          | Under WSLg                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1. Install, start              | Checked: the .deb installs and the app starts from `/usr/bin/netterm`; the menu entry (`/usr/share/applications/netterm.desktop`, Exec, Icon, `Categories=Utility;`, which was empty before #114) and its 32 and 128 px icons are installed. The AppImage starts (`chmod +x`, then run; FUSE works in WSL). Not seen: the entry in a desktop's application menu (WSLg has none).                                                                                                                |
+| 1. Install, start              | Checked: the .deb installs and the app starts from `/usr/bin/enodix`; the menu entry (`/usr/share/applications/enodix.desktop`, Exec, Icon, `Categories=Utility;`, which was empty before #114) and its 32 and 128 px icons are installed. The AppImage starts (`chmod +x`, then run; FUSE works in WSL). Not seen: the entry in a desktop's application menu (WSLg has none).                                                                                                                |
 | 2. Workspace, views, themes    | Checked: a workspace opened by its folder, the tree, the details sheet, the palette (Ctrl+K, a host found), Preferences. Light and dark follow the desktop's GTK theme (`GTK_THEME=Adwaita:dark` gives the dark app; the AppImage's runtime sets `GTK_THEME` itself from the desktop portal's colour scheme, `APPIMAGE_GTK_THEME` overrides it). Not seen: a desktop's own light/dark switch.                                                                                                   |
 | 3. Profiles, the vault         | Checked: Security says the vault is the only store; saving a profile explains and turns the vault on; key and agent profiles saved; turning it off says there is no other store; after a restart the unlock screen asks for the master password and unlocks.                                                                                                                                                                                                                                  |
 | 4. SSH, telnet, serial         | Checked: SSH with a password, a key and an agent profile (`ssh-agent`, `SSH_AUTH_SOCK`), the host key question; telnet. Serial cannot be checked: WSL has no serial adapter.                                                                                                                                                                                                                                                                                                                  |
 | 5. Terminal                    | Checked: typing, Ctrl+Shift+C / Ctrl+Shift+V through the system clipboard (under WSLg shared with Windows), WebGL rendering, zoom (Ctrl+= / Ctrl+0), split right, several tabs, multi-send into two sessions. Not driven: paste with a right click (off by default).                                                                                                                                                                                                                          |
-| 6. Python                      | Checked: the setup finds the system's `/usr/bin/python3` and builds the environment from the package's wheel (`/usr/lib/netterm/python/`, the AppImage's own inside it); a script job runs (it gets its login from the app); `netterm-cli inventory <workspace>` from a shell. Fixed in #114: from the AppImage no Python was found (its runtime's `PYTHONHOME` leaked into the child).                                                                                                        |
+| 6. Python                      | Checked: the setup finds the system's `/usr/bin/python3` and builds the environment from the package's wheel (`/usr/lib/enodix/python/`, the AppImage's own inside it); a script job runs (it gets its login from the app); `enodix-cli inventory <workspace>` from a shell. Fixed in #114: from the AppImage no Python was found (its runtime's `PYTHONHOME` leaked into the child).                                                                                                        |
 | 7. Updates                     | Checked: with a newer `latest.json` the notice offers only the release page, no install; the .deb's copy says to update with the package manager, the AppImage's that it is a portable copy (both said "unpack it over this one" before #114).                                                                                                                                                                                                                                                 |
 | 8. Log folder, web links       | Checked as far as the app goes: "Open log folder" and a web link hand the folder and the URL to the desktop's opener (under WSL, Windows' through `powershell.exe`, with the folder as `\\wsl$\<distribution>\...`). Not seen: a file manager or browser opening (replaced by the recording stand-ins).                                                                                                                                                                                         |
 | 9. The app's own frame         | Checked on Wayland and X11: no system frame (`is_decorated` false, and no title bar in the X11 pictures), Minimize, Maximize, Close in the top bar; Maximize and Restore; a double click on the top bar's empty part maximizes and restores; Close ends the app. Cannot be checked under WSLg: dragging the window, resizing from the edges and corners, Minimize's effect and edge tiling. WSLg's compositor moves and sizes windows for the Windows desktop, Wayland has no position to read, XWayland keeps reporting the old one, and `is_minimized` stays false. |
@@ -230,8 +230,8 @@ console now: see the table below), and with a desktop also:
 
 1. the menu entry: `desktop-file-validate`, the icon as GTK's icon theme
    finds it at 16 to 256 px, the menu's search (Whisker; GNOME's
-   overview) finding netterm and starting it (GNOME: the window tied to
-   `netterm.desktop`, so the dock shows its icon);
+   overview) finding enodix and starting it (GNOME: the window tied to
+   `enodix.desktop`, so the dock shows its icon);
 2. the desktop's own dark switch while the app runs, its theme on
    "system" (XFCE: Appearance's style, `Adwaita-dark`; GNOME: the colour
    scheme), and back to light; then, at the restart, the app started with
@@ -259,19 +259,19 @@ apt-get install --no-install-recommends xvfb xfwm4 xfce4-panel \
 ```
 
 `npm run test:linux-fedora` pulls `registry.fedoraproject.org/fedora:45`
-(about 200 MB) and builds `netterm-fedora-check` on it (about 1.2 GB);
-`podman image rm netterm-fedora-check fedora:45` takes them away again.
+(about 200 MB) and builds `enodix-fedora-check` on it (about 1.2 GB);
+`podman image rm enodix-fedora-check fedora:45` takes them away again.
 
 Verified on 2026-11-22: Windows 11, WSL 2, Ubuntu 26.04.1, WebKitGTK
 2.52.6, xfwm4 4.20.0, GNOME Shell 50.1; Fedora 45 with WebKitGTK 2.54.2
-in podman 5.7. netterm 0.4.1 as built from this tree. Run again on the
+in podman 5.7. enodix 0.4.1 as built from this tree. Run again on the
 same day after #140, #141, #142 and #143: all five runs above (without
 `--gallium-driver`) passed.
 
 | #58 item                     | In WSL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Menu entry and icon          | Checked on XFCE and GNOME: valid, found by each menu's search with its icon, started from it; GNOME ties the window to the entry. The package installs the icon at 32 and 128 px only; the other sizes are scaled from those. Not seen: KDE's menu.                                                                                                                                                                                                                                                                                                                                                                       |
-| Light and dark               | Checked: the .deb follows XFCE's style switch and GNOME's colour scheme live, both ways, and starts dark on a dark desktop. The AppImage follows GNOME's colour scheme live. Its runtime pins `GTK_THEME` to `Adwaita:light` or `:dark` at start; since #143 netterm's own start-up hook reads XFCE's style as well, so it starts light on a light XFCE and dark on a dark one, but a style switched while it runs needs a restart (the check notes that it stays light). Before #143 a dark XFCE style left it light. |
+| Light and dark               | Checked: the .deb follows XFCE's style switch and GNOME's colour scheme live, both ways, and starts dark on a dark desktop. The AppImage follows GNOME's colour scheme live. Its runtime pins `GTK_THEME` to `Adwaita:light` or `:dark` at start; since #143 enodix's own start-up hook reads XFCE's style as well, so it starts light on a light XFCE and dark on a dark one, but a style switched while it runs needs a restart (the check notes that it stays light). Before #143 a dark XFCE style left it light. |
 | Serial                       | Partly: a console on a pseudo terminal that `socat` forwards (as a console server's port is reached) opens from quick connect by its path at 115200, shows the console's output, takes typing, and takes Send break with the session going on. The core's tests drive the real driver on a pseudo terminal pair (`tests/serial_pty.rs`). Fixed: such a port could not be opened at all (RTS refused). Not checkable in WSL: a USB adapter and its driver, the speed on a wire, a break, DTR and RTS reaching a device, unplugging, the `dialout` group. |
 | File manager and browser     | Checked on XFCE and GNOME, from the .deb and the AppImage: Thunar opens on the log folder, GNOME Web loads the web link and the release page. Fixed: from the AppImage they got its library path, GTK and GIO modules, Python home and more, and started inside its mount.                                                                                                                                                                                                                                                                                                                                          |
 | WebGL and a GPU              | Partly. By default Mesa renders in software (llvmpipe): the user cannot open `/dev/dri` (the `render` group) and the virtual displays have no DRI3. With `--gallium-driver d3d12` the app's GL is Mesa's D3D12 driver on the computer's own GPU through `/dev/dxg`: webkit://gpu says `GL_RENDERER` "D3D12 (<the GPU>)", WebGL on, and the terminal draws with xterm's WebGL renderer, on X11 and on Wayland. That is a real GPU through a translation layer (OpenGL ES over Direct3D 12), and WebKit hands its frames over in shared memory (no render node for DMA-BUF). Every check passes with it, but the pictures show stray diagonal lines across some rounded borders (buttons, badges), which llvmpipe does not draw: the translation layer's, not the app's, and why WSL's default stays software. Not checkable in WSL: Mesa's or a vendor's native driver (amdgpu, i915/xe, nouveau, NVIDIA's) and zero-copy DMA-BUF. |
@@ -289,7 +289,7 @@ On a real desktop (for example Ubuntu and Fedora, X11 and Wayland), run
 `npm run test:linux-desktop` there if it can be set up, and check by hand
 what it cannot (see the table above):
 
-1. Install the .deb (`sudo apt install ./netterm_<v>_amd64.deb`) or the
+1. Install the .deb (`sudo apt install ./enodix_<v>_amd64.deb`) or the
    .rpm; the app is in the application menu with its icon and starts. Run
    the AppImage too (`chmod +x`, then start it).
 2. Open a workspace folder; the tree, side panel, palette (Ctrl+K) and
@@ -305,8 +305,8 @@ what it cannot (see the table above):
 5. Terminal: typing, copy and paste (Ctrl+Shift+C/V, right click), WebGL
    rendering, split panes, several tabs, zoom, multi-send.
 6. Python: Preferences, Python finds the system's Python and sets up the
-   environment from `/usr/lib/netterm/python/`; a script job runs and
-   `netterm-cli inventory <workspace>` works from a shell.
+   environment from `/usr/lib/enodix/python/`; a script job runs and
+   `enodix-cli inventory <workspace>` works from a shell.
 7. Updates: with a newer `latest.json` at the release address, the notice
    only offers the release page, never an install.
 8. Log folders and "Open log folder" open the file manager; web links open

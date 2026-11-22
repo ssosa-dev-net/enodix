@@ -8,16 +8,16 @@ mod support;
 use std::collections::BTreeMap;
 use std::fs;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::job::{
+use enodix_core::job::{
     self, HostState, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget, SkipReason,
     StartError,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::SessionManager;
-use netterm_core::workspace::{HostId, Protocol, Workspace};
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::SessionManager;
+use enodix_core::workspace::{HostId, Protocol, Workspace};
 use support::{TestSshServer, CODE_QUESTION, OTP_USERNAME, PASSWORD, USERNAME, WAIT};
 use tempfile::TempDir;
 
@@ -411,7 +411,7 @@ async fn untrusted_host_keys_fail_only_their_hosts() {
             && changed_reason.contains("has changed"),
         "{changed_reason}"
     );
-    use netterm_core::known_hosts::HostKeyStatus;
+    use enodix_core::known_hosts::HostKeyStatus;
     assert!(matches!(
         known_hosts
             .check("127.0.0.1", unknown.port(), unknown.host_key())

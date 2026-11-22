@@ -1,4 +1,4 @@
-"""Hosts behind jump hosts: the Nornir plugin opens ``netterm-cli tunnel``
+"""Hosts behind jump hosts: the Nornir plugin opens ``enodix-cli tunnel``
 and Netmiko logs in through it to the device-mode test server, reached only
 through test jump hosts (other instances of the example server) that log in
 with the stored ``lab`` password profile. The app's known hosts (in the
@@ -23,9 +23,9 @@ from nornir import InitNornir
 from nornir.core import Nornir
 from nornir_netmiko.tasks import netmiko_send_command
 
-import netterm
-from netterm._tunnel import _close_all as close_all_tunnels
-from netterm.nornir import NettermInventory
+import enodix
+from enodix._tunnel import _close_all as close_all_tunnels
+from enodix.nornir import EnodixInventory
 
 from support import DEVICE_HOSTNAME, BridgeTest, JumpServer, Relay
 
@@ -41,7 +41,7 @@ def listening(port: int) -> bool:
 
 
 class Records(logging.Handler):
-    """Keeps what the ``netterm`` logger says, from any thread."""
+    """Keeps what the ``enodix`` logger says, from any thread."""
 
     def __init__(self) -> None:
         super().__init__(logging.WARNING)
@@ -99,7 +99,7 @@ class JumpHostsTest(BridgeTest):
             f"[localhost]:{device} {key}",
         )
         self.records = Records()
-        logger = logging.getLogger("netterm")
+        logger = logging.getLogger("enodix")
         logger.addHandler(self.records)
         self.addCleanup(logger.removeHandler, self.records)
 
@@ -113,7 +113,7 @@ class JumpHostsTest(BridgeTest):
         nr = InitNornir(
             runner={"plugin": "threaded", "options": {"num_workers": 3}},
             inventory={
-                "plugin": "NettermInventory",
+                "plugin": "EnodixInventory",
                 "options": {"workspace": str(self.workspace.root), "hosts": hosts},
             },
             logging={"enabled": False},
@@ -134,7 +134,7 @@ class Tunnels(JumpHostsTest):
             self.assertEqual(host.hostname, "127.0.0.1")
             self.assertNotEqual(host.port, self.server.device_port)
             ports.add(host.port)
-            data = host["netterm"]
+            data = host["enodix"]
             self.assertTrue(data["behind_jump_host"])
             self.assertIsNone(data["tunnel_error"])
             self.assertEqual(data["tunnel"]["port"], host.port)
@@ -157,7 +157,7 @@ class Tunnels(JumpHostsTest):
         nr = self.nornir(["behind/r1.yaml"])
         host = nr.inventory.hosts["behind/r1.yaml"]
         # As if the device had been replaced since the app trusted it.
-        Path(host["netterm"]["tunnel"]["known_hosts"]).write_text(
+        Path(host["enodix"]["tunnel"]["known_hosts"]).write_text(
             f"[127.0.0.1]:{host.port} {self.bastion.key}\n", encoding="utf-8"
         )
         result = nr.run(task=netmiko_send_command, command_string="show hostname")["behind/r1.yaml"]
@@ -178,12 +178,12 @@ class Tunnels(JumpHostsTest):
             "refused/new-jump.yaml",
             f"address: 127.0.0.1\nport: {self.server.device_port}\njump_host: stranger.yaml\n",
         )
-        loader = NettermInventory(str(self.workspace.root), credentials=False, tunnels=True)
+        loader = EnodixInventory(str(self.workspace.root), credentials=False, tunnels=True)
         inventory = loader.load()
         self.addCleanup(loader.opened.close)
 
         def error(name: str) -> str:
-            data = inventory.hosts[name]["netterm"]
+            data = inventory.hosts[name]["enodix"]
             self.assertTrue(data["behind_jump_host"])
             self.assertIsNone(data["tunnel"])
             self.assertIsNotNone(data["tunnel_error"])
@@ -200,8 +200,8 @@ class Tunnels(JumpHostsTest):
         self.assertNotIn(str(stranger.port), known)
         self.assertEqual(inventory.hosts["refused/no-login.yaml"].hostname, "127.0.0.1")
         # The others are tunnelled; the warning names only the refused ones.
-        self.assertIsNotNone(inventory.hosts["behind/r1.yaml"]["netterm"]["tunnel"])
-        self.assertIsNone(inventory.hosts["devices/r-pass.yaml"]["netterm"]["tunnel_error"])
+        self.assertIsNotNone(inventory.hosts["behind/r1.yaml"]["enodix"]["tunnel"])
+        self.assertIsNone(inventory.hosts["devices/r-pass.yaml"]["enodix"]["tunnel_error"])
         warning = self.records.wait_for("could not be tunnelled")
         self.assertIn("refused/broken.yaml", warning)
         self.assertNotIn("behind/r1.yaml", warning)
@@ -218,36 +218,36 @@ class Tunnels(JumpHostsTest):
         ):
             with self.subTest(hosts=hosts):
                 self.records.lines.clear()
-                loader = NettermInventory(str(self.workspace.root), hosts=hosts, credentials=False, tunnels=True)
+                loader = EnodixInventory(str(self.workspace.root), hosts=hosts, credentials=False, tunnels=True)
                 inventory = loader.load()
                 if loader.opened is not None:
                     self.addCleanup(loader.opened.close)
                 host = inventory.hosts["telnet/t1.yaml"]
-                data = host["netterm"]
+                data = host["enodix"]
                 self.assertTrue(data["behind_jump_host"])
                 self.assertIsNone(data["tunnel"])
                 self.assertIn("only SSH is tunnelled", data["tunnel_error"])
                 self.assertEqual(host.hostname, "192.0.2.5")
                 warning = self.records.wait_for("could not be tunnelled")
                 self.assertIn("telnet/t1.yaml", warning)
-                self.assertIsNone(inventory.hosts[hosts[1]]["netterm"]["tunnel_error"])
-        exported = {host["id"]: host for host in netterm.inventory(self.workspace.root)["hosts"]}
-        with self.assertRaises(netterm.Unreachable) as refused:
-            netterm.endpoint(exported["telnet/t1.yaml"], 23)
+                self.assertIsNone(inventory.hosts[hosts[1]]["enodix"]["tunnel_error"])
+        exported = {host["id"]: host for host in enodix.inventory(self.workspace.root)["hosts"]}
+        with self.assertRaises(enodix.Unreachable) as refused:
+            enodix.endpoint(exported["telnet/t1.yaml"], 23)
         self.assertIn("only SSH is tunnelled", str(refused.exception))
 
     def test_without_tunnels_hosts_behind_jump_hosts_say_so(self) -> None:
-        inventory = NettermInventory(str(self.workspace.root), hosts=BEHIND, tunnels=False).load()
+        inventory = EnodixInventory(str(self.workspace.root), hosts=BEHIND, tunnels=False).load()
         host = inventory.hosts["behind/r1.yaml"]
         self.assertEqual(host.port, self.server.device_port)
-        self.assertIn("tunnels off", host["netterm"]["tunnel_error"])
+        self.assertIn("tunnels off", host["enodix"]["tunnel_error"])
 
     def test_the_tunnel_ends_with_the_script_that_started_it(self) -> None:
         script = self.workspace.data / "starter.py"
         script.write_text(
             "import json, sys, time\n"
-            "import netterm\n"
-            "opened = netterm.tunnels(sys.argv[1], hosts=['behind/r1.yaml'])\n"
+            "import enodix\n"
+            "opened = enodix.tunnels(sys.argv[1], hosts=['behind/r1.yaml'])\n"
             "print(json.dumps(opened.hosts['behind/r1.yaml']['port']), flush=True)\n"
             "if sys.argv[2] == 'end':\n"
             "    sys.exit(0)\n"
@@ -290,10 +290,10 @@ class Tunnels(JumpHostsTest):
             from scrapli.driver import GenericDriver
         except ImportError:
             self.skipTest("scrapli is not installed")
-        opened = netterm.tunnels(self.workspace.root, hosts=["behind/r1.yaml"])
+        opened = enodix.tunnels(self.workspace.root, hosts=["behind/r1.yaml"])
         self.addCleanup(opened.close)
         tunnel = opened.hosts["behind/r1.yaml"]
-        login = netterm.credentials(self.workspace.root, "behind/r1.yaml")
+        login = enodix.credentials(self.workspace.root, "behind/r1.yaml")
         driver = GenericDriver(
             comms_prompt_pattern=r"^\S+[#>] ?$",
             host=tunnel["address"],
@@ -333,7 +333,7 @@ class TunnelPorts(JumpHostsTest):
     def test_tunnels_report_the_loopback_port_of_each_named_port(self) -> None:
         device = self.server.device_port
         ports = [self.mirror.port, self.stranger, device, self.mirror.port]
-        opened = netterm.tunnels(self.workspace.root, hosts=BEHIND, ports=ports)
+        opened = enodix.tunnels(self.workspace.root, hosts=BEHIND, ports=ports)
         self.addCleanup(opened.close)
         loopbacks = set()
         for name in BEHIND:
@@ -351,7 +351,7 @@ class TunnelPorts(JumpHostsTest):
         self.assertEqual(len(loopbacks), 2 * len(BEHIND))
 
     def test_without_ports_an_entry_is_as_before(self) -> None:
-        opened = netterm.tunnels(self.workspace.root, hosts=["behind/r1.yaml"])
+        opened = enodix.tunnels(self.workspace.root, hosts=["behind/r1.yaml"])
         self.addCleanup(opened.close)
         self.assertEqual(
             set(opened.hosts["behind/r1.yaml"]), {"address", "port", "host_keys", "known_hosts"}
@@ -361,47 +361,47 @@ class TunnelPorts(JumpHostsTest):
         for bad in (0, 65536, -1, True, "830", 830.0):
             with self.subTest(port=bad):
                 with self.assertRaises(ValueError):
-                    netterm.tunnels(self.workspace.root, hosts=BEHIND, ports=[bad])
+                    enodix.tunnels(self.workspace.root, hosts=BEHIND, ports=[bad])
         with self.assertRaises(ValueError):
-            netterm.tunnels(self.workspace.root, hosts=BEHIND, ports=830)
+            enodix.tunnels(self.workspace.root, hosts=BEHIND, ports=830)
 
     def test_endpoint_says_where_to_connect_or_why_not(self) -> None:
         self.workspace.write("refused/new-device.yaml", "address: 192.0.2.7\njump_host: jumps/bastion.yaml\n")
-        exported = {host["id"]: host for host in netterm.inventory(self.workspace.root)["hosts"]}
+        exported = {host["id"]: host for host in enodix.inventory(self.workspace.root)["hosts"]}
         named = self.mirror.port
-        opened = netterm.tunnels(self.workspace.root, ports=[named])
+        opened = enodix.tunnels(self.workspace.root, ports=[named])
         self.addCleanup(opened.close)
         r1 = exported["behind/r1.yaml"]
         entry = opened.hosts["behind/r1.yaml"]
         # A tunnelled host: its tunnel's listener for that port.
-        self.assertEqual(netterm.endpoint(r1, named, opened), ("127.0.0.1", entry["extra_ports"][named]))
+        self.assertEqual(enodix.endpoint(r1, named, opened), ("127.0.0.1", entry["extra_ports"][named]))
         self.assertEqual(opened.endpoint(r1, named), ("127.0.0.1", entry["extra_ports"][named]))
         address, port = opened.endpoint(r1, self.server.device_port)
         self.assertEqual((address, port), ("127.0.0.1", entry["port"]))
         # A direct host: its own address and the port, tunnels or not.
         direct = exported["devices/r-pass.yaml"]
-        self.assertEqual(netterm.endpoint(direct, 830, opened), ("127.0.0.1", 830))
-        self.assertEqual(netterm.endpoint(direct, 830), ("127.0.0.1", 830))
-        self.assertEqual(netterm.endpoint(direct, 443).port, 443)
+        self.assertEqual(enodix.endpoint(direct, 830, opened), ("127.0.0.1", 830))
+        self.assertEqual(enodix.endpoint(direct, 830), ("127.0.0.1", 830))
+        self.assertEqual(enodix.endpoint(direct, 443).port, 443)
         # A host that could not be tunnelled: the tunnel's reason.
-        with self.assertRaises(netterm.Unreachable) as refused:
+        with self.assertRaises(enodix.Unreachable) as refused:
             opened.endpoint(exported["refused/new-device.yaml"], named)
         self.assertIn("refused/new-device.yaml", str(refused.exception))
         self.assertIn("connect to it once in the app", str(refused.exception))
         # A port that was not named.
-        with self.assertRaises(netterm.Unreachable) as unnamed:
+        with self.assertRaises(enodix.Unreachable) as unnamed:
             opened.endpoint(r1, 4444)
         self.assertIn("port 4444 was not named", str(unnamed.exception))
         # A host behind a jump host, and no tunnels.
-        with self.assertRaises(netterm.Unreachable) as none:
-            netterm.endpoint(r1, named)
+        with self.assertRaises(enodix.Unreachable) as none:
+            enodix.endpoint(r1, named)
         self.assertIn("no tunnels", str(none.exception))
-        self.assertIsInstance(none.exception, netterm.NettermError)
+        self.assertIsInstance(none.exception, enodix.EnodixError)
 
     def test_the_nornir_option_opens_the_ports_and_the_host_data_answers(self) -> None:
         self.workspace.write("refused/new-device.yaml", "address: 192.0.2.7\njump_host: jumps/bastion.yaml\n")
         named = self.mirror.port
-        loader = NettermInventory(
+        loader = EnodixInventory(
             str(self.workspace.root), credentials=False, tunnels=True, tunnel_ports=[named, 443]
         )
         inventory = loader.load()
@@ -412,29 +412,29 @@ class TunnelPorts(JumpHostsTest):
                 entry = loader.opened.hosts[name]
                 # hostname and port stay the SSH endpoint.
                 self.assertEqual((host.hostname, host.port), ("127.0.0.1", entry["port"]))
-                answers = host["netterm"]["ports"]
+                answers = host["enodix"]["ports"]
                 self.assertEqual(set(answers), {named, 443})
                 self.assertEqual(answers[named], {"address": "127.0.0.1", "port": entry["extra_ports"][named]})
                 self.assertEqual(banner(answers[named]["port"]), b"SSH-")
                 # No connection plugin is given options for the extra ports.
                 self.assertFalse({"ncclient", "scrapli_netconf"} & set(host.connection_options))
-        direct = inventory.hosts["devices/r-pass.yaml"]["netterm"]["ports"]
+        direct = inventory.hosts["devices/r-pass.yaml"]["enodix"]["ports"]
         self.assertEqual(direct, {named: {"address": "127.0.0.1", "port": named}, 443: {"address": "127.0.0.1", "port": 443}})
-        refused = inventory.hosts["refused/new-device.yaml"]["netterm"]["ports"][named]
+        refused = inventory.hosts["refused/new-device.yaml"]["enodix"]["ports"][named]
         self.assertIn("connect to it once in the app", refused["error"])
 
     def test_a_script_that_names_no_ports_gets_no_answers(self) -> None:
         nr = self.nornir(BEHIND)
         for name in BEHIND:
-            self.assertEqual(nr.inventory.hosts[name]["netterm"]["ports"], {})
-            self.assertNotIn("extra_ports", nr.inventory.hosts[name]["netterm"]["tunnel"])
-        self.assertEqual(nr.inventory.hosts["behind/r1.yaml"].port, nr.inventory.hosts["behind/r1.yaml"]["netterm"]["tunnel"]["port"])
+            self.assertEqual(nr.inventory.hosts[name]["enodix"]["ports"], {})
+            self.assertNotIn("extra_ports", nr.inventory.hosts[name]["enodix"]["tunnel"])
+        self.assertEqual(nr.inventory.hosts["behind/r1.yaml"].port, nr.inventory.hosts["behind/r1.yaml"]["enodix"]["tunnel"]["port"])
 
     def open_ports(self) -> "tuple[dict, dict]":
         """Tunnels to r1 with the mirror and the stranger named, and r1's login."""
-        opened = netterm.tunnels(self.workspace.root, hosts=["behind/r1.yaml"], ports=[self.mirror.port, self.stranger])
+        opened = enodix.tunnels(self.workspace.root, hosts=["behind/r1.yaml"], ports=[self.mirror.port, self.stranger])
         self.addCleanup(opened.close)
-        login = netterm.credentials(self.workspace.root, "behind/r1.yaml")
+        login = enodix.credentials(self.workspace.root, "behind/r1.yaml")
         return opened.hosts["behind/r1.yaml"], login
 
     def test_a_strict_key_client_through_an_extra_port_checks_the_device_key(self) -> None:
@@ -470,7 +470,7 @@ class TunnelPorts(JumpHostsTest):
         except ImportError:
             self.skipTest("ncclient is not installed")
         entry, login = self.open_ports()
-        options = netterm.host_key_options(entry)["ncclient"]
+        options = enodix.host_key_options(entry)["ncclient"]
         self.assertTrue(options["hostkey_verify"])
         for port, accepted in ((self.mirror.port, True), (self.stranger, False)):
             with self.subTest(port=port):
@@ -495,7 +495,7 @@ class TunnelPorts(JumpHostsTest):
         except ImportError:
             self.skipTest("scrapli_netconf is not installed")
         entry, login = self.open_ports()
-        options = netterm.host_key_options(entry)["scrapli_netconf"]
+        options = enodix.host_key_options(entry)["scrapli_netconf"]
         for port, accepted in ((self.mirror.port, True), (self.stranger, False)):
             with self.subTest(port=port):
                 driver = NetconfDriver(

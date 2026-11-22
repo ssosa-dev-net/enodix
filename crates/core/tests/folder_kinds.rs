@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::Path;
 
-use netterm_core::workspace::{folder_kind, FolderKind, Workspace, WORKSPACE_FILE};
+use enodix_core::workspace::{folder_kind, FolderKind, Workspace, WORKSPACE_FILE};
 use tempfile::TempDir;
 
 /// Every entry under `root`, recursively, with its contents, so a test can

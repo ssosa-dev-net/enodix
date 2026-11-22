@@ -34,10 +34,10 @@ cEOS also prints it before `Username: ` on telnet.
 | paging off                     | A job driven by the device's built-in platform definition runs `paging_command` (more lines than a job's 100-row terminal): no pager (`--More--`, `---(more)---`, ...) shows and the job ends at the prompt |
 | config backup                  | A config backup job keeps the configuration without the prompt (its last line matches `config_end`); a second backup of the unchanged device keeps nothing new, so the definition's ignored lines cover what changes by itself |
 | privileged mode                | Only where the definition has a privilege command: a job's `privilege_check` command shows `privilege_expect` (level 15). On an entry with an enable secret (the two privilege-1 logins): the device asked for it, and a job with a wrong secret fails the host as refused |
-| fill in from devices           | Only with `NETTERM_LAB_PYTHON` (a Python with NAPALM): the app's script (`python -m netterm.enrich`, from `python/`) runs as a job for every device whose definition has a NAPALM driver (cEOS, IOS-XE, Junos), through the headless binary's tunnels (`netterm-cli tunnel`, opened by the package) when there is a jump host, after a terminal session through the chain has trusted the keys; every device reports vendor, model, serial number and OS version, and applying writes them |
-| tunnel ports                   | Only with `NETTERM_LAB_PYTHON`: a script (`crates/core/tests/lab/tunnel_ports.py`) opens the headless binary's tunnels with ports 830 and 443 named, through the jump host, after a terminal session has trusted the keys; ncclient reaches NETCONF on the `junos` device's port 830 with the device's key checked against the keys the app trusts, gets the running configuration, and is refused with another key in its known-hosts file; an HTTPS eAPI call (requests) runs `show version` on the `ceos` device's port 443. A check whose library that Python lacks, or whose platform the lab file has no device of, is NOT CHECKED |
+| fill in from devices           | Only with `ENODIX_LAB_PYTHON` (a Python with NAPALM): the app's script (`python -m enodix.enrich`, from `python/`) runs as a job for every device whose definition has a NAPALM driver (cEOS, IOS-XE, Junos), through the headless binary's tunnels (`enodix-cli tunnel`, opened by the package) when there is a jump host, after a terminal session through the chain has trusted the keys; every device reports vendor, model, serial number and OS version, and applying writes them |
+| tunnel ports                   | Only with `ENODIX_LAB_PYTHON`: a script (`crates/core/tests/lab/tunnel_ports.py`) opens the headless binary's tunnels with ports 830 and 443 named, through the jump host, after a terminal session has trusted the keys; ncclient reaches NETCONF on the `junos` device's port 830 with the device's key checked against the keys the app trusts, gets the running configuration, and is refused with another key in its known-hosts file; an HTTPS eAPI call (requests) runs `show version` on the `ceos` device's port 443. A check whose library that Python lacks, or whose platform the lab file has no device of, is NOT CHECKED |
 | second channel and backup on login | A session opened with the host's backup on login reports it saved; then a second shell channel on that session's connection is opened: accepted (the command runs there, the terminal is untouched) or refused (then the backup used a second connection) |
-| files                          | What [Files on the lab devices](#files-on-the-lab-devices) says the device offers, on a file connection of its own (as a Files tab and a file job make one), with a 300 KiB file. SFTP: the platform's file folder (else the login's) is listed, the file is uploaded with its size checked, downloaded and compared, renamed and deleted. A device without SFTP: the fall back to SCP happens by itself, the file is sent to the platform's file folder, fetched and compared (an `ios` device takes it at `flash:` and gives it back from `bootflash:`, the same storage on the CSR 1000v); it stays on the device under the fixed name `netterm-lab-check.bin` (SCP cannot delete), replaced by each run. A device that lacks the settings of step 1 (`lab/configs/csr1-files.cfg`, `lab/configs/cjunos1-files.set`) is NOT CHECKED, with the device's words and the app's hint as the reason |
+| files                          | What [Files on the lab devices](#files-on-the-lab-devices) says the device offers, on a file connection of its own (as a Files tab and a file job make one), with a 300 KiB file. SFTP: the platform's file folder (else the login's) is listed, the file is uploaded with its size checked, downloaded and compared, renamed and deleted. A device without SFTP: the fall back to SCP happens by itself, the file is sent to the platform's file folder, fetched and compared (an `ios` device takes it at `flash:` and gives it back from `bootflash:`, the same storage on the CSR 1000v); it stays on the device under the fixed name `enodix-lab-check.bin` (SCP cannot delete), replaced by each run. A device that lacks the settings of step 1 (`lab/configs/csr1-files.cfg`, `lab/configs/cjunos1-files.set`) is NOT CHECKED, with the device's words and the app's hint as the reason |
 
 The output of every check (pass, fail or not checked, with the negotiated
 algorithms) is printed, so run it with `--nocapture` (the npm script does).
@@ -64,12 +64,12 @@ start with `_` or be `clab-server` (the suite's own files).
 
 1. Deploy the lab on the containerlab server (you do this; the suite never
    deploys anything). The repository's topology is
-   `lab/netterm-test.clab.yml`, with startup configs under `lab/configs/`.
+   `lab/enodix-test.clab.yml`, with startup configs under `lab/configs/`.
    FRR needs an image with an SSH server, built from `lab/frr/`:
 
    ```sh
-   docker build -t netterm-frr:latest lab/frr
-   NETTERM_LAB_PASSWORD=<frr root password> sudo -E containerlab deploy -t lab/netterm-test.clab.yml
+   docker build -t enodix-frr:latest lab/frr
+   ENODIX_LAB_PASSWORD=<frr root password> sudo -E containerlab deploy -t lab/enodix-test.clab.yml
    ```
 
    cEOS (`ceos:4.36.0.1F` in the topology) must be imported into Docker
@@ -147,22 +147,22 @@ start with `_` or be `clab-server` (the suite's own files).
 3. Set the environment and run, from the repository root:
 
    ```sh
-   export NETTERM_LAB_CONFIG=/path/to/lab.yaml   # not needed for lab/lab.yaml
-   export NETTERM_LAB_SRL_PASSWORD=...           # whatever password_env names
-   export NETTERM_LAB_CEOS_PASSWORD=...
-   export NETTERM_LAB_PASSWORD=...               # default for devices without password_env
+   export ENODIX_LAB_CONFIG=/path/to/lab.yaml   # not needed for lab/lab.yaml
+   export ENODIX_LAB_SRL_PASSWORD=...           # whatever password_env names
+   export ENODIX_LAB_CEOS_PASSWORD=...
+   export ENODIX_LAB_PASSWORD=...               # default for devices without password_env
    npm run test:lab
    ```
 
    For `lab_enrichment` and `lab_tunnel_ports`, also
-   `export NETTERM_LAB_PYTHON=<python>` (without it both print NOT CHECKED).
+   `export ENODIX_LAB_PYTHON=<python>` (without it both print NOT CHECKED).
    That Python needs NAPALM for `lab_enrichment`, and ncclient and
    requests for `lab_tunnel_ports` (`pip install napalm` brings all three;
-   else `pip install ncclient requests`). The package `netterm` comes from
+   else `pip install ncclient requests`). The package `enodix` comes from
    this repository's `python/` folder; nothing else is needed.
 
-   `npm run test:lab` is `cargo build -p netterm-cli && `
-   `cargo test -p netterm-core --test containerlab -- --ignored --nocapture --test-threads=1`.
+   `npm run test:lab` is `cargo build -p enodix-cli && `
+   `cargo test -p enodix-core --test containerlab -- --ignored --nocapture --test-threads=1`.
    Add a test name (`lab_ssh_login_and_command`, `lab_host_keys`,
    `lab_wrong_password`, `lab_terminal_size`,
    `lab_large_output_with_flow_control`, `lab_session_log`,
@@ -172,7 +172,7 @@ start with `_` or be `clab-server` (the suite's own files).
 
 Without a lab file the suite prints `containerlab suite SKIPPED: no lab
 configured ...` and passes. A lab file that exists but cannot be used (a
-missing password variable, an unknown key, `NETTERM_LAB_CONFIG` naming a
+missing password variable, an unknown key, `ENODIX_LAB_CONFIG` naming a
 missing file) fails. `npm run check` and `cargo test` never run the lab
 tests (they are `#[ignore]`d); they do run the suite's own tests, which
 check the lab file parsing and run every check against the in-process
@@ -193,7 +193,7 @@ devices:
     platform: srlinux # srlinux | ceos | frr | vtysh | ios | nxos | junos | other
     address: 172.20.30.11
     port: 22
-    password_env: NETTERM_LAB_SRL_PASSWORD # or agent: true
+    password_env: ENODIX_LAB_SRL_PASSWORD # or agent: true
 ```
 
 Passwords can also be written as `password:`, but keep them in environment
@@ -247,7 +247,7 @@ And for the platform checks (`nxos` not verified: no image yet):
 The device passwords are the images' own defaults for SR Linux, cEOS, the
 CSR 1000v and cJunos Evolved (the topology does not change them; see the
 containerlab documentation of each kind) and, for FRR (root and vtysh),
-whatever `NETTERM_LAB_PASSWORD` was when the lab was deployed. None is
+whatever `ENODIX_LAB_PASSWORD` was when the lab was deployed. None is
 written in the repository.
 
 ## Built-in platforms on real devices

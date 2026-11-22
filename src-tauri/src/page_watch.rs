@@ -5,7 +5,7 @@
 //! (every window's page goes with it). An unresponsive renderer is not
 //! acted on: WebView2 did not report one for a page stopped for 48 s
 //! (#120), so a hung page is found by the shell's own questions instead
-//! (`netterm_core::layout::PageAnswers`); a frame's, the GPU's or a utility
+//! (`enodix_core::layout::PageAnswers`); a frame's, the GPU's or a utility
 //! process's exit leave the page alive. Linux: WebKitGTK's
 //! `web-process-terminated`, any reason, as the page's own. Elsewhere
 //! nothing is watched.

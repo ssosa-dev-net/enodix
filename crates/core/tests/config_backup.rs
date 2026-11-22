@@ -7,17 +7,17 @@ mod support;
 
 use std::fs;
 
-use netterm_core::configs::{ConfigError, ConfigStore, LastBackup, SaveOutcome, VERSION_EXTENSION};
-use netterm_core::credentials::{
+use enodix_core::configs::{ConfigError, ConfigStore, LastBackup, SaveOutcome, VERSION_EXTENSION};
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::diff::DiffLine;
-use netterm_core::job::results::RunStore;
-use netterm_core::job::{
+use enodix_core::diff::DiffLine;
+use enodix_core::job::results::RunStore;
+use enodix_core::job::{
     self, HostResult, HostState, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget,
     SkipReason, StartError,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use support::workspaces::files;
 use support::{TestSshServer, CONFIG_TIME, PASSWORD, USERNAME, WAIT};
 use tempfile::TempDir;

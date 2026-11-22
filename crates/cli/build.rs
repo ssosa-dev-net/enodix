@@ -21,8 +21,8 @@ fn main() {
     };
     let product = text_of(&config["productName"], "productName");
     for (key, variable) in [
-        ("identifier", "NETTERM_IDENTIFIER"),
-        ("productName", "NETTERM_PRODUCT_NAME"),
+        ("identifier", "ENODIX_IDENTIFIER"),
+        ("productName", "ENODIX_PRODUCT_NAME"),
     ] {
         println!("cargo:rustc-env={variable}={}", text_of(&config[key], key));
     }
@@ -62,7 +62,7 @@ fn version_details(product: &str, publisher: &str) {
         .set("OriginalFilename", &format!("{name}.exe"));
     resource
         .compile()
-        .expect("the version details of netterm-cli.exe compile");
+        .expect("the version details of enodix-cli.exe compile");
 }
 
 /// Built elsewhere for Windows (cross-compiling): no version details.

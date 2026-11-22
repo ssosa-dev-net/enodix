@@ -5,7 +5,7 @@
 //! HTTPS to the cEOS device on 443 (requests), through the lab's jump
 //! host.
 //!
-//! Python is the developer's (`NETTERM_LAB_PYTHON`); a check whose library
+//! Python is the developer's (`ENODIX_LAB_PYTHON`); a check whose library
 //! (ncclient, requests) that Python lacks is NOT CHECKED, as is a check
 //! with no device of its platform in the lab file. The workspace, the
 //! trusted keys and the tunnels are those of `super::scripts`.
@@ -56,8 +56,8 @@ pub async fn check(lab: &Lab) -> Result<Vec<Reported>, String> {
         .arg(&prepared.root)
         .arg(id(netconf))
         .arg(id(eapi))
-        .env("NETTERM_CLI", cli)
-        .env("NETTERM_DATA_DIR", &prepared.data)
+        .env("ENODIX_CLI", cli)
+        .env("ENODIX_DATA_DIR", &prepared.data)
         .env("PYTHONPATH", scripts::package())
         .stdin(Stdio::null());
     // The credential agent answers on this runtime while the script runs.

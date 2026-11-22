@@ -1,6 +1,6 @@
 //! `tunnel <workspace> [limit] [--port <number>...]`: loopback tunnels to
 //! the hosts behind jump hosts, for the Python bridge (see
-//! `netterm_core::tunnel`).
+//! `enodix_core::tunnel`).
 //!
 //! The hosts are those `inventory` would export with the same limit (a
 //! script job's scope included). Each chain is connected through the core
@@ -17,10 +17,10 @@
 
 use std::io::Read;
 
-use netterm_core::credentials::Profiles;
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::tunnel::{self, TunnelOptions, TunnelPlan, Tunnels};
-use netterm_core::workspace::HostId;
+use enodix_core::credentials::Profiles;
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::tunnel::{self, TunnelOptions, TunnelPlan, Tunnels};
+use enodix_core::workspace::HostId;
 
 use crate::credentials::{data_folder, open_store};
 use crate::{option_and_value, print, scoped_export, Failure, END_OF_OPTIONS, NAME};

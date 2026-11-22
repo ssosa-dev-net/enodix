@@ -1,4 +1,4 @@
-//! The resolved inventory export: what the headless binary (`netterm-cli
+//! The resolved inventory export: what the headless binary (`enodix-cli
 //! inventory`) prints, and what the Python bridge builds its Nornir
 //! inventory from.
 //!

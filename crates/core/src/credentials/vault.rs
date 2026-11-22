@@ -69,7 +69,10 @@ pub fn vault_file(data_folder: &Path) -> PathBuf {
     data_folder.join(VAULT_FILE)
 }
 
-const FORMAT: &str = "netterm-vault";
+const FORMAT: &str = "enodix-vault";
+/// The format name vaults were written with before the app was renamed:
+/// still read, and the file is written with [`FORMAT`] at its next save.
+const FORMAT_BEFORE_RENAME: &str = "netterm-vault";
 const VERSION: u32 = 1;
 const ALGORITHM: &str = "argon2id";
 const NONCE_LEN: usize = 24;
@@ -618,7 +621,7 @@ fn read_sealed(path: &Path, held: Option<&WriteLock>) -> Result<(Sealed, Vec<u8>
     let sealed: Sealed = serde_json::from_slice(&bytes).map_err(|_| {
         VaultError::Damaged("it cannot be read (cut short, or not a vault file)".into())
     })?;
-    if sealed.format != FORMAT {
+    if sealed.format != FORMAT && sealed.format != FORMAT_BEFORE_RENAME {
         return Err(VaultError::Damaged("it is not a vault file".into()));
     }
     if sealed.version > VERSION {

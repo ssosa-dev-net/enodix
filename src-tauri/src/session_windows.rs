@@ -30,16 +30,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use netterm_core::layout::{
+use enodix_core::layout::{
     close_workspace_sessions, live_in_session_windows, place_session_window, take_over_dead_window,
     Answered, Frame, PageAnswers, PhysicalRect, TabId, WindowId, WindowView, Windows,
     PAGE_ASK_EVERY, SESSION_WINDOW_MIN_SIZE,
 };
-use netterm_core::session::{
+use enodix_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, SessionId, SessionManager, SessionRecord,
     SessionRecords, SessionRelays, SessionState, Transport,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{
@@ -131,7 +131,7 @@ pub(super) fn session_release(
     relays
         .release(
             session,
-            netterm_core::session::ConsumerKey::from_raw(consumer),
+            enodix_core::session::ConsumerKey::from_raw(consumer),
         )
         .map_err(|error| error.to_string())
 }
@@ -584,7 +584,7 @@ pub(super) struct TakenTab {
 }
 
 impl TakenTab {
-    fn of(taken: netterm_core::layout::Taken, records: &SessionRecords) -> Self {
+    fn of(taken: enodix_core::layout::Taken, records: &SessionRecords) -> Self {
         Self {
             session: taken.session.0,
             tab: taken.tab,

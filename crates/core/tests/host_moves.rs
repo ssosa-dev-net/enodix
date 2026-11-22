@@ -10,18 +10,18 @@ mod support;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use netterm_core::configs::{ConfigStore, SaveOutcome};
-use netterm_core::credentials::{
+use enodix_core::configs::{ConfigStore, SaveOutcome};
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::history::{self, HistoryKind, LeftHistory, Sessions};
-use netterm_core::job::{self, JobPlan};
-use netterm_core::logging::LogFolder;
-use netterm_core::session::{
+use enodix_core::history::{self, HistoryKind, LeftHistory, Sessions};
+use enodix_core::job::{self, JobPlan};
+use enodix_core::logging::LogFolder;
+use enodix_core::session::{
     SessionEvents, SessionRecord, SessionRecords, SessionState, SessionTarget, TerminalSize,
     Transport,
 };
-use netterm_core::workspace::{HostId, HostMove, Workspace};
+use enodix_core::workspace::{HostId, HostMove, Workspace};
 use support::{next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT, USERNAME};
 use tempfile::TempDir;
 
@@ -582,7 +582,7 @@ fn a_host_without_history_moves_with_nothing_to_report() {
 fn session_records_name_the_host_after_it_moved() {
     let (_temp, root, mut workspace) = workspace(&lab_files());
     let records = SessionRecords::new();
-    let session = netterm_core::session::SessionId(7);
+    let session = enodix_core::session::SessionId(7);
     let record = SessionRecord::for_host(
         &workspace,
         &id("Lab/far.yaml"),
@@ -593,7 +593,7 @@ fn session_records_name_the_host_after_it_moved() {
     .unwrap();
     records.record(session, record);
     records.record(
-        netterm_core::session::SessionId(8),
+        enodix_core::session::SessionId(8),
         SessionRecord::new("10.9.9.9", "10.9.9.9"),
     );
 

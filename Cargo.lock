@@ -1323,6 +1323,77 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
+name = "enodix"
+version = "0.5.0"
+dependencies = [
+ "enodix-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-updater",
+ "tokio",
+ "webkit2gtk",
+ "webview2-com",
+]
+
+[[package]]
+name = "enodix-cli"
+version = "0.5.0"
+dependencies = [
+ "enodix-core",
+ "libc",
+ "portable-pty",
+ "rpassword",
+ "russh",
+ "serde",
+ "serde_json",
+ "static_vcruntime",
+ "tauri-winres",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "enodix-core"
+version = "0.5.0"
+dependencies = [
+ "argon2",
+ "chacha20poly1305",
+ "chrono",
+ "futures",
+ "libc",
+ "md5",
+ "notify",
+ "open",
+ "rand",
+ "regex",
+ "reqwest",
+ "russh",
+ "russh-sftp",
+ "rustls",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "serialport",
+ "sha2 0.11.1",
+ "socket2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "unicode-normalization",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
 name = "enum_dispatch"
 version = "0.3.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2926,77 +2997,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
-]
-
-[[package]]
-name = "netterm"
-version = "0.5.0"
-dependencies = [
- "netterm-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-updater",
- "tokio",
- "webkit2gtk",
- "webview2-com",
-]
-
-[[package]]
-name = "netterm-cli"
-version = "0.5.0"
-dependencies = [
- "libc",
- "netterm-core",
- "portable-pty",
- "rpassword",
- "russh",
- "serde",
- "serde_json",
- "static_vcruntime",
- "tauri-winres",
- "tempfile",
- "tokio",
- "windows-sys 0.61.2",
- "zeroize",
-]
-
-[[package]]
-name = "netterm-core"
-version = "0.5.0"
-dependencies = [
- "argon2",
- "chacha20poly1305",
- "chrono",
- "futures",
- "libc",
- "md5",
- "notify",
- "open",
- "rand",
- "regex",
- "reqwest",
- "russh",
- "russh-sftp",
- "rustls",
- "semver",
- "serde",
- "serde_json",
- "serde_norway",
- "serialport",
- "sha2 0.11.1",
- "socket2",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "unicode-normalization",
- "url",
- "uuid",
- "windows-sys 0.61.2",
- "zeroize",
 ]
 
 [[package]]

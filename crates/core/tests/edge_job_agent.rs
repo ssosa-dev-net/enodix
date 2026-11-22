@@ -9,8 +9,8 @@ mod support;
 
 use std::time::Duration;
 
-use netterm_core::credentials::{CredentialProfile, ProfileAuth};
-use netterm_core::job::{HostState, JobOptions};
+use enodix_core::credentials::{CredentialProfile, ProfileAuth};
+use enodix_core::job::{HostState, JobOptions};
 use support::agent::TestAgent;
 use support::jobs::{folder, host, run, snippet, Lab};
 use support::{TestSshServer, USERNAME};

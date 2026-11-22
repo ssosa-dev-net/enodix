@@ -30,43 +30,43 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use netterm_core::configs::{ConfigStore, SaveOutcome};
-use netterm_core::credentials::{
+use enodix_core::configs::{ConfigStore, SaveOutcome};
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::diff::DiffLine;
-use netterm_core::job::{
+use enodix_core::diff::DiffLine;
+use enodix_core::job::{
     self, HostResult, HostState, JobEvent, JobOptions, JobStep, JobTarget, LoginBackup,
     LoginBackupOutcome, SessionLogin, JOB_TERMINAL_SIZE,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::logging::{LogFolder, SessionLog};
-use netterm_core::session::{
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::logging::{LogFolder, SessionLog};
+use enodix_core::session::{
     CloseReason, HostKeyDecision, NegotiatedAlgorithms, OpenError, OpenOptions, OutputOptions,
     SessionEvent, SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth,
     SshTarget, TelnetTarget, TerminalSize, DEFAULT_TELNET_PORT,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use regex::Regex;
 use serde::Deserialize;
 use tempfile::TempDir;
 
 /// Names the lab file. When it is not set, `lab/lab.yaml` at the repository
 /// root is used if it exists.
-pub const CONFIG_ENV: &str = "NETTERM_LAB_CONFIG";
+pub const CONFIG_ENV: &str = "ENODIX_LAB_CONFIG";
 /// The device password when a device sets neither `password`,
 /// `password_env` nor `agent`.
-pub const PASSWORD_ENV: &str = "NETTERM_LAB_PASSWORD";
+pub const PASSWORD_ENV: &str = "ENODIX_LAB_PASSWORD";
 /// The wrong password the wrong-password check tries on a device that logs
 /// in with the agent.
-const WRONG_PASSWORD: &str = "netterm-lab-wrong-password";
+const WRONG_PASSWORD: &str = "enodix-lab-wrong-password";
 
 /// How long output must stay quiet after it ends with the prompt.
 pub const SETTLE: Duration = Duration::from_millis(300);
 
 /// What the suite prints when no lab is configured.
 pub const SKIP_MESSAGE: &str = "containerlab suite SKIPPED: no lab configured. \
-Set NETTERM_LAB_CONFIG to a lab file, or create lab/lab.yaml (not committed) \
+Set ENODIX_LAB_CONFIG to a lab file, or create lab/lab.yaml (not committed) \
 from lab/lab.example.yaml; see docs/containerlab.md.";
 
 /// The terminal size sessions open with.
@@ -138,7 +138,7 @@ pub enum Platform {
 }
 
 /// What the defaults of a platform are. Verified against SR Linux 24.10.1,
-/// cEOS 4.36.0.1F and FRR 10.2.1 in `lab/netterm-test.clab.yml`; a lab file
+/// cEOS 4.36.0.1F and FRR 10.2.1 in `lab/enodix-test.clab.yml`; a lab file
 /// can override each.
 struct Defaults {
     username: Option<&'static str>,
@@ -1375,7 +1375,7 @@ async fn config_backup(run: &LabRun, device: &Device) -> Result<String, String> 
 }
 
 /// An enable secret no device of the lab has.
-const WRONG_ENABLE_SECRET: &str = "netterm-lab-not-the-enable-secret";
+const WRONG_ENABLE_SECRET: &str = "enodix-lab-not-the-enable-secret";
 
 /// `question` is the definition's privilege password pattern. An entry
 /// with an enable secret is there to show the question answered: the

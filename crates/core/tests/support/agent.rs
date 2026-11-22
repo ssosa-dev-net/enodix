@@ -24,10 +24,7 @@ impl TestAgent {
     pub async fn start(keys: &[PrivateKey]) -> Self {
         #[cfg(windows)]
         {
-            let name = format!(
-                r"\\.\pipe\netterm-test-agent-{:016x}",
-                rand::random::<u64>()
-            );
+            let name = format!(r"\\.\pipe\enodix-test-agent-{:016x}", rand::random::<u64>());
             Self::start_at(PathBuf::from(name), keys)
                 .await
                 .expect("the pipe name is random")
@@ -117,7 +114,7 @@ impl TestAgent {
 
 /// An agent address nothing listens at.
 pub fn unused_path() -> PathBuf {
-    let name = format!("netterm-test-no-agent-{:016x}", rand::random::<u64>());
+    let name = format!("enodix-test-no-agent-{:016x}", rand::random::<u64>());
     #[cfg(windows)]
     return PathBuf::from(r"\\.\pipe").join(name);
     #[cfg(unix)]

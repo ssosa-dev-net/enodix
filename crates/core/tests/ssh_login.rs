@@ -5,7 +5,7 @@
 
 mod support;
 
-use netterm_core::session::{
+use enodix_core::session::{
     AgentError, CloseReason, LoginPrompt, LoginQuestion, OpenError, SessionEvents, SessionId,
     SessionManager, SessionState, SessionTarget, SshAgent, SshAuth, SshTarget, TerminalSize,
 };

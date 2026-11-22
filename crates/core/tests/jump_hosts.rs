@@ -7,15 +7,15 @@ mod support;
 
 use std::fs;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, ProfileError, Profiles,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::{
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::{
     CloseReason, HostKeyDecision, LoginQuestion, OpenError, SessionEvents, SessionManager,
     SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
 };
-use netterm_core::workspace::{HostId, JumpChainError, Workspace};
+use enodix_core::workspace::{HostId, JumpChainError, Workspace};
 use support::{
     closed_port, next_host_key_question, next_prompt, next_state, output_ending_with,
     TestSshServer, CODE_NAME, CODE_QUESTION, ONE_TIME_CODE, OTP_USERNAME, PASSWORD, PROMPT,

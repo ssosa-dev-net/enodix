@@ -4,7 +4,7 @@
 #   npm run test:installer -- -Old <an older release's -setup.exe> [-New <setup.exe>]
 #
 # -New defaults to this version's installer in target/dist/<version>-unsigned
-# (or target/dist/<version>). It stops, changing nothing, if netterm is
+# (or target/dist/<version>). It stops, changing nothing, if enodix is
 # installed for this user. Then, silently, one installer at a time: installs
 # -Old, upgrades it to -New while the installed headless binary runs,
 # uninstalls while it runs again, installs -New fresh and uninstalls it, and
@@ -148,8 +148,8 @@ function StartCli([string]$folder) {
   $start.RedirectStandardInput = $true
   $start.RedirectStandardOutput = $true
   $start.CreateNoWindow = $true
-  $start.EnvironmentVariables["NETTERM_DATA_DIR"] = Join-Path $scratch "data"
-  $start.EnvironmentVariables["NETTERM_KEYCHAIN_PREFIX"] = "netterm-test-installer-check-$PID"
+  $start.EnvironmentVariables["ENODIX_DATA_DIR"] = Join-Path $scratch "data"
+  $start.EnvironmentVariables["ENODIX_KEYCHAIN_PREFIX"] = "enodix-test-installer-check-$PID"
   $process = [System.Diagnostics.Process]::Start($start)
   $line = $process.StandardOutput.ReadLine()
   Write-Output "$cli is running (process $($process.Id)), it said: $line"
@@ -180,8 +180,8 @@ function CheckClearKeychain([string]$folder) {
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.CreateNoWindow = $true
-    $start.EnvironmentVariables["NETTERM_DATA_DIR"] = Join-Path $scratch "data"
-    $start.EnvironmentVariables["NETTERM_KEYCHAIN_PREFIX"] = "netterm-test-installer-check-$PID"
+    $start.EnvironmentVariables["ENODIX_DATA_DIR"] = Join-Path $scratch "data"
+    $start.EnvironmentVariables["ENODIX_KEYCHAIN_PREFIX"] = "enodix-test-installer-check-$PID"
     $process = [System.Diagnostics.Process]::Start($start)
     $said = ($process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()).Trim()
     $process.WaitForExit()

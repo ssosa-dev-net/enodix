@@ -24,7 +24,7 @@ use std::fs;
 use std::future::Future;
 use std::time::Duration;
 
-use netterm_core::files::{
+use enodix_core::files::{
     join_path, FileConnection, Files, Link, Outcome as Ended, Protocol, Scp, Sftp, SizeCheck,
     Transfer, TransferError, Transfers,
 };
@@ -33,9 +33,9 @@ use tempfile::TempDir;
 use super::{Device, LabRun, Outcome, Platform};
 
 /// The file's name on the device.
-pub const NAME: &str = "netterm-lab-check.bin";
+pub const NAME: &str = "enodix-lab-check.bin";
 /// Its name once renamed (SFTP).
-pub const RENAMED: &str = "netterm-lab-check-renamed.bin";
+pub const RENAMED: &str = "enodix-lab-check-renamed.bin";
 /// Its size: more than the engine's 256 KiB buffer, so more than one step.
 pub const SIZE: usize = 300 * 1024;
 
@@ -205,7 +205,7 @@ impl Round<'_> {
                     "the transfer did not end within {} s",
                     limit.as_secs()
                 )),
-                partial: netterm_core::files::Partial::Nothing,
+                partial: enodix_core::files::Partial::Nothing,
             },
         }
     }

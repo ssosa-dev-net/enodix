@@ -5,14 +5,14 @@
 //!
 //! The 100-host run is part of the suite; the 500-host one (the ticket's
 //! number) is `#[ignore]`d for its time:
-//! `cargo test -p netterm-core --test edge_job_scale -- --ignored --nocapture`.
+//! `cargo test -p enodix-core --test edge_job_scale -- --ignored --nocapture`.
 
 mod support;
 
 use std::time::{Duration, Instant};
 
-use netterm_core::job::results::{OutputRef, RunStore};
-use netterm_core::job::{self, HostState, JobOptions};
+use enodix_core::job::results::{OutputRef, RunStore};
+use enodix_core::job::{self, HostState, JobOptions};
 use support::jobs::{closes, folder, host, snippet, Lab};
 use support::memory::{self, MIB};
 use support::TestSshServer;

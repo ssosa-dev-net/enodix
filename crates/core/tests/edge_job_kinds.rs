@@ -11,14 +11,14 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use netterm_core::configs::{ConfigStore, SaveOutcome};
-use netterm_core::credentials::Profiles;
-use netterm_core::job::results::RunStore;
-use netterm_core::job::{
+use enodix_core::configs::{ConfigStore, SaveOutcome};
+use enodix_core::credentials::Profiles;
+use enodix_core::job::results::RunStore;
+use enodix_core::job::{
     self, HostState, JobEvent, JobOptions, JobStep, PlanError, RunningJobs, APP_CLOSED,
     APP_CLOSE_WAIT,
 };
-use netterm_core::workspace::HostId;
+use enodix_core::workspace::HostId;
 use support::jobs::{folder, follow, host, run, Lab};
 use support::{TestSshServer, WAIT};
 
@@ -549,7 +549,7 @@ async fn cancelling_a_file_sent_to_a_device_that_stopped_answering_ends_it_at_on
         assert!(
             output.contains(&format!(
                 "Cancelled: a partial file may remain on the device: it did not answer the request to remove it within {} s.",
-                netterm_core::files::CANCEL_REMOVE_WAIT.as_secs()
+                enodix_core::files::CANCEL_REMOVE_WAIT.as_secs()
             )),
             "{output}"
         );

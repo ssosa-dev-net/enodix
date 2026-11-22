@@ -4,11 +4,11 @@
 
 use std::fs;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     prepare_workspace, AuthDraft, CredentialProfile, CredentialStore, MemoryStore, ProfileAuth,
     ProfileDraft, Profiles,
 };
-use netterm_core::workspace::{Workspace, WORKSPACE_FILE};
+use enodix_core::workspace::{Workspace, WORKSPACE_FILE};
 use tempfile::TempDir;
 
 fn draft(name: &str, username: &str) -> ProfileDraft {

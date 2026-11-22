@@ -18,7 +18,7 @@
 # what the GTK hook takes; after it, GTK_THEME is set again. An
 # APPIMAGE_GTK_THEME the user exported is left alone. POSIX sh only.
 
-netterm_desktop_style() {
+enodix_desktop_style() {
   # Without the bundle's GSettings schemas and GIO modules, which the GTK
   # hook may have pointed at already.
   case ":$(printf '%s' "${XDG_CURRENT_DESKTOP:-}" | tr '[:lower:]' '[:upper:]'):" in
@@ -33,11 +33,11 @@ netterm_desktop_style() {
 }
 
 if ! printenv APPIMAGE_GTK_THEME > /dev/null 2>&1; then
-  case "$(netterm_desktop_style | tr -d "'" | tr '[:upper:]' '[:lower:]')" in
+  case "$(enodix_desktop_style | tr -d "'" | tr '[:upper:]' '[:lower:]')" in
     *-dark | *-dark-*)
       APPIMAGE_GTK_THEME="Adwaita:dark"
       export GTK_THEME="$APPIMAGE_GTK_THEME"
       ;;
   esac
 fi
-unset -f netterm_desktop_style
+unset -f enodix_desktop_style

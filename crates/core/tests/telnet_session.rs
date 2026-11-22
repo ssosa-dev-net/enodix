@@ -8,12 +8,12 @@ mod support;
 use std::fs;
 use std::time::Duration;
 
-use netterm_core::credentials::{HostLogin, MemoryStore, Profiles};
-use netterm_core::session::{
+use enodix_core::credentials::{HostLogin, MemoryStore, Profiles};
+use enodix_core::session::{
     CloseReason, OpenError, OutputOptions, SessionEvents, SessionId, SessionManager, SessionState,
     SessionTarget, TelnetTarget, TerminalSize, DEFAULT_CONNECT_TIMEOUT, DEFAULT_TELNET_PORT,
 };
-use netterm_core::workspace::{HostId, Protocol, Workspace};
+use enodix_core::workspace::{HostId, Protocol, Workspace};
 use support::telnet::{
     EchoMode, TestTelnetServer, BANNER, LOGIN_INCORRECT, PASSWORD_PROMPT, TELNET_PROMPT,
     UNKNOWN_COMMAND, USERNAME_PROMPT,

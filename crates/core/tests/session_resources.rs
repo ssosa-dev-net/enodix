@@ -8,8 +8,8 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use netterm_core::logging::LogFolder;
-use netterm_core::session::{
+use enodix_core::logging::LogFolder;
+use enodix_core::session::{
     CloseReason, SessionEvent, SessionEvents, SessionId, SessionManager, SessionState,
     SessionTarget, TerminalSize,
 };
@@ -88,7 +88,7 @@ async fn memory_stays_bounded_under_a_flood_read_fast_slowly_and_not_at_all() {
     }
 }
 
-/// `cargo test -p netterm-core --test session_resources -- --ignored`.
+/// `cargo test -p enodix-core --test session_resources -- --ignored`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "heavy: a 512 MiB flood (about a minute)"]
 async fn memory_stays_bounded_under_a_flood_of_hundreds_of_megabytes() {
@@ -109,7 +109,7 @@ async fn memory_stays_bounded_under_a_flood_of_hundreds_of_megabytes() {
 #[test]
 fn plain_text_does_not_keep_an_endless_control_sequence() {
     let _alone = exclusive_blocking();
-    let mut text = netterm_core::logging::PlainText::new();
+    let mut text = enodix_core::logging::PlainText::new();
     let baseline = resident();
     let peak = Peak::start();
     assert_eq!(text.push(b"before\r\n\x1b["), "before\n");

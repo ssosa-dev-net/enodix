@@ -1,6 +1,6 @@
 """The workspace of the app, for Python scripts.
 
-Everything goes through the app's headless binary (``netterm-cli``), found
+Everything goes through the app's headless binary (``enodix-cli``), found
 by :func:`find_cli`: the resolved inventory, a host's login from its
 credential profile, and named secrets. Credentials travel only over the
 binary's output pipe to this process; nothing is written to disk or put in
@@ -11,12 +11,12 @@ binary opens (:func:`tunnels`), for their SSH port and any other device
 port a script names; :func:`endpoint` says where to connect for a port of
 a host, tunnelled or not. The Nornir plugin opens them itself.
 
-The Nornir inventory plugin is :class:`netterm.nornir.NettermInventory`
-(registered as ``NettermInventory``); it needs Nornir, which this package
+The Nornir inventory plugin is :class:`enodix.nornir.EnodixInventory`
+(registered as ``EnodixInventory``); it needs Nornir, which this package
 does not install.
 
 Run by the app as a script job, a script finds its workspace in
-``NETTERM_WORKSPACE`` (the default of every ``workspace`` argument here), and
+``ENODIX_WORKSPACE`` (the default of every ``workspace`` argument here), and
 the binary shows it only the job's hosts and hands over only their logins.
 """
 
@@ -29,7 +29,7 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 from ._cli import (
     CliFailed,
     CliNotFound,
-    NettermError,
+    EnodixError,
     VersionWarning,
     default_location,
     find_cli,
@@ -48,7 +48,7 @@ __all__ = [
     "CliFailed",
     "CliNotFound",
     "Endpoint",
-    "NettermError",
+    "EnodixError",
     "Tunnels",
     "Unreachable",
     "VersionWarning",
@@ -66,12 +66,12 @@ __all__ = [
 Folder = Union[str, "PathLike[str]"]
 
 #: The variable the app sets for a script job: the workspace folder.
-WORKSPACE_VARIABLE = "NETTERM_WORKSPACE"
+WORKSPACE_VARIABLE = "ENODIX_WORKSPACE"
 
 
 def job_workspace() -> Optional[str]:
     """The workspace folder of the script job this script runs in (the app
-    sets ``NETTERM_WORKSPACE``), or ``None`` when it was not started by one."""
+    sets ``ENODIX_WORKSPACE``), or ``None`` when it was not started by one."""
     return os.environ.get(WORKSPACE_VARIABLE) or None
 
 
@@ -80,7 +80,7 @@ def _workspace(workspace: Optional[Folder]) -> str:
         return fspath(workspace)
     found = job_workspace()
     if found is None:
-        raise NettermError(
+        raise EnodixError(
             "no workspace given: pass the workspace folder (it is only known by itself "
             f"in a script job, which sets {WORKSPACE_VARIABLE})"
         )
@@ -95,7 +95,7 @@ def inventory(
     hosts: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """The workspace's resolved inventory, as the binary exports it
-    (``netterm-cli inventory``, format 1): every host with the settings
+    (``enodix-cli inventory``, format 1): every host with the settings
     that apply to it, its jump hosts, folders, tags and custom fields; no
     secrets. Limit it to one of: the hosts in ``folder`` and below, those
     of the saved filter ``filter``, or the host ids in ``hosts``. In a
@@ -148,7 +148,7 @@ def tunnels(
     ports: Optional[Iterable[int]] = None,
 ) -> Tunnels:
     """Loopback tunnels to the hosts behind jump hosts among those
-    :func:`inventory` gives with the same limit (``netterm-cli tunnel``):
+    :func:`inventory` gives with the same limit (``enodix-cli tunnel``):
     each jump chain is connected as the app would, with the jump hosts'
     stored logins and the host keys the app trusts, and nothing is asked.
     The result's ``hosts`` maps each such host id to where to connect
@@ -165,7 +165,7 @@ def tunnels(
 
 def credentials(workspace: Optional[Folder], host: str) -> Dict[str, Any]:
     """The login of the credential profile the host ``host`` (a host id)
-    uses (``netterm-cli credentials``, format 1): ``username``, ``auth``
+    uses (``enodix-cli credentials``, format 1): ``username``, ``auth``
     (``{"kind": "password", "password"}``, ``{"kind": "private_key",
     "key_file", "passphrase"}`` or ``{"kind": "agent"}``) and
     ``enable_secret``. From the running app, else the store itself (the

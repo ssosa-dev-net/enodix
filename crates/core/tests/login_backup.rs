@@ -8,17 +8,17 @@ mod support;
 use std::fs;
 use std::sync::Arc;
 
-use netterm_core::configs::ConfigStore;
-use netterm_core::credentials::{
+use enodix_core::configs::ConfigStore;
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::job::{LoginBackup, LoginBackupOutcome, SessionLogin};
-use netterm_core::layout::WindowId;
-use netterm_core::session::{
+use enodix_core::job::{LoginBackup, LoginBackupOutcome, SessionLogin};
+use enodix_core::layout::WindowId;
+use enodix_core::session::{
     CloseReason, OpenError, OpenOptions, SessionError, SessionEvent, SessionEvents, SessionId,
     SessionManager, SessionRelays, SessionState, SessionTarget, SshTarget, TerminalSize,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use support::{next_state, TestSshServer, PASSWORD, USERNAME, WAIT};
 use tempfile::TempDir;
 

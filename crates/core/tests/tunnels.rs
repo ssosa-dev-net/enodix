@@ -1,4 +1,4 @@
-//! Loopback tunnels through jump chains (`netterm_core::tunnel`), against
+//! Loopback tunnels through jump chains (`enodix_core::tunnel`), against
 //! the in-process test servers. Most checks read the device's SSH banner
 //! through the tunnel and count what the jump hosts forwarded.
 
@@ -9,15 +9,15 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::{HostKeyDecision, SessionState, SessionTarget, TerminalSize};
-use netterm_core::tunnel::{
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::{HostKeyDecision, SessionState, SessionTarget, TerminalSize};
+use enodix_core::tunnel::{
     self, Planned, TunnelEvent, TunnelOptions, TunnelState, TunnelStatus, Tunnels,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use support::tcp::TcpService;
 use support::{TestSshServer, OTP_USERNAME, PASSWORD, USERNAME};
 use tempfile::TempDir;
@@ -635,8 +635,8 @@ struct Stalled {
     _temp: TempDir,
     tunnels: Tunnels,
     events: Events,
-    _manager: netterm_core::session::SessionManager,
-    _session: netterm_core::session::SessionEvents,
+    _manager: enodix_core::session::SessionManager,
+    _session: enodix_core::session::SessionEvents,
     other_port: u16,
 }
 

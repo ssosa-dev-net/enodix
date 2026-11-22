@@ -12,17 +12,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::job::results::RunStore;
-use netterm_core::job::{
+use enodix_core::job::results::RunStore;
+use enodix_core::job::{
     self, HostState, Job, JobEvent, JobOptions, JobPlan, JobReport, JobStep, JobTarget, PlanError,
     SkipReason,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::SessionManager;
-use netterm_core::workspace::{HostId, Protocol, SavedJob, Workspace};
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::SessionManager;
+use enodix_core::workspace::{HostId, Protocol, SavedJob, Workspace};
 use sha2::Digest;
 use support::scp::ScpQuirk;
 use support::{TestSshServer, CODE_QUESTION, OTP_USERNAME, PASSWORD, USERNAME, WAIT};

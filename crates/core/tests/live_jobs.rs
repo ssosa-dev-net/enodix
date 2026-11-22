@@ -6,13 +6,13 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use netterm_core::configs::SaveOutcome;
-use netterm_core::credentials::{MemoryStore, Profiles};
-use netterm_core::job::{
+use enodix_core::configs::SaveOutcome;
+use enodix_core::credentials::{MemoryStore, Profiles};
+use enodix_core::job::{
     self, HostResult, HostState, JobEvent, JobPlan, JobReport, JobStep, JobTarget, LiveJobs,
     NewLiveJob,
 };
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::workspace::{HostId, Workspace};
 use support::workspaces::fixture;
 
 fn target() -> JobTarget {

@@ -11,14 +11,14 @@ mod support;
 use std::fs;
 use std::time::Duration;
 
-use netterm_core::credentials::CredentialProfile;
-use netterm_core::job::results::{OutputRef, RunStore};
-use netterm_core::job::{
+use enodix_core::credentials::CredentialProfile;
+use enodix_core::job::results::{OutputRef, RunStore};
+use enodix_core::job::{
     self, HostState, JobEvent, JobOptions, JobStep, JobTarget, SkipReason, HIDDEN_SECRET,
 };
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::session::{SessionManager, SessionState, SessionTarget, TerminalSize};
-use netterm_core::workspace::HostId;
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::session::{SessionManager, SessionState, SessionTarget, TerminalSize};
+use enodix_core::workspace::HostId;
 use support::jobs::{closes, folder, follow, host, host_at, profile, run, snippet, Lab};
 use support::{
     next_state, output_ending_with, SilentServer, TestSshServer, ENABLE_SECRET, HALT_REST,
@@ -113,7 +113,7 @@ async fn hosts_failing_in_every_way_at_once_each_end_with_their_own_reason() {
         ("unknown-command.yaml", at_device(&command("frobnicate"))),
     ]);
     lab.put(CredentialProfile {
-        auth: netterm_core::credentials::ProfileAuth::Password {
+        auth: enodix_core::credentials::ProfileAuth::Password {
             password: "not the password".into(),
         },
         ..profile("wrong", USERNAME)
@@ -397,7 +397,7 @@ async fn cancelling_with_hosts_at_every_stage_ends_them_all_and_can_be_run_again
     assert_eq!(output, ran.result("d-output.yaml").output);
     let again = job::plan_again(
         &lab.workspace,
-        &netterm_core::credentials::Profiles::new(&lab.store, &lab.workspace),
+        &enodix_core::credentials::Profiles::new(&lab.store, &lab.workspace),
         &kept,
     )
     .unwrap();
@@ -1096,7 +1096,7 @@ fn a_plan_for_a_target_that_is_gone_is_refused() {
     ]);
     let gone = job::plan(
         &lab.workspace,
-        &netterm_core::credentials::Profiles::new(&lab.store, &lab.workspace),
+        &enodix_core::credentials::Profiles::new(&lab.store, &lab.workspace),
         &folder("Elsewhere"),
         &snippet("Show"),
     );

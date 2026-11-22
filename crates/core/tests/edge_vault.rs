@@ -27,7 +27,7 @@ use std::sync::{mpsc, Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     vault_file, ActiveStore, CredentialProfile, CredentialStore, KdfParams, ProfileAuth,
     ScopedProfile, ScopedSecret, SecretValue, StoreContents, Vault, VaultError, VaultStatus,
     VAULT_LOCK_FILE,
@@ -416,7 +416,7 @@ fn turning_on_cut_before_its_rename_leaves_the_keychain_in_use_with_everything()
     // file is there, and nothing was taken out of the keychain yet.
     fs::write(
         data.path("credentials.vault.tmp"),
-        b"{\"format\": \"netterm-va",
+        b"{\"format\": \"enodix-va",
     )
     .unwrap();
     let store = ActiveStore::new(Box::new(keychain.clone()), data.vault());
@@ -806,8 +806,8 @@ fn a_scanner_holding_the_vault_file_for_a_moment_only_delays_a_save() {
 /// there, printing `saved <name>` after each save it was told was done:
 /// [`WRITES_VARIABLE`] of them, or until it is killed (0).
 const WRITER: &str = "vault writer";
-const WRITES_VARIABLE: &str = "NETTERM_TEST_WRITES";
-const COPY_VARIABLE: &str = "NETTERM_TEST_COPY";
+const WRITES_VARIABLE: &str = "ENODIX_TEST_WRITES";
+const COPY_VARIABLE: &str = "ENODIX_TEST_COPY";
 
 #[test]
 fn helper() {

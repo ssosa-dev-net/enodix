@@ -5,7 +5,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use netterm_core::session::{
+use enodix_core::session::{
     CloseReason, OutputOptions, SessionEvent, SessionEvents, SessionId, SessionManager,
     SessionState, SessionTarget, TerminalSize,
 };

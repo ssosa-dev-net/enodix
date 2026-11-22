@@ -9,9 +9,9 @@ mod support;
 
 use std::fs;
 
-use netterm_core::known_hosts::KnownHosts;
-use netterm_core::logging::LogFolder;
-use netterm_core::session::{
+use enodix_core::known_hosts::KnownHosts;
+use enodix_core::logging::LogFolder;
+use enodix_core::session::{
     CloseReason, HostKeyDecision, JumpHost, LoginPrompt, OpenError, OpenOptions, SessionEvent,
     SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth, SshTarget,
     TerminalSize,

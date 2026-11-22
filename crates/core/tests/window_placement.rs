@@ -3,7 +3,7 @@
 //! work area, worked out in physical pixels so that the position names one
 //! monitor whatever each monitor's display scaling is.
 
-use netterm_core::layout::{
+use enodix_core::layout::{
     place_session_window, Frame, PhysicalRect, Placement, SESSION_WINDOW_MIN_SIZE,
 };
 

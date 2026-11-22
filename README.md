@@ -1,4 +1,4 @@
-# netterm
+# enodix
 
 A terminal for network engineers: SSH, telnet and serial sessions to the
 devices in an inventory kept as plain YAML files (a folder you can put in
@@ -70,22 +70,22 @@ and what each check covered.
 
 Each release has these files:
 
-| File                                 | What it is                                                                  |
-| ------------------------------------ | --------------------------------------------------------------------------- |
-| `netterm_<version>_x64-setup.exe`    | The installer. Installs for your user only; no administrator rights needed. |
-| `netterm_<version>_x64-portable.zip` | The portable copy: unpack it anywhere (a USB stick) and run `netterm.exe`.  |
-| `netterm_<version>_amd64.deb`        | Debian and Ubuntu package (checked only in desktops inside WSL).            |
-| `netterm-<version>-1.x86_64.rpm`     | Fedora, RHEL and openSUSE package (the same).                               |
-| `netterm_<version>_amd64.AppImage`   | One Linux file that runs without installing (the same).                     |
-| `SHA256SUMS.txt`                     | The SHA-256 checksum of every file, to check a download.                    |
-| `latest.json`, `*.sig`               | Used by the app's update check; you do not need them.                       |
+| File                                | What it is                                                                  |
+| ----------------------------------- | --------------------------------------------------------------------------- |
+| `enodix_<version>_x64-setup.exe`    | The installer. Installs for your user only; no administrator rights needed. |
+| `enodix_<version>_x64-portable.zip` | The portable copy: unpack it anywhere (a USB stick) and run `enodix.exe`.   |
+| `enodix_<version>_amd64.deb`        | Debian and Ubuntu package (checked only in desktops inside WSL).            |
+| `enodix-<version>-1.x86_64.rpm`     | Fedora, RHEL and openSUSE package (the same).                               |
+| `enodix_<version>_amd64.AppImage`   | One Linux file that runs without installing (the same).                     |
+| `SHA256SUMS.txt`                    | The SHA-256 checksum of every file, to check a download.                    |
+| `latest.json`, `*.sig`              | Used by the app's update check; you do not need them.                       |
 
 ### Checking a download
 
 In PowerShell, compare the file's checksum with its line in `SHA256SUMS.txt`:
 
 ```powershell
-Get-FileHash .\netterm_0.1.0_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\enodix_0.1.0_x64-setup.exe -Algorithm SHA256
 ```
 
 Get the checksums from the release page itself, not from a copy sent with the
@@ -94,7 +94,7 @@ download.
 ### "Windows protected your PC" (SmartScreen)
 
 Early releases are not code-signed (signing starts at the public launch).
-The first time you run the installer or `netterm.exe`, Windows SmartScreen
+The first time you run the installer or `enodix.exe`, Windows SmartScreen
 may show a blue "Windows protected your PC" window saying the app is from an
 "Unknown publisher". Windows shows this for any unsigned program; it does
 not mean a virus was found. To go on:
@@ -137,10 +137,10 @@ connection the app can make.
 
 ## Uninstalling
 
-Uninstall netterm from **Settings, Apps, Installed apps** (or run
-`uninstall.exe` in its folder, `%LOCALAPPDATA%\netterm`). It closes netterm,
-and `netterm-cli.exe` if a script is using it, then removes the program
-folder (the app, `netterm-cli.exe`, the Python wheel, the licence), the
+Uninstall enodix from **Settings, Apps, Installed apps** (or run
+`uninstall.exe` in its folder, `%LOCALAPPDATA%\enodix`). It closes enodix,
+and `enodix-cli.exe` if a script is using it, then removes the program
+folder (the app, `enodix-cli.exe`, the Python wheel, the licence), the
 Start menu and desktop shortcuts and the entry in Installed apps. Files you
 put in the program folder yourself are left there.
 
@@ -148,29 +148,29 @@ Your data stays, so a later install finds it again, unless you tick
 **Also delete settings, saved logins and the vault, ...** on the uninstall
 page. That deletes:
 
-- `%APPDATA%\dev.netterm.app`: settings, the vault, known host keys, the
+- `%APPDATA%\dev.enodix.app`: settings, the vault, known host keys, the
   list of workspaces and the Python choice;
-- `%LOCALAPPDATA%\dev.netterm.app`: session logs, config backups, kept job
+- `%LOCALAPPDATA%\dev.enodix.app`: session logs, config backups, kept job
   results, the Python environment and the window's web view data (before
   0.5.0 the backups, results and environment were in `%APPDATA%`; the
   first start of 0.5.0 moves them, see below);
 - the saved logins (credential profiles and named secrets) in Windows
-  Credential Manager, the entries whose names start with `dev.netterm.app`;
-- the registry key `HKCU\Software\Sergio Sosa\netterm`, where the installer
+  Credential Manager, the entries whose names start with `dev.enodix.app`;
+- the registry key `HKCU\Software\Sergio Sosa\enodix`, where the installer
   remembers the program folder.
 
 What always stays: your workspace folders, files you downloaded from
 devices, and a Python bridge you installed with `pip`. If you uninstalled
 without ticking the box, delete the two folders above by hand, and the
 Credential Manager entries in **Control Panel, Credential Manager, Windows
-Credentials**. Running `netterm-cli clear-keychain --yes` before you
+Credentials**. Running `enodix-cli clear-keychain --yes` before you
 uninstall removes those entries for you.
 
 ### The move to the local folder in 0.5.0
 
 Config backups, kept job results and the Python environment are large and
 only make sense on one computer, so since 0.5.0 they are in
-`%LOCALAPPDATA%\dev.netterm.app`, not in the roaming `%APPDATA%`, which a
+`%LOCALAPPDATA%\dev.enodix.app`, not in the roaming `%APPDATA%`, which a
 company's roaming profiles copy at every logon. The first start of 0.5.0
 moves them there, once, before it shows anything:
 
@@ -187,10 +187,10 @@ moves them there, once, before it shows anything:
 - If both folders hold backups or results (an older version was run after
   the move), neither is changed: the app uses the local one and says where
   the other is, so you can look in it and remove it.
-- While another copy of netterm runs, a starting copy moves nothing: the
+- While another copy of enodix runs, a starting copy moves nothing: the
   move waits for a start when it runs alone.
 
-On Linux everything was and stays in `~/.local/share/dev.netterm.app`.
+On Linux everything was and stays in `~/.local/share/dev.enodix.app`.
 
 ### Installing and uninstalling silently
 
@@ -201,16 +201,16 @@ The installer takes these switches (`uninstall.exe` takes `/S` and `/P`):
 | `/S`        | Silent: no window, no questions. A silent install also makes a desktop shortcut, unless `/NS`.    |
 | `/P`        | Passive: shows progress only, asks nothing (the mode updates use). Also makes a desktop shortcut. |
 | `/NS`       | No shortcuts: neither the Start menu one nor the desktop one.                                     |
-| `/D=<path>` | Installs into `<path>` instead of `%LOCALAPPDATA%\netterm`. It must come last, without quotes.    |
+| `/D=<path>` | Installs into `<path>` instead of `%LOCALAPPDATA%\enodix`. It must come last, without quotes.     |
 
-A running netterm or `netterm-cli.exe` is closed without asking in silent
+A running enodix or `enodix-cli.exe` is closed without asking in silent
 and passive mode. A silent uninstall (`uninstall.exe /S`) never deletes your
 data or saved logins. It returns at once, while a copy of it carries on from
 the temp folder for a few seconds.
 
 ## The headless binary
 
-`netterm-cli.exe` is installed beside `netterm.exe` (and is in the portable
+`enodix-cli.exe` is installed beside `enodix.exe` (and is in the portable
 zip). It has no window and does not need the app running. It prints a
 workspace's inventory as JSON, each host with the settings that apply to it
 (inheritance resolved), its jump hosts, folders, tags and custom fields;
@@ -218,27 +218,27 @@ credential profiles appear by name only, and custom fields named like a
 secret (password, key, community, token) are left out:
 
 ```powershell
-netterm-cli inventory C:\Work\inventory
-netterm-cli inventory C:\Work\inventory --folder Europe/Madrid
-netterm-cli inventory C:\Work\inventory --filter "Arista in Madrid"
-netterm-cli inventory C:\Work\inventory --host core-r1.yaml --host Lab/sw1.yaml
+enodix-cli inventory C:\Work\inventory
+enodix-cli inventory C:\Work\inventory --folder Europe/Madrid
+enodix-cli inventory C:\Work\inventory --filter "Arista in Madrid"
+enodix-cli inventory C:\Work\inventory --host core-r1.yaml --host Lab/sw1.yaml
 ```
 
 Problems with workspace files are printed as warnings and do not stop the
 export. It exits with 1 (and says why) for a missing workspace or an
 unknown folder, filter or host, and with 2 for a command line it does not
-understand. `netterm-cli --help` lists the options. A value that starts
+understand. `enodix-cli --help` lists the options. A value that starts
 with `-` goes after `--`, which ends the options
-(`netterm-cli secret -- C:\Work\inventory -ro`), or after `=` for an option
+(`enodix-cli secret -- C:\Work\inventory -ro`), or after `=` for an option
 (`--folder=-old`, `--host=-spare.yaml`).
 
 It also hands out logins and opens tunnels, for scripts:
 
 ```powershell
-netterm-cli credentials C:\Work\inventory Europe/Madrid/core-r1.yaml
-netterm-cli secret C:\Work\inventory netbox-token
-netterm-cli tunnel C:\Work\inventory --folder Europe/Madrid
-netterm-cli tunnel C:\Work\inventory --folder Europe/Madrid --port 830 --port 443
+enodix-cli credentials C:\Work\inventory Europe/Madrid/core-r1.yaml
+enodix-cli secret C:\Work\inventory netbox-token
+enodix-cli tunnel C:\Work\inventory --folder Europe/Madrid
+enodix-cli tunnel C:\Work\inventory --folder Europe/Madrid --port 830 --port 443
 ```
 
 - `credentials` prints the login of the credential profile a host uses, and
@@ -259,25 +259,25 @@ netterm-cli tunnel C:\Work\inventory --folder Europe/Madrid --port 830 --port 44
   reason on standard error. The app does not check a device's TLS
   certificate through a tunnel; the script decides how to.
 
-`netterm-cli clear-keychain --yes` removes every saved login (credential
-profiles and named secrets, of every workspace) netterm keeps in Windows
+`enodix-cli clear-keychain --yes` removes every saved login (credential
+profiles and named secrets, of every workspace) enodix keeps in Windows
 Credential Manager, and says how many. Without `--yes` it only says how many
 it would remove, and removes nothing. The vault is not touched. The
 uninstaller runs it when you tick the data box (see "Uninstalling").
 
 ## Python and Nornir
 
-The `python` folder beside `netterm.exe` (and in the portable zip) holds a
+The `python` folder beside `enodix.exe` (and in the portable zip) holds a
 small pure-Python package that presents a workspace as a Nornir inventory,
 with the logins of your credential profiles, and reads named secrets. Its
 version always matches the app's; install it from that file:
 
 ```powershell
-pip install "$env:LOCALAPPDATA\netterm\python\netterm-<version>-py3-none-any.whl"
+pip install "$env:LOCALAPPDATA\enodix\python\enodix-<version>-py3-none-any.whl"
 ```
 
-Then use the `NettermInventory` plugin in `InitNornir`. Hosts behind jump
-hosts are reached through tunnels the plugin opens with `netterm-cli`, so
+Then use the `EnodixInventory` plugin in `InitNornir`. Hosts behind jump
+hosts are reached through tunnels the plugin opens with `enodix-cli`, so
 scripts run unchanged; a device must have been connected to once in the
 app, so that its host key is trusted. See
 [python/README.md](python/README.md) for the options, the mapping and the
@@ -291,7 +291,7 @@ the devices for their vendor, model, serial number and OS version.
 
 ## Tested platforms
 
-netterm claims support only for the device platforms below, each verified by the
+enodix claims support only for the device platforms below, each verified by the
 containerlab device suite ([docs/containerlab.md](docs/containerlab.md))
 at the version shown. Other platforms may work but have not been tested.
 
@@ -314,13 +314,13 @@ Cisco NX-OS has not been tested.
 
 ## Building from source
 
-For the layout and commands (`npm install`, `npm run check`,
-`npm run app:build`; `npm run test:python` for the Python bridge and
-`npm run test:linux` for the Linux checks), `docs/linux.md` for Linux and
-`docs/releasing.md` for making a release.
+Install the JavaScript dependencies with `npm install`, run every check with
+`npm run check` and build the app with `npm run app:build`. `npm run test:python`
+runs the Python bridge tests and `npm run test:linux` the Linux checks;
+`docs/linux.md` covers Linux and `docs/releasing.md` making a release.
 
 ## License
 
-netterm is free software under the GNU General Public License, version 3 only
+enodix is free software under the GNU General Public License, version 3 only
 (`GPL-3.0-only`); see [LICENSE](LICENSE). It is funded by donations, with no paid
 tier, no hosted service and no contributor agreement.

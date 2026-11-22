@@ -8,7 +8,7 @@ mod support;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use netterm_core::workspace::{
+use enodix_core::workspace::{
     Condition, HostId, SavedFilter, SearchResults, Workspace, FILTERS_FILE,
 };
 use support::workspaces::{fixture, fixture_copy};

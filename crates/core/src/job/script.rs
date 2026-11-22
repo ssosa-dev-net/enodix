@@ -45,11 +45,11 @@ use crate::workspace::HostId;
 /// with their file's `.yaml`/`.yml`.
 pub const SCRIPT_OUTPUT: &str = "script";
 /// Names the file listing the job's hosts ([`ScriptTargets`]).
-pub const TARGETS_VARIABLE: &str = "NETTERM_JOB_TARGETS";
+pub const TARGETS_VARIABLE: &str = "ENODIX_JOB_TARGETS";
 /// Names the workspace folder the script runs for.
-pub const WORKSPACE_VARIABLE: &str = "NETTERM_WORKSPACE";
+pub const WORKSPACE_VARIABLE: &str = "ENODIX_WORKSPACE";
 /// Names the headless binary, for the Python package.
-pub const CLI_VARIABLE: &str = "NETTERM_CLI";
+pub const CLI_VARIABLE: &str = "ENODIX_CLI";
 /// The version of the targets file's format.
 pub const TARGETS_FORMAT: u32 = 1;
 
@@ -152,7 +152,7 @@ pub(super) fn spawn(
         id: HostId::new(SCRIPT_OUTPUT),
         name,
         facts: (plan.step == JobStep::Enrich).then(|| {
-            std::env::temp_dir().join(format!("netterm-facts-{}.json", uuid::Uuid::new_v4()))
+            std::env::temp_dir().join(format!("enodix-facts-{}.json", uuid::Uuid::new_v4()))
         }),
         events,
         text: PlainText::new(),
@@ -206,7 +206,7 @@ impl Runner {
         targets: &ScriptTargets,
         cancel: &watch::Receiver<bool>,
     ) {
-        let file = std::env::temp_dir().join(format!("netterm-job-{}.json", uuid::Uuid::new_v4()));
+        let file = std::env::temp_dir().join(format!("enodix-job-{}.json", uuid::Uuid::new_v4()));
         let (state, exit_status) = match self.execute(script, options, targets, &file, cancel) {
             Ok(Ended::Exited(status)) => (exited(status), status.code()),
             Ok(Ended::Cancelled) => (HostState::Cancelled, None),

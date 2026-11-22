@@ -6,8 +6,8 @@ mod support;
 use std::fmt::Write as _;
 use std::fs;
 
-use netterm_core::session::{SessionState, SessionTarget, TerminalSize};
-use netterm_core::workspace::{Folder, HostId, Workspace};
+use enodix_core::session::{SessionState, SessionTarget, TerminalSize};
+use enodix_core::workspace::{Folder, HostId, Workspace};
 use support::workspaces::{fixture, fixture_copy};
 use support::{next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT, USERNAME};
 use tempfile::TempDir;

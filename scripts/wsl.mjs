@@ -3,8 +3,8 @@
 // distribution's own file system and run there. Building from /mnt/<drive>
 // would be slow and would write a Linux target/ into the Windows checkout.
 //
-//   NETTERM_WSL_DISTRO  the distribution (default: WSL's default one)
-//   NETTERM_WSL_DIR     the folder there (default ~/netterm-linux-check)
+//   ENODIX_WSL_DISTRO  the distribution (default: WSL's default one)
+//   ENODIX_WSL_DIR     the folder there (default ~/enodix-linux-check)
 
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const distro = process.env.NETTERM_WSL_DISTRO;
+const distro = process.env.ENODIX_WSL_DISTRO;
 const distroArgs = distro ? ["-d", distro] : [];
 
 /** `text` as one single-quoted word for bash. */
@@ -21,7 +21,7 @@ export function quoted(text) {
 }
 
 /** The checkout's folder in WSL. */
-const folder = process.env.NETTERM_WSL_DIR || "~/netterm-linux-check";
+const folder = process.env.ENODIX_WSL_DIR || "~/enodix-linux-check";
 /** `folder` as bash takes it (`~` expanded). */
 export const WSL_FOLDER = folder.startsWith("~/")
   ? `"$HOME"/${quoted(folder.slice(2))}`

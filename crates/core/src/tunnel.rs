@@ -2,7 +2,7 @@
 //!
 //! Python libraries (Netmiko, scrapli, NAPALM) make their own SSH
 //! connections and know nothing of the app's jump hosts. The headless
-//! binary (`netterm-cli tunnel`) therefore opens each host's jump chain here,
+//! binary (`enodix-cli tunnel`) therefore opens each host's jump chain here,
 //! exactly as a terminal session would (the app's known host keys, stored
 //! profile or agent logins, legacy crypto and connect timeouts of each
 //! hop), and listens on a loopback port per host; the inventory plugin

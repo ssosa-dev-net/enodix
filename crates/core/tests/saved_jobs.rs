@@ -7,11 +7,11 @@ mod support;
 use std::collections::BTreeMap;
 use std::fs;
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, Profiles,
 };
-use netterm_core::job::{self, JobPlan, JobStep, JobTarget, PlanError};
-use netterm_core::workspace::{
+use enodix_core::job::{self, JobPlan, JobStep, JobTarget, PlanError};
+use enodix_core::workspace::{
     secret_answers, EditError, HostId, SavedJob, ScriptError, Workspace, JOBS_FILE,
 };
 use support::workspaces::{fixture, fixture_copy, read};

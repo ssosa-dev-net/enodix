@@ -12,8 +12,8 @@ mod support;
 
 use std::fs;
 
-use netterm_core::inventory::{self, Limit};
-use netterm_core::workspace::{EditError, FolderDeletion, Workspace};
+use enodix_core::inventory::{self, Limit};
+use enodix_core::workspace::{EditError, FolderDeletion, Workspace};
 use support::workspaces::files;
 use tempfile::TempDir;
 
@@ -250,7 +250,7 @@ fn two_files_of_one_name_in_two_forms_both_load_and_are_a_problem() {
 /// search and saved filters.
 #[test]
 fn a_name_in_its_other_form_finds_the_host() {
-    use netterm_core::workspace::{Condition, HostId, SavedFilter};
+    use enodix_core::workspace::{Condition, HostId, SavedFilter};
     let (temp, _) = empty_workspace();
     let root = temp.path();
     fs::write(
@@ -306,7 +306,7 @@ fn a_name_in_its_other_form_finds_the_host() {
 #[cfg(unix)]
 #[test]
 fn on_linux_two_files_differing_only_in_case_are_two_hosts_never_mixed_up() {
-    use netterm_core::workspace::HostId;
+    use enodix_core::workspace::HostId;
     let (temp, _) = empty_workspace();
     let root = temp.path();
     fs::write(root.join("R1.yaml"), "address: 10.0.0.1\n").unwrap();
@@ -355,7 +355,7 @@ fn on_linux_two_files_differing_only_in_case_are_two_hosts_never_mixed_up() {
 #[cfg(unix)]
 #[test]
 fn on_linux_files_with_names_windows_reserves_load_and_can_be_edited() {
-    use netterm_core::workspace::HostId;
+    use enodix_core::workspace::HostId;
     let (temp, _) = empty_workspace();
     let root = temp.path();
     fs::write(root.join("CON.yaml"), "address: 10.0.0.1\n").unwrap();

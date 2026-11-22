@@ -7,14 +7,14 @@ mod support;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use netterm_core::credentials::{
+use enodix_core::credentials::{
     AuthDraft, AuthSummary, CredentialProfile, CredentialStore, HostLogin, MemoryStore,
     ProfileAuth, ProfileDraft, ProfileError, ProfileSummary, Profiles,
 };
-use netterm_core::session::{
+use enodix_core::session::{
     SessionState, SessionTarget, SshAgent, SshAuth, SshTarget, TerminalSize,
 };
-use netterm_core::workspace::{HostId, Settings, Workspace};
+use enodix_core::workspace::{HostId, Settings, Workspace};
 use support::agent::TestAgent;
 use support::workspaces::files;
 use support::{next_state, output_ending_with, TestSshServer, PASSWORD, PROMPT, USERNAME};

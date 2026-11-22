@@ -4,12 +4,12 @@
 
 mod support;
 
-use netterm_core::import::csv::{
+use enodix_core::import::csv::{
     suggest_mapping, ColumnTarget, CsvError, CsvImport, CsvTable, HostField, MappingError,
     PreviewOutcome, Separator,
 };
-use netterm_core::import::{ImportReport, ReportEntry};
-use netterm_core::workspace::{HostId, Workspace};
+use enodix_core::import::{ImportReport, ReportEntry};
+use enodix_core::workspace::{HostId, Workspace};
 use support::workspaces::{files, fixture_copy, read};
 use tempfile::TempDir;
 

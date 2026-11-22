@@ -6,8 +6,8 @@ mod support;
 
 use std::fs;
 
-use netterm_core::template::{MissingVariables, Template, Variables};
-use netterm_core::workspace::{EditError, ExpandError, HostId, Snippet, Workspace, SNIPPETS_FILE};
+use enodix_core::template::{MissingVariables, Template, Variables};
+use enodix_core::workspace::{EditError, ExpandError, HostId, Snippet, Workspace, SNIPPETS_FILE};
 use support::workspaces::read;
 use tempfile::TempDir;
 

@@ -8,7 +8,7 @@
 // Windows 11 with the Windows Sandbox feature on, and its `wsb` command line
 // (it comes with the sandbox's own update, the first time the sandbox
 // starts). Before the smoke test: `npm run app:build` and
-// `cargo build -p netterm-core --example test_ssh_server` (the sandbox has
+// `cargo build -p enodix-core --example test_ssh_server` (the sandbox has
 // no Rust toolchain). Before the installer check: a release build
 // (`npm run release -- --unsigned`).
 //
@@ -25,11 +25,11 @@
 // the exit code is the test's.
 //
 // One sandbox at a time, and one app-driving run at a time: the lock
-// folder %TEMP%\netterm-app-driving.lock is taken for the run.
+// folder %TEMP%\enodix-app-driving.lock is taken for the run.
 //
 // vGPU is off unless --vgpu: with it on, the sandbox's own window manager
 // (dwm) crashed in a loop and the session was lost on this computer
-// (2026-11-21, the testing notes).
+// (2026-11-21).
 
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -48,19 +48,19 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const LOCK = join(tmpdir(), "netterm-app-driving.lock");
+const LOCK = join(tmpdir(), "enodix-app-driving.lock");
 const LOCK_STALE_MS = 40 * 60 * 1000;
-const DESKTOP = "netterm-sandbox";
+const DESKTOP = "enodix-sandbox";
 /** Where everything is inside the sandbox. */
 const INSIDE = {
-  tree: String.raw`C:\netterm-host\tree`,
-  app: String.raw`C:\netterm-host\app`,
-  server: String.raw`C:\netterm-host\server`,
-  node: String.raw`C:\netterm-host\node`,
-  python: String.raw`C:\netterm-host\python`,
-  oldInstaller: String.raw`C:\netterm-host\old`,
-  newInstaller: String.raw`C:\netterm-host\new`,
-  out: String.raw`C:\netterm-out`,
+  tree: String.raw`C:\enodix-host\tree`,
+  app: String.raw`C:\enodix-host\app`,
+  server: String.raw`C:\enodix-host\server`,
+  node: String.raw`C:\enodix-host\node`,
+  python: String.raw`C:\enodix-host\python`,
+  oldInstaller: String.raw`C:\enodix-host\old`,
+  newInstaller: String.raw`C:\enodix-host\new`,
+  out: String.raw`C:\enodix-out`,
 };
 /** What the tests read from the tree, copied for the sandbox. */
 const TREE = [
@@ -176,7 +176,7 @@ function currentInstaller() {
       "target",
       "dist",
       folder,
-      `netterm_${version}_x64-setup.exe`,
+      `enodix_${version}_x64-setup.exe`,
     );
     if (existsSync(file)) return file;
   }
@@ -277,8 +277,8 @@ async function main() {
       "test_ssh_server.exe",
     );
     for (const [file, how] of [
-      [join(app, "netterm.exe"), "npm run app:build"],
-      [server, "cargo build -p netterm-core --example test_ssh_server"],
+      [join(app, "enodix.exe"), "npm run app:build"],
+      [server, "cargo build -p enodix-core --example test_ssh_server"],
     ]) {
       if (!existsSync(file)) throw new Error(`no ${file}: run ${how} first`);
     }

@@ -11,8 +11,8 @@ mod support;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use netterm_core::preferences::Preferences;
-use netterm_core::update::{
+use enodix_core::preferences::Preferences;
+use enodix_core::update::{
     InstallKind, InstallRefused, UpdateAction, UpdateChecker, UpdateSource, UpdateSourceError,
     UpdateStatus, INSTALLED_MARKER, PACKAGE_MARKER, PORTABLE_MARKER,
 };
@@ -26,11 +26,11 @@ fn manifest(version: &str) -> String {
   "version": "{version}",
   "notes": "Faster serial ports.",
   "pub_date": "2026-11-01T10:00:00Z",
-  "page": "https://example.invalid/netterm/releases/tag/v{version}",
+  "page": "https://example.invalid/enodix/releases/tag/v{version}",
   "platforms": {{
     "windows-x86_64": {{
       "signature": "c2lnbmF0dXJl",
-      "url": "https://example.invalid/netterm/releases/download/v{version}/netterm_{version}_x64-setup.exe"
+      "url": "https://example.invalid/enodix/releases/download/v{version}/enodix_{version}_x64-setup.exe"
     }}
   }}
 }}"#
@@ -73,7 +73,7 @@ async fn an_installed_copy_offers_to_install_a_newer_version() {
     assert_eq!(offer.published.as_deref(), Some("2026-11-01T10:00:00Z"));
     assert_eq!(
         offer.page.as_deref(),
-        Some("https://example.invalid/netterm/releases/tag/v0.2.0")
+        Some("https://example.invalid/enodix/releases/tag/v0.2.0")
     );
     assert_eq!(server.requests(), ["GET /latest.json HTTP/1.1"]);
 }
