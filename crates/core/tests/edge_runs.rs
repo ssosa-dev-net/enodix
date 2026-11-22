@@ -351,7 +351,11 @@ fn two_hundred_kept_runs_list_quickly() {
 /// Listing again reads only the descriptions that changed (#137; every
 /// list used to read every description whole, which the Jobs view waits
 /// for each time a job starts or ends): a second list of 2 000 runs takes
-/// well under half of reading every description, measured beside it.
+/// well under half of reading every description, measured beside it. Not
+/// timed on Windows: there, reading a file's size and time opens the file,
+/// which on some computers (CI's runners, with their scanner) costs as much
+/// as reading a description this small; what is not read again is checked
+/// on every system by the next test.
 #[test]
 fn listing_many_kept_runs_again_is_quick() {
     let Listing {
@@ -359,10 +363,47 @@ fn listing_many_kept_runs_again_is_quick() {
         again,
         reading,
     } = list_many(2000);
-    assert!(
-        again < reading / 2,
-        "first {first:?}, again {again:?}, reading {reading:?}"
-    );
+    if cfg!(not(windows)) {
+        assert!(
+            again < reading / 2,
+            "first {first:?}, again {again:?}, reading {reading:?}"
+        );
+    }
+}
+
+/// A settled description whose size and time have not changed is not read
+/// again: changed to the same size with its time put back, the list still
+/// gives what it held before; once its time changes, the new contents
+/// (#137).
+#[test]
+fn a_settled_description_is_read_again_only_when_its_stamp_changes() {
+    let lab = lab(2);
+    let plan = lab.plan(&folder(""), &snippet("Show"));
+    let store = RunStore::new(lab.folder("data/jobs"));
+    let ws = lab.id();
+    let id = keep(&store, &ws, &plan, "r1# show hostname\nr1\nr1#\n");
+    let file = store.root().join(&ws).join(&id).join(RUN_FILE);
+    let set_time = |time: SystemTime| {
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    };
+    let old = SystemTime::now() - Duration::from_secs(3600);
+    set_time(old);
+    let listed = store.list(&ws).unwrap();
+    assert_eq!(listed.runs[0].step, snippet("Show"));
+
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(text.contains("name: Show"), "{text}");
+    fs::write(&file, text.replace("name: Show", "name: Shaw")).unwrap();
+    set_time(old);
+    assert_eq!(store.list(&ws).unwrap(), listed, "read again");
+
+    set_time(old + Duration::from_secs(60));
+    assert_eq!(store.list(&ws).unwrap().runs[0].step, snippet("Shaw"));
 }
 
 /// A description written again a moment after it was listed, with the same
