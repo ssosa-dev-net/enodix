@@ -32,13 +32,36 @@
 // web view are written to `--pictures` (default: a folder in the
 // temporary one, kept).
 //
-// Not checked here (see docs/linux.md): dragging the window, resizing it
-// from its edges, Minimize's effect, edge tiling, and what the desktop's
-// opener then does.
+// A serial console is opened on a pseudo terminal that `socat` forwards
+// to a TCP port the script plays the device on (as a console server's
+// port reached with `socat pty,... tcp:...` looks).
+//
+// `--desktop xfce|gnome` (#58) runs all of it inside a real desktop
+// session out of sight (scripts/linux-desktop-session.mjs: XFCE on a
+// virtual X display, or GNOME Shell headless on Wayland), and adds what
+// only a desktop shows: the menu entry found by the menu's search and
+// started from it, light and dark switched by the desktop's own setting
+// while the app runs, the frame moved, resized from its edges and
+// corners, tiled at the screen's edge, maximized by a double click and
+// minimized and brought back with the desktop's real pointer (geometry
+// read from the window manager), and "Open log folder" and web links
+// starting a real file manager (Thunar) and browser (GNOME Web), with
+// the environment those programs got. Pictures of the whole screen are
+// added (`*-desktop.png`). `--gallium-driver <name>` sets Mesa's
+// GALLIUM_DRIVER for the app (under WSL `d3d12` reaches the computer's
+// GPU through /dev/dxg) and requires WebGL's renderer to name it.
+//
+// `--cli <program>` runs the headless binary from the shell (default
+// /usr/bin/netterm-cli) and `--packaged rpm` says `--app` is a package's
+// copy: scripts/linux-fedora-check.mjs runs both in a Fedora container.
+//
+// Without --desktop, not checked here (see docs/linux.md): dragging the
+// window, resizing it from its edges, Minimize's effect, edge tiling, and
+// what the desktop's opener then does.
 //
 // Needs, besides those two: Rust (to build the example server),
-// openssh-client (ssh-agent, ssh-add), python3 with venv, and the app's
-// package installed (/usr/bin/netterm-cli, used from the shell).
+// openssh-client (ssh-agent, ssh-add), python3 with venv, socat, and the
+// app's package installed (/usr/bin/netterm-cli, used from the shell).
 
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -48,13 +71,21 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
+import {
+  BROWSER,
+  FILE_MANAGER,
+  SCREEN,
+  startDesktop,
+} from "./linux-desktop-session.mjs";
 import { quoted, ROOT, syncIntoWsl, wsl, WSL_FOLDER } from "./wsl.mjs";
 
 const SSH_PORT = 24722;
@@ -62,11 +93,14 @@ const TELNET_PORT = 24723;
 const RELEASE_PORT = 24724;
 const DRIVER_PORT = 24727;
 const NATIVE_PORT = 24728;
+const CONSOLE_PORT = 24729;
 const USERNAME = "engineer";
 const PASSWORD = "correct horse";
 const MASTER_PASSWORD = "linux desktop master";
 const NEWER_VERSION = "99.0.0";
-const RELEASE_PAGE = "https://example.invalid/releases/99.0.0";
+// Served by the release server, so a real browser opening them is seen.
+const RELEASE_PAGE = `http://127.0.0.1:${RELEASE_PORT}/releases/99.0.0`;
+const WEB_LINK = `http://127.0.0.1:${RELEASE_PORT}/status`;
 const TIMEOUT_MS = 20000;
 
 function fail(message) {
@@ -75,7 +109,17 @@ function fail(message) {
   throw Object.assign(new Error(message), { reported: true });
 }
 
-const options = { app: "/usr/bin/netterm", backend: null, pictures: null };
+const options = {
+  app: "/usr/bin/netterm",
+  backend: null,
+  pictures: null,
+  desktop: null,
+  "gallium-driver": null,
+  // The headless binary run from a shell, and whether `--app` is a
+  // package's copy (`--packaged rpm`: scripts/linux-fedora-check.mjs).
+  cli: "/usr/bin/netterm-cli",
+  packaged: null,
+};
 for (let at = 2; at < process.argv.length; at++) {
   const name = process.argv[at].replace(/^--/, "");
   if (!(name in options)) {
@@ -108,8 +152,13 @@ const workspace = join(temp, "workspace");
 const keyFile = join(temp, "keys", "rsa_client");
 const agentSocket = join(temp, "agent.sock");
 const openedFile = join(temp, "opened.txt");
+/** What the desktop's opener got as its environment (with --desktop). */
+const openerEnvironmentFile = join(temp, "opener-environment.txt");
+const consolePort = join(temp, "ttyCONSOLE");
 const pictures = options.pictures ?? join(temp, "pictures");
 const children = [];
+/** The desktop session, with --desktop (startDesktop). */
+let desktop = null;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const step = (message) => console.log(`ok - ${message}`);
 /** A fault that does not stop the run. */
@@ -189,9 +238,7 @@ function createWorkspace() {
     writeFileSync(
       join(workspace, "Lab", `${name}.yaml`),
       `name: ${name}\naddress: 127.0.0.1\ncredential_profile: ${profile}\n` +
-        (name === "r1-password"
-          ? "web_links:\n  status: https://example.invalid/status\n"
-          : ""),
+        (name === "r1-password" ? `web_links:\n  status: ${WEB_LINK}\n` : ""),
     );
   writeFileSync(
     join(workspace, "Lab", "sw-telnet.yaml"),
@@ -220,7 +267,12 @@ function createWorkspace() {
  * to open. The app opens through the `open` crate, which tries xdg-open
  * first, then gio and others; under WSL it first hands the target to
  * Windows through `powershell.exe` (in OPEN_RS_TARGET), which would open
- * the Windows browser: that one is replaced too. */
+ * the Windows browser: that one is replaced too.
+ *
+ * With --desktop, xdg-open records and then runs the real one (which
+ * starts the desktop's file manager or browser), with its environment
+ * written to `openerEnvironmentFile`; `powershell.exe` records and fails,
+ * so the crate goes on to xdg-open as on a Linux computer. */
 function fakeOpener() {
   const bin = join(temp, "bin");
   mkdirSync(bin);
@@ -230,8 +282,21 @@ function fakeOpener() {
     writeFileSync(join(bin, name), record(name, "$*"));
   writeFileSync(
     join(bin, "powershell.exe"),
-    record("windows", "$OPEN_RS_TARGET"),
+    record("windows", "$OPEN_RS_TARGET") + (desktop ? "exit 1\n" : ""),
   );
+  if (desktop)
+    writeFileSync(
+      join(bin, "xdg-open"),
+      record("xdg-open", "$*") +
+        `{ echo "--- $*"; env; } >> ${quoted(openerEnvironmentFile)}\n` +
+        `PATH=$(printf '%s' "$PATH" | sed "s#^${bin}:##")\n` +
+        // What WebDriver sets in the app only: a browser that is itself
+        // WebKit (GNOME Web) would take it for its own and fail to start.
+        // And --gallium-driver's, which is for the app (GNOME Web shows
+        // blank pages with Mesa's D3D12 driver).
+        `unset WEBKIT_INSPECTOR_SERVER TAURI_AUTOMATION TAURI_WEBVIEW_AUTOMATION${options["gallium-driver"] ? " GALLIUM_DRIVER" : ""}\n` +
+        `exec /usr/bin/xdg-open "$@" 2>> ${quoted(`${openerEnvironmentFile}.errors`)}\n`,
+    );
   for (const name of [
     "xdg-open",
     "gio",
@@ -293,7 +358,9 @@ async function startServers() {
     encoding: "utf8",
   });
   if (added.status !== 0) fail(`ssh-add: ${added.stderr}`);
-  const release = { requests: 0 };
+  // The update check's manifest, and the pages a browser opens (each
+  // visit recorded with the browser's name for itself).
+  const release = { requests: 0, visits: [] };
   const manifest = JSON.stringify({
     version: NEWER_VERSION,
     notes: "A newer release.",
@@ -302,9 +369,20 @@ async function startServers() {
     platforms: {},
   });
   const server = createServer((request, response) => {
-    release.requests += 1;
-    response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(manifest);
+    if (request.url === "/latest.json") {
+      release.requests += 1;
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(manifest);
+      return;
+    }
+    release.visits.push({
+      path: request.url,
+      agent: request.headers["user-agent"] ?? "",
+    });
+    response.writeHead(200, { "Content-Type": "text/html" });
+    response.end(
+      `<!doctype html><title>netterm check ${request.url}</title><h1>${request.url}</h1>`,
+    );
   });
   await new Promise((resolve) =>
     server.listen(RELEASE_PORT, "127.0.0.1", resolve),
@@ -314,20 +392,25 @@ async function startServers() {
 }
 
 /** The app's environment: temporary data and XDG folders, the agent, the
- * release server, the recording opener first on the PATH. */
+ * release server, the recording opener first on the PATH. With --desktop
+ * the XDG folders are the desktop session's (temporary too), where its
+ * settings and default applications are. */
 function appEnvironment(bin, extra = {}) {
   const env = {
     ...process.env,
     NETTERM_DATA_DIR: dataFolder,
-    XDG_DATA_HOME: join(temp, "xdg-data"),
-    XDG_CACHE_HOME: join(temp, "xdg-cache"),
-    XDG_CONFIG_HOME: join(temp, "xdg-config"),
+    ...(!desktop && {
+      XDG_DATA_HOME: join(temp, "xdg-data"),
+      XDG_CACHE_HOME: join(temp, "xdg-cache"),
+      XDG_CONFIG_HOME: join(temp, "xdg-config"),
+    }),
     SSH_AUTH_SOCK: agentSocket,
     NETTERM_UPDATE_ENDPOINT: `http://127.0.0.1:${RELEASE_PORT}/latest.json`,
     PATH: `${bin}:${process.env.PATH}`,
     ...extra,
   };
   if (options.backend) env.GDK_BACKEND = options.backend;
+  if (options["gallium-driver"]) env.GALLIUM_DRIVER = options["gallium-driver"];
   return env;
 }
 
@@ -354,6 +437,8 @@ async function startApp(env) {
       method,
       headers: { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
+      // A session the app never connects to would wait for ever.
+      signal: AbortSignal.timeout(120000),
     });
     const answer = await response.json();
     if (!response.ok)
@@ -386,6 +471,8 @@ async function startApp(env) {
         script: `const done = arguments[arguments.length - 1];\n${body}`,
         args,
       }),
+    url: () => call("GET", at("/url")),
+    navigate: (url) => call("POST", at("/url"), { url }),
     exists: (selector) =>
       page.js("return !!document.querySelector(arguments[0])", selector),
     text: (selector) =>
@@ -467,9 +554,11 @@ async function startApp(env) {
       mkdirSync(pictures, { recursive: true });
       const png = await call("GET", at("/screenshot"));
       writeFileSync(join(pictures, `${name}.png`), Buffer.from(png, "base64"));
-      // Under X11 also the window as the X server has it (ImageMagick's
-      // import; WSLg's XWayland cannot capture its root window).
-      if ((options.backend ?? process.env.GDK_BACKEND) === "x11") {
+      // In a desktop session, the whole screen.
+      if (desktop) desktop.picture(join(pictures, `${name}-desktop.png`));
+      // Under WSLg's X11 also the window as the X server has it
+      // (ImageMagick's import; WSLg's XWayland cannot capture its root).
+      else if ((options.backend ?? process.env.GDK_BACKEND) === "x11") {
         const title = await page.js("return document.title");
         const found = spawnSync(
           "xdotool",
@@ -552,6 +641,31 @@ async function openPreferences(page) {
   );
 }
 
+/** A tool of the active pane's bar: its button, or in a narrow pane
+ * (#100) the entry of the same name in the bar's "…" menu. */
+async function paneTool(page, selector, label) {
+  const shown = await page.js(
+    `const bars = [...document.querySelectorAll("[data-tab-bar]")];
+     const active = bars.find((bar) => bar.closest(".pane")?.querySelector(".slot[data-active]")) ?? bars[0];
+     for (const bar of bars) delete bar.dataset.checkBar;
+     active.dataset.checkBar = "";
+     const button = active.querySelector(arguments[0]);
+     return !!button && button.checkVisibility() && !button.closest("[inert]");`,
+    selector,
+  );
+  if (shown) return page.click(`[data-check-bar] ${selector}`);
+  await page.click("[data-check-bar] [data-pane-tools-more]");
+  await until(`"${label}" in the pane's menu`, () =>
+    page.js(
+      `const entry = [...document.querySelectorAll("[role=menuitem]")].find((item) => item.textContent.trim() === arguments[0]);
+       if (entry) entry.dataset.checkEntry = "";
+       return !!entry;`,
+      label,
+    ),
+  );
+  await page.click("[data-check-entry]");
+}
+
 async function closeTab(page, selector) {
   if (await page.exists(`${selector} [data-tab-close]`))
     await page.click(`${selector} [data-tab-close]`);
@@ -590,11 +704,611 @@ async function started(page) {
       size: [innerWidth, innerHeight],
       webgl2: !!canvas.getContext("webgl2"),
     };`);
-  step(
-    `the app started (${options.app}, GDK_BACKEND ${options.backend ?? process.env.GDK_BACKEND ?? "unset"}): ` +
-      `window "${info.title}" ${info.size.join("x")}, WebGL 2 ${info.webgl2 ? "available" : "NOT available"}`,
+  // The renderer behind the web view's GL: WebKit hides it from pages
+  // (WebGL names an "Apple GPU" whatever draws), so it is read from
+  // WebKitGTK's own webkit://gpu page, then the app is loaded again.
+  const appUrl = await page.url();
+  await page.navigate("webkit://gpu");
+  const gpu = await until("webkit://gpu", async () => {
+    const text = await page.js("return document.body?.innerText ?? ''");
+    return text.includes("Renderer") && text;
+  }).catch(() => "");
+  mkdirSync(pictures, { recursive: true });
+  writeFileSync(join(pictures, "1-webkit-gpu.txt"), gpu);
+  await page.navigate(appUrl);
+  await until("the welcome view again", () =>
+    page.exists("[data-welcome] [data-welcome-form=open]"),
   );
+  // The page is a table: each name on a line, its value on the next.
+  const lines = gpu.split("\n").map((line) => line.trim());
+  const field = (name) => {
+    const at = lines.indexOf(name);
+    return at >= 0 ? lines[at + 1] : undefined;
+  };
+  const renderer = field("GL_RENDERER") ?? "unknown";
+  step(
+    `the app started (${options.app}, GDK_BACKEND ${options.backend ?? process.env.GDK_BACKEND ?? "unset"}` +
+      `${desktop ? `, in ${desktop.name}` : ""}): ` +
+      `window "${info.title}" ${info.size.join("x")}, WebGL 2 ${info.webgl2 ? "available" : "NOT available"}; ` +
+      `webkit://gpu: GL_RENDERER "${renderer}", acceleration ${field("Policy")}, ` +
+      `WebGL ${field("WebGL enabled")}, buffers ${field("Renderer")}, ${field("Platform")}`,
+  );
+  const driver = options["gallium-driver"];
+  if (driver && !renderer.toLowerCase().includes(driver))
+    problem(`with GALLIUM_DRIVER=${driver} the renderer is "${renderer}"`);
   await page.picture("1-welcome");
+}
+
+// --- A desktop session (--desktop) ----------------------------------------
+
+const APP_CLASSES = ["netterm", "Netterm"];
+
+/** The app's windows as the desktop's window manager has them. */
+function appWindows() {
+  return desktop.windows(APP_CLASSES);
+}
+
+/** The one window of the app, once the window manager has it. */
+function appWindow() {
+  return until("the app's window at the window manager", () => {
+    const found = appWindows();
+    return found.length === 1 && found[0];
+  });
+}
+
+/** The window once two reads a moment apart agree. */
+async function settledWindow() {
+  let last = await appWindow();
+  for (let tries = 0; tries < 30; tries++) {
+    await sleep(250);
+    const now = await appWindow();
+    if (JSON.stringify(now) === JSON.stringify(last)) return now;
+    last = now;
+  }
+  return last;
+}
+
+const near = (value, expected, slack = 3) =>
+  Math.abs(value - expected) <= slack;
+const box = (window) =>
+  `${window.width}x${window.height} at ${window.x},${window.y}`;
+
+/** 1. The menu entry: valid, its icon at every size a menu asks, found by
+ * the desktop's menu search and started from it (before the check's own
+ * copy of the app). The package's only. */
+async function desktopMenu() {
+  const validated = spawnSync(
+    "desktop-file-validate",
+    ["/usr/share/applications/netterm.desktop"],
+    { encoding: "utf8" },
+  );
+  if (validated.error)
+    fail("desktop-file-validate is needed (desktop-file-utils)");
+  if (validated.status !== 0 || validated.stdout.trim())
+    problem(
+      `desktop-file-validate: ${validated.stdout}${validated.stderr}`.trim(),
+    );
+  else step("desktop-file-validate accepts the menu entry");
+
+  // What GTK's icon theme (and so the menu and the task list) finds for
+  // each size, through the hicolor theme and its cache.
+  const icons = spawnSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import gi, sys",
+        "gi.require_version('Gtk', '3.0')",
+        "from gi.repository import Gtk",
+        "theme = Gtk.IconTheme.get_default()",
+        "for size in (16, 24, 32, 48, 64, 128, 256):",
+        "    info = theme.lookup_icon('netterm', size, 0)",
+        "    print(size, info.get_filename() if info else None, info.get_base_size() if info else 0)",
+      ].join("\n"),
+    ],
+    { env: desktop.env, encoding: "utf8" },
+  );
+  const found = icons.stdout.trim().split("\n");
+  if (icons.status !== 0 || found.some((line) => line.includes("None")))
+    problem(`the icon theme lacks the icon: ${icons.stdout}${icons.stderr}`);
+  else
+    step(
+      `the icon theme finds the icon at every size: ${found.map((line) => line.replace(/ \/usr\/share\/icons\/hicolor\/(\S+)\/apps\/netterm.png/, " $1")).join(", ")}`,
+    );
+  const cache = "/usr/share/icons/hicolor/icon-theme.cache";
+  if (!existsSync(cache) || !readFileSync(cache).includes("netterm"))
+    problem("the hicolor icon cache does not list netterm");
+
+  if (desktop.menuEntry) {
+    const entry = desktop.menuEntry("netterm.desktop");
+    if (!entry?.shown) problem(`GNOME's app list: ${JSON.stringify(entry)}`);
+    else step(`GNOME's app list has it: ${JSON.stringify(entry)}`);
+  }
+
+  mkdirSync(pictures, { recursive: true });
+  // A second try if the first search found nothing to start (a menu
+  // still loading on a busy computer).
+  let window = null;
+  for (let attempt = 1; !window && attempt <= 2; attempt++) {
+    await desktop.searchMenu("netterm");
+    desktop.picture(join(pictures, "0-menu-search-desktop.png"));
+    await desktop.launchMenuHit();
+    window = await settles(
+      () => appWindows().find((window) => window.width > 0),
+      30000,
+    ).then((started) =>
+      started ? appWindows().find((window) => window.width > 0) : null,
+    );
+    if (!window) await desktop.key("Escape");
+  }
+  if (!window) fail("the menu's search did not start the app");
+  await sleep(2000);
+  desktop.picture(join(pictures, "0-menu-started-desktop.png"));
+  const startedBy = readFileSync(`/proc/${window.pid}/cmdline`, "utf8")
+    .split("\0")
+    .filter(Boolean)
+    .join(" ");
+  if (window.app !== undefined && window.app !== "netterm.desktop")
+    problem(
+      `GNOME ties the window to ${window.app}, not netterm.desktop (dock icon, StartupWMClass)`,
+    );
+  step(
+    `the menu's search found netterm and started it ("${startedBy}"): window "${window.title}" ${box(window)}` +
+      (window.app ? `, tied to ${window.app}` : ""),
+  );
+  desktop.close(window);
+  const gone = await settles(() => appWindows().length === 0, 10000);
+  if (!gone) {
+    problem("the app started from the menu did not close");
+    try {
+      process.kill(window.pid);
+    } catch {
+      // Gone already.
+    }
+  }
+}
+
+/** 2. Light and dark from the desktop's own switch, with the app's theme
+ * on "system", while it runs. */
+async function desktopTheme(page) {
+  const shown = () =>
+    page.js(`return {
+      dark: matchMedia("(prefers-color-scheme: dark)").matches,
+      applied: document.documentElement.dataset.theme ?? null,
+      background: getComputedStyle(document.body).backgroundColor,
+    }`);
+  const frameTheme = async () => (await page.window("theme")).value ?? null;
+  // Whether the page is told (the media query's change event).
+  await page.js(`window.__checkChanges = [];
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change",
+      (event) => window.__checkChanges.push(event.matches));`);
+  const before = await shown();
+  if (before.dark)
+    problem(`the desktop is light, the app dark: ${JSON.stringify(before)}`);
+  const switched = desktop.setDark(true);
+  const dark = await settles(async () => {
+    const now = await shown();
+    return now.dark && now.applied === "dark";
+  }, 10000);
+  const darkShown = {
+    ...(await shown()),
+    changeEvents: await page.js("return window.__checkChanges"),
+  };
+  const darkFrame = await frameTheme();
+  await page.picture("2-desktop-dark");
+  if (dark)
+    step(
+      `the desktop switched to dark (${switched}): the running app turned dark (${JSON.stringify(darkShown)}, the window's theme ${darkFrame})`,
+    );
+  else
+    problem(
+      `the desktop switched to dark (${switched}), the running app stayed light (${JSON.stringify(darkShown)}, the window's theme ${darkFrame})`,
+    );
+  const back = desktop.setDark(false);
+  const light = await settles(async () => {
+    const now = await shown();
+    return !now.dark && now.applied === "light";
+  }, 10000);
+  await page.picture("2-desktop-light");
+  if (light) step(`and back to light (${back}): the app turned light`);
+  else problem(`the desktop back to light (${back}), the app stayed dark`);
+}
+
+/** The screen point of a point of the page: the page's origin is found
+ * by moving the desktop's pointer over the window and reading where the
+ * page saw it. */
+async function pageOrigin(page) {
+  await desktop.calm?.();
+  await page.js(`window.__checkPointer = null;
+    addEventListener("mousemove", (event) => (window.__checkPointer = [event.clientX, event.clientY]));`);
+  const window = await settledWindow();
+  // Moved a little at a time until the page sees it (the first motion
+  // into a window may only enter it).
+  for (let step = 0; step < 20; step++) {
+    const at = { x: window.x + 300 + step, y: window.y + 300 + step };
+    await desktop.to(at.x, at.y);
+    await sleep(100);
+    const seen = await page.js("return window.__checkPointer");
+    if (seen && seen[0] > 250) return { x: at.x - seen[0], y: at.y - seen[1] };
+  }
+  fail(
+    `the page did not see the desktop's pointer over the window (${box(window)})`,
+  );
+}
+
+/** A drag with the desktop's pointer, in steps, as a hand does. */
+async function drag(from, to, { hold = 0 } = {}) {
+  await desktop.to(from.x, from.y);
+  await sleep(150);
+  await desktop.down();
+  await sleep(200);
+  for (const part of [0.1, 0.3, 0.6, 0.85, 1]) {
+    await desktop.to(
+      from.x + (to.x - from.x) * part,
+      from.y + (to.y - from.y) * part,
+    );
+    await sleep(80);
+  }
+  // Held against the target a moment, pushing (a window manager tiles
+  // on the pointer pressing the screen edge).
+  for (let push = 0; hold && push < 6; push++) {
+    await desktop.to(to.x + (push % 2), to.y + push);
+    await sleep(100);
+  }
+  await sleep(200 + hold);
+  await desktop.up();
+  await sleep(300);
+}
+
+async function realClick(point, times = 1) {
+  await desktop.to(point.x, point.y);
+  await sleep(100);
+  for (let count = 0; count < times; count++) {
+    await desktop.down();
+    await desktop.up();
+  }
+}
+
+/** 9. The frame with the desktop's own pointer: move, resize from edges
+ * and corners, tiling at the screen's edge, a double click on the top
+ * bar; the window manager says where the window is. */
+async function desktopFrame(page) {
+  const start = await settledWindow();
+  const origin = await pageOrigin(page);
+  note(
+    `the window at the window manager: ${box(start)}; the page's origin on the screen ${origin.x},${origin.y}`,
+  );
+  // The top bar's empty part (a drag region), on the screen now.
+  const barOnScreen = async () => {
+    const at = await pageOrigin(page);
+    const bar = await page.js(`
+      const bar = document.querySelector("[data-tab-bar]");
+      const box = bar.getBoundingClientRect();
+      const y = Math.round(box.top + box.height / 2);
+      for (let x = Math.round(box.right) - 8; x > box.left; x -= 4)
+        if (document.elementFromPoint(x, y) === bar) return { x, y };
+      return null;`);
+    if (!bar) fail("no empty part in the top bar");
+    return { x: at.x + bar.x, y: at.y + bar.y };
+  };
+  const pageSize = () => page.js("return [innerWidth, innerHeight]");
+  const results = [];
+  const expect = async (what, expected) => {
+    const now = await settledWindow();
+    const wrong = Object.entries(expected).filter(
+      ([key, value]) => !near(now[key], value),
+    );
+    if (wrong.length)
+      problem(
+        `${what}: the window is ${box(now)}, expected ${JSON.stringify(expected)}`,
+      );
+    else results.push(what);
+    return now;
+  };
+
+  // Move: the top bar's empty part dragged by (+140, +90).
+  let before = start;
+  let from = await barOnScreen();
+  await drag(from, { x: from.x + 140, y: from.y + 90 });
+  await expect("moved by dragging the top bar", {
+    x: before.x + 140,
+    y: before.y + 90,
+    width: before.width,
+    height: before.height,
+  });
+  await page.picture("9-moved");
+
+  // Resizing from each edge and corner, 2 px inside it.
+  const edges = [
+    [
+      "the right edge",
+      (w) => ({ x: w.x + w.width - 2, y: w.y + w.height / 2 }),
+      [100, 0],
+      (w) => ({ width: w.width + 100 }),
+    ],
+    [
+      "the bottom edge",
+      (w) => ({ x: w.x + w.width / 2, y: w.y + w.height - 2 }),
+      // Upwards: below, the window may already reach the screen's foot.
+      [0, -60],
+      (w) => ({ height: w.height - 60 }),
+    ],
+    [
+      "the bottom-right corner",
+      (w) => ({ x: w.x + w.width - 2, y: w.y + w.height - 2 }),
+      [-120, -80],
+      (w) => ({ width: w.width - 120, height: w.height - 80 }),
+    ],
+    [
+      "the left edge",
+      (w) => ({ x: w.x + 2, y: w.y + w.height / 2 }),
+      [-70, 0],
+      (w) => ({ x: w.x - 70, width: w.width + 70 }),
+    ],
+    [
+      "the top edge",
+      (w) => ({ x: w.x + w.width / 2, y: w.y + 2 }),
+      [0, -40],
+      (w) => ({ y: w.y - 40, height: w.height + 40 }),
+    ],
+    [
+      "the top-left corner",
+      (w) => ({ x: w.x + 2, y: w.y + 2 }),
+      [50, 30],
+      (w) => ({
+        x: w.x + 50,
+        y: w.y + 30,
+        width: w.width - 50,
+        height: w.height - 30,
+      }),
+    ],
+  ];
+  for (const [name, grip, [dx, dy], expected] of edges) {
+    before = await settledWindow();
+    const pageBefore = await pageSize();
+    from = grip(before);
+    await drag(from, { x: from.x + dx, y: from.y + dy });
+    const now = await expect(`resized from ${name}`, {
+      x: before.x,
+      y: before.y,
+      width: before.width,
+      height: before.height,
+      ...expected(before),
+    });
+    const followed = await settles(async () => {
+      const size = await pageSize();
+      return (
+        near(size[0] - pageBefore[0], now.width - before.width) &&
+        near(size[1] - pageBefore[1], now.height - before.height)
+      );
+    });
+    if (!followed)
+      problem(
+        `resized from ${name}: the page is ${(await pageSize()).join("x")}, was ${pageBefore.join("x")}, for a window ${box(now)} (was ${box(before)})`,
+      );
+  }
+  await page.picture("9-resized");
+
+  // Tiling to the left half: by dragging the top bar to the screen's left
+  // edge, then with the desktop's key; each time dragged off the edge
+  // again, the window gets its size back.
+  const area = desktop.workArea();
+  const tiledLeft = (window) =>
+    near(window.x, area.x, 4) &&
+    near(window.width, area.width / 2, 8) &&
+    window.height >= area.height - 40;
+  for (const [how, perform] of [
+    [
+      "by dragging it to the screen's left edge",
+      async () =>
+        drag(
+          await barOnScreen(),
+          { x: 0, y: area.y + area.height / 2 },
+          { hold: 800 },
+        ),
+    ],
+    [
+      `with the desktop's key (${desktop.tileLeftKey})`,
+      async () => {
+        await realClick(await barOnScreen());
+        await desktop.key(desktop.tileLeftKey);
+        await sleep(800);
+      },
+    ],
+  ]) {
+    before = await settledWindow();
+    await perform();
+    let now = await settledWindow();
+    await page.picture(`9-tiled-left-${how.startsWith("by") ? "drag" : "key"}`);
+    if (!tiledLeft(now)) {
+      problem(
+        `tiling ${how}: the window is ${box(now)} (the work area ${area.width}x${area.height} at ${area.x},${area.y})`,
+      );
+      // Back where the next steps can reach it.
+      desktop.place(now, 150, 120);
+      await sleep(500);
+      continue;
+    }
+    results.push(`tiled to the left half ${how} (${box(now)})`);
+    await drag(await barOnScreen(), {
+      x: SCREEN.width / 2,
+      y: SCREEN.height / 3,
+    });
+    now = await settledWindow();
+    if (near(now.width, before.width, 4) && near(now.height, before.height, 4))
+      results.push(`dragged off the edge, back to ${now.width}x${now.height}`);
+    else
+      problem(
+        `dragged off the edge after tiling ${how}, the window is ${box(now)}, was ${box(before)}`,
+      );
+  }
+
+  // A double click on the top bar with the real pointer.
+  before = await settledWindow();
+  await realClick(await barOnScreen(), 2);
+  const maximized = await settles(
+    async () => (await appWindow()).maximized,
+    5000,
+  );
+  await page.picture("9-maximized-by-double-click");
+  if (maximized) {
+    let now = await settledWindow();
+    results.push(`a double click on the top bar maximized it (${box(now)})`);
+    await realClick(await barOnScreen(), 2);
+    const restored = await settles(
+      async () => !(await appWindow()).maximized,
+      5000,
+    );
+    now = await settledWindow();
+    if (restored && near(now.width, before.width, 4))
+      results.push(`a second one restored it (${box(now)})`);
+    else problem(`a second double click left the window ${box(now)}`);
+  } else
+    problem(
+      "a double click on the top bar's empty part with the desktop's pointer did not maximize the window",
+    );
+  step(
+    `the frame with the desktop's pointer (${desktop.name}): ${results.join("; ")}`,
+  );
+  // Back to where and how big it started, for the checks after this.
+  desktop.place(await appWindow(), start.x, start.y, start.width, start.height);
+  await settledWindow();
+}
+
+/** 9 (end): Minimize with the desktop's pointer; the window manager says
+ * it is minimized, and the desktop brings it back. */
+async function desktopMinimize(page) {
+  const origin = await pageOrigin(page);
+  const button = await page.js(`
+    const box = document.querySelector("[data-window-control=minimize]").getBoundingClientRect();
+    return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };`);
+  await realClick({ x: origin.x + button.x, y: origin.y + button.y });
+  const minimized = await settles(
+    async () => (await appWindow()).minimized,
+    5000,
+  );
+  const told = (await page.window("is_minimized")).value;
+  desktop.picture(join(pictures, "9-minimized-desktop.png"));
+  if (!minimized) {
+    problem(
+      `Minimize clicked with the desktop's pointer: the window manager does not have it minimized (the app says is_minimized ${told})`,
+    );
+    return;
+  }
+  desktop.activate(await appWindow());
+  const back = await settles(async () => !(await appWindow()).minimized, 5000);
+  const answers = await page.js("return document.title").catch(() => null);
+  await page.picture("9-restored");
+  if (back && answers)
+    step(
+      `Minimize (the desktop's pointer) minimized the window (the window manager says so; the app's is_minimized ${told}); the desktop brought it back and it draws`,
+    );
+  else
+    problem(
+      `after Minimize the window did not come back (${back}, ${answers})`,
+    );
+}
+
+/** 8. With a desktop: the file manager and the browser really started,
+ * and what they were given. */
+async function desktopOpener(release) {
+  const fileManager = await until(
+    "the file manager's window",
+    () => desktop.windows(FILE_MANAGER.classes)[0],
+    30000,
+  ).catch(() => null);
+  const browser = await until(
+    "the browser's window",
+    () => desktop.windows(BROWSER.classes)[0],
+    60000,
+  ).catch(() => null);
+  const visited = await until(
+    "the browser to load the pages",
+    () =>
+      release.visits.some((visit) => visit.path === "/status") &&
+      release.visits.some(
+        (visit) => visit.path === new URL(RELEASE_PAGE).pathname,
+      ),
+    60000,
+  ).catch(() => false);
+  await sleep(1500);
+  desktop.picture(join(pictures, "8-opened-desktop.png"));
+  const logFolder = basename(
+    readFileSync(openedFile, "utf8")
+      .split("\n")
+      .find((line) => line.startsWith("xdg-open ") && line.includes("/logs/"))
+      ?.slice("xdg-open ".length) ?? "",
+  );
+  if (fileManager && fileManager.title.includes(logFolder))
+    step(
+      `"Open log folder" started the file manager on it: window "${fileManager.title}"`,
+    );
+  else
+    problem(
+      `"Open log folder": the file manager ${fileManager ? `shows "${fileManager.title}", not ${logFolder}` : "did not start"}`,
+    );
+  if (browser && visited)
+    step(
+      `the web link and the release page opened in the browser ("${browser.title}"), which loaded them: ${JSON.stringify(release.visits.map((visit) => visit.path))} as "${release.visits[0].agent}"`,
+    );
+  else
+    problem(
+      `the browser ${browser ? `("${browser.title}") ` : "did not start, and "}loaded ${JSON.stringify(release.visits)}`,
+    );
+
+  // What the started programs, and the opener, got from the app: nothing
+  // that points into an AppImage's mount (its libraries, its Python, its
+  // GTK modules) may reach them.
+  const bundled = (name, value) =>
+    /^(APPDIR|APPIMAGE|ARGV0|OWD|APPIMAGE_GTK_THEME)$/.test(name) ||
+    value.includes("/tmp/.mount_");
+  const leaks = (pairs) => [
+    ...new Set(
+      pairs
+        .filter(([name, value]) => bundled(name, value))
+        .map(([name]) => name),
+    ),
+  ];
+  const opener = existsSync(openerEnvironmentFile)
+    ? readFileSync(openerEnvironmentFile, "utf8")
+        .split("\n")
+        .map((line) => line.split(/=(.*)/s).slice(0, 2))
+        .filter((pair) => pair.length === 2)
+    : [];
+  const report = [`xdg-open: ${leaks(opener).join(", ") || "clean"}`];
+  let leaked = leaks(opener).length > 0;
+  for (const [name, window] of [
+    ["file manager", fileManager],
+    ["browser", browser],
+  ]) {
+    if (!window) continue;
+    // A program in a container (test:linux-fedora) has a process id of
+    // the container's, not readable here.
+    if (!existsSync(`/proc/${window.pid}/environ`)) {
+      report.push(`${name}: in another process namespace, not read`);
+      continue;
+    }
+    const environment = readFileSync(`/proc/${window.pid}/environ`, "utf8")
+      .split("\0")
+      .map((line) => line.split(/=(.*)/s).slice(0, 2))
+      .filter((pair) => pair.length === 2);
+    const found = leaks(environment);
+    // Nor may it stand in the bundle's mount.
+    const folder = readlinkSync(`/proc/${window.pid}/cwd`);
+    if (folder.includes("/tmp/.mount_")) found.push(`its folder ${folder}`);
+    leaked ||= found.length > 0;
+    report.push(`${name} (pid ${window.pid}): ${found.join(", ") || "clean"}`);
+  }
+  if (leaked)
+    problem(
+      `the AppImage's environment reached the opened programs: ${report.join("; ")}`,
+    );
+  else
+    step(
+      `what the opened programs got from the app points nowhere into the app's bundle: ${report.join("; ")}`,
+    );
+  for (const window of [fileManager, browser])
+    if (window) desktop.minimize(window);
 }
 
 /** 2. A workspace opened by its folder; the tree, the details sheet, the
@@ -904,7 +1618,7 @@ async function terminal(page, first) {
   const panes = () =>
     page.js(`return document.querySelectorAll("[data-tab-bar]").length`);
   const panesBefore = await panes();
-  await page.click(`[data-split=right]`);
+  await paneTool(page, "[data-split=right]", "Split right");
   await until("a second pane", async () => (await panes()) > panesBefore);
   await page.picture("5-split");
   step(`split right: ${panesBefore} pane became ${await panes()}`);
@@ -934,6 +1648,99 @@ async function terminal(page, first) {
   step(
     `${(await tabIds(page)).length} tabs in ${await panes()} panes; multi-send (Ctrl+Shift+M in two sessions) typed into both`,
   );
+}
+
+/** A console on a pseudo terminal: `socat` makes one at `consolePort`
+ * and forwards it to a TCP port, where the script plays the device (a
+ * console server's port reached this way looks the same to the app).
+ * Resolves to the device: `send`, `received()`. */
+async function startConsole() {
+  const forwarder = await startProcess(
+    "socat",
+    [
+      "-d",
+      "-d",
+      `PTY,raw,echo=0,link=${consolePort}`,
+      `TCP-LISTEN:${CONSOLE_PORT},bind=127.0.0.1,reuseaddr`,
+    ],
+    process.env,
+    (output) => output.includes("listening on"),
+  ).catch((error) => {
+    if (/ENOENT|socat to start/.test(String(error.message)))
+      fail("socat is needed for the serial console (apt-get install socat)");
+    throw error;
+  });
+  const socket = await new Promise((resolve, reject) => {
+    const made = connect(CONSOLE_PORT, "127.0.0.1", () => resolve(made));
+    made.on("error", reject);
+  });
+  let received = "";
+  socket.on("data", (chunk) => (received += chunk.toString("latin1")));
+  await until("the console's pseudo terminal", () => existsSync(consolePort));
+  return {
+    forwarder,
+    send: (text) => socket.write(text),
+    received: () => received,
+    close: () => socket.destroy(),
+  };
+}
+
+/** 4 (serial). The console opened from quick connect by its path, at
+ * 115200: bytes both ways, Send break from the session's menu, the
+ * session going on after it. A pseudo terminal has no wire: the break
+ * reaches no device, and the speed is only the line's setting. */
+async function serialConsole(page) {
+  const device = await startConsole();
+  const before = await tabIds(page);
+  await paneTool(page, "[data-new-tab]", "New connection in this pane");
+  const form = ".slot.connect [data-quick-serial]";
+  await page.click(".slot.connect [data-quick-mode=serial]");
+  await page.type(`${form} [name=serial-port]`, consolePort);
+  await page.type(`${form} [name=baud-rate]`, "115200");
+  await page.click(`${form} button[type=submit]`);
+  const tab = await until("the serial session's tab", async () =>
+    (await tabIds(page)).find((id) => !before.includes(id)),
+  );
+  const slot = `.slot[data-tab="${tab}"]`;
+  const status = () => page.text(`${slot} [role=status]`);
+  await until("the serial session connected", async () => {
+    const said = await status();
+    if (/closed|cannot/i.test(said)) fail(`the serial session: ${said}`);
+    return /connected/i.test(said);
+  });
+  device.send("\r\nSwitch>");
+  await until("the console's prompt", async () =>
+    (await screen(page, slot)).includes("Switch>"),
+  );
+  await focusTerminal(page, slot);
+  await page.typeKeys("show clock\r");
+  await until("the typed line at the console", () =>
+    device.received().endsWith("show clock\r"),
+  );
+  await page.picture("4-serial");
+  step(
+    `serial: ${consolePort} (a pseudo terminal) opened from quick connect at 115200; the console's output shown, typing reached it`,
+  );
+
+  await page.click(`${slot} [data-session-menu]`);
+  await page.click("[data-send-break]");
+  await page.typeKeys("after break\r");
+  await until("the line typed after the break", () =>
+    device.received().endsWith("after break\r"),
+  );
+  if (!/connected/i.test(await status()))
+    fail(`after Send break the session is ${await status()}`);
+  step(
+    "Send break (the session's menu) was taken, and the session went on: the line typed after it reached the console",
+  );
+  await closeTab(page, `[role=tab][data-tab="${tab}"]`);
+  // A live session's tab asks first.
+  await page.click("[data-confirm-close] [data-confirm=close]");
+  await until(
+    "the serial tab closed",
+    async () => !(await tabIds(page)).includes(tab),
+  );
+  device.close();
 }
 
 /** 6. Python: the system's Python, the environment from the package's
@@ -1041,14 +1848,10 @@ async function python(page) {
     `a script job ran with the app's environment: ${done.output.trim().split("\n").join(" / ")}`,
   );
 
-  const inventory = spawnSync(
-    "/usr/bin/netterm-cli",
-    ["inventory", workspace],
-    {
-      encoding: "utf8",
-      env: { ...process.env, NETTERM_DATA_DIR: dataFolder },
-    },
-  );
+  const inventory = spawnSync(options.cli, ["inventory", workspace], {
+    encoding: "utf8",
+    env: { ...process.env, NETTERM_DATA_DIR: dataFolder },
+  });
   if (inventory.status !== 0 || !inventory.stdout.includes("r1-password"))
     fail(`netterm-cli inventory: ${inventory.status} ${inventory.stderr}`);
   step("netterm-cli inventory <workspace> worked from a shell");
@@ -1073,9 +1876,10 @@ async function updates(page, release) {
   const said = (await page.text("[data-update] .detail"))
     .replace(/\s+/g, " ")
     .trim();
-  const expected = options.app.startsWith("/usr/")
-    ? /package manager/
-    : /portable copy/;
+  const expected =
+    options.packaged || options.app.startsWith("/usr/")
+      ? /package manager/
+      : /portable copy/;
   if (!expected.test(said)) problem(`the update notice says: ${said}`);
   await page.picture("7-update");
   await page.click("[data-update-page]");
@@ -1107,7 +1911,7 @@ async function opener(page) {
   }
   await page.click("[data-details-sheet] [data-web-link=status]");
   await until("the web link handed to the opener", () =>
-    readFileSync(openedFile, "utf8").includes("https://example.invalid/status"),
+    readFileSync(openedFile, "utf8").includes(WEB_LINK),
   );
   await page.click("[data-details-sheet] [data-open-logs]");
   // Under WSL as a Windows path (\\wsl$\<distribution>\tmp\...).
@@ -1164,6 +1968,11 @@ async function frame(page) {
   );
   step("Maximize maximized the window, Restore restored it");
 
+  // In a desktop session the double click is made with the desktop's own
+  // pointer (desktopFrame). WebDriver's synthetic one confuses xfwm4 on
+  // the way back (its state stays maximized at the normal size), which a
+  // real double click does not.
+  if (desktop) return;
   // A point of the top bar where nothing but the bar is (a drag region).
   const empty = await page.js(`
     const bar = document.querySelector("[data-tab-bar]");
@@ -1188,10 +1997,14 @@ async function frame(page) {
       async () => (await width()) > normal,
     );
     await doubleClickBar();
-    await until(
-      "restored by a double click",
-      async () => !(await answer("is_maximized")),
-    );
+    if (!(await settles(async () => !(await answer("is_maximized")), 10000)))
+      fail(
+        `a second double click did not restore the window: the app says is_maximized ${await answer("is_maximized")}, ` +
+          `the page is ${await width()} wide (${normal} before)` +
+          (desktop
+            ? `, the window manager has ${JSON.stringify(appWindows())}`
+            : ""),
+      );
     await until(
       "the page back to its width",
       async () => (await width()) === normal,
@@ -1262,21 +2075,50 @@ async function restart(bin) {
 
 async function main() {
   console.log(`test:linux-desktop: temporary folder ${temp}`);
+  if (options.desktop) {
+    desktop = await startDesktop(options.desktop, join(temp, "desktop"), note);
+    children.push({ kill: () => desktop.stop() });
+    // Everything started from here on is in the desktop session.
+    for (const name of Object.keys(process.env))
+      if (!(name in desktop.env)) delete process.env[name];
+    Object.assign(process.env, desktop.env);
+    step(`a desktop session out of sight: ${desktop.name}`);
+  }
   createWorkspace();
   const bin = fakeOpener();
   const release = await startServers();
   children.push({ kill: release.close });
+  if (desktop && options.app === "/usr/bin/netterm") await desktopMenu();
   const page = await startApp(appEnvironment(bin));
   try {
     await started(page);
+    if (desktop) await desktopTheme(page);
     await updates(page, release);
+    // The release page opened a real browser: minimized, out of the way of
+    // the frame checks (desktopOpener sees it again for the web link).
+    // (Closed, GNOME Web 49 aborts, and XFCE's opener, which waits for
+    // it, then says it failed.)
+    if (desktop)
+      for (const window of await until(
+        "the browser with the release page",
+        () =>
+          desktop.windows(BROWSER.classes).length &&
+          desktop.windows(BROWSER.classes),
+        60000,
+      ).catch(() => []))
+        desktop.minimize(window);
     await frame(page);
+    if (desktop) await desktopFrame(page);
     await workspaceAndViews(page);
     await vaultOnly(page);
     await terminal(page, await sessions(page));
+    await serialConsole(page);
     await python(page);
     await opener(page);
-    await minimize(page);
+    if (desktop) {
+      await desktopOpener(release);
+      await desktopMinimize(page);
+    } else await minimize(page);
   } catch (error) {
     await page.picture("failure").catch(() => {});
     throw error;
@@ -1286,6 +2128,14 @@ async function main() {
   await restart(bin);
   console.log(`test:linux-desktop: pictures in ${pictures}`);
 }
+
+// Stopped from outside: what was started goes too (a desktop session's
+// programs run in process groups of their own).
+for (const signal of ["SIGINT", "SIGTERM"])
+  process.on(signal, () => {
+    for (const child of children) child.kill();
+    process.exit(1);
+  });
 
 try {
   await main();
@@ -1304,6 +2154,7 @@ try {
       "xdg-data",
       "xdg-cache",
       "xdg-config",
+      "desktop",
     ])
       rmSync(join(temp, name), { recursive: true, force: true });
   process.exit();

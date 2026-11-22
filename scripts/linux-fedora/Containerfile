@@ -1,0 +1,10 @@
+# The .rpm installed on Fedora by dnf, which resolves its dependencies
+# (#58); built and run by scripts/linux-fedora-check.mjs. Also a file
+# manager, a browser and the desktop's opener, for "Open log folder" and
+# web links, and Python for the script job.
+ARG FEDORA=45
+FROM registry.fedoraproject.org/fedora:${FEDORA}
+COPY *.rpm /tmp/
+RUN dnf install -y --setopt=install_weak_deps=False /tmp/*.rpm \
+      python3 xdg-utils thunar epiphany adwaita-icon-theme desktop-file-utils \
+    && dnf clean all && rm /tmp/*.rpm
