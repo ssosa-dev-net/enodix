@@ -241,9 +241,38 @@ pub async fn follow(
 pub fn existing_locally(folder: &Path, names: &[String]) -> Vec<String> {
     names
         .iter()
-        .filter(|name| folder.join(name).exists())
+        .filter(|name| local_path(folder, name).is_ok_and(|path| path.exists()))
         .cloned()
         .collect()
+}
+
+/// Where a file the device names `name` goes in the local folder `into`,
+/// unless the name cannot be one file there. A device names files as it
+/// likes: on Unix a backslash or a colon is an ordinary character, while on
+/// Windows `..\x`, `C:x` or `\\server\share` would leave `into` or name
+/// another computer. Refused on every system, the same as a log's name:
+/// control characters, `/ \ : * ? " < > |`, Windows' device names, a
+/// trailing dot or space (Windows drops it), and anything that is not one
+/// plain name.
+fn local_path(into: &Path, name: &str) -> Result<PathBuf, BrowseError> {
+    let refused = || {
+        bad_name(&format!(
+            "{name} cannot be a file here: rename it on the device first (a local \
+             name cannot hold control characters or / \\ : * ? \" < > |, be a \
+             Windows device name such as CON, or end in a dot or a space)"
+        ))
+    };
+    if name.chars().any(crate::workspace::forbidden_in_file_names)
+        || crate::workspace::is_device_name(name)
+        || name.ends_with(['.', ' '])
+    {
+        return Err(refused());
+    }
+    let mut parts = Path::new(name).components();
+    match (parts.next(), parts.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(into.join(name)),
+        _ => Err(refused()),
+    }
 }
 
 /// The open browsers, by id, and their hosts' transfers. Closing one (or
@@ -497,7 +526,7 @@ impl FileBrowsers {
             .map(|name| {
                 let name = checked_name(&name)?.to_owned();
                 let remote = join_path(folder, &name);
-                let local = into.join(&name);
+                let local = local_path(into, &name)?;
                 Ok((name, Transfer::download(remote, local)))
             })
             .collect::<Result<Vec<_>, BrowseError>>()?;
@@ -533,7 +562,7 @@ impl FileBrowsers {
         let name = checked_name(remote_name(remote))
             .map_err(|_| bad_name("a path to a file on the device is needed"))?
             .to_owned();
-        let local = into.join(&name);
+        let local = local_path(into, &name)?;
         let mut added = self.add(id, vec![(name, Transfer::download(remote, local))])?;
         Ok(added.pop().expect("one added"))
     }

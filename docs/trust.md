@@ -101,8 +101,9 @@ or off.
 - **Key:** derived from the master password with Argon2id (version 1.3),
   64 MiB of memory, 3 passes, 4 lanes, a 32-byte key, and a random 32-byte
   salt per file. The parameters are written in the file, so a later
-  version can raise them; a file asking for more than 4 GiB is refused as
-  damaged.
+  version can raise them; a file asking for more than 4 GiB, or more than
+  16 passes or lanes, is refused as damaged. A new master password needs
+  at least 8 characters.
 - **Encryption:** XChaCha20-Poly1305 with a new random 24-byte nonce each
   time the file is written. The file's header (format, version, key
   parameters and salt) is bound to the encrypted body, so it cannot be
@@ -128,7 +129,10 @@ or off.
 ### Linux
 
 The app has no Linux keychain support yet: the vault is the only store, so
-it must be turned on before any profile can be saved. (The Linux build has
+it must be turned on before any profile can be saved. The vault and its
+lock file are made readable by you alone (mode 0600) and the data folder
+`~/.local/share/dev.enodix.app` yours alone (0700); a vault made by an
+earlier version is tightened so when it is unlocked. (The Linux build has
 not been checked on a real desktop yet; see `docs/linux.md`.)
 
 ## What is encrypted and what is not
@@ -178,7 +182,9 @@ which asks the running app over its **credential agent**:
   access list grants your account alone), and connections from other
   computers are refused. `enodix-cli` checks that the program serving the
   pipe runs as you before asking it anything, so a program of another user
-  that took the name first gets nothing.
+  that took the name first gets nothing. On a computer shared with other
+  users (a terminal server, a jump box), such a program can still keep
+  scripts from getting logins this way, until the app is started again.
 - On Linux, a socket `<data folder>/agent.sock` that only you may open
   (mode 0600), and the app checks that whoever connects is you.
 
@@ -474,8 +480,16 @@ own interpreter installs nothing.
 - **A workspace from someone else.** Its web links can point anywhere and
   send a host's address and other fields to that address when you click
   them. Its jump hosts are machines your sessions pass through, and they
-  get the jump host's login. Its scripts are code that runs as you. Read a
-  workspace you did not write before you use it, as you would a script.
+  get the jump host's login. Its scripts are code that runs as you, and its
+  platform definitions say what is sent at login (paging off, privileged
+  mode, the show command of back up on login; each must be one line, and a
+  definition whose command holds a line break is refused). Its hosts'
+  addresses decide where your logins go. Read a workspace you did not
+  write before you use it, as you would a script.
+- **Files from a device.** A file is downloaded under the name the device
+  gives it, so a name that could leave the folder you chose (`..\`, a
+  drive, `\\server`) or that Windows cannot hold is refused: rename it on
+  the device first.
 - **Tunnel ports.** While a script's tunnel runs, anyone on this computer
   can use its ports (see above).
 - **A device or jump host you trusted wrongly.** The first connection

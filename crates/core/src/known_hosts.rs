@@ -156,6 +156,21 @@ impl KnownHosts {
     /// stored for them.
     pub fn remember(&self, host: &str, port: u16, key: &PublicKey) -> Result<(), KnownHostsError> {
         let mut store = self.lock();
+        // A name the file would read as more than one plain host (a comma
+        // separates hosts, whitespace ends the field, a wildcard or `!`
+        // matches others, a leading `#`, `@` or `|` is a comment, a marker
+        // or a hashed name): trusting a key for `core1,x` would trust it
+        // for `core1` too. A shared workspace can name a host so.
+        if host.is_empty()
+            || host
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace() || ",*?!".contains(c))
+            || host.starts_with(['#', '@', '|'])
+        {
+            return Err(store.write_error(format!(
+                "{host:?} is not a host name or address that can be remembered"
+            )));
+        }
         let mut lines = store.load()?;
         let pattern = pattern(host, port);
         lines.retain_mut(|line| match line {

@@ -252,7 +252,7 @@ impl Runner {
         cancel: &watch::Receiver<bool>,
     ) -> Result<Ended, String> {
         let json = serde_json::to_string_pretty(targets).expect("targets serialise");
-        fs::write(file, json).map_err(|error| {
+        write_private(file, json.as_bytes()).map_err(|error| {
             format!(
                 "the job's hosts could not be written for the script to {}: {error}",
                 file.display()
@@ -263,15 +263,31 @@ impl Runner {
         }
         let mut command = quiet_command(options.interpreter.as_os_str());
         command.arg("-u");
-        match &script.run {
-            ScriptRun::File(file) => command.arg(file),
-            ScriptRun::Module(module) => command.arg("-m").arg(module),
+        // A workspace's own script runs in the workspace. The app's own
+        // module (`-m`, which puts the current folder first on Python's
+        // import path) runs in the interpreter's folder instead: a workspace
+        // holding an `enodix` package of its own would otherwise replace the
+        // app's (a shared workspace's code, run by Fill in from devices).
+        // The workspace is still given by ENODIX_WORKSPACE.
+        let folder = match &script.run {
+            ScriptRun::File(file) => {
+                command.arg(file);
+                script.root.as_path()
+            }
+            ScriptRun::Module(module) => {
+                command.arg("-m").arg(module);
+                options
+                    .interpreter
+                    .parent()
+                    .filter(|parent| parent.is_dir())
+                    .unwrap_or(&script.root)
+            }
         };
         if let Some(facts) = &self.facts {
             command.env(FACTS_VARIABLE, facts);
         }
         command
-            .current_dir(&script.root)
+            .current_dir(folder)
             .stdin(Stdio::null())
             .env("PYTHONUNBUFFERED", "1")
             .env(TARGETS_VARIABLE, file)
@@ -399,4 +415,19 @@ fn read_pipe(mut stream: impl Read + Send + 'static, sender: std_mpsc::SyncSende
             }
         }
     });
+}
+
+/// Writes `bytes` to the new file `path`, readable by this user only on
+/// Unix (the targets file goes to the shared temporary folder; it names
+/// the job's hosts). Windows' temporary folder is the user's own already.
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(bytes)
 }

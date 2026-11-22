@@ -538,7 +538,7 @@ mod listener {
     //! checks each peer's user id.
 
     use std::fs;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -577,8 +577,13 @@ mod listener {
                 .inspect_err(|_| {
                     let _ = fs::remove_file(&made);
                 })?;
-            // The socket is ours: its owner is this process's user.
-            let owner = fs::metadata(&path)?.uid();
+            // The user a client must be: this process's own, not the owner
+            // of the file now at `path` (read after the rename, another
+            // user able to write the folder could have put a socket of
+            // theirs there and been trusted; a file system that maps owners
+            // could give the wrong one).
+            // SAFETY: no arguments, cannot fail.
+            let owner = unsafe { libc::geteuid() };
             Ok(Self {
                 path,
                 owner,

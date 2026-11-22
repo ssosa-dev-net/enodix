@@ -61,10 +61,27 @@ impl PlatformDefinition {
         self.other_names.iter().any(|name| same(name, text))
     }
 
-    /// Each of the definition's patterns that cannot be used, as
-    /// "`key`: why"; `Ok` when all of them can.
+    /// Each of the definition's patterns and commands that cannot be used,
+    /// as "`key`: why"; `Ok` when all of them can. A command is one line
+    /// sent to the device: a line break or another control character in it
+    /// would send more than it shows (from a shared workspace, commands the
+    /// user never sees, at every login with back up on login).
     pub fn check(&self) -> Result<(), String> {
         let mut errors = Vec::new();
+        for (key, command) in [
+            (DISABLE_PAGING, &self.disable_paging),
+            (PRIVILEGE_COMMAND, &self.privilege_command),
+            (SHOW_CONFIG, &self.show_config),
+        ] {
+            if command
+                .as_ref()
+                .is_some_and(|line| line.chars().any(char::is_control))
+            {
+                errors.push(format!(
+                    "`{key}`: a command is one line: it cannot hold a line break or another control character"
+                ));
+            }
+        }
         if self.prompt.trim().is_empty() {
             errors.push(format!("`{PROMPT}`: the pattern is empty"));
         } else if let Err(error) = check_pattern(&self.prompt) {
