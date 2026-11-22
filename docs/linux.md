@@ -36,7 +36,8 @@ apt-get install build-essential pkg-config libudev-dev rsync \
 # for the app and its packages (Tauri on Linux):
 apt-get install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
   librsvg2-dev libxdo-dev libssl-dev patchelf file wget curl xdg-utils
-# to check what the packages hold (the release does):
+# to check what the packages hold and add the AppImage's hook (the
+# release does):
 apt-get install rpm2cpio cpio squashfs-tools
 ```
 
@@ -69,6 +70,17 @@ the first package build downloads the AppImage tools.
   `LD_LIBRARY_PATH` and others to its own folder for the app; the
   programs the app starts (Python, scripts, the headless binary) get the
   environment without them, or the system's Python could not start.
+- **AppImage, light and dark.** With the theme on "system", the .deb and
+  the .rpm follow the desktop's light and dark switch while they run. The
+  AppImage's GTK is pinned to Adwaita light or dark when it starts (its
+  runtime's hook, as other GTK themes break inside the bundle): it reads
+  the desktop's colour scheme (GNOME, and desktops that announce one
+  through the desktop portal) and, since #143, the desktop's style (XFCE's
+  Appearance, `Adwaita-dark`, or any style whose name ends in `-dark`).
+  It starts dark on a dark desktop either way. GNOME's colour scheme
+  switched while it runs is followed; a style switched while it runs
+  (XFCE) is not: restart the AppImage. `APPIMAGE_GTK_THEME=Adwaita:dark`
+  (or `:light`) set before starting it overrides both.
 - **SSH agent.** Agent profiles use the agent `SSH_AUTH_SOCK` names (there
   is no default otherwise).
 - **Serial ports** are the system's (`/dev/ttyUSB0`, `/dev/ttyS0`, ...);
@@ -222,7 +234,11 @@ console now: see the table below), and with a desktop also:
    `netterm.desktop`, so the dock shows its icon);
 2. the desktop's own dark switch while the app runs, its theme on
    "system" (XFCE: Appearance's style, `Adwaita-dark`; GNOME: the colour
-   scheme), and back to light;
+   scheme), and back to light; then, at the restart, the app started with
+   the desktop already dark is dark. For the AppImage on XFCE only what it
+   starts with is required (light, then dark at the restart): a style
+   switched while it runs is noted, not expected to reach it (#143);
+
 3. the frame with the desktop's pointer: the top bar dragged, the window
    resized from each edge and corner, tiled to the left half by dragging
    it to the screen's edge and with the desktop's key (Super+Left), back
@@ -248,12 +264,14 @@ apt-get install --no-install-recommends xvfb xfwm4 xfce4-panel \
 
 Verified on 2026-11-22: Windows 11, WSL 2, Ubuntu 26.04.1, WebKitGTK
 2.52.6, xfwm4 4.20.0, GNOME Shell 50.1; Fedora 45 with WebKitGTK 2.54.2
-in podman 5.7. netterm 0.4.1 as built from this tree.
+in podman 5.7. netterm 0.4.1 as built from this tree. Run again on the
+same day after #140, #141, #142 and #143: all five runs above (without
+`--gallium-driver`) passed.
 
 | #58 item                     | In WSL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Menu entry and icon          | Checked on XFCE and GNOME: valid, found by each menu's search with its icon, started from it; GNOME ties the window to the entry. The package installs the icon at 32 and 128 px only; the other sizes are scaled from those. Not seen: KDE's menu.                                                                                                                                                                                                                                                                                                                                                                       |
-| Light and dark               | Checked: the .deb follows XFCE's style switch and GNOME's colour scheme live, both ways. The AppImage follows GNOME's, not XFCE's: its runtime pins `GTK_THEME` to `Adwaita:light` or `:dark` from the colour scheme at start, so a dark XFCE style leaves it light (a fault, not fixed here).                                                                                                                                                                                                                                                                                                                             |
+| Light and dark               | Checked: the .deb follows XFCE's style switch and GNOME's colour scheme live, both ways, and starts dark on a dark desktop. The AppImage follows GNOME's colour scheme live. Its runtime pins `GTK_THEME` to `Adwaita:light` or `:dark` at start; since #143 netterm's own start-up hook reads XFCE's style as well, so it starts light on a light XFCE and dark on a dark one, but a style switched while it runs needs a restart (the check notes that it stays light). Before #143 a dark XFCE style left it light. |
 | Serial                       | Partly: a console on a pseudo terminal that `socat` forwards (as a console server's port is reached) opens from quick connect by its path at 115200, shows the console's output, takes typing, and takes Send break with the session going on. The core's tests drive the real driver on a pseudo terminal pair (`tests/serial_pty.rs`). Fixed: such a port could not be opened at all (RTS refused). Not checkable in WSL: a USB adapter and its driver, the speed on a wire, a break, DTR and RTS reaching a device, unplugging, the `dialout` group. |
 | File manager and browser     | Checked on XFCE and GNOME, from the .deb and the AppImage: Thunar opens on the log folder, GNOME Web loads the web link and the release page. Fixed: from the AppImage they got its library path, GTK and GIO modules, Python home and more, and started inside its mount.                                                                                                                                                                                                                                                                                                                                          |
 | WebGL and a GPU              | Partly. By default Mesa renders in software (llvmpipe): the user cannot open `/dev/dri` (the `render` group) and the virtual displays have no DRI3. With `--gallium-driver d3d12` the app's GL is Mesa's D3D12 driver on the computer's own GPU through `/dev/dxg`: webkit://gpu says `GL_RENDERER` "D3D12 (<the GPU>)", WebGL on, and the terminal draws with xterm's WebGL renderer, on X11 and on Wayland. That is a real GPU through a translation layer (OpenGL ES over Direct3D 12), and WebKit hands its frames over in shared memory (no render node for DMA-BUF). Every check passes with it, but the pictures show stray diagonal lines across some rounded borders (buttons, badges), which llvmpipe does not draw: the translation layer's, not the app's, and why WSL's default stays software. Not checkable in WSL: Mesa's or a vendor's native driver (amdgpu, i915/xe, nouveau, NVIDIA's) and zero-copy DMA-BUF. |

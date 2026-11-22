@@ -309,6 +309,9 @@ async function startXfce(env, children, log) {
   const desktop = {
     kind: "xfce",
     name: "XFCE (xfwm4) on X11 (Xvfb)",
+    /** What `setDark` switches: the style (GTK theme), not a colour
+     * scheme. */
+    darkBy: "style",
     /** The windows of the given classes, as the window manager has them
      * (minimized ones too). */
     windows(classes) {
@@ -594,6 +597,8 @@ async function startGnome(env, children, log) {
   const desktop = {
     kind: "gnome",
     name: "GNOME Shell (Mutter) on Wayland, headless",
+    /** What `setDark` switches. */
+    darkBy: "colour scheme",
     evaluate,
     windows: (classes) => evaluate(windowsCode(classes)),
     workArea: () =>

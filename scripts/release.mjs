@@ -182,6 +182,9 @@ const LINUX_LICENCE = {
   rpm: `/usr/share/licenses/${productName}/LICENSE`,
   appimage: `/usr/share/licenses/${productName}/LICENSE`,
 };
+/** The AppRun hook (src-tauri/appimage/desktop-style.sh) that makes the
+ * AppImage start dark on a desktop whose dark look is a style (#143). */
+const APPIMAGE_STYLE_HOOK = "/apprun-hooks/netterm-desktop-style.sh";
 const version = readFileSync(join(ROOT, "Cargo.toml"), "utf8").match(
   /\[workspace\.package\][^[]*?\nversion\s*=\s*"([^"]+)"/,
 )?.[1];
@@ -501,9 +504,73 @@ function linux() {
       fail(
         `expected one .${extension} in ${join(bundles, folder)}, found ${made.length}`,
       );
+    if (folder === "appimage") addStyleHook(join(bundles, folder, made[0]));
     checkLinuxPackage(folder, join(bundles, folder, made[0]));
     copyFileSync(join(bundles, folder, made[0]), join(dist, made[0]));
   }
+}
+
+/** Adds netterm's AppRun hook (src-tauri/appimage/desktop-style.sh, #143)
+ * to the AppImage Tauri made, after linuxdeploy's GTK hook. Tauri's
+ * `appimage.files` reach only the AppDir's `usr/`, so the AppImage is
+ * unpacked, the hook put in `apprun-hooks/` and sourced by AppRun, and
+ * packed again: the same runtime in front of a squashfs made with the same
+ * compression and block size. */
+function addStyleHook(file) {
+  const output = (command, args) => {
+    const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8" });
+    if (result.error?.code === "ENOENT")
+      fail(`${command} is needed to add the AppImage's hook (docs/linux.md)`);
+    if (result.status !== 0)
+      fail(`${command} ${args.join(" ")} failed: ${result.stderr}`);
+    return result.stdout;
+  };
+  const offset = Number(output(file, ["--appimage-offset"]).trim());
+  if (!(offset > 0)) fail(`${relative(ROOT, file)} gives no squashfs offset`);
+  const about = output("unsquashfs", ["-s", "-o", String(offset), file]);
+  const compression = about.match(/^Compression (\S+)/m)?.[1];
+  const blockSize = about.match(/^Block size (\d+)/m)?.[1];
+  if (!compression || !blockSize)
+    fail(`cannot read the squashfs of ${relative(ROOT, file)}: ${about}`);
+  const work = join(dirname(file), "style-hook");
+  rmSync(work, { recursive: true, force: true });
+  mkdirSync(work);
+  const tree = join(work, "root");
+  output("unsquashfs", ["-q", "-n", "-o", String(offset), "-d", tree, file]);
+  const gtkHook = 'source "$this_dir"/apprun-hooks/"linuxdeploy-plugin-gtk.sh"';
+  const appRun = readFileSync(join(tree, "AppRun"), "utf8");
+  if (!appRun.split("\n").includes(gtkHook))
+    fail(`the AppImage's AppRun does not source the GTK hook: ${appRun}`);
+  const hookName = basename(APPIMAGE_STYLE_HOOK);
+  copyFileSync(
+    join(ROOT, "src-tauri", "appimage", "desktop-style.sh"),
+    join(tree, APPIMAGE_STYLE_HOOK),
+  );
+  writeFileSync(
+    join(tree, "AppRun"),
+    appRun.replace(
+      gtkHook,
+      () => `${gtkHook}\nsource "$this_dir"/apprun-hooks/"${hookName}"`,
+    ),
+  );
+  const squashfs = join(work, "root.squashfs");
+  output("mksquashfs", [
+    tree,
+    squashfs,
+    "-all-root",
+    "-noappend",
+    "-no-progress",
+    "-comp",
+    compression,
+    "-b",
+    blockSize,
+  ]);
+  const runtime = readFileSync(file).subarray(0, offset);
+  writeFileSync(file, Buffer.concat([runtime, readFileSync(squashfs)]), {
+    mode: 0o755,
+  });
+  rmSync(work, { recursive: true, force: true });
+  console.log(`release: ${relative(ROOT, file)} sources ${hookName}`);
 }
 
 /** The files a Linux package lists (paths without a leading `./`), read
@@ -558,7 +625,8 @@ function checkLinuxPackage(format, file) {
   // must not (InstallKind::detect).
   const marker = `/usr/lib/${productName}/${PACKAGE_MARKER}`;
   if (format !== "appimage") expected.push(marker);
-  else if (files.has(marker))
+  else expected.push(APPIMAGE_STYLE_HOOK);
+  if (format === "appimage" && files.has(marker))
     fail(`${relative(ROOT, file)} holds ${marker}, which marks a package`);
   const missing = expected.filter((path) => !files.has(path));
   if (missing.length)
