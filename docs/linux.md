@@ -98,6 +98,18 @@ the first package build downloads the AppImage tools.
   since 0.5.0; nothing moves on Linux). The AppImage carries
   the binary and the wheel inside it: scripts run outside the app need
   `ENODIX_CLI` (see `python/README.md`).
+- **Removing it.** Remove the package with the package manager:
+  `sudo apt remove enodix` (or `sudo dpkg --purge enodix`) for the .deb,
+  `sudo dnf remove enodix` (or `sudo rpm -e enodix`) for the .rpm. That
+  takes away the program, `enodix-cli`, the wheel, the licence, the
+  notices and the menu entry, and the folders they were in. For the
+  AppImage, delete the file. Your data stays in
+  `~/.local/share/dev.enodix.app` either way, so a later install finds it;
+  delete that folder to remove settings, the vault, known hosts, logs,
+  job results, config backups and the Python environment too. Nothing is
+  kept in a system keychain on Linux (the vault is the only store).
+  Checked on 2026-11-22 in Ubuntu 24.04 and Fedora 41 containers: after
+  the removal no file or folder of enodix was left.
 
 ## What is skipped on Linux
 
