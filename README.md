@@ -140,9 +140,10 @@ connection the app can make.
 Uninstall enodix from **Settings, Apps, Installed apps** (or run
 `uninstall.exe` in its folder, `%LOCALAPPDATA%\enodix`). It closes enodix,
 and `enodix-cli.exe` if a script is using it, then removes the program
-folder (the app, `enodix-cli.exe`, the Python wheel, the licence), the
-Start menu and desktop shortcuts and the entry in Installed apps. Files you
-put in the program folder yourself are left there.
+folder (the app, `enodix-cli.exe`, the Python wheel, the licence and the
+third-party notices), the Start menu and desktop shortcuts and the entry in
+Installed apps. Files you put in the program folder yourself are left there.
+On Linux the package manager removes it (`docs/linux.md`, "Removing it").
 
 Your data stays, so a later install finds it again, unless you tick
 **Also delete settings, saved logins and the vault, ...** on the uninstall

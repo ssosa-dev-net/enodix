@@ -507,6 +507,26 @@ function linux() {
     ...withLicence(format),
     [`/usr/lib/${productName}/${PACKAGE_MARKER}`]: `../target/release/${PACKAGE_MARKER}`,
   });
+  // The .rpm records its files but not every folder they are in, so
+  // `rpm -e` left /usr/lib/<product>/python and /usr/share/licenses/<product>
+  // behind, empty. Its post-removal script removes those folders once the
+  // package is gone ($1 is 0; an upgrade passes 1), and only if empty.
+  // (dpkg removes the .deb's own folders.)
+  const rpmPostRemove = join(ROOT, "target", "release", "rpm-post-remove.sh");
+  const emptyFolders = [
+    `/usr/lib/${productName}/python`,
+    `/usr/lib/${productName}`,
+    `/usr/share/licenses/${productName}`,
+  ];
+  writeFileSync(
+    rpmPostRemove,
+    `# ${productName}: the folders its files were in, once it is removed.\n` +
+      'if [ "$1" = 0 ]; then\n' +
+      emptyFolders
+        .map((folder) => `  rmdir "${folder}" 2>/dev/null || :\n`)
+        .join("") +
+      "fi\n",
+  );
   const configFile = writeConfig({
     bundle: {
       active: true,
@@ -516,7 +536,7 @@ function linux() {
       },
       linux: {
         deb: { files: packaged("deb") },
-        rpm: { files: packaged("rpm") },
+        rpm: { files: packaged("rpm"), postRemoveScript: rpmPostRemove },
         appimage: { files: withLicence("appimage") },
       },
     },
