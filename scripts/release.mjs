@@ -265,6 +265,16 @@ function signing() {
       "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not set (see docs/releasing.md)",
     );
   }
+  // Kept here and taken out of the environment: nothing this script starts
+  // inherits the key (the build runs every crate's build script and npm's
+  // tools, any of which could read it), and only the signer started after
+  // the build is given it (`sign`).
+  const key = {
+    privateKey: contentsOf(privateKey),
+    password: process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD,
+  };
+  delete process.env.TAURI_SIGNING_PRIVATE_KEY;
+  delete process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD;
   const pubkeySource =
     process.env.ENODIX_UPDATER_PUBKEY?.trim() || PUBLIC_KEY_FILE;
   if (pubkeySource === PUBLIC_KEY_FILE && !existsSync(PUBLIC_KEY_FILE)) {
@@ -285,7 +295,21 @@ function signing() {
     ? httpsUrl("ENODIX_RELEASE_PAGE", process.env.ENODIX_RELEASE_PAGE.trim())
         .href
     : releaseUrl.href;
-  return { pubkey, pub, base, page };
+  return { pubkey, pub, base, page, key };
+}
+
+/** Signs `file` for the updater with the release key, naming `version` in
+ * the signature (the app requires it): `<file>.sig`. The signer is the one
+ * program given the key, after the build is done. */
+function sign(file, key) {
+  run(
+    process.execPath,
+    [tauriCli, "signer", "sign", "--app-version", version, file],
+    {
+      TAURI_SIGNING_PRIVATE_KEY: key.privateKey,
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: key.password,
+    },
+  );
 }
 
 /** A text for an NSIS `!define`: `$` is NSIS's own, `"` would end it. */
@@ -340,7 +364,8 @@ function windows() {
     bundle: {
       active: true,
       targets: ["nsis"],
-      createUpdaterArtifacts: !unsigned,
+      // Signed after the build, by `sign`: the build never sees the key.
+      createUpdaterArtifacts: false,
       copyright,
       // The installer's licence page.
       licenseFile: join(ROOT, "LICENSE"),
@@ -397,6 +422,8 @@ function windows() {
   copyFileSync(installer, join(dist, installerName));
   let signature = null;
   if (signed) {
+    rmSync(`${installer}.sig`, { force: true });
+    sign(installer, signed.key);
     if (!existsSync(`${installer}.sig`))
       fail(`${installerName} has no updater signature`);
     signature = readFileSync(`${installer}.sig`, "utf8").trim();
