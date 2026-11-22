@@ -110,11 +110,15 @@ async fn back_up(plan: JobPlan, configs: &ConfigStore) -> JobReport {
     })
     .await
     .expect("the job did not finish");
-    let reported: Vec<_> = report
+    let mut reported: Vec<_> = report
         .hosts
         .iter()
         .filter_map(|h| h.backup.clone().map(|b| (h.id.clone(), b)))
         .collect();
+    // Hosts run side by side: the events come as each one ends, the report
+    // is in the plan's order.
+    outcomes.sort_by(|(a, _), (b, _)| a.cmp(b));
+    reported.sort_by(|(a, _), (b, _)| a.cmp(b));
     assert_eq!(outcomes, reported);
     report
 }
