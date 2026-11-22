@@ -90,12 +90,14 @@ const UPDATE_ENDPOINT_VARIABLE: &str = "NETTERM_UPDATE_ENDPOINT";
 /// `wpad` up for a proxy script and, a minute in, asks
 /// `edge.microsoft.com` for component updates and downloads them. The page
 /// is the app's own and never leaves the computer, so it needs no
-/// background networking, no proxy and no components. (Typing still makes
-/// WebView2 reach Office servers now and then; nothing here stops it yet,
-/// see docs/trust.md.) Every window must use
-/// the same arguments: WebView2 refuses another set for the same data
-/// folder.
-pub(crate) const WEBVIEW_ARGUMENTS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-background-networking --no-proxy-server --disable-component-update";
+/// background networking, no proxy and no components. The nine features
+/// after wry's three are Edge's sign-in with the Windows account (#135):
+/// on a computer signed in to a Microsoft account the engine's sign-in
+/// library (OneAuth) otherwise fetches that account's profile from
+/// Microsoft's Office servers a few seconds after a start; see
+/// docs/trust.md. Every window must use the same arguments: WebView2
+/// refuses another set for the same data folder.
+pub(crate) const WEBVIEW_ARGUMENTS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,msOneAuthWAM,msForceOneAuthWAM,msOneAuthIDHRD,msLoadOneAuthInBackground,msImplicitSignin,msImplicitSignInNetworkRetry,msM365LinksImplicitSignin,msSeamlessWebToBrowserSignIn,msEnableWebToBrowserSignIn --autoplay-policy=no-user-gesture-required --disable-background-networking --no-proxy-server --disable-component-update";
 
 /// The event that brings the interface the workspace after changes made
 /// outside the app.

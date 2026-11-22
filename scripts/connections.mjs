@@ -14,7 +14,9 @@
 //   release server, the DevTools client) or to one of the app's own
 //   processes (a script's tunnel), or, if its owner cannot be told (it
 //   closed already), is on a port the test named;
-// - a UDP socket bound to a loopback address.
+// - a UDP socket bound to a loopback address, or the one WebView2's
+//   network process points at a fixed address to ask Windows whether IPv6
+//   works (it sends nothing, which the network log is checked for).
 //
 // Anything else is a problem, kept with the step that was running. What it
 // cannot see is in the testing notes.
@@ -52,9 +54,16 @@ export function netLogProblems(file) {
   const found = new Map();
   const note = (what) => found.set(what, (found.get(what) ?? 0) + 1);
   let events = 0;
+  let datagramSent = null;
   for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
-    // One event per line; the first line is the log's constants.
-    if (!line.startsWith("{") || line.startsWith('{"constants"')) continue;
+    // One event per line; the first line is the log's constants, which
+    // give each kind of event its number.
+    if (line.startsWith('{"constants"')) {
+      const type = /"UDP_BYTES_SENT":(\d+)/.exec(line);
+      if (type) datagramSent = Number(type[1]);
+      continue;
+    }
+    if (!line.startsWith("{")) continue;
     let event;
     try {
       event = JSON.parse(line.replace(/,\s*$/, ""));
@@ -62,6 +71,11 @@ export function netLogProblems(file) {
       continue;
     }
     events += 1;
+    // A UDP socket that is only pointed at an address sends nothing (the
+    // IPv6 reachability check does that); one that sends is a lookup or a
+    // connection WebView2 made itself.
+    if (datagramSent !== null && event.type === datagramSent)
+      note("sent a datagram");
     const { host, url } = event.params ?? {};
     if (typeof host === "string") {
       // "name:port", "scheme://name" or "scheme://name:port".
@@ -100,6 +114,7 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
   const started = [];
   const connections = new Map();
   const udp = [];
+  const probes = [];
   let step = "the start";
   let reported = 0;
   const watcher = spawn(
@@ -141,13 +156,24 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
   // msedgewebview2.exe started by netterm.exe) now and then connects to
   // port 443 of Microsoft's Exchange Online / Office addresses
   // (40.96.0.0/13, 52.96.0.0/14), outside its network stack: its sign-in
-  // with the Windows account. Only that, and the UDP socket below, is let
-  // through, and every one is listed at the end of the run; anything else
-  // fails.
+  // with the Windows account. The app now starts WebView2 with that
+  // sign-in off, and no run has made the connection since; until enough
+  // runs have shown none, one is still let through and listed at the end
+  // of the run. Anything else fails.
   const known = [];
   const browserProcess = (event) =>
     event.name === "msedgewebview2.exe" &&
     processes.get(processes.get(event.pid)?.parent)?.name === "netterm.exe";
+  // A process WebView2's browser process started (its network process is
+  // one of them).
+  const networkProcess = (event) => {
+    const parent = processes.get(event.pid)?.parent;
+    return (
+      event.name === "msedgewebview2.exe" &&
+      processes.get(parent)?.name === "msedgewebview2.exe" &&
+      processes.get(processes.get(parent)?.parent)?.name === "netterm.exe"
+    );
+  };
   const knownOfficeConnection = (event) => {
     const [a, b] = event.remoteAddress.split(".").map(Number);
     return (
@@ -166,15 +192,18 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
     if (event.kind === "udp") {
       udp.push(event);
       if (LOOPBACK.test(event.localAddress)) return null;
-      const what = `${who} has a UDP socket on ${event.local}`;
-      // The same sign-in (#135) now and then opens a UDP socket in the
-      // browser process (where its datagrams go cannot be seen). Listed
-      // with the Office connections until #135 is closed.
-      if (browserProcess(event)) {
-        known.push(`${what}, during ${step}`);
+      // WebView2's network process asks Windows whether IPv6 reaches the
+      // internet by pointing a UDP socket at a fixed Microsoft address and
+      // reading back the local address Windows picked (Chromium's IPv6
+      // reachability check, made when a name is resolved, `tauri.localhost`
+      // included). Nothing is sent: `netLogProblems` fails on any datagram
+      // the network log shows. Where IPv6 works the socket lives long
+      // enough to be seen here now and then. Any other UDP socket fails.
+      if (networkProcess(event)) {
+        probes.push(event.local);
         return null;
       }
-      return what;
+      return `${who} has a UDP socket on ${event.local}`;
     }
     if (event.state === "LISTEN") {
       return LOOPBACK.test(event.localAddress)
@@ -257,6 +286,7 @@ export async function watchConnections({ ports = [], intervalMs = 50 } = {}) {
         processes: names,
         connections: remotes,
         udp: udp.length,
+        probes: probes.length,
         known: [...known],
       };
     },

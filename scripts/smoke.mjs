@@ -1393,7 +1393,13 @@ async function noConnectionOfItsOwn(step) {
       ),
     );
   }
-  const { processes, connections: seen, udp, known } = connections.summary();
+  const {
+    processes,
+    connections: seen,
+    udp,
+    probes,
+    known,
+  } = connections.summary();
   // Let through, but never silently (see connections.mjs).
   for (const finding of known) {
     console.log(`KNOWN FINDING (#135) - WebView2's sign-in: ${finding}`);
@@ -1403,7 +1409,7 @@ async function noConnectionOfItsOwn(step) {
     .join(", ");
   const total = Object.values(seen).reduce((sum, count) => sum + count, 0);
   step(
-    `over the whole run the app's processes (${names}) made ${total} connections, all to the test or to each other on this computer but ${known.length} known ones of WebView2 to Office, ${udp} UDP sockets, and WebView2 (the network logs of ${netLogs.copies} copies) looked up and requested nothing beyond it`,
+    `over the whole run the app's processes (${names}) made ${total} connections, all to the test or to each other on this computer but ${known.length} known ones of WebView2 to Office, ${udp} UDP sockets (${probes} of them WebView2's IPv6 check, which sends nothing), and WebView2 (the network logs of ${netLogs.copies} copies) looked up, requested and sent nothing beyond it`,
   );
 }
 
@@ -15178,12 +15184,25 @@ async function severalInAWindow({
   await keys.type("inleft\r");
   await focusTerminal(window.evaluate, ySlot);
   await keys.type("inright\r");
-  await until(
-    "each typed line echoed in its own pane",
-    async () =>
-      (await ran(window.evaluate, xSlot, "inleft")) &&
-      (await ran(window.evaluate, ySlot, "inright")),
-  );
+  try {
+    await until(
+      "each typed line echoed in its own pane",
+      async () =>
+        (await ran(window.evaluate, xSlot, "inleft")) &&
+        (await ran(window.evaluate, ySlot, "inright")),
+    );
+  } catch (error) {
+    // Seen to fail now and then (2026-11-21, twice): say where the typed
+    // lines went and who had the keys.
+    const tail = async (slot) =>
+      (await lines(window.evaluate, slot)).filter(Boolean).slice(-3);
+    const focused = await window.evaluate(
+      `document.activeElement?.closest(".slot")?.dataset.tab ?? document.activeElement?.tagName ?? null`,
+    );
+    fail(
+      `${error.message}; x (tab ${xTab}) ends ${json(await tail(xSlot))}; y (tab ${yTab}) ends ${json(await tail(ySlot))}; the keys are with ${json(focused)}`,
+    );
+  }
   if (
     (await ranAnywhere(window.evaluate, xSlot, "inright")) ||
     (await ranAnywhere(window.evaluate, ySlot, "inleft"))
