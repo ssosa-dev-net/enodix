@@ -9,8 +9,8 @@ mod support;
 use std::time::{Duration, Instant};
 
 use netterm_core::session::{
-    CloseReason, JumpHost, OpenError, SessionEvents, SessionId, SessionManager, SessionState,
-    SessionTarget, SshAuth, SshTarget, TerminalSize,
+    CloseReason, ConnectStage, JumpHost, OpenError, SessionEvents, SessionId, SessionManager,
+    SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
 };
 use support::proxy::LinkProxy;
 use support::{
@@ -173,7 +173,13 @@ async fn a_hop_going_silent_or_dropping_during_the_login_to_the_device_fails_the
                     "{error:?}"
                 ),
                 // Every jump host answers: the device is the one silent.
-                (true, _) => assert_eq!(error, OpenError::TimedOut { after: SHORT }),
+                (true, _) => assert_eq!(
+                    error,
+                    OpenError::TimedOut {
+                        after: SHORT,
+                        stage: ConnectStage::Login
+                    }
+                ),
                 // A jump host that dropped is named.
                 (false, 0 | 1) => assert!(
                     matches!(&error, OpenError::JumpHost { name, .. } if name == HOPS[hop]),

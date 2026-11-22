@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use tokio::net::TcpStream;
 
-use super::OpenError;
+use super::{ConnectStage, OpenError};
 
 /// Resolves to the TCP connection to `host` on `port`, trying each address
 /// the name resolves to in turn, each for its share of `timeout` (so an
@@ -51,6 +51,11 @@ pub(super) async fn connect(
         // No address answered within its share (or the system gave up).
         io::ErrorKind::TimedOut => OpenError::TimedOut {
             after: Duration::from_secs(started.elapsed().as_secs_f64().round() as u64),
+            stage: ConnectStage::Tcp {
+                host: host.to_owned(),
+                port,
+                via: None,
+            },
         },
         _ => OpenError::Connect(error.to_string()),
     })

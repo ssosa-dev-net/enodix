@@ -273,10 +273,16 @@ everything 0.2.0 could do, the app still does, reached differently.
 - **A connection that fails** (#116) says what happened and what to
   check next, in the bar under the terminal (or the SSH agent's card):
   the address for a name that does not resolve, the Port setting for a
-  refused port, the address, the device and the Connect timeout for no
-  answer, the username and password (and the Credentials view) for a
+  refused port, the username and password (and the Credentials view) for a
   refused login, the agent for an agent login; a jump host's failure
-  says it is the jump host's. Fix it where the advice says, then press
+  says it is the jump host's. A device that stops answering is named
+  with the step it stopped at (#140): no TCP connection to the address
+  and port (through which jump host, if one), connected but no SSH
+  identification line, no key exchange, no answer to the login, no
+  answer to the channel request, or no shell; each with its own advice
+  (the address and a firewall, the Port setting, the device's
+  authentication server, a busy device; and the Connect timeout). Jobs and
+  the Files tab give the same words. Fix it where the advice says, then press
   Enter in the terminal to reconnect.
 - **Reconnecting** (Enter in a closed session, or the session menu's
   Reconnect; the same in a split pane and in a session window) connects

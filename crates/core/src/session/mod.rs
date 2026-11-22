@@ -350,10 +350,14 @@ pub enum OpenError {
     #[error("{host} refused the connection on port {port}")]
     ConnectionRefused { host: String, port: u16 },
     /// The device did not answer in time while the session was being
-    /// opened: no connection, no handshake, or no answer while logging in
-    /// ([`SshTarget::connect_timeout`], [`TelnetTarget::connect_timeout`]).
-    #[error("the device did not answer within {} s", .after.as_secs_f64())]
-    TimedOut { after: Duration },
+    /// opened ([`SshTarget::connect_timeout`],
+    /// [`TelnetTarget::connect_timeout`]); `stage` says at which step it
+    /// went silent (#140).
+    #[error("{stage} within {} s", .after.as_secs_f64())]
+    TimedOut {
+        after: Duration,
+        stage: ConnectStage,
+    },
     /// The device could not be reached for another reason, or the
     /// connection broke while it was being set up.
     #[error("could not connect: {0}")]
@@ -410,6 +414,52 @@ pub enum OpenError {
     },
 }
 
+/// The step of opening a session at which the device (or the jump host
+/// being reached) stopped answering: what an [`OpenError::TimedOut`] says
+/// did not happen (#140). Each step has the whole connect timeout, the
+/// clock starting again after the user answers a question.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConnectStage {
+    /// No TCP connection to `host` on `port`: nothing answered the
+    /// connection request (a wrong address, a device that is down, a
+    /// firewall dropping it). `via` is the jump host that was asked to make
+    /// the connection, if one was.
+    #[error(
+        "no TCP connection to {host} port {port}{}",
+        .via.as_ref().map(|via| format!(" through the jump host {via}")).unwrap_or_default()
+    )]
+    Tcp {
+        host: String,
+        port: u16,
+        via: Option<String>,
+    },
+    /// Connected over TCP, but the device sent no SSH identification line
+    /// (`SSH-2.0-...`): something listens there that does not speak SSH,
+    /// or the SSH server is stuck.
+    #[error("connected, but no SSH identification line came")]
+    Identification,
+    /// The device sent its identification line, but the key exchange did
+    /// not finish.
+    #[error("the SSH identification line came, but the key exchange did not finish")]
+    KeyExchange,
+    /// The key exchange finished, but the device did not answer the login
+    /// (a device waiting on its RADIUS or TACACS+ server, say).
+    #[error("the key exchange finished, but the login got no answer")]
+    Login,
+    /// Logged in, but the device did not answer the request for a session
+    /// channel (for the shell, or a file connection's SFTP or SCP).
+    #[error("logged in, but the request for a session channel got no answer")]
+    Channel,
+    /// Logged in and the channel opened, but the device did not start the
+    /// shell.
+    #[error("logged in, but the shell did not start")]
+    Shell,
+    /// Logged in and the channel opened, but the device did not answer the
+    /// request for the subsystem `name` (`sftp`).
+    #[error("logged in, but the request for the {name} subsystem got no answer")]
+    Subsystem { name: String },
+}
+
 /// Why logging in with an SSH agent did not work.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AgentError {
@@ -444,9 +494,7 @@ impl OpenError {
                 "Nothing accepts connections on port {port}: check the Port setting, and that \
                  the device has SSH (or telnet) turned on."
             ),
-            Self::TimedOut { .. } => "Check the address and that the device is up; a firewall \
-                may be dropping the connection. A slow device may need a longer Connect timeout."
-                .into(),
+            Self::TimedOut { stage, .. } => stage.advice(),
             Self::AuthenticationFailed => "Check the username and password (or key). For a \
                 host with a credential profile, change them in the Credentials view, then \
                 reconnect."
@@ -483,6 +531,37 @@ impl OpenError {
             _ => return None,
         };
         Some(advice)
+    }
+}
+
+impl ConnectStage {
+    /// What to check when the device went silent at this stage.
+    fn advice(&self) -> String {
+        match self {
+            Self::Tcp { via: None, .. } => "Check the address and that the device is up; a \
+                firewall may be dropping the connection. A slow device may need a longer Connect \
+                timeout."
+                .into(),
+            Self::Tcp { via: Some(via), .. } => format!(
+                "Check the address, that the device is up, and that {via} can reach it; a \
+                 firewall may be dropping the connection. A slow device may need a longer \
+                 Connect timeout."
+            ),
+            Self::Identification => "Check the Port setting: what answers there may not be an \
+                SSH server (a telnet or console port, say), or the device's SSH server is stuck \
+                or has no line free."
+                .into(),
+            Self::KeyExchange => "The device may be slow to compute the key exchange (an old \
+                or busy one): try a longer Connect timeout."
+                .into(),
+            Self::Login => "The device may be waiting on its authentication server (RADIUS, \
+                TACACS+): check that the device reaches it, or try a longer Connect timeout."
+                .into(),
+            Self::Channel | Self::Shell | Self::Subsystem { .. } => "The device accepted the \
+                login but went no further: it may be busy, or out of sessions for this user. Try \
+                again, or a longer Connect timeout."
+                .into(),
+        }
     }
 }
 

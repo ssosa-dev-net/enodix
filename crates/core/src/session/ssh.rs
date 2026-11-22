@@ -24,9 +24,9 @@ use super::connection::Lost;
 use super::recording::{FirstBytes, Recording};
 use super::tcp;
 use super::{
-    agent, AgentError, CloseReason, Command, HostKeyAsker, HostKeyDecision, HostKeyQuestion,
-    JumpHost, Link, LoginPrompt, LoginQuestion, NegotiatedAlgorithms, OpenError, Prompter,
-    SessionEvent, SessionState, SshAuth, SshTarget, TerminalSize, TERM,
+    agent, AgentError, CloseReason, Command, ConnectStage, HostKeyAsker, HostKeyDecision,
+    HostKeyQuestion, JumpHost, Link, LoginPrompt, LoginQuestion, NegotiatedAlgorithms, OpenError,
+    Prompter, SessionEvent, SessionState, SshAuth, SshTarget, TerminalSize, TERM,
 };
 use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
 
@@ -1032,10 +1032,12 @@ async fn open_shell(
     let (connection, jumps, algorithms) =
         connect_device(target, known_hosts, asker, prompter, None).await?;
 
+    let progress = Progress::new(Step::At(ConnectStage::Channel));
     let started = within(
         target.connect_timeout,
         prompter.user_wait(),
-        start_shell(&connection, size),
+        &progress,
+        start_shell(&connection, size, &progress),
     )
     .await;
     let (channel, early_output) = match started {
@@ -1142,7 +1144,14 @@ impl JumpConnections {
                 "the jump host {name} could not reach it ({})",
                 forwarding_failure(&error)
             ))),
-            Err(_) => Err(OpenError::TimedOut { after: timeout }),
+            Err(_) => Err(OpenError::TimedOut {
+                after: timeout,
+                stage: ConnectStage::Tcp {
+                    host: host.to_owned(),
+                    port,
+                    via: Some(name.clone()),
+                },
+            }),
         }
     }
 
@@ -1161,6 +1170,7 @@ impl JumpConnections {
 async fn start_shell(
     connection: &Handle<Client>,
     size: TerminalSize,
+    progress: &Progress,
 ) -> Result<(Channel<client::Msg>, Vec<u8>), OpenError> {
     let channel = connection
         .channel_open_session()
@@ -1170,6 +1180,7 @@ async fn start_shell(
             _ if connection.is_closed() => OpenError::Protocol(CLOSED_BEFORE_SHELL.into()),
             error => protocol(error),
         })?;
+    progress.set(Step::At(ConnectStage::Shell));
     shell_on(channel, size)
         .await
         .map_err(|refusal| match refusal {
@@ -1274,21 +1285,28 @@ async fn connect(
     prompter: &mut Prompter,
 ) -> Result<(Handle<Client>, NegotiatedAlgorithms), OpenError> {
     let user = prompter.user_wait();
+    let progress = Progress::new(Step::At(ConnectStage::Tcp {
+        host: hop.host.to_owned(),
+        port: hop.port,
+        via: via.as_ref().map(|via| via.name.to_owned()),
+    }));
     within(
         hop.connect_timeout,
         user,
-        connect_and_log_in(hop, via, known_hosts, asker, prompter),
+        &progress,
+        connect_and_log_in(hop, via, known_hosts, asker, prompter, &progress),
     )
     .await
 }
 
-/// [`connect`] without the timeout.
+/// [`connect`] without the timeout; tells `progress` each step reached.
 async fn connect_and_log_in(
     hop: Hop<'_>,
     via: Option<Via<'_>>,
     known_hosts: &KnownHosts,
     asker: &SharedAsker,
     prompter: &mut Prompter,
+    progress: &Progress,
 ) -> Result<(Handle<Client>, NegotiatedAlgorithms), OpenError> {
     let login = login(hop.auth).await?;
     let config = Arc::new(client::Config {
@@ -1320,6 +1338,7 @@ async fn connect_and_log_in(
         let connected = match via {
             None => {
                 let socket = tcp::connect(hop.host, hop.port, hop.connect_timeout).await?;
+                progress.set(Step::Handshake(first_bytes.clone()));
                 let stream = Recording::new(socket, first_bytes.clone());
                 client::connect_stream(config, stream, client).await
             }
@@ -1335,6 +1354,7 @@ async fn connect_and_log_in(
                             forwarding_failure(&error)
                         ))
                     })?;
+                progress.set(Step::Handshake(first_bytes.clone()));
                 let stream = Recording::new(channel.into_stream(), first_bytes.clone());
                 client::connect_stream(config, stream, client).await
             }
@@ -1359,6 +1379,7 @@ async fn connect_and_log_in(
     // Needed only for a failed negotiation: stop keeping what arrives.
     drop(first_bytes.take());
     let mut connection = connected?;
+    progress.set(Step::At(ConnectStage::Login));
     let agreed = negotiated
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1504,15 +1525,65 @@ fn handshake_broke(error: &io::Error) -> OpenError {
 }
 
 /// Runs `work`, unless it waits on the network for `timeout` first: that
-/// is [`OpenError::TimedOut`].
+/// is [`OpenError::TimedOut`], at the stage `progress` had reached.
 async fn within<T>(
     timeout: Duration,
     user: watch::Receiver<bool>,
+    progress: &Progress,
     work: impl Future<Output = Result<T, OpenError>>,
 ) -> Result<T, OpenError> {
     tokio::select! {
         done = work => done,
-        () = deadline(user, timeout) => Err(OpenError::TimedOut { after: timeout }),
+        () = deadline(user, timeout) => Err(progress.timed_out(timeout)),
+    }
+}
+
+/// How far the opening of one hop (or the start of a channel) has got:
+/// what its timeout says did not answer (#140). Set by the work as it goes
+/// and read once its wait has ended.
+#[derive(Clone)]
+struct Progress(Arc<std::sync::Mutex<Step>>);
+
+/// A step of [`Progress`].
+enum Step {
+    At(ConnectStage),
+    /// Connected; the SSH handshake under way. What the device has sent so
+    /// far tells the identification line from the key exchange.
+    Handshake(FirstBytes),
+}
+
+impl Progress {
+    fn new(step: Step) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(step)))
+    }
+
+    fn set(&self, step: Step) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = step;
+    }
+
+    fn stage(&self) -> ConnectStage {
+        match &*self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            Step::At(stage) => stage.clone(),
+            Step::Handshake(first_bytes) if first_bytes.has_identification() => {
+                ConnectStage::KeyExchange
+            }
+            Step::Handshake(_) => ConnectStage::Identification,
+        }
+    }
+
+    /// The failure of a wait of `after` that ended at this point.
+    fn timed_out(&self, after: Duration) -> OpenError {
+        OpenError::TimedOut {
+            after,
+            stage: self.stage(),
+        }
     }
 }
 
@@ -1627,6 +1698,7 @@ impl Connected {
         &self,
         name: &str,
     ) -> Result<Channel<client::Msg>, SubsystemRefusal> {
+        let progress = Progress::new(Step::At(ConnectStage::Channel));
         let starting =
             async {
                 let mut channel = self.connections[0].channel_open_session().await.map_err(
@@ -1637,6 +1709,7 @@ impl Connected {
                         _ => SubsystemRefusal::Failed(CONNECTION_LOST.into()),
                     },
                 )?;
+                progress.set(Step::At(ConnectStage::Subsystem { name: name.into() }));
                 channel
                     .request_subsystem(true, name)
                     .await
@@ -1668,10 +1741,7 @@ impl Connected {
         match tokio::time::timeout(self.connect_timeout, starting).await {
             Ok(started) => started,
             Err(_) => Err(SubsystemRefusal::Failed(
-                OpenError::TimedOut {
-                    after: self.connect_timeout,
-                }
-                .to_string(),
+                progress.timed_out(self.connect_timeout).to_string(),
             )),
         }
     }
@@ -1698,8 +1768,11 @@ impl Connected {
         };
         match tokio::time::timeout(self.connect_timeout, starting).await {
             Ok(started) => started,
+            // Sending the command waits for nothing: only the channel can
+            // go unanswered.
             Err(_) => Err(OpenError::TimedOut {
                 after: self.connect_timeout,
+                stage: ConnectStage::Channel,
             }
             .to_string()),
         }
