@@ -164,7 +164,10 @@ computer, for when GitHub's runners are not available.
    rename "Unreleased" to the version and start a new "Unreleased" above it.
 2. `npm run check`, `npm run test:python` (the Python bridge: needs Python
    3.10+ and, the first time, the network for Nornir), and
-   `npm run app:build && npm run smoke`.
+   `npm run app:build && npm run smoke`. The Dependencies workflow must be
+   green, and each advisory `deny.toml` ignores looked at again: drop the
+   ones a dependency update has fixed (`cargo deny check` then reports an
+   ignore that matches nothing).
 3. Build the Windows files, in a shell where the key is set (PowerShell shown):
 
    ```powershell

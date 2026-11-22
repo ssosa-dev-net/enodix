@@ -85,6 +85,13 @@ jobs:
       - name: Tests
         run: cargo test --workspace --no-fail-fast
 
+      # The cache restores target/, and with it a virtual environment from an
+      # earlier run that may not work on this runner (pip half there): the
+      # tests then make a fresh one.
+      - name: Remove a cached Python environment
+        shell: bash
+        run: rm -rf target/python-test
+
       - name: Python bridge tests
         run: npm run test:python
         env:
