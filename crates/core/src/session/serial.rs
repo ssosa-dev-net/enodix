@@ -209,8 +209,11 @@ impl SerialPorts for SystemSerialPorts {
             // only talk while DTR (and RTS) are up.
             .dtr_on_open(true)
             .open()?;
+        // Best effort, as the driver does for DTR: a line without modem
+        // lines (a pseudo terminal, such as a console forwarded by `socat
+        // pty,...`) refuses it (ENOTTY) and is still a working line (#58).
         if parameters.flow_control != FlowControl::Hardware {
-            opened.write_request_to_send(true)?;
+            let _ = opened.write_request_to_send(true);
         }
         Ok(Box::new(SystemLine(opened)))
     }
