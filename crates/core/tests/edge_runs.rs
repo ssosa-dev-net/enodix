@@ -6,7 +6,7 @@
 mod support;
 
 use std::fs;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use netterm_core::job::results::{
     OutputRef, ResultsError, RunList, RunStore, StoredRun, RUN_FILE, SAVE_EVERY,
@@ -302,6 +302,18 @@ fn list_many(runs: usize) -> Listing {
         fs::create_dir_all(to.join("output")).unwrap();
         fs::write(to.join(RUN_FILE), &text).unwrap();
     }
+    // Kept runs are old: a description written a moment ago is read at
+    // every list (its time cannot tell one write from the next).
+    let old = SystemTime::now() - Duration::from_secs(3600);
+    for entry in fs::read_dir(store.root().join(&ws)).unwrap() {
+        let file = entry.unwrap().path().join(RUN_FILE);
+        fs::File::options()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
     let made = making.elapsed();
     let listing = Instant::now();
     let listed = store.list(&ws).unwrap();
@@ -351,6 +363,39 @@ fn listing_many_kept_runs_again_is_quick() {
         again < reading / 2,
         "first {first:?}, again {again:?}, reading {reading:?}"
     );
+}
+
+/// A description written again a moment after it was listed, with the same
+/// size and the same file time, is read again (#137). A file clock is
+/// coarse: on Linux a host's state going from `waiting` to `running`
+/// within one tick left the list showing `waiting`.
+#[test]
+fn a_fresh_description_rewritten_with_the_same_size_and_time_is_read_again() {
+    let lab = lab(2);
+    let plan = lab.plan(&folder(""), &snippet("Show"));
+    let store = RunStore::new(lab.folder("data/jobs"));
+    let ws = lab.id();
+    let run = keep(&store, &ws, &plan, "r1#\n");
+    let file = store.root().join(&ws).join(&run).join(RUN_FILE);
+    let first = store.list(&ws).unwrap();
+    assert_eq!(first.runs[0].hosts[0].name, "r0");
+
+    let written = fs::metadata(&file).unwrap().modified().unwrap();
+    let text = fs::read_to_string(&file).unwrap();
+    let renamed = text.replacen("name: r0", "name: q0", 1);
+    assert_ne!(text, renamed);
+    assert_eq!(text.len(), renamed.len());
+    fs::write(&file, &renamed).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(written)
+        .unwrap();
+    assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), written);
+
+    let second = store.list(&ws).unwrap();
+    assert_eq!(second.runs[0].hosts[0].name, "q0");
 }
 
 /// What a store lists after its runs were listed once and then changed on
