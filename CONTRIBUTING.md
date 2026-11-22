@@ -14,7 +14,12 @@ keys, addresses and configurations you would not publish.
 1. Talk about larger changes in an issue first, so the work fits the plan.
 2. Build and test from a clone: `npm install`, then `npm run check` (format
    check, lint and every test) must pass. `npm run test:python` covers the
-   Python bridge and `npm run test:linux` the Linux checks.
+   Python bridge and `npm run test:linux` the Linux checks. CI runs the
+   same checks on Linux and Windows for every pull request
+   (`.github/workflows/ci.yml`); a pull request is merged once they pass.
+   The end-to-end smoke test, the containerlab device suite and the
+   installer checks need a desktop, a lab or Windows Sandbox, so the
+   maintainer runs them before a release.
 3. Tests check what a user would see, through `enodix-core`'s public API;
    extend the test harness in `crates/core/tests/support` rather than
    mocking internals.
