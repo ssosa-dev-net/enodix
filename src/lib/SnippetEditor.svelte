@@ -71,17 +71,19 @@
   async function save() {
     if (saving || missing) return;
     saving = true;
+    // What is sent: typing while it saves stays unsaved.
+    const sent = { ...draft };
     try {
       await saveSnippet(previous, {
-        name: draft.name,
-        group: draft.group.trim() === "" ? null : draft.group,
-        text: draft.text,
+        name: sent.name,
+        group: sent.group.trim() === "" ? null : sent.group,
+        text: sent.text,
       });
       error = null;
-      const renamed = draft.name !== previous;
-      previous = draft.name;
-      savedAs = { ...draft };
-      if (renamed) {
+      const renamed = sent.name !== previous;
+      previous = sent.name;
+      savedAs = sent;
+      if (renamed && !changed) {
         // The tab follows the snippet's new name.
         openView("snippet", draft.name);
         onclose();

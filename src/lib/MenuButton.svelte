@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import type { Component } from "svelte";
+  import { untrack, type Component } from "svelte";
 
   /** One entry of a `MenuButton`'s menu. */
   export interface MenuItem {
@@ -72,6 +72,11 @@
   /** Shows the list below the button (above if it does not fit, inside the
    * window either way) and focuses the first (or last) entry. */
   function show(node: HTMLElement) {
+    // Once per opening: a change to the button must not show it again.
+    untrack(() => place(node));
+  }
+
+  function place(node: HTMLElement) {
     try {
       node.showPopover();
     } catch {
@@ -94,7 +99,9 @@
       node.style.top = `${top}px`;
     }
     const all = items(node);
-    const offered = all.filter((item) => item.ariaDisabled !== "true");
+    const offered = all.filter(
+      (item) => item.getAttribute("aria-disabled") !== "true",
+    );
     const pool = offered.length > 0 ? offered : all;
     (opening === "last" ? pool.at(-1) : pool[0])?.focus();
   }
