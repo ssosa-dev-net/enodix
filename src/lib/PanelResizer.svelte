@@ -119,6 +119,7 @@
     transform: translate(-50%, -50%);
     width: 14px;
     height: 36px;
+    min-height: 0;
     padding: 0;
     font-size: var(--text-xs);
     line-height: 1;

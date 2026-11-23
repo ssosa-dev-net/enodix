@@ -1283,6 +1283,7 @@
         }}
       >
         <input
+          class="compact"
           name="search"
           aria-label="Search the scrollback"
           placeholder="Search"
@@ -1310,6 +1311,7 @@
         </label>
         <button
           type="button"
+          class="compact"
           data-search="previous"
           title="Previous match (Shift+Enter)"
           aria-label="Previous match"
@@ -1318,6 +1320,7 @@
         >
         <button
           type="button"
+          class="compact"
           data-search="next"
           title="Next match (Enter)"
           aria-label="Next match"
@@ -1326,6 +1329,7 @@
         >
         <button
           type="button"
+          class="compact"
           data-search="close"
           title="Close (Escape)"
           aria-label="Close the search"
@@ -1699,8 +1703,9 @@
     flex: none;
     display: inline-grid;
     place-items: center;
-    width: 26px;
-    height: 24px;
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
     padding: 0;
     border-color: transparent;
     background: none;
@@ -1750,7 +1755,15 @@
 
   .ended button {
     margin-left: auto;
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
+    font-size: var(--text-xs);
+  }
+
+  .log-failed button,
+  .backup-failed button {
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     font-size: var(--text-xs);
   }
 
@@ -1797,7 +1810,8 @@
   }
 
   .search button {
-    padding: var(--space-0-5) var(--space-1-5);
+    min-width: var(--control-height-small);
+    padding: 0 var(--space-1-5);
   }
 
   .terminal {

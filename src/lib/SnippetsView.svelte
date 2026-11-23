@@ -254,8 +254,8 @@
     flex: none;
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: var(--control-height);
+    height: var(--control-height);
     padding: 0;
     border-color: transparent;
     background: none;
@@ -277,6 +277,7 @@
   .field {
     display: flex;
     align-items: center;
+    height: var(--control-height);
     gap: var(--space-1-5);
     padding: 0 var(--space-1-5) 0 var(--space-2);
     background: var(--input);
@@ -294,7 +295,8 @@
     min-width: 0;
     border: 0;
     background: none;
-    padding: var(--space-1) 0;
+    height: 100%;
+    padding: 0;
     font-size: var(--text-sm);
     outline: none;
   }
@@ -306,7 +308,10 @@
   .field .clear {
     display: inline-grid;
     place-items: center;
-    padding: var(--space-0-5);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
+    padding: 0;
     border: 0;
     background: none;
     color: var(--muted);
@@ -395,6 +400,8 @@
     text-align: left;
     border-color: transparent;
     background: none;
+    justify-content: normal;
+    min-height: 0;
     padding: var(--space-1) var(--space-1-5);
   }
 
@@ -423,7 +430,10 @@
     flex: none;
     display: inline-grid;
     place-items: center;
-    padding: var(--space-1);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
+    padding: 0;
     border-color: transparent;
     background: none;
     color: var(--muted);

@@ -125,6 +125,7 @@
     border-radius: var(--radius-sm);
     background: none;
     text-align: left;
+    min-height: 0;
     padding: var(--space-1-5) var(--space-2-5);
   }
 

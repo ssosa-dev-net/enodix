@@ -486,9 +486,7 @@
         spellcheck="false"
         bind:value={newValue}
       />
-      <button type="submit" class="small" disabled={newKey.trim() === ""}
-        >Add</button
-      >
+      <button type="submit" disabled={newKey.trim() === ""}>Add</button>
     </form>
   </section>
 
@@ -598,8 +596,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: var(--control-height);
+    height: var(--control-height);
     padding: 0;
     border-color: transparent;
     background: none;
@@ -624,9 +622,9 @@
     margin-top: var(--space-1);
   }
 
-  .actions button,
-  .small {
-    padding: var(--space-0-5) var(--space-2);
+  .actions button {
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     font-size: var(--text-xs);
   }
 
@@ -676,7 +674,9 @@
   }
 
   .remove {
-    padding: 0 var(--space-1-5);
+    width: var(--control-height);
+    height: var(--control-height);
+    padding: 0;
     border: 0;
     background: none;
     color: var(--muted);

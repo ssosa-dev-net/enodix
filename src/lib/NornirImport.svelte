@@ -411,11 +411,6 @@
     min-width: 0;
   }
 
-  input,
-  select {
-    padding: var(--space-1) var(--space-2);
-  }
-
   .scroll {
     overflow: auto;
     min-height: 0;

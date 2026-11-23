@@ -246,6 +246,8 @@
     text-align: left;
     border-color: transparent;
     background: none;
+    gap: 0;
+    min-height: 0;
     padding: var(--space-0-5) var(--space-1-5);
   }
 
@@ -285,7 +287,10 @@
 
   .small {
     flex: none;
-    padding: var(--space-0-5) var(--space-1-5);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
+    padding: 0;
     border-color: transparent;
     background: none;
     color: var(--muted);

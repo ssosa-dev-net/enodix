@@ -398,6 +398,8 @@
     display: grid;
     gap: var(--space-0-5);
     width: 100%;
+    min-height: 0;
+    justify-content: normal;
     padding: var(--space-1-5) var(--space-2);
     text-align: left;
     background: none;

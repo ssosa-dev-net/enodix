@@ -6,9 +6,11 @@
     value: string;
     /** What is copied, for the button's label. */
     what: string;
+    /** The small size, for a dense row; beside an input it is the default. */
+    compact?: boolean;
   }
 
-  let { value, what }: Props = $props();
+  let { value, what, compact = false }: Props = $props();
 
   let copied = $state(false);
   let failed = $state(false);
@@ -33,6 +35,7 @@
 <button
   type="button"
   class="copy"
+  class:compact
   class:copied
   title={failed ? "Could not copy" : `Copy ${what}`}
   aria-label="Copy {what}"
@@ -52,11 +55,18 @@
     flex: none;
     display: inline-grid;
     place-items: center;
-    width: 1.8rem;
-    padding: var(--space-0-5) 0;
+    width: var(--control-height);
+    height: var(--control-height);
+    min-height: 0;
+    padding: 0;
     color: var(--muted);
     background: none;
     border-color: transparent;
+  }
+
+  .copy.compact {
+    width: var(--control-height-small);
+    height: var(--control-height-small);
   }
 
   .copy:hover:not(:disabled) {
