@@ -10,6 +10,7 @@
 import Archive from "@lucide/svelte/icons/archive";
 import ClipboardCheck from "@lucide/svelte/icons/clipboard-check";
 import Cpu from "@lucide/svelte/icons/cpu";
+import FileCode from "@lucide/svelte/icons/file-code";
 import FileClock from "@lucide/svelte/icons/file-clock";
 import FileInput from "@lucide/svelte/icons/file-input";
 import FileSpreadsheet from "@lucide/svelte/icons/file-spreadsheet";
@@ -76,6 +77,11 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
       return `Edit ${hostName(id)}${count > 0 ? ` (${count})` : ""}`;
     },
     icon: SquarePen,
+  } /** A snippet's editor (#10, item 8): subject the snippet's name; null
+   * is a new snippet. */,
+  snippet: {
+    title: (name) => (name ? `Snippet ${name}` : "New snippet"),
+    icon: FileCode,
   },
 };
 

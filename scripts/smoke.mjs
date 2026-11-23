@@ -5208,20 +5208,19 @@ async function snippets({
     exists("[data-snippets] [data-snippets-empty] [data-snippet-first]"),
   );
   await clickOn("[data-snippet-first]");
-  // The form opens in the view, in place of the list (#79): nothing
-  // window-modal, Escape goes back to the list.
-  const inView =
-    "[data-side-view=snippets] [data-snippets][data-mode=edit] form[data-snippet-form]";
-  await until("the snippet form in the view", () => exists(inView));
-  if (await exists("[aria-modal=true]")) fail("the snippet form is modal");
-  await evaluate(
-    `document.querySelector("input[name=snippet-name]").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`,
-  );
-  await until("the list again after Escape", () =>
-    exists("[data-snippets][data-mode=list] [data-snippet-first]"),
+  // The editor opens in a tab of its own (#10, item 8), not in the view
+  // and not window-modal; Cancel closes the tab, the view stays.
+  const inTab =
+    ".slot.view:not([hidden]) [data-view=snippet] form[data-snippet-form]";
+  await until("the snippet editor tab", () => exists(inTab));
+  if (await exists("[aria-modal=true]")) fail("the snippet editor is modal");
+  await clickOn("[data-snippet-cancel]");
+  await until(
+    "the snippet editor tab closed by Cancel",
+    async () => !(await exists(inTab)),
   );
   await clickOn("[data-snippet-first]");
-  await until("the snippet form", () => exists(inView));
+  await until("the snippet editor tab", () => exists(inTab));
   await fillForm(
     {
       "snippet-name": "Smoke check",
@@ -5229,6 +5228,12 @@ async function snippets({
       "snippet-text": "snipA {{address}} {{name}} {{site}}\nsnipB {{vlan}}\n",
     },
     "[data-snippet-form]",
+  );
+  // The variables found in the text are listed beside it.
+  await until("the variables found beside the text", () =>
+    evaluate(
+      `[...document.querySelectorAll("[data-snippet-found-variable]")].map((c) => c.dataset.snippetFoundVariable).join(",") === "address,name,site,vlan"`,
+    ),
   );
   await until(
     "the snippet in the workspace",
@@ -5366,7 +5371,13 @@ async function snippets({
   // Edited (renamed) and deleted from the panel.
   await showSideView(evaluate, "snippets");
   await clickOn('[data-snippet-edit="Smoke check"]');
-  await until("the snippet form", () => exists("[data-snippet-form]"));
+  // Edit opens the snippet in its editor tab (the new snippet's tab moved
+  // to its name when saved).
+  await until("the snippet's editor tab", () =>
+    exists(
+      '.slot.view:not([hidden]) [data-view=snippet] form[data-snippet-editing="Smoke check"]',
+    ),
+  );
   await fillForm({ "snippet-name": "Smoke renamed" }, "[data-snippet-form]");
   await until("the renamed snippet in the workspace", () =>
     fileText().startsWith("Smoke renamed:\n  group: Smoke\n"),

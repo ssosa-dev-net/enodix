@@ -34,6 +34,7 @@
   import Dialog from "./lib/Dialog.svelte";
   import DetailsSheet from "./lib/DetailsSheet.svelte";
   import HostEditor from "./lib/HostEditor.svelte";
+  import SnippetEditor from "./lib/SnippetEditor.svelte";
   import HighlightRules from "./lib/HighlightRules.svelte";
   import HostsView from "./lib/HostsView.svelte";
   import PaneView, {
@@ -830,6 +831,7 @@
             item.view === "configs" ||
             item.view === "files" ||
             item.view === "host" ||
+            item.view === "snippet" ||
             item.view === "csv-import" ||
             item.view === "nornir-import" ||
             item.view === "enrich"
@@ -992,6 +994,14 @@
       detail: "Open in a tab",
       icon: VIEWS.host.icon,
       run: () => openViewTab({ view: "host", subject: null }),
+    },
+    {
+      id: "new-snippet",
+      label: "New snippet",
+      words: "snippets commands variables editor add create",
+      detail: "Open in a tab",
+      icon: VIEWS.snippet.icon,
+      run: () => openViewTab({ view: "snippet", subject: null }),
     },
     {
       id: "switch-workspace",
@@ -1958,6 +1968,11 @@
               <HostEditor
                 subject={item.subject}
                 onconnect={prompt}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
+            {:else if item.view === "snippet" && inventory.workspace}
+              <SnippetEditor
+                subject={item.subject}
                 onclose={() => closeViewTab(item.tab, true)}
               />
             {:else if item.view === "python-setup"}
