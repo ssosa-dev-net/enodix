@@ -2574,11 +2574,19 @@ async function main() {
       await devtools.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
     }
   };
-  // Fills fields of the first form matching `form`, then submits it.
+  // Fills fields of the first form matching `form` that has every one of
+  // them, then submits it. Not just the first form: a tab kept open from
+  // an earlier step (the host or snippet editor) has a form of its own.
   const fillForm = (fields, form = "form") =>
     evaluate(`(() => {
       const fields = ${JSON.stringify(fields)};
-      const form = document.querySelector(${JSON.stringify(form)});
+      const form = [...document.querySelectorAll(${JSON.stringify(form)})].find(
+        (candidate) =>
+          Object.keys(fields).every((name) =>
+            candidate.querySelector("[name=" + name + "]"),
+          ),
+      );
+      if (!form) throw new Error("no form with " + Object.keys(fields).join(", "));
       for (const [name, value] of Object.entries(fields)) {
         const input = form.querySelector("[name=" + name + "]");
         input.value = value;
