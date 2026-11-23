@@ -205,7 +205,7 @@ computer, for when GitHub's runners are not available.
    ```
 
    It copies the working tree into WSL (`~/enodix-linux-check`, see
-   `docs/linux.md` for the packages the distribution needs), runs
+   `docs/dev/linux.md` for the packages the distribution needs), runs
    `npm ci` and `npm run release` there and copies the .deb, .rpm and
    .AppImage into `target/dist/<version>/`. On a Linux machine, run
    `npm run release` there instead. The first build downloads the AppImage
@@ -269,7 +269,7 @@ computer, for when GitHub's runners are not available.
    (**Check now** in Preferences), and installing works. On Linux, install
    the .deb in WSL and run `npm run test:linux-desktop` (also with
    `--backend x11` and `--app <the AppImage>`), then check what it cannot
-   on a real desktop with the list in `docs/linux.md`.
+   on a real desktop with the list in `docs/dev/linux.md`.
 
 7. Clean up, so build output does not pile up (it reached hundreds of
    gigabytes once). Everything published can be downloaded again:

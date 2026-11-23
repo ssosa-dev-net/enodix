@@ -1,0 +1,4 @@
+address: 198.51.100.5
+role: server
+description: Jump host for the European sites
+tags: [jump]

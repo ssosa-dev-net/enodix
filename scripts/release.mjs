@@ -17,7 +17,7 @@
 // replaces only its own files, so both sets can sit side by side, and
 // `SHA256SUMS.txt` lists every file there.
 //
-// See docs/releasing.md. It reads (on Linux only the endpoint):
+// See docs/dev/releasing.md. It reads (on Linux only the endpoint):
 //
 //   TAURI_SIGNING_PRIVATE_KEY           the updater's private key: the path
 //                                       of the key file (never inside the
@@ -79,7 +79,7 @@ function fail(message) {
 
 function required(name) {
   const value = process.env[name]?.trim();
-  if (!value) fail(`${name} is not set (see docs/releasing.md)`);
+  if (!value) fail(`${name} is not set (see docs/dev/releasing.md)`);
   return value;
 }
 
@@ -257,12 +257,12 @@ function signing() {
   const privateKey = required("TAURI_SIGNING_PRIVATE_KEY");
   if (existsSync(privateKey) && insideRepository(privateKey)) {
     fail(
-      "the private key is inside the repository: move it out (see docs/releasing.md)",
+      "the private key is inside the repository: move it out (see docs/dev/releasing.md)",
     );
   }
   if (process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD === undefined) {
     fail(
-      "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not set (see docs/releasing.md)",
+      "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is not set (see docs/dev/releasing.md)",
     );
   }
   // Kept here and taken out of the environment: nothing this script starts
@@ -600,7 +600,9 @@ function addStyleHook(file) {
   const output = (command, args) => {
     const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8" });
     if (result.error?.code === "ENOENT")
-      fail(`${command} is needed to add the AppImage's hook (docs/linux.md)`);
+      fail(
+        `${command} is needed to add the AppImage's hook (docs/dev/linux.md)`,
+      );
     if (result.status !== 0)
       fail(`${command} ${args.join(" ")} failed: ${result.stderr}`);
     return result.stdout;
@@ -660,7 +662,7 @@ function linuxPackageFiles(format, file) {
     const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8" });
     if (result.error?.code === "ENOENT")
       fail(
-        `${command} is needed to check the packages' contents: install it (docs/linux.md)`,
+        `${command} is needed to check the packages' contents: install it (docs/dev/linux.md)`,
       );
     if (result.status !== 0)
       fail(`${command} ${args.join(" ")} failed: ${result.stderr}`);
@@ -727,7 +729,7 @@ for (const name of files) console.log(`  ${name}`);
 console.log(
   endpoint
     ? "\nNothing was uploaded. Upload these files to the release, and the" +
-        ` Windows build's latest.json to ${endpoint.href} (see docs/releasing.md).`
+        ` Windows build's latest.json to ${endpoint.href} (see docs/dev/releasing.md).`
     : "\nNothing was uploaded. This is an unsigned pre-release: its copies" +
-        " never check for or install an update (see docs/releasing.md).",
+        " never check for or install an update (see docs/dev/releasing.md).",
 );

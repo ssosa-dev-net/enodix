@@ -1,5 +1,5 @@
 // Drives the Linux app on a Linux desktop (#114): the points of
-// docs/linux.md's "Checking the packages on a Linux desktop" that a script
+// docs/dev/linux.md's "Checking the packages on a Linux desktop" that a script
 // can see. Written for WSLg (WSL 2 on Windows 11), where it was run; it
 // should run unchanged on a real Linux desktop.
 //
@@ -55,7 +55,7 @@
 // /usr/bin/enodix-cli) and `--packaged rpm` says `--app` is a package's
 // copy: scripts/linux-fedora-check.mjs runs both in a Fedora container.
 //
-// Without --desktop, not checked here (see docs/linux.md): dragging the
+// Without --desktop, not checked here (see docs/dev/linux.md): dragging the
 // window, resizing it from its edges, Minimize's effect, edge tiling, and
 // what the desktop's opener then does.
 //
@@ -673,7 +673,7 @@ async function closeTab(page, selector) {
     await page.click(`${selector} [data-tab-close]`);
 }
 
-// --- The points of docs/linux.md ----------------------------------------
+// --- The points of docs/dev/linux.md ----------------------------------------
 
 /** 1. The package's menu entry and icon; the app starts and shows its
  * window. */
@@ -922,7 +922,7 @@ async function desktopTheme(page) {
 
 /** 2, for an AppImage on a desktop whose dark look is a style: light at
  * launch with the desktop light; a switch while it runs is only noted (it
- * needs a restart: docs/linux.md). */
+ * needs a restart: docs/dev/linux.md). */
 async function pinnedTheme(page) {
   const shown = () =>
     page.js(`return {

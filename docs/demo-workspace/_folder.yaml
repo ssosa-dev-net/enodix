@@ -1,0 +1,5 @@
+description: Northwind network (demo)
+credential_profile: northwind-ops
+logging: true
+web_links:
+  NMS: https://nms.example.net/device/{{name}}

@@ -1,5 +1,5 @@
 //! The lab check of file transfers (#108): each device with what
-//! `docs/containerlab.md` ("Files on the lab devices") says it offers,
+//! `docs/dev/containerlab.md` ("Files on the lab devices") says it offers,
 //! through the lab's jump host, the way a Files tab and a file job reach
 //! it: an unattended file connection of the host's profile target,
 //! `start_files` (SFTP, or the fall back to SCP by itself) and the
@@ -112,7 +112,7 @@ async fn transfer(run: &LabRun, device: &Device) -> Result<String, Stop> {
             if documented(device.platform) == Some(Protocol::Scp) {
                 connection.close().await;
                 return Err(Stop::Failed(
-                    "SFTP started on a device documented as having none (docs/containerlab.md)"
+                    "SFTP started on a device documented as having none (docs/dev/containerlab.md)"
                         .into(),
                 ));
             }
@@ -127,11 +127,11 @@ async fn transfer(run: &LabRun, device: &Device) -> Result<String, Stop> {
                 return Err(match scp.hint() {
                     Some(hint) => Stop::NotChecked(format!(
                         "no SFTP: {why}. The app's hint: {hint}. On the lab's cjunos1, paste \
-                         lab/configs/cjunos1-files.set (docs/containerlab.md)"
+                         lab/configs/cjunos1-files.set (docs/dev/containerlab.md)"
                     )),
                     None => Stop::Failed(format!(
                         "no SFTP ({why}) on a device documented as offering it \
-                         (docs/containerlab.md)"
+                         (docs/dev/containerlab.md)"
                     )),
                 });
             }
@@ -321,7 +321,7 @@ async fn over_scp(
         Some((error, hint)) => {
             return Err(Stop::NotChecked(format!(
                 "{error} The app's hint: {hint}. On the lab's csr1, paste \
-                 lab/configs/csr1-files.cfg (docs/containerlab.md)"
+                 lab/configs/csr1-files.cfg (docs/dev/containerlab.md)"
             )));
         }
         None => {

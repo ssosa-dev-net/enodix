@@ -1,0 +1,7 @@
+address: 198.51.100.22
+site: London LD5
+platform: frr
+vendor: FRRouting
+role: edge_router
+environment: production
+tags: [edge]

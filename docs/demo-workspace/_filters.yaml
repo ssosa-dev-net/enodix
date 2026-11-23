@@ -1,0 +1,7 @@
+Core routers:
+  tags: [core]
+Edge routers:
+  tags: [edge]
+Arista in Madrid:
+  vendor: Arista
+  site: Madrid DC1

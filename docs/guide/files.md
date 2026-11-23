@@ -5,6 +5,8 @@ or a tech-support bundle off it) without a second tool: the app already
 has the device's address, login, jump hosts and legacy-crypto setting, and
 knows which hosts are production.
 
+![The Files tab on a device, with its listing and transfers](../images/files.png)
+
 There are two ways in: the **Files tab** of one host, and **Send file…**,
 a job that sends one file to many hosts. Both work over SSH only (not
 telnet, not serial, not a quick connection).
@@ -22,8 +24,7 @@ timeouts. Nothing is asked when the profile is stored and the keys are
 trusted. A host with no stored profile asks for the username and password
 in the tab; an unknown or changed host key is asked there too, with the
 same choices as in a terminal. An open terminal on the same device is not
-touched: on the lab, a terminal on cEOS echoed and answered as quickly
-during a 400 MB upload as before it.
+touched by a transfer.
 
 ### A device with SFTP
 
@@ -80,7 +81,7 @@ cancels the transfer.
 | Cisco IOS, IOS-XE | SCP only | `ip scp server enable`. Before it the device answers `Administratively disabled.`, which the app shows with that command as a hint. `ip ssh bulk-mode` makes uploads several times faster | Privilege 15; a lower one gets `Privilege denied.` |
 | Juniper Junos | SCP as it comes; SFTP (the browser) once turned on | `set system services ssh sftp-server` for the browser. Without it the tab shows the SCP form, with that command as a hint | Any login class; a read-only login cannot delete |
 | Arista EOS | SFTP | Nothing | Privilege 15. A lower one looks like a device without SFTP and then refuses SCP too, in its own words |
-| Nokia SR Linux | SFTP | Nothing | The `admin` account was the one tried |
+| Nokia SR Linux | SFTP | Nothing | The `admin` account |
 | FRR (Linux) | SFTP | An SSH server with its SFTP subsystem | Any |
 
 A refusal is always shown as the device said it. The app adds a hint only
@@ -156,47 +157,36 @@ Each platform definition can name the folder where files belong on that
 platform (Platforms tab, "File folder"). The Files tab starts there, the
 SCP form fills it in and the file job sends there.
 
-| Built-in platform | File folder | Checked on |
-| ----------------- | ----------- | ---------- |
-| `ios` | `flash:` | CSR 1000v, IOS-XE 17.03.08 (where `bootflash:` is the same storage: a file sent to one is fetched from the other) |
-| `eos` | `/mnt/flash` | cEOS 4.36.0.1F |
-| `junos` | `/var/tmp` | cJunos Evolved 25.4R1.13 |
-| `nxos` | `bootflash:` | not verified (no image in the lab) |
-| `srlinux`, `frr` | none: the login's folder | SR Linux 24.10.1, FRR 10.2.1 |
+| Built-in platform | File folder |
+| ----------------- | ----------- |
+| `ios` | `flash:` (on IOS-XE, `bootflash:` is the same storage: a file sent to one is fetched from the other) |
+| `eos` | `/mnt/flash` |
+| `junos` | `/var/tmp` |
+| `nxos` | `bootflash:` |
+| `srlinux`, `frr` | none: the login's folder |
 
-## What was verified
+## Tested devices
 
-What is listed here was checked against the containerlab lab
-([containerlab.md](containerlab.md)), through its jump host, on 2026-11-21,
-and against the app's own test servers. What was not is under
-[Known limits](#known-limits). The lab is virtual machines and
-containers on one server: its speeds say nothing about real hardware (the
-lab's CSR 1000v is held to 1 Mbit/s by its licence).
+Which device platforms and versions this was tried on is in the
+[tested platforms table](../../README.md#tested-platforms).
 
-- SFTP on SR Linux, cEOS, FRR and cJunos Evolved: list, upload, download
-  and compare, rename, delete.
-- SCP on IOS-XE: the fall back by itself, send and fetch, the refusal and
-  its hint with `ip scp server enable` taken out, and that the tab holds
-  none of the device's lines (`show users` lists only the terminal).
-- The Junos fall back and its hint with the SFTP server taken out.
-- A 400 MB file uploaded to cEOS in the tab: 4 s, about 100 MB/s, while a
-  terminal on the same device echoed and answered in 45 to 63 ms, as
-  before the upload.
-- The same file sent as a job to cEOS, cJunos (about 8 s each over SFTP)
-  and the CSR (about two and a half minutes over SCP, 2.7 MB/s), with
-  each device's own checksum equal to the MD5 the run shows. Without
-  Overwrite: cEOS counted as already there, the CSR failed saying it
-  cannot tell, and a host whose key was not trusted failed with that
-  reason while the others went on. Cancelled part way, the job stopped
-  within a second.
-- A cancelled SFTP upload on cJunos: its partial file was removed.
-- Not on a device, but against the app's test server: a transfer that
-  stops moving (failed after three connect timeouts, saying so), a lost
-  connection and Reconnect, and the production questions. Also only there:
-  a one-time code and a host key trusted once, asked for each file on a
-  device with SCP only, since no lab device asks a question at login.
+## Trust
 
-## Known limits
+- The app listens on nothing for this. No file server is started; every
+  file moves over an SSH connection the app opens to the device.
+- Every file connection is one you started: opening a Files tab, sending
+  or fetching a file in it, or starting a file job. Nothing connects in
+  the background, and a tab that is closed has no connection.
+- A downloaded file is a plain file where you put it, as readable as any
+  other file there. An image or a config is as sensitive on your disk as
+  on the device.
+- A file job's kept run holds the file's name, size and hashes and each
+  host's outcome, as plain files beside the other job results. It does not
+  hold the file.
+- Host keys are checked as for a terminal. A job never trusts a key: a
+  host whose key is not trusted yet fails until you connect to it once.
+
+## Limits
 
 - **SCP-only devices have no listing**, no rename and no delete. The app
   runs no `dir` or other command on a device to make up for it.
@@ -218,13 +208,9 @@ lab's CSR 1000v is held to 1 Mbit/s by its licence).
 - **An IOS device with all its lines in use refuses the connection**
   before the login begins. The app says the device closed the connection
   and that its lines may all be in use.
-- **Not verified:** NX-OS and its `bootflash:`, the name of flash on
-  physical Catalyst switches, speeds on real hardware, a jump host that
-  needs a typed login, Linux. A drag from Explorer and the system's file
-  dialog were played by the tests, not operated. The Junos read-only
-  login and the IOS device with its lines in use (above) were seen while
-  the feature was designed and are covered by tests, and were not tried
-  again in the finished app.
+- **Not tried:** NX-OS and its `bootflash:`, the name of flash on
+  physical Catalyst switches, speeds on real hardware and a jump host that
+  needs a typed login.
 - **Renaming onto an existing name fails** on every device tried, and is
   reported as such.
 - **No resume**, no whole folders, no editing in place, no change of
@@ -232,19 +218,3 @@ lab's CSR 1000v is held to 1 Mbit/s by its licence).
   A Files tab lives in the main window only.
 - On a very slow link (a few tens of KB/s with the default timeout) a
   transfer can be failed as stalled although bytes still move.
-
-## Trust
-
-- The app listens on nothing for this. No file server is started; every
-  file moves over an SSH connection the app opens to the device.
-- Every file connection is one you started: opening a Files tab, sending
-  or fetching a file in it, or starting a file job. Nothing connects in
-  the background, and a tab that is closed has no connection.
-- A downloaded file is a plain file where you put it, as readable as any
-  other file there. An image or a config is as sensitive on your disk as
-  on the device.
-- A file job's kept run holds the file's name, size and hashes and each
-  host's outcome, as plain files beside the other job results. It does not
-  hold the file.
-- Host keys are checked as for a terminal. A job never trusts a key: a
-  host whose key is not trusted yet fails until you connect to it once.

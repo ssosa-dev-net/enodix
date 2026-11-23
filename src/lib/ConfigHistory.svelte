@@ -460,7 +460,7 @@
     border-radius: var(--radius-sm);
   }
 
-  .text {
+  pre.text {
     min-height: 6rem;
     max-height: 40vh;
     overflow: auto;

@@ -1,0 +1,10 @@
+Show version: show version
+BGP summary: show ip bgp summary
+OSPF neighbours: show ip ospf neighbor
+Interface detail: show interface {{interface}}
+Route to a prefix: show ip route {{prefix}}
+Interface description: |-
+  configure terminal
+  interface {{interface}}
+  description {{description}}
+  end

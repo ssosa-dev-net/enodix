@@ -1,340 +1,195 @@
-# enodix
+<!-- Logo: replace this comment with the logo image once it exists, e.g.
+<p align="center"><img src="docs/images/logo.svg" alt="enodix" width="96"></p>
+-->
 
-A terminal for network engineers: SSH, telnet and serial sessions to the
-devices in an inventory kept as plain YAML files (a folder you can put in
-git). Free and open source under the GPL-3.0.
+<h1 align="center">enodix</h1>
 
-- **Sessions:** tabs and split panes, jump hosts, session logs, keyword
-  highlighting, snippets with variables filled from the host, and paste
-  safety for production devices.
-- **Multi-send:** type into a group of terminals at once; joining a
-  production device asks first.
-- **Credentials:** profiles are kept in the Windows Credential Manager, or
-  in the app's own encrypted vault behind a master password (your choice;
-  on Linux the vault is the only store). Workspace files hold only a
-  profile's name. [docs/trust.md](docs/trust.md) says where every login
-  and file is kept, what is encrypted, and every connection the app can
-  make.
-- **Jobs:** run a snippet on a folder, a saved filter, one host or a few
-  hosts selected in the tree, with per-device output you can search,
-  compare and save. Nothing is asked mid-run; a list beforehand shows
-  which hosts will be skipped and why.
-- **Config backup:** as a job or each time you log in, kept as versions
-  with a diff between any two.
-- **Files:** a device's files in a tab, over SFTP, or SCP on devices that
-  have nothing else, with the host's login and jump hosts; upload,
-  download, rename and delete, with progress, checked sizes and the
-  uploaded file's MD5 and SHA-256. One file can be sent to a folder of
-  devices as a job. [docs/files.md](docs/files.md) says what each platform
-  needs and what the limits are.
-- **Python:** the inventory and logins as a Nornir inventory for your own
-  Netmiko, scrapli and NAPALM scripts, run from the app or from a shell,
-  with hosts behind jump hosts reached through the app's own jump chains.
-  Python is optional; nothing else needs it.
-- **Fill in from devices:** vendor, model, serial number and OS version
-  fetched with NAPALM, reviewed before anything is written.
+<p align="center">
+  <strong>A terminal for network engineers.</strong><br>
+  SSH, telnet and serial sessions to the devices in an inventory you keep as
+  plain YAML, with jobs, config backups and file transfers built in.
+</p>
 
-The window is a thin rail of icons on the left (Hosts, Snippets, Jobs,
-Config backups, Credentials, and Preferences at its foot), one side view
-that it switches and folds, and the terminals in tabs and split panes.
-Job runs, config history, Preferences, the imports and the other tools
-open as tabs beside the terminals, and a job run or a config history can
-open in a window of its own. So can a terminal, still connected and with
-its scrollback, for a second monitor. [docs/interface.md](docs/interface.md)
-describes the window, lists the shortcuts and says where everything is.
+<p align="center">
+  <a href="https://github.com/ssosa-dev-net/enodix/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ssosa-dev-net/enodix?include_prereleases&label=release"></a>
+  <a href="LICENSE"><img alt="Licence: GPL-3.0" src="https://img.shields.io/badge/licence-GPL--3.0-blue"></a>
+  <img alt="Windows and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey">
+</p>
 
-Releases up to 0.1.2 have the sessions and the inventory only. The rest
-of the list, apart from files, came with 0.2.0. Later releases added the
-redesigned interface (0.3.0), terminals in windows of their own (0.4.0),
-script tunnel ports (0.4.1) and a device's files (0.5.0); 0.6.0 is the
-first release as enodix and the first with the automatic updates described
-below (releases up to 0.5.0 were pre-releases without them). No release is
-code-signed yet, so Windows SmartScreen may warn the first time (see
-below). Download the files from the repository's **Releases** page.
-[CHANGELOG.md](CHANGELOG.md) lists what each release added, and
-[ROADMAP.md](ROADMAP.md) says what is built, what is not yet verified and
-what comes next.
+<p align="center">
+  <a href="https://github.com/ssosa-dev-net/enodix/releases/latest"><strong>Download</strong></a> ·
+  <a href="docs/guide/getting-started.md"><strong>Getting started</strong></a> ·
+  <a href="docs/README.md"><strong>Documentation</strong></a>
+</p>
 
-Windows 10 and 11 (64-bit). The app needs Microsoft Edge WebView2,
-which Windows 11 includes; the installer downloads it when it is missing.
-On a computer with neither WebView2 nor internet access (a Windows Server
-jump box, say), install Microsoft's Evergreen Standalone WebView2 runtime
-first. The portable copy needs it too: it cannot install WebView2, and
-without it the app does not start.
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/hero-light.png">
+  <img alt="enodix with the Hosts view on the left and two router sessions in split panes" src="docs/images/hero-dark.png">
+</picture>
 
-Since 0.5.0 there are also Linux packages (.deb, .rpm, AppImage). They have been
-checked in XFCE and GNOME desktop sessions inside WSL, and the .rpm in a
-Fedora container, but not yet on a Linux computer, so Linux is not claimed
-as supported. [docs/linux.md](docs/linux.md) says how the app differs there
-and what each check covered.
+## Why enodix
 
-## Download and install
+- **Your inventory is a folder of YAML files.** One file per device, folders
+  for sites, settings inherited down the tree. Keep it in git, review changes
+  in pull requests, edit it in the app or in any editor.
+- **Built for production networks.** Production devices are marked
+  everywhere, ask before a paste or a multi-send reaches them, and a job lists
+  every host it will skip, and why, before it starts.
+- **Passwords never land in your files.** Logins live in Windows Credential
+  Manager or the app's own encrypted vault. Workspace files only name a
+  credential profile.
+- **Local, private and free.** No account, no cloud, no telemetry. GPL-3.0,
+  with no paid tier. [Where every login is kept and every connection the app
+  makes](docs/trust.md) is written down.
 
-Each release has these files:
+## A quick tour
 
-| File                                | What it is                                                                  |
-| ----------------------------------- | --------------------------------------------------------------------------- |
-| `enodix_<version>_x64-setup.exe`    | The installer. Installs for your user only; no administrator rights needed. |
-| `enodix_<version>_x64-portable.zip` | The portable copy: unpack it anywhere (a USB stick) and run `enodix.exe`.   |
-| `enodix_<version>_amd64.deb`        | Debian and Ubuntu package (checked only in desktops inside WSL).            |
-| `enodix-<version>-1.x86_64.rpm`     | Fedora, RHEL and openSUSE package (the same).                               |
-| `enodix_<version>_amd64.AppImage`   | One Linux file that runs without installing (the same).                     |
-| `SHA256SUMS.txt`                    | The SHA-256 checksum of every file, to check a download.                    |
-| `latest.json`, `*.sig`              | Used by the app's update check; you do not need them.                       |
+### Sessions, tabs and split panes
 
-### Checking a download
+Connect from the tree with a double click. Tabs and split panes, jump hosts,
+session logs, keyword highlighting and search in the scrollback. Any terminal
+can move to a window of its own on a second monitor, still connected.
+[Sessions guide](docs/guide/sessions.md)
 
-In PowerShell, compare the file's checksum with its line in `SHA256SUMS.txt`:
+<img alt="Connecting to a router from the Hosts view" src="docs/images/connect.gif" width="800">
 
-```powershell
-Get-FileHash .\enodix_0.1.0_x64-setup.exe -Algorithm SHA256
-```
+### Snippets with variables
 
-Get the checksums from the release page itself, not from a copy sent with the
-download.
+Save the commands you type every day. Variables like `{{interface}}` are
+filled from the host's own fields, or asked for once.
+[Snippets guide](docs/guide/snippets.md)
 
-### "Windows protected your PC" (SmartScreen)
+<img alt="The snippet editor and the prompt for a variable" src="docs/images/snippet.png" width="800">
 
-Early releases are not code-signed (signing starts at the public launch).
-The first time you run the installer or `enodix.exe`, Windows SmartScreen
-may show a blue "Windows protected your PC" window saying the app is from an
-"Unknown publisher". Windows shows this for any unsigned program; it does
-not mean a virus was found. To go on:
+### Multi-send
 
-1. Check the file's SHA-256 checksum against `SHA256SUMS.txt` (above).
-2. Click **More info**, then **Run anyway**.
+Type once into a group of terminals. A production device asks before it
+joins. [Multi-send guide](docs/guide/multi-send.md)
 
-If the downloaded file is blocked instead (no **Run anyway** button), open
-its **Properties**, tick **Unblock** and click **OK**. Your organisation may
-not allow unsigned programs at all; ask your IT team in that case.
+<img alt="Four router sessions receiving the same command" src="docs/images/multi-send.gif" width="800">
 
-## Updates
+### Jobs on a folder, a filter or a few hosts
 
-The installed app checks for a new version once when it starts. When one is
-out, a notice in the corner says so; nothing is downloaded or installed until
-you click **Install and restart** (open sessions are closed, so it asks
-first when you have any). **Later** hides the notice until the next start.
+Run a snippet, a Python script or a file transfer on many devices. Before it
+starts you see which hosts will run and which are skipped; afterwards every
+device's output can be searched, compared and saved.
+[Jobs guide](docs/guide/jobs.md)
 
-The portable copy only tells you a new version exists and links to its
-download page; it never replaces itself. Unpack the new zip over the old
-folder.
+<img alt="A job's results, one device per row" src="docs/images/job-results.png" width="800">
 
-Updates are signed: the app installs only a download signed with the
-project's release key.
+### Config backups with history
 
-### Turning the update check off
+Back up configurations as a job, or each time you log in. Every change is
+kept as a version, and any two can be compared.
+[Config backups guide](docs/guide/config-backups.md)
 
-Open **Preferences** (the gear at the foot of the rail, or Ctrl+,) and clear **Check for
-a new version at start**. With it off, the app makes no network connection
-that you did not start (sessions, file transfers, jobs, scripts, a Python
-setup you confirmed, **Check now**; web links open in your browser). The
-setting is kept per user in the app's data folder (`preferences.yaml`, key
-`check_for_updates`).
+<img alt="Two versions of a router's configuration compared" src="docs/images/config-diff.png" width="800">
 
-The app sends no telemetry and has no crash reporting. The update check is a
-plain request for the release manifest (`latest.json`) and sends nothing
-about you, your machine or your inventory (the server sees your address,
-as with any connection). [docs/trust.md](docs/trust.md) lists every
-connection the app can make.
+### Files over SFTP and SCP
 
-## Uninstalling
+A device's files in a tab: upload, download, rename and delete, through its
+jump hosts, with checksums of what you sent. One file can go to a whole folder
+of devices as a job. [Files guide](docs/guide/files.md)
 
-Uninstall enodix from **Settings, Apps, Installed apps** (or run
-`uninstall.exe` in its folder, `%LOCALAPPDATA%\enodix`). It closes enodix,
-and `enodix-cli.exe` if a script is using it, then removes the program
-folder (the app, `enodix-cli.exe`, the Python wheel, the licence and the
-third-party notices), the Start menu and desktop shortcuts and the entry in
-Installed apps. Files you put in the program folder yourself are left there.
-On Linux the package manager removes it (`docs/linux.md`, "Removing it").
+<img alt="The Files tab on a router" src="docs/images/files.png" width="800">
 
-Your data stays, so a later install finds it again, unless you tick
-**Also delete settings, saved logins and the vault, ...** on the uninstall
-page. That deletes:
+### Credentials
 
-- `%APPDATA%\dev.enodix.app`: settings, the vault, known host keys, the
-  list of workspaces and the Python choice;
-- `%LOCALAPPDATA%\dev.enodix.app`: session logs, config backups, kept job
-  results, the Python environment and the window's web view data (before
-  0.5.0 the backups, results and environment were in `%APPDATA%`; the
-  first start of 0.5.0 moves them, see below);
-- the saved logins (credential profiles and named secrets) in Windows
-  Credential Manager, the entries whose names start with `dev.enodix.app`;
-- the registry key `HKCU\Software\Sergio Sosa\enodix`, where the installer
-  remembers the program folder.
+Credential profiles (password, private key or SSH agent, with an optional enable
+secret) and named secrets such as API tokens, kept out of your workspace.
+[Credentials guide](docs/guide/credentials.md)
 
-What always stays: your workspace folders, files you downloaded from
-devices, and a Python bridge you installed with `pip`. If you uninstalled
-without ticking the box, delete the two folders above by hand, and the
-Credential Manager entries in **Control Panel, Credential Manager, Windows
-Credentials**. Running `enodix-cli clear-keychain --yes` before you
-uninstall removes those entries for you.
+### Python and Nornir
 
-### The move to the local folder in 0.5.0
+Your workspace as a Nornir inventory, with its logins and jump hosts, for your
+own Netmiko, scrapli and NAPALM scripts, run from the app or a shell. **Fill
+in from devices** reads vendor, model, serial number and OS version with
+NAPALM, for you to review. Python is optional.
+[Python guide](python/README.md)
 
-Config backups, kept job results and the Python environment are large and
-only make sense on one computer, so since 0.5.0 they are in
-`%LOCALAPPDATA%\dev.enodix.app`, not in the roaming `%APPDATA%`, which a
-company's roaming profiles copy at every logon. The first start of 0.5.0
-moves them there, once, before it shows anything:
+## Install
 
-- On one drive the move is a rename, done whole or not at all. When the
-  roaming folder is on another drive (redirected to a server), the backups
-  and results are copied, each file checked, and only then removed from
-  the old place; the Python environment is not copied but goes on working
-  where it is until you set it up again (Preferences, Python), which makes
-  it in the local folder and removes the old one.
-- A move that is cut short (the computer switched off, a full disk) loses
-  nothing: the next start finishes it or starts it again. A move that
-  fails leaves the data where it was, and the app uses it there and says
-  so in a notice.
-- If both folders hold backups or results (an older version was run after
-  the move), neither is changed: the app uses the local one and says where
-  the other is, so you can look in it and remove it.
-- While another copy of enodix runs, a starting copy moves nothing: the
-  move waits for a start when it runs alone.
+| You have                   | Download                                                                                              |
+| -------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Windows 10 or 11 (64-bit)  | `enodix_<version>_x64-setup.exe`: installs for your user, no admin rights                             |
+| Windows, nothing installed | `enodix_<version>_x64-portable.zip`: unpack and run `enodix.exe`                                      |
+| Linux                      | `.deb`, `.rpm` or `.AppImage` (not yet checked on a Linux computer; see [Linux](docs/guide/linux.md)) |
 
-On Linux everything was and stays in `~/.local/share/dev.enodix.app`.
+Get them from the [latest release](https://github.com/ssosa-dev-net/enodix/releases/latest).
+Releases are not code-signed yet, so Windows SmartScreen may warn the first
+time: check the download against `SHA256SUMS.txt`, then choose **More info**,
+**Run anyway**. The app checks for updates at start and installs one only
+when you say so.
 
-### Installing and uninstalling silently
+[Install, update and uninstall](docs/guide/install.md) covers checksums,
+silent installs, the data folders and removing everything.
 
-The installer takes these switches (`uninstall.exe` takes `/S` and `/P`):
+## Quick start
 
-| Switch      | What it does                                                                                      |
-| ----------- | ------------------------------------------------------------------------------------------------- |
-| `/S`        | Silent: no window, no questions. A silent install also makes a desktop shortcut, unless `/NS`.    |
-| `/P`        | Passive: shows progress only, asks nothing (the mode updates use). Also makes a desktop shortcut. |
-| `/NS`       | No shortcuts: neither the Start menu one nor the desktop one.                                     |
-| `/D=<path>` | Installs into `<path>` instead of `%LOCALAPPDATA%\enodix`. It must come last, without quotes.     |
+1. Open enodix and open a folder as your workspace (an empty one is fine).
+2. Add a host with **New host**, or drop a YAML file into the folder:
 
-A running enodix or `enodix-cli.exe` is closed without asking in silent
-and passive mode. A silent uninstall (`uninstall.exe /S`) never deletes your
-data or saved logins. It returns at once, while a copy of it carries on from
-the temp folder for a few seconds.
+   ```yaml
+   # Europe/Madrid/mad-core-1.yaml
+   address: 198.51.100.11
+   platform: eos
+   environment: production
+   credential_profile: northwind-ops
+   tags: [core]
+   ```
 
-## The headless binary
+3. Create the credential profile `northwind-ops` in the **Credentials** view.
+4. Double-click the host to connect.
+5. Save a snippet and run it on a folder from the **Jobs** view.
 
-`enodix-cli.exe` is installed beside `enodix.exe` (and is in the portable
-zip). It has no window and does not need the app running. It prints a
-workspace's inventory as JSON, each host with the settings that apply to it
-(inheritance resolved), its jump hosts, folders, tags and custom fields;
-credential profiles appear by name only, and custom fields named like a
-secret (password, key, community, token) are left out:
-
-```powershell
-enodix-cli inventory C:\Work\inventory
-enodix-cli inventory C:\Work\inventory --folder Europe/Madrid
-enodix-cli inventory C:\Work\inventory --filter "Arista in Madrid"
-enodix-cli inventory C:\Work\inventory --host core-r1.yaml --host Lab/sw1.yaml
-```
-
-Problems with workspace files are printed as warnings and do not stop the
-export. It exits with 1 (and says why) for a missing workspace or an
-unknown folder, filter or host, and with 2 for a command line it does not
-understand. `enodix-cli --help` lists the options. A value that starts
-with `-` goes after `--`, which ends the options
-(`enodix-cli secret -- C:\Work\inventory -ro`), or after `=` for an option
-(`--folder=-old`, `--host=-spare.yaml`).
-
-It also hands out logins and opens tunnels, for scripts:
-
-```powershell
-enodix-cli credentials C:\Work\inventory Europe/Madrid/core-r1.yaml
-enodix-cli secret C:\Work\inventory netbox-token
-enodix-cli tunnel C:\Work\inventory --folder Europe/Madrid
-enodix-cli tunnel C:\Work\inventory --folder Europe/Madrid --port 830 --port 443
-```
-
-- `credentials` prints the login of the credential profile a host uses, and
-  `secret` a named secret of the workspace, as JSON. They come from the
-  running app when it is open and its vault unlocked; otherwise from the
-  keychain, or from the vault after asking its master password on the
-  terminal. A password is never taken from the command line or the
-  environment, and nothing is written to disk.
-- `tunnel` opens a port on `127.0.0.1` for each host behind jump hosts,
-  through the jump chain the app would use, and serves it until its
-  standard input ends. It asks no host-key or login question: a jump host
-  or device whose key the app has not trusted is refused, with the reason
-  in its output.
-  Each `--port` adds a port on `127.0.0.1` per host for that device port
-  (NETCONF on 830, an API on 443, any TCP port), through the same jump
-  chain; its output lists them as `extra_ports`. Nothing checks that the
-  device listens there: a connection to a closed port is closed, with the
-  reason on standard error. The app does not check a device's TLS
-  certificate through a tunnel; the script decides how to.
-
-`enodix-cli clear-keychain --yes` removes every saved login (credential
-profiles and named secrets, of every workspace) enodix keeps in Windows
-Credential Manager, and says how many. Without `--yes` it only says how many
-it would remove, and removes nothing. The vault is not touched. The
-uninstaller runs it when you tick the data box (see "Uninstalling").
-
-## Python and Nornir
-
-The `python` folder beside `enodix.exe` (and in the portable zip) holds a
-small pure-Python package that presents a workspace as a Nornir inventory,
-with the logins of your credential profiles, and reads named secrets. Its
-version always matches the app's; install it from that file:
-
-```powershell
-pip install "$env:LOCALAPPDATA\enodix\python\enodix-<version>-py3-none-any.whl"
-```
-
-Then use the `EnodixInventory` plugin in `InitNornir`. Hosts behind jump
-hosts are reached through tunnels the plugin opens with `enodix-cli`, so
-scripts run unchanged; a device must have been connected to once in the
-app, so that its host key is trusted. See
-[python/README.md](python/README.md) for the options, the mapping and the
-limits.
-
-The app can also do this for you: in **Preferences**, Python sets up an
-environment (after showing what it will install) or uses your own
-interpreter, and then **Run script…** on a folder, filter or host runs a
-`.py` file of the workspace as a job, and **Fill in from devices** asks
-the devices for their vendor, model, serial number and OS version.
+The [Getting started guide](docs/guide/getting-started.md) walks through it
+with pictures, and [docs/demo-workspace](docs/demo-workspace) is a small
+example network to open and look around.
 
 ## Tested platforms
 
-enodix claims support only for the device platforms below, each verified by the
-containerlab device suite ([docs/containerlab.md](docs/containerlab.md))
-at the version shown. Other platforms may work but have not been tested.
+enodix claims support only for these device platforms, each checked by the
+project's [containerlab device suite](docs/dev/containerlab.md) at the version
+shown. Other platforms may work but have not been tested.
 
-| Platform                 | Version       | SSH | Telnet     | Files                             | Verified                     |
-| ------------------------ | ------------- | --- | ---------- | --------------------------------- | ---------------------------- |
-| Nokia SR Linux           | 24.10.1       | yes | not tested | SFTP                              | 2026-11-14, files 2026-11-21 |
-| Arista cEOS              | 4.36.0.1F     | yes | yes        | SFTP                              | 2026-11-14, files 2026-11-21 |
-| FRRouting                | 10.2.1        | yes | not tested | SFTP                              | 2026-11-14, files 2026-11-21 |
-| Cisco IOS-XE (CSR 1000v) | 17.03.08      | yes | not tested | SCP only (`ip scp server enable`) | 2026-11-14, files 2026-11-21 |
-| Juniper cJunos Evolved   | 25.4R1.13-EVO | yes | not tested | SFTP once its server is on; SCP   | 2026-11-14, files 2026-11-21 |
+| Platform                 | Version       | SSH | Telnet     | Files                             |
+| ------------------------ | ------------- | --- | ---------- | --------------------------------- |
+| Nokia SR Linux           | 24.10.1       | yes | not tested | SFTP                              |
+| Arista cEOS              | 4.36.0.1F     | yes | yes        | SFTP                              |
+| FRRouting                | 10.2.1        | yes | not tested | SFTP                              |
+| Cisco IOS-XE (CSR 1000v) | 17.03.08      | yes | not tested | SCP only (`ip scp server enable`) |
+| Juniper cJunos Evolved   | 25.4R1.13-EVO | yes | not tested | SFTP once its server is on; SCP   |
 
-SSH covers login with a password, a command and its output, host-key
-checking, a refused password, resizing, large output with flow control and
-session logs, each through an SSH jump host, and jobs and config backups
-with the built-in platform definition (paging off, privileged mode, the
-whole configuration, backup on login). Files covers, through the lab's
-jump host: over SFTP a listing, an upload, a download compared byte for
-byte, a rename and a delete; over SCP a file sent, fetched and compared.
-Cisco NX-OS has not been tested.
+Each was checked on 21 November 2026 for login, commands, host keys, large
+output, session logs, jobs and config backups with the built-in platform
+definition, and file transfers, all through an SSH jump host. Cisco NX-OS has
+not been tested. Old equipment that only speaks outdated SSH algorithms is
+reached with the [Legacy crypto](docs/guide/legacy-crypto.md) setting.
 
-Old equipment that speaks only SSH algorithms no longer considered safe is
-reached with the **Legacy crypto** setting, off by default:
-[docs/legacy-crypto.md](docs/legacy-crypto.md) says what it allows and what to
-do when a connection cannot agree on algorithms.
+## Documentation
 
-## Building from source
+- [Getting started](docs/guide/getting-started.md)
+- [The inventory](docs/guide/inventory.md), [sessions](docs/guide/sessions.md),
+  [snippets](docs/guide/snippets.md), [multi-send](docs/guide/multi-send.md),
+  [jobs](docs/guide/jobs.md), [config backups](docs/guide/config-backups.md),
+  [files](docs/guide/files.md), [credentials](docs/guide/credentials.md)
+- [The window and shortcuts](docs/guide/interface.md),
+  [the headless `enodix-cli`](docs/guide/cli.md),
+  [Python and Nornir](python/README.md)
+- [Where enodix keeps your passwords, and what it connects to](docs/trust.md)
+- [What changed in each release](CHANGELOG.md) and
+  [what comes next](ROADMAP.md)
 
-Install the JavaScript dependencies with `npm install`, run every check with
-`npm run check` and build the app with `npm run app:build`. `npm run test:python`
-runs the Python bridge tests and `npm run test:linux` the Linux checks;
-`docs/linux.md` covers Linux and `docs/releasing.md` making a release.
+## Contributing
 
-## License
+Bug reports, ideas and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md)
+says how to build and test enodix and covers the Contributor Licence
+Agreement. Report security problems privately, as [SECURITY.md](SECURITY.md)
+describes.
+
+## Licence
 
 enodix is free software under the GNU General Public License, version 3 only
 (`GPL-3.0-only`); see [LICENSE](LICENSE). The components it is built from are
-listed, with their licences, in `THIRD-PARTY-NOTICES.txt`, which every
-installer and package carries. There is no paid tier and no hosted service.
-
-Contributions are welcome under the Contributor Licence Agreement in
-[CONTRIBUTING.md](CONTRIBUTING.md): you keep your copyright, and the author may
-also offer enodix under other terms, while every contribution stays available
-under the GPL.
+listed with their licences in `THIRD-PARTY-NOTICES.txt`, which every installer
+and package carries.

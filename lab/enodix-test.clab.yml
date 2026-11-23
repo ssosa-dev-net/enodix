@@ -1,10 +1,10 @@
-# The lab the containerlab device suite expects (docs/containerlab.md).
+# The lab the containerlab device suite expects (docs/dev/containerlab.md).
 # Deploy it on the containerlab server yourself:
 #
 #   docker build -t enodix-frr:latest lab/frr
 #   ENODIX_LAB_PASSWORD=... sudo -E containerlab deploy -t lab/enodix-test.clab.yml
 #
-# Deployed and passing with these images (docs/containerlab.md).
+# Deployed and passing with these images (docs/dev/containerlab.md).
 # cEOS must be imported into Docker first (Arista's download needs an account).
 name: enodix-test
 

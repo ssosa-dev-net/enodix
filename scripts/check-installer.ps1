@@ -1,5 +1,5 @@
 # Checks the Windows installer for real, on this computer, as a release's
-# step (docs/releasing.md, "Check the installer"):
+# step (docs/dev/releasing.md, "Check the installer"):
 #
 #   npm run test:installer -- -Old <an older release's -setup.exe> [-New <setup.exe>]
 #
