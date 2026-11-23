@@ -1,0 +1,5 @@
+address: 198.51.100.32
+platform: srlinux
+vendor: Nokia
+model: SR Linux
+tags: [lab]

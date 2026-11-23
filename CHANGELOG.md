@@ -49,7 +49,7 @@ installer").
   in with the host's credential profile, through its jump hosts, on a
   connection of its own: an open terminal on the device is not slowed. A
   login that must be typed and an unknown or changed host key are asked in
-  the tab. [docs/files.md](docs/files.md) describes it, what each platform
+  the tab. [docs/guide/files.md](docs/guide/files.md) describes it, what each platform
   needs and its limits.
   - A device with SFTP gets a browser: folders and files with size, time
     and permissions, a path box, upload (a file dialog or files dropped
@@ -573,7 +573,7 @@ over 0.2.0 by hand).
 ### A new interface
 
 The same features, reached differently (spec #61, #62 to #79);
-[docs/interface.md](docs/interface.md) says where each one now is.
+[docs/guide/interface.md](docs/guide/interface.md) says where each one now is.
 
 - A new look: one dark and one light palette, the Inter typeface for the
   interface (terminals keep your font), real icons, all shipped inside the

@@ -1,6 +1,6 @@
 # Paste into cjunos1 after each deploy, in configuration mode (`configure`,
 # then these lines, then `commit and-quit`), with the settings of step 1 in
-# docs/containerlab.md. The topology gives cJunos Evolved no startup config.
+# docs/dev/containerlab.md. The topology gives cJunos Evolved no startup config.
 #
 # SFTP is refused ("subsystem request failed") until the SFTP server is
 # turned on. SCP works without it.

@@ -1,0 +1,8 @@
+address: 198.51.100.11
+site: Madrid DC1
+platform: frr
+vendor: FRRouting
+role: core
+environment: production
+tags: [core]
+backup_on_login: true

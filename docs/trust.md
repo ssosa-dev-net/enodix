@@ -133,7 +133,7 @@ it must be turned on before any profile can be saved. The vault and its
 lock file are made readable by you alone (mode 0600) and the data folder
 `~/.local/share/dev.enodix.app` yours alone (0700); a vault made by an
 earlier version is tightened so when it is unlocked. (The Linux build has
-not been checked on a real desktop yet; see `docs/linux.md`.)
+not been checked on a real desktop yet; see `docs/guide/linux.md`.)
 
 ## What is encrypted and what is not
 

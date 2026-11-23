@@ -1,0 +1,8 @@
+address: 198.51.100.23
+site: London LD5
+platform: srlinux
+vendor: Nokia
+model: 7220 IXR-D2L
+role: access
+environment: production
+tags: [access]

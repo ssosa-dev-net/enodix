@@ -1,8 +1,10 @@
 # enodix on Linux
 
+Maintainer notes. For users, see [enodix on Linux](../guide/linux.md).
+
 The core, the headless binary `enodix-cli` and the Python bridge are
-checked on Linux as well as on Windows (#56), and the app is built and
-packaged for Linux (#57): a .deb, an .rpm and an .AppImage.
+checked on Linux as well as on Windows, and the app is built and
+packaged for Linux: a .deb, an .rpm and an .AppImage.
 
 ## Checks
 
@@ -23,7 +25,7 @@ distribution, and the checks run there. Building from `/mnt/<drive>` would
 be slow and would write a Linux `target/` into the Windows checkout.
 `ENODIX_WSL_DIR` changes the folder, `ENODIX_WSL_DISTRO` the
 distribution (default: WSL's default one). `npm run release:linux` uses the
-same copy (see `docs/releasing.md`).
+same copy (see [releasing.md](releasing.md)).
 
 ## Setting up WSL once
 
@@ -50,66 +52,6 @@ curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal -c clippy
 `libudev-dev` is for the `serialport` crate. Rust must be 1.90 or newer.
 The Python suite installs Nornir from the package index the first time;
 the first package build downloads the AppImage tools.
-
-## How the app differs on Linux
-
-- **Credentials.** There is no Linux keychain backend: the vault is the
-  only store (`ActiveStore::without_keychain`). Until it is turned on the
-  app lists no profiles, and saving a profile explains that and offers to
-  turn the vault on (the profile typed is then saved into it). Turning the
-  vault off is refused with an explanation: there is no other store to
-  move the profiles to. `enodix-cli` with the app closed and no vault
-  says the same.
-- **Updates.** The update check only announces a new version (with a link
-  to its page); it never installs. Packages are updated with the package
-  manager, and the notice of a copy installed by the .deb or the .rpm says
-  so (the packages carry `/usr/lib/enodix/package.txt`); an AppImage is
-  updated by downloading the new one, and its notice says it is a portable
-  copy.
-- **AppImage.** Its runtime sets `PYTHONHOME`, `PYTHONPATH`,
-  `LD_LIBRARY_PATH` and others to its own folder for the app; the
-  programs the app starts (Python, scripts, the headless binary) get the
-  environment without them, or the system's Python could not start.
-- **AppImage, light and dark.** With the theme on "system", the .deb and
-  the .rpm follow the desktop's light and dark switch while they run. The
-  AppImage's GTK is pinned to Adwaita light or dark when it starts (its
-  runtime's hook, as other GTK themes break inside the bundle): it reads
-  the desktop's colour scheme (GNOME, and desktops that announce one
-  through the desktop portal) and, since #143, the desktop's style (XFCE's
-  Appearance, `Adwaita-dark`, or any style whose name ends in `-dark`).
-  It starts dark on a dark desktop either way. GNOME's colour scheme
-  switched while it runs is followed; a style switched while it runs
-  (XFCE) is not: restart the AppImage. `APPIMAGE_GTK_THEME=Adwaita:dark`
-  (or `:light`) set before starting it overrides both.
-- **SSH agent.** Agent profiles use the agent `SSH_AUTH_SOCK` names (there
-  is no default otherwise).
-- **Serial ports** are the system's (`/dev/ttyUSB0`, `/dev/ttyS0`, ...);
-  opening one usually needs the user in the `dialout` group.
-- **Where things are.** The packages install `/usr/bin/enodix`,
-  `/usr/bin/enodix-cli` (on the PATH, where the Python bridge finds it)
-  and the Python wheel in `/usr/lib/enodix/python/`, and the licence (the
-  GPL) as `/usr/share/doc/enodix/copyright` (.deb) or
-  `/usr/share/licenses/enodix/LICENSE` (.rpm, and inside the AppImage),
-  with the third-party notices beside it as `THIRD-PARTY-NOTICES.txt`;
-  the release checks each package holds those. Settings, the vault,
-  known hosts, logs, job results, config backups and the Python
-  environment live in `~/.local/share/dev.enodix.app` (`$XDG_DATA_HOME`),
-  one folder (Windows splits them between a roaming and a local folder
-  since 0.5.0; nothing moves on Linux). The AppImage carries
-  the binary and the wheel inside it: scripts run outside the app need
-  `ENODIX_CLI` (see `python/README.md`).
-- **Removing it.** Remove the package with the package manager:
-  `sudo apt remove enodix` (or `sudo dpkg --purge enodix`) for the .deb,
-  `sudo dnf remove enodix` (or `sudo rpm -e enodix`) for the .rpm. That
-  takes away the program, `enodix-cli`, the wheel, the licence, the
-  notices and the menu entry, and the folders they were in. For the
-  AppImage, delete the file. Your data stays in
-  `~/.local/share/dev.enodix.app` either way, so a later install finds it;
-  delete that folder to remove settings, the vault, known hosts, logs,
-  job results, config backups and the Python environment too. Nothing is
-  kept in a system keychain on Linux (the vault is the only store).
-  Checked on 2026-11-22 in Ubuntu 24.04 and Fedora 41 containers: after
-  the removal no file or folder of enodix was left.
 
 ## What is skipped on Linux
 

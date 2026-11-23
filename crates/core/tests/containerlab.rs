@@ -7,7 +7,7 @@
 //! from the file `ENODIX_LAB_CONFIG` names, or `lab/lab.yaml` (ignored by
 //! git); with neither, each prints [`lab::SKIP_MESSAGE`] and passes. A lab
 //! file that is present but unusable (a missing password, a typo) fails.
-//! See `docs/containerlab.md`.
+//! See `docs/dev/containerlab.md`.
 //!
 //! The other tests here run on every `cargo test`: they check the lab file
 //! parsing and the skip rule, and run the same checks against the
@@ -62,67 +62,67 @@ async fn lab_check(check: Check) {
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_ssh_login_and_command() {
     lab_check(Check::LoginAndCommand).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_host_keys() {
     lab_check(Check::HostKeys).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_wrong_password() {
     lab_check(Check::WrongPassword).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_terminal_size() {
     lab_check(Check::Resize).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_large_output_with_flow_control() {
     lab_check(Check::LargeOutput).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_session_log() {
     lab_check(Check::SessionLog).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_telnet() {
     lab_check(Check::Telnet).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_paging() {
     lab_check(Check::Paging).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_config_backup() {
     lab_check(Check::ConfigBackup).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_privilege() {
     lab_check(Check::Privilege).await;
 }
 
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_second_channel() {
     lab_check(Check::SecondChannel).await;
 }
@@ -130,16 +130,16 @@ async fn lab_second_channel() {
 /// The login banner: shown before the first prompt with the option, not at
 /// all without it; the motd shown either way.
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_login_banner() {
     lab_check(Check::LoginBanner).await;
 }
 
-/// Files: each device with what `docs/containerlab.md` says it offers (SFTP:
+/// Files: each device with what `docs/dev/containerlab.md` says it offers (SFTP:
 /// list, upload, download and compare, rename, delete; SCP on the device
 /// without SFTP: send, fetch and compare), through the jump host.
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_files() {
     lab_check(Check::Files).await;
 }
@@ -147,7 +147,7 @@ async fn lab_files() {
 /// Host enrichment: the shipped script fetches the facts of the devices
 /// NAPALM has a driver for, and applying the preview fills them in.
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_enrichment() {
     let Ok(Some(lab)) = lab::from_environment().map_err(|error| panic!("{error}")) else {
         eprintln!("{}", lab::SKIP_MESSAGE);
@@ -173,7 +173,7 @@ async fn lab_enrichment() {
 /// (ncclient, the device key checked) and eAPI on the cEOS device's port
 /// 443 (HTTPS) through the jump host.
 #[tokio::test]
-#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/containerlab.md)"]
+#[ignore = "containerlab suite: needs a lab (npm run test:lab, docs/dev/containerlab.md)"]
 async fn lab_tunnel_ports() {
     let Ok(Some(lab)) = lab::from_environment().map_err(|error| panic!("{error}")) else {
         eprintln!("{}", lab::SKIP_MESSAGE);

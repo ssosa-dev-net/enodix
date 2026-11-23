@@ -14,7 +14,7 @@
 // target/ into the checkout), and the checks run there. ENODIX_WSL_DISTRO
 // picks the distribution (default: WSL's default one). The distribution
 // needs rustup's Rust, build-essential, pkg-config, libudev-dev, rsync,
-// python3 with venv and Node.js: see docs/linux.md.
+// python3 with venv and Node.js: see docs/dev/linux.md.
 
 import { spawnSync } from "node:child_process";
 

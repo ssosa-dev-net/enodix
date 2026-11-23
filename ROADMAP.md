@@ -37,10 +37,10 @@ These need hardware, devices or setups the project does not have.
 
 - **Linux on a real computer.** The app, the packages and the checks run
   under WSL (XFCE and GNOME sessions, and Fedora in a container); see
-  [docs/linux.md](docs/linux.md). Not checked: a USB serial adapter, a native
+  [docs/dev/linux.md](docs/dev/linux.md). Not checked: a USB serial adapter, a native
   GPU driver, KDE, SELinux on a real Fedora.
 - **Real devices.** Everything is checked against virtual devices in a
-  containerlab lab ([docs/containerlab.md](docs/containerlab.md)): SR Linux,
+  containerlab lab ([docs/dev/containerlab.md](docs/dev/containerlab.md)): SR Linux,
   cEOS, FRR, IOS-XE (CSR 1000v) and cJunos Evolved. Not checked: Cisco NX-OS
   (its platform definition is a handful of values you can correct in the
   app), the flash names of physical Catalyst switches, transfer speeds on real

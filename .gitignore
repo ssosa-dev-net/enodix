@@ -6,7 +6,7 @@
 /src-tauri/gen/
 
 # Release signing keys and certificates never belong in the repository (see
-# docs/releasing.md); only the public key, src-tauri/updater-key.pub, is
+# docs/dev/releasing.md); only the public key, src-tauri/updater-key.pub, is
 # committed. The test fixtures' throwaway keys are tracked and stay so.
 *.key
 *.pfx
@@ -19,7 +19,7 @@
 /credentials.vault
 
 # The containerlab suite's lab file holds the lab's addresses and maybe
-# passwords (docs/containerlab.md); only lab/lab.example.yaml is committed.
+# passwords (docs/dev/containerlab.md); only lab/lab.example.yaml is committed.
 /lab/lab.yaml
 # What `containerlab deploy` leaves beside the topology.
 /lab/clab-*/

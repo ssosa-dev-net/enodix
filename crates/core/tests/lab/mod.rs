@@ -1,7 +1,7 @@
 //! The containerlab device suite's lab and checks (`tests/containerlab.rs`).
 //!
 //! A lab file (YAML, never committed: see `lab/lab.example.yaml` and
-//! `docs/containerlab.md`) names the devices of your containerlab
+//! `docs/dev/containerlab.md`) names the devices of your containerlab
 //! lab, how to reach them (directly, or through the containerlab server as
 //! an SSH jump host) and the logins. Passwords may be in the file or, better,
 //! in environment variables it names.
@@ -67,7 +67,7 @@ pub const SETTLE: Duration = Duration::from_millis(300);
 /// What the suite prints when no lab is configured.
 pub const SKIP_MESSAGE: &str = "containerlab suite SKIPPED: no lab configured. \
 Set ENODIX_LAB_CONFIG to a lab file, or create lab/lab.yaml (not committed) \
-from lab/lab.example.yaml; see docs/containerlab.md.";
+from lab/lab.example.yaml; see docs/dev/containerlab.md.";
 
 /// The terminal size sessions open with.
 pub const SIZE: TerminalSize = TerminalSize {

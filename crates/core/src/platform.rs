@@ -180,7 +180,7 @@ const PASSWORD_PROMPT: &str = r"(?i)password:\s*$";
 /// whole configuration, unchanged on a second backup, backup on login) on
 /// SR Linux 24.10.1, cEOS 4.36.0.1F, FRR 10.2.1 (vtysh as the login
 /// shell), IOS-XE 17.03.08 (CSR 1000v) and cJunos Evolved 25.4R1
-/// (`docs/containerlab.md`). NX-OS has not been checked on a device.
+/// (`docs/dev/containerlab.md`). NX-OS has not been checked on a device.
 /// The file folders were checked on cEOS (`/mnt/flash`), cJunos
 /// (`/var/tmp`) and the CSR 1000v (`flash:`, `bootflash:`); NX-OS's
 /// `bootflash:` was not, nor `flash:` on physical Catalyst hardware.

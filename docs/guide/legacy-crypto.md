@@ -7,6 +7,8 @@ panel) lets a session reach such equipment. It is off by default and is
 inherited like the other settings. A jump host uses its own setting, not
 the setting of the host it leads to. Quick connections never use it.
 
+![A session's message when it cannot agree on algorithms with a device](../images/legacy-crypto.png)
+
 ## What the switch changes
 
 With the switch **off**, a session offers only modern algorithms:
@@ -44,7 +46,7 @@ and MAC). It also says whether turning on Legacy crypto would help. When
 the device offers only unsupported algorithms, it says that the switch
 would not help.
 
-## Not supported
+## Limits
 
 Support is best effort. It covers what the SSH library (`russh`) provides;
 the project does not fork or patch it. These outdated algorithms stay
@@ -59,6 +61,3 @@ of a kind cannot be reached:
 - Key exchange: GSS-API (`gss-*`) and RSA key exchange (`rsa1024-sha1`).
 - Host keys: X.509 certificates (`x509v3-sign-rsa`, `x509v3-sign-dss`).
 - SSH protocol 1.
-
-The core keeps the same list in `UNSUPPORTED_ALGORITHMS`
-(`crates/core/src/session/algorithms.rs`).
