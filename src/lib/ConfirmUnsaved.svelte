@@ -1,14 +1,17 @@
 <script lang="ts">
-  // Unsaved edits in the host editor (#10), before they would be left:
-  // closing the tab, showing another host, quitting or opening another
-  // workspace. Save writes them, Discard drops them, Cancel stays.
+  // Unsaved edits in the host editor or a snippet editor (#10), before they
+  // would be left: closing the tab, showing another host, quitting or
+  // opening another workspace. Save writes them, Discard drops them, Cancel stays.
   import { onMount } from "svelte";
   import { unsaved } from "./hostDrafts.svelte";
   import { inventory } from "./inventory.svelte";
+  import { NEW_SNIPPET } from "./snippetDrafts.svelte";
   import { findHost } from "./workspace";
 
   interface Props {
     hosts: string[];
+    /** Snippets (by name) instead of hosts. */
+    snippets: string[];
     doing: string;
     error: string | null;
     onsave: () => void;
@@ -16,7 +19,8 @@
     oncancel: () => void;
   }
 
-  let { hosts, doing, error, onsave, ondiscard, oncancel }: Props = $props();
+  let { hosts, snippets, doing, error, onsave, ondiscard, oncancel }: Props =
+    $props();
 
   let save: HTMLButtonElement;
 
@@ -37,9 +41,15 @@
   };
   const changes = $derived(hosts.reduce((sum, id) => sum + unsaved(id), 0));
   const what = $derived(
-    hosts.length === 1
-      ? name(hosts[0])
-      : `${hosts.length} hosts (${hosts.map(name).join(", ")})`,
+    snippets.length === 1
+      ? snippets[0] === NEW_SNIPPET
+        ? NEW_SNIPPET
+        : `snippet ${snippets[0]}`
+      : snippets.length > 1
+        ? `${snippets.length} snippets (${snippets.join(", ")})`
+        : hosts.length === 1
+          ? name(hosts[0])
+          : `${hosts.length} hosts (${hosts.map(name).join(", ")})`,
   );
 </script>
 
@@ -60,9 +70,14 @@
   >
     <h2 id="confirm-unsaved-title">Save changes to {what}?</h2>
     <p>
-      {changes === 1
-        ? `1 change is not saved yet. Save it before ${doing}, or discard it?`
-        : `${changes} changes are not saved yet. Save them before ${doing}, or discard them?`}
+      {#if snippets.length > 0}
+        Your changes are not saved yet. Save them before {doing}, or discard
+        them?
+      {:else}
+        {changes === 1
+          ? `1 change is not saved yet. Save it before ${doing}, or discard it?`
+          : `${changes} changes are not saved yet. Save them before ${doing}, or discard them?`}
+      {/if}
     </p>
     {#if error}
       <p class="error" role="alert" data-unsaved-error>

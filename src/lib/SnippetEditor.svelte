@@ -5,19 +5,26 @@
   // Subject: the snippet's name; null for a new snippet. Saved, a new (or
   // renamed) snippet's tab moves to the snippet's name, so a tab is never
   // about a name that is gone.
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import Button from "./Button.svelte";
   import { inventory, saveSnippet } from "./inventory.svelte";
+  import {
+    NEW_SNIPPET,
+    registerSnippet,
+    unregisterSnippet,
+  } from "./snippetDrafts.svelte";
   import { variablesOf } from "./snippets.svelte";
   import { openView } from "./views";
 
   interface Props {
+    /** The tab that shows this editor, to be asked about when it closes. */
+    tab: number;
     /** The snippet's name; null: a new snippet. */
     subject: string | null;
     onclose: () => void;
   }
 
-  let { subject, onclose }: Props = $props();
+  let { tab, subject, onclose }: Props = $props();
 
   const original = untrack(() =>
     subject === null
@@ -68,8 +75,14 @@
     if (gutter && area) gutter.scrollTop = area.scrollTop;
   }
 
-  async function save() {
-    if (saving || missing) return;
+  /**
+   * Saves the snippet. Resolves to whether it did. A renamed snippet's tab
+   * follows its new name unless `follow` is false (the window saves it
+   * before closing this very tab, which must not leave another behind).
+   */
+  async function save(follow = true): Promise<boolean> {
+    if (missing) return true;
+    if (saving) return false;
     saving = true;
     // What is sent: typing while it saves stays unsaved.
     const sent = { ...draft };
@@ -83,17 +96,31 @@
       const renamed = sent.name !== previous;
       previous = sent.name;
       savedAs = sent;
-      if (renamed && !changed) {
+      if (follow && renamed && !changed) {
         // The tab follows the snippet's new name.
         openView("snippet", draft.name);
         onclose();
       }
+      return true;
     } catch (failure) {
       error = String(failure);
+      return false;
     } finally {
       saving = false;
     }
   }
+
+  // Listed so that closing the tab, quitting or opening another workspace
+  // asks about unsaved changes first.
+  $effect(() => {
+    registerSnippet(tab, {
+      name: draft.name.trim() === "" ? NEW_SNIPPET : draft.name.trim(),
+      changed,
+      save: () => save(false),
+      error: () => error,
+    });
+  });
+  onDestroy(() => unregisterSnippet(tab));
 
   function onkeydown(event: KeyboardEvent) {
     if (
