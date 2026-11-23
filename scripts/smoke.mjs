@@ -775,7 +775,7 @@ async function sidePanels({
   }
   if (
     sheetPlace.sections.join(",") !==
-    "device,connection,tags,custom,description"
+    "device,location,connection,tags,custom,description"
   ) {
     fail(`the sheet's sections: ${sheetPlace.sections.join(",")}`);
   }
