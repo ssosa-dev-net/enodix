@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="t">
+  <title id="t">enodix</title>
+  <!-- Heavier strokes on a 4-unit grid, so the mark stays sharp at 16 and 24 px. -->
+  <rect width="64" height="64" rx="14" fill="#0f1216"/>
+  <path d="M16 32H48" fill="none" stroke="#5eb3ff" stroke-width="8" stroke-linecap="round"/>
+  <path d="M48 32A16 16 0 1 0 44.26 42.28" fill="none" stroke="#5eb3ff" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="44.26" cy="42.28" r="7.5" fill="#5fd39a"/>
+</svg>
