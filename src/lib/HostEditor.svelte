@@ -43,9 +43,15 @@
     untrack(() => selectedHost()?.id ?? null),
   );
 
+  /** The selected host's id. A derived value notifies only when the id
+   * changes, not each time the tree is replaced: a save replaces it while
+   * its draft is still unsettled, and the effect below would then ask
+   * about the same edits a second time. */
+  const selectedId = $derived(selectedHost()?.id ?? null);
+
   $effect(() => {
     if (subject !== null) return;
-    const next = selectedHost()?.id ?? null;
+    const next = selectedId;
     untrack(() => {
       const from = followed;
       if (next === null || next === from) return;
