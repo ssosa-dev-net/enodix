@@ -13,6 +13,7 @@
   import Settings from "@lucide/svelte/icons/settings";
   import Trash from "@lucide/svelte/icons/trash";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
+  import IconButton from "./IconButton.svelte";
   import type { ProfileSummary } from "./credentials";
   import { inventory } from "./inventory.svelte";
   import { openView } from "./views";
@@ -79,15 +80,14 @@
 <div class="credentials" data-credentials data-mode={mode.kind} {onkeydown}>
   <header data-window-bar data-tauri-drag-region="deep">
     <h2>Credentials</h2>
-    <button
-      class="tool"
+    <IconButton
+      icon={Plus}
       data-profile-new
-      aria-label="New credential profile"
+      label="New credential profile"
       title="New credential profile, kept on this computer"
       disabled={!workspace}
       onclick={() => show({ kind: "edit", profile: null })}
-      ><Plus size={16} aria-hidden="true" /></button
-    >
+    />
   </header>
 
   {#if !workspace}
@@ -169,14 +169,14 @@
             Kept in this computer's keychain; the vault is off.
           {/if}
         </span>
-        <button
-          class="small"
+        <IconButton
+          icon={Settings}
+          size="compact"
           data-open-vault
-          aria-label="The vault, in Preferences"
+          label="The vault, in Preferences"
           title="The vault, in Preferences"
           onclick={() => openView("preferences")}
-          ><Settings size={13} aria-hidden="true" /></button
-        >
+        />
       </div>
       {#if view.needs_vault}
         <p class="note" data-profiles-needs-vault>
@@ -241,22 +241,22 @@
                 <strong>{profile.name}</strong>
                 <small>{describe(profile)}</small>
               </span>
-              <button
-                class="small"
+              <IconButton
+                icon={Pencil}
+                size="compact"
                 data-profile-edit
                 title="Edit or rename"
-                aria-label={`Edit ${profile.name}`}
+                label={`Edit ${profile.name}`}
                 onclick={() => show({ kind: "edit", profile })}
-                ><Pencil size={13} aria-hidden="true" /></button
-              >
-              <button
-                class="small"
+              />
+              <IconButton
+                icon={Trash}
+                size="compact"
                 data-profile-delete
                 title="Delete"
-                aria-label={`Delete ${profile.name}`}
+                label={`Delete ${profile.name}`}
                 onclick={() => show({ kind: "delete", name: profile.name })}
-                ><Trash size={13} aria-hidden="true" /></button
-              >
+              />
             </li>
           {/each}
         </ul>
@@ -271,35 +271,36 @@
         {#if view.secrets.length > 0}<span class="count"
             >{view.secrets.length}</span
           >{/if}
-        <button
-          class="small add"
+        <IconButton
+          icon={Plus}
+          size="compact"
+          class="add"
           data-secret-new
-          aria-label="New secret"
+          label="New secret"
           title="New named secret"
           onclick={() => show({ kind: "secret", name: null })}
-          ><Plus size={13} aria-hidden="true" /></button
-        >
+        />
       </h3>
       <ul data-secrets>
         {#each view.secrets as name (name)}
           <li data-secret={name}>
             <span class="text"><strong>{name}</strong></span>
-            <button
-              class="small"
+            <IconButton
+              icon={Pencil}
+              size="compact"
               data-secret-replace
               title="Replace the value"
-              aria-label={`Replace the value of ${name}`}
+              label={`Replace the value of ${name}`}
               onclick={() => show({ kind: "secret", name })}
-              ><Pencil size={13} aria-hidden="true" /></button
-            >
-            <button
-              class="small"
+            />
+            <IconButton
+              icon={Trash}
+              size="compact"
               data-secret-delete
               title="Delete"
-              aria-label={`Delete ${name}`}
+              label={`Delete ${name}`}
               onclick={() => show({ kind: "deleteSecret", name })}
-              ><Trash size={13} aria-hidden="true" /></button
-            >
+            />
           </li>
         {:else}
           <li class="empty-line">
@@ -333,25 +334,8 @@
     flex: 1;
     margin: 0;
     padding: var(--space-1) 0;
-    font-size: var(--text-sm);
+    font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
-  }
-
-  .tool {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  .tool:hover:not(:disabled) {
-    color: var(--text);
-    background: var(--surface-raised);
   }
 
   .body,
@@ -373,6 +357,7 @@
     margin: var(--space-2) var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .form .hint {
@@ -417,6 +402,7 @@
     border-radius: var(--radius-sm);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .error {
@@ -431,29 +417,26 @@
     align-items: center;
     gap: var(--space-1);
     margin: var(--space-2) var(--space-3) var(--space-0-5);
-    color: var(--muted);
-    font-size: var(--text-2xs);
+    color: var(--text);
+    font-size: var(--text-sm);
     font-weight: var(--weight-semibold);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   h3.title {
     margin: 0;
     color: var(--text);
     font-size: var(--text-sm);
-    text-transform: none;
-    letter-spacing: normal;
     overflow-wrap: anywhere;
   }
 
-  h3 .add {
+  h3 :global(.add) {
     margin-left: auto;
   }
 
   .count {
     color: var(--muted);
     font-weight: normal;
+    font-variant-numeric: tabular-nums;
   }
 
   ul {
@@ -502,23 +485,10 @@
     white-space: nowrap;
   }
 
-  .small {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    padding: var(--space-1);
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  .small:hover {
-    color: var(--text);
-  }
-
   .setup {
     flex: none;
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     font-size: var(--text-xs);
   }
 
@@ -538,6 +508,7 @@
     padding: var(--space-1) var(--space-3) var(--space-2);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .empty p {

@@ -140,7 +140,7 @@
   }
 
   .actions button[type="submit"] {
-    padding: var(--space-1-5) var(--space-4);
+    padding: 0 var(--space-4);
   }
 
   .danger,

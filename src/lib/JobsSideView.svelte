@@ -1,4 +1,5 @@
 <script lang="ts">
+  import IconButton from "./IconButton.svelte";
   // The Jobs side view (#69): the jobs running here at the top with their
   // progress, the workspace's saved jobs, then every kept run, newest
   // first. A run opens in a tab (its job's own tab if that is still open);
@@ -115,14 +116,15 @@
       <span class="meta">{when(entry.started)} · {progress(entry)}</span>
     </button>
     {#if state === "running" && liveJob(entry.id)}
-      <button
-        class="small"
+      <IconButton
+        icon={Square}
+        size="compact"
+        variant="danger"
         data-run-cancel={entry.id}
         title="Cancel this job"
-        aria-label={`Cancel ${stepTitle(entry.step)}`}
+        label={`Cancel ${stepTitle(entry.step)}`}
         onclick={() => cancel(entry.id)}
-        ><Square size={13} aria-hidden="true" /></button
-      >
+      />
     {/if}
   </li>
 {/snippet}
@@ -195,18 +197,16 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
   }
 
   h3 {
     margin: 0;
     padding: var(--space-1-5) var(--space-3) var(--space-0-5);
-    color: var(--muted);
-    font-size: var(--text-2xs);
+    color: var(--text);
+    font-size: var(--text-sm);
     font-weight: var(--weight-semibold);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   .group {
@@ -246,6 +246,8 @@
     text-align: left;
     border-color: transparent;
     background: none;
+    gap: 0;
+    min-height: 0;
     padding: var(--space-0-5) var(--space-1-5);
   }
 
@@ -271,6 +273,7 @@
   .meta {
     color: var(--muted);
     font-size: var(--text-2xs);
+    font-variant-numeric: tabular-nums;
   }
 
   li.damaged {
@@ -283,22 +286,11 @@
     color: var(--danger);
   }
 
-  .small {
-    flex: none;
-    padding: var(--space-0-5) var(--space-1-5);
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  .small:hover {
-    color: var(--danger);
-  }
-
   .hint {
     margin: var(--space-1-5) var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .error {

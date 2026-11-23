@@ -291,12 +291,14 @@
 
   h3 {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--text-md);
     font-weight: var(--weight-semibold);
+    color: var(--text);
   }
 
   p {
     margin: 0;
+    line-height: 1.5;
   }
 
   form {
@@ -328,6 +330,7 @@
 
   .note {
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .error {

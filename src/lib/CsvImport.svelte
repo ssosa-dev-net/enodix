@@ -462,13 +462,15 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
   h3 {
     margin: var(--space-1-5) 0 var(--space-0-5);
-    font-size: var(--text-sm);
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
+    color: var(--text);
   }
 
   form {
@@ -485,11 +487,6 @@
   .row input {
     flex: 1;
     min-width: 0;
-  }
-
-  input,
-  select {
-    padding: var(--space-1) var(--space-2);
   }
 
   .scroll {
@@ -555,10 +552,12 @@
   .note {
     margin: 0;
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .note.warning {
     color: var(--warning);
+    line-height: 1.5;
   }
 
   section ul {

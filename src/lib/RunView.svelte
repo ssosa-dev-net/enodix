@@ -684,7 +684,7 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
@@ -695,6 +695,7 @@
   .meta {
     color: var(--muted);
     font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
   }
 
   .run {
@@ -714,7 +715,6 @@
   .row input {
     flex: 1;
     min-width: 10rem;
-    padding: var(--space-1) var(--space-2);
   }
 
   .row label {
@@ -744,6 +744,8 @@
     display: flex;
     gap: var(--space-2);
     align-items: baseline;
+    justify-content: normal;
+    min-height: 0;
     padding: var(--space-1) var(--space-2);
     text-align: left;
     background: none;
@@ -846,6 +848,7 @@
   .link {
     background: none;
     border: none;
+    min-height: 0;
     padding: 0;
     color: var(--accent, inherit);
     text-decoration: underline;
@@ -885,6 +888,7 @@
   .note {
     margin: 0;
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .error {

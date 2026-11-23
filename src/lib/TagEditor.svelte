@@ -1,5 +1,6 @@
 <script lang="ts">
   import X from "@lucide/svelte/icons/x";
+  import IconButton from "./IconButton.svelte";
   import CopyButton from "./CopyButton.svelte";
   import { describeOrigin, isOwn, type Item } from "./inventory.svelte";
   import type { Effective } from "./workspace";
@@ -55,13 +56,13 @@
       {#each tags as tag (tag)}
         <li class="tag">
           {tag}
-          <button
-            class="remove"
-            aria-label="Remove tag {tag}"
+          <IconButton
+            icon={X}
+            size="compact"
+            label="Remove tag {tag}"
             onclick={() =>
               onchange((current) => current.filter((t) => t !== tag))}
-            ><X size={12} aria-hidden="true" /></button
-          >
+          />
         </li>
       {/each}
     </ul>
@@ -73,9 +74,7 @@
       spellcheck="false"
       bind:value={newTag}
     />
-    <button type="submit" class="small" disabled={newTag.trim() === ""}
-      >Add</button
-    >
+    <button type="submit" disabled={newTag.trim() === ""}>Add</button>
   </form>
 </section>
 
@@ -90,11 +89,9 @@
     align-items: center;
     justify-content: space-between;
     margin: 0 0 var(--space-1-5);
-    font-size: var(--text-xs);
+    font-size: var(--text-md);
     font-weight: var(--weight-semibold);
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    color: var(--text);
   }
 
   .row {
@@ -106,11 +103,6 @@
   .row input {
     flex: 1;
     width: 100%;
-  }
-
-  .small {
-    padding: var(--space-0-5) var(--space-2);
-    font-size: var(--text-xs);
   }
 
   .tags {
@@ -125,7 +117,7 @@
   .tag {
     display: flex;
     align-items: center;
-    padding: var(--space-0-5) 0 var(--space-0-5) var(--space-2);
+    padding: 0 0 0 var(--space-2);
     border: 1px solid var(--border);
     border-radius: var(--radius-full);
     background: var(--surface);
@@ -136,16 +128,5 @@
     border-style: dashed;
     background: none;
     color: var(--muted);
-  }
-
-  .remove {
-    padding: 0 var(--space-1-5);
-    border: 0;
-    background: none;
-    color: var(--muted);
-  }
-
-  .remove:hover:not(:disabled) {
-    color: var(--danger);
   }
 </style>

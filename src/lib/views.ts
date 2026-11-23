@@ -10,6 +10,7 @@
 import Archive from "@lucide/svelte/icons/archive";
 import ClipboardCheck from "@lucide/svelte/icons/clipboard-check";
 import Cpu from "@lucide/svelte/icons/cpu";
+import FileCode from "@lucide/svelte/icons/file-code";
 import FileClock from "@lucide/svelte/icons/file-clock";
 import FileInput from "@lucide/svelte/icons/file-input";
 import FileSpreadsheet from "@lucide/svelte/icons/file-spreadsheet";
@@ -18,8 +19,10 @@ import Highlighter from "@lucide/svelte/icons/highlighter";
 import ListChecks from "@lucide/svelte/icons/list-checks";
 import Package from "@lucide/svelte/icons/package";
 import Settings from "@lucide/svelte/icons/settings";
+import SquarePen from "@lucide/svelte/icons/square-pen";
 import type { Component } from "svelte";
-import { inventory } from "./inventory.svelte";
+import { following, unsaved } from "./hostDrafts.svelte";
+import { inventory, selectedHost } from "./inventory.svelte";
 import type { ViewName, ViewRef } from "./layout";
 import { findHost } from "./workspace";
 import {
@@ -63,6 +66,23 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
   /** A host's files over SFTP (#103; subject: the host; one per host,
    * main window only). */
   files: { title: (host) => `Files ${hostName(host)}`, icon: FolderOpen },
+  /** The host editor (#10): subject null follows the selected host;
+   * a host's id keeps the tab on that host (pinned). */
+  host: {
+    title: (host) => {
+      const id = host ?? following.host ?? selectedHost()?.id ?? null;
+      if (!id) return "Edit host";
+      // Unsaved edits show in the tab, as an editor's would.
+      const count = unsaved(id);
+      return `Edit ${hostName(id)}${count > 0 ? ` (${count})` : ""}`;
+    },
+    icon: SquarePen,
+  } /** A snippet's editor (#10, item 8): subject the snippet's name; null
+   * is a new snippet. */,
+  snippet: {
+    title: (name) => (name ? `Snippet ${name}` : "New snippet"),
+    icon: FileCode,
+  },
 };
 
 /** The open workspace's name for the host `id` (else the id). */
@@ -83,6 +103,15 @@ export function setViewOpener(open: (view: ViewRef) => void) {
  * active pane. */
 export function openView(view: ViewName, subject: string | null = null) {
   opener?.({ view, subject });
+}
+
+/** The window's shortcut for the host editor (Ctrl+Shift and a letter no
+ * terminal program needs; see `App.svelte`'s `shortcut`). */
+export const EDIT_HOST_SHORTCUT = "Ctrl+Shift+E";
+
+/** Shows the host editor tab that follows the selection (#10). */
+export function openHostEditor() {
+  openView("host", null);
 }
 
 /** Opens a new job tab for `draft`'s job. */
