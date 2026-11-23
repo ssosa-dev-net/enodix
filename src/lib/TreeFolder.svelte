@@ -198,6 +198,7 @@
     gap: var(--space-1-5);
     width: 100%;
     min-height: 28px;
+    justify-content: normal;
     border: 0;
     border-radius: var(--radius-md);
     background: none;

@@ -1229,12 +1229,17 @@
                   <dt>MD5</dt>
                   <dd data-transfer-hash="md5">
                     <code>{state.hashes.md5}</code>
-                    <CopyButton value={state.hashes.md5} what="the MD5" />
+                    <CopyButton
+                      compact
+                      value={state.hashes.md5}
+                      what="the MD5"
+                    />
                   </dd>
                   <dt>SHA-256</dt>
                   <dd data-transfer-hash="sha256">
                     <code>{state.hashes.sha256}</code>
                     <CopyButton
+                      compact
                       value={state.hashes.sha256}
                       what="the SHA-256"
                     />
@@ -1501,21 +1506,19 @@
     font-family: var(--font-mono);
   }
 
-  .bar .go {
-    padding: var(--space-1) var(--space-3);
-  }
-
   button.icon {
     display: inline-grid;
     place-items: center;
-    padding: var(--space-1);
+    width: var(--control-height);
+    height: var(--control-height);
+    padding: 0;
   }
 
   button.text {
     display: inline-flex;
     gap: var(--space-1);
     align-items: center;
-    padding: var(--space-1) var(--space-2);
+    padding: 0 var(--space-2);
     white-space: nowrap;
   }
 
@@ -1612,6 +1615,7 @@
   }
 
   button.link {
+    min-height: 0;
     padding: 0;
     color: var(--accent);
     background: none;
@@ -1627,7 +1631,8 @@
 
   td.actions button,
   button.small {
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     font-size: var(--text-xs);
   }
 

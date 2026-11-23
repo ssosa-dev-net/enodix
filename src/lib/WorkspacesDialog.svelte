@@ -303,10 +303,6 @@
     font-weight: var(--weight-semibold);
   }
 
-  input {
-    padding: var(--space-1-5) var(--space-2);
-  }
-
   ul {
     list-style: none;
     margin: 0;
@@ -369,7 +365,8 @@
   }
 
   .remove {
-    padding: var(--space-0-5) var(--space-1-5);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-1-5);
     font-size: var(--text-xs);
   }
 

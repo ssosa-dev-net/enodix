@@ -560,7 +560,6 @@
       />
       <button
         type="submit"
-        class="small"
         disabled={newLinkName.trim() === "" || newLinkUrl.trim() === ""}
         >Add</button
       >
@@ -647,6 +646,7 @@
   }
 
   .definitions {
+    min-height: 0;
     padding: 0;
     border: 0;
     background: none;
@@ -668,12 +668,15 @@
   }
 
   .small {
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     font-size: var(--text-xs);
   }
 
   .remove {
-    padding: 0 var(--space-1-5);
+    width: var(--control-height);
+    height: var(--control-height);
+    padding: 0;
     border: 0;
     background: none;
     color: var(--muted);

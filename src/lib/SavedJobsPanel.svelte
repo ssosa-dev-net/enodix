@@ -160,6 +160,7 @@
     gap: var(--space-1-5);
     border-color: transparent;
     background: none;
+    min-height: 0;
     padding: var(--space-0-5) var(--space-0-5);
     font-weight: var(--weight-semibold);
     text-align: left;
@@ -210,6 +211,8 @@
     text-align: left;
     border-color: transparent;
     background: none;
+    gap: 0;
+    min-height: 0;
     padding: var(--space-0-5) var(--space-1-5);
   }
 
@@ -246,7 +249,9 @@
 
   .small {
     flex: none;
-    padding: var(--space-0-5) var(--space-1-5);
+    min-width: var(--control-height-small);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-1-5);
     font-size: var(--text-2xs);
     border-color: transparent;
     background: none;

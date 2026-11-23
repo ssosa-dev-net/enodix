@@ -786,6 +786,7 @@
     place-items: center;
     width: var(--pane-tool-size);
     height: var(--pane-tool-size);
+    min-height: 0;
     padding: 0;
     color: var(--muted);
     background: none;

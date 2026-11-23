@@ -355,6 +355,7 @@
   }
 
   .link {
+    min-height: 0;
     padding: 0;
     border: 0;
     background: none;
