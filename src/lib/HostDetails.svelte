@@ -138,6 +138,61 @@
     );
   }
 
+  /** The sections the list on the left jumps to, in page order. */
+  const SECTIONS = [
+    ["device", "Device"],
+    ["location", "Location"],
+    ["connection", "Connection"],
+    ["tags", "Tags"],
+    ["custom", "Custom fields"],
+    ["description", "Description"],
+  ] as const;
+  /** The fields that say where the device is; the rest describe it. */
+  const LOCATION_KEYS: readonly string[] = [
+    "site",
+    "building",
+    "room",
+    "rack",
+    "rack_unit",
+  ];
+  const deviceFields = HOST_TEXT_FIELDS.filter(
+    ([key]) => !LOCATION_KEYS.includes(key),
+  );
+  const locationFields = HOST_TEXT_FIELDS.filter(([key]) =>
+    LOCATION_KEYS.includes(key),
+  );
+
+  let root = $state<HTMLElement | null>(null);
+  let current = $state<string>("device");
+
+  function jumpTo(id: string) {
+    current = id;
+    root
+      ?.querySelector(`[data-details-section="${id}"]`)
+      ?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
+  // The section nearest the top of the scrolling area is the current one.
+  $effect(() => {
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const sections = [...root.querySelectorAll("[data-details-section]")];
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const top = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort(
+            (a, b) => a.boundingClientRect.top - b.boundingClientRect.top,
+          )[0];
+        const id = (top?.target as HTMLElement | undefined)?.dataset
+          .detailsSection;
+        if (id) current = id;
+      },
+      { rootMargin: "0px 0px -70% 0px" },
+    );
+    sections.forEach((section) => observer.observe(section));
+    return () => observer.disconnect();
+  });
+
   let newKey = $state("");
   let newValue = $state("");
 
@@ -189,7 +244,7 @@
   }
 </script>
 
-<div class="details" aria-label="Host details">
+<div class="details" aria-label="Host details" bind:this={root}>
   <header>
     <h2>{host.name}</h2>
     <span class="file" title="The host's file in the workspace">{host.id}</span>
@@ -325,206 +380,255 @@
     </div>
   </header>
 
-  <section aria-label="Device" data-details-section="device">
-    <h3>Device</h3>
-    <label class="field">
-      <span>Name</span>
-      <span class="row">
-        <input
-          name="name"
-          value={host.name}
-          spellcheck="false"
-          onchange={async (event) => {
-            const input = event.currentTarget;
-            if (onedit) onedit({ name: input.value });
-            else await renameTo(item, input.value);
-            input.value = host.name;
-          }}
-        />
-        <CopyButton value={host.name} what="name" />
-      </span>
-    </label>
-    <label class="field">
-      <span>Role</span>
-      <span class="row">
-        {#if role}
-          <RoleIcon {role} />
-        {/if}
-        <select
-          name="role"
-          value={role?.id ?? ""}
-          onchange={async (event) => {
-            const select = event.currentTarget;
-            await save({ role: select.value === "" ? null : select.value });
-            select.value = role?.id ?? "";
-          }}
+  <div class="layout">
+    <nav class="sections-nav" aria-label="Host sections">
+      {#each SECTIONS as [id, label] (id)}
+        <button
+          type="button"
+          data-section-link={id}
+          aria-current={current === id ? "true" : undefined}
+          onclick={() => jumpTo(id)}>{label}</button
         >
-          <option value="">No role</option>
-          {#each roles as option (option.id)}
-            <option value={option.id}>{option.name}</option>
-          {/each}
-          {#if role?.source === "undefined"}
-            <option value={role.id}>{role.name} (not defined)</option>
-          {/if}
-        </select>
-      </span>
-    </label>
-    {#each HOST_TEXT_FIELDS as [key, label] (key)}
-      <label class="field">
-        <span>{label}</span>
-        <span class="row">
+      {/each}
+    </nav>
+    <div class="form">
+      <section aria-label="Device" data-details-section="device">
+        <h3>Device</h3>
+        <label class="field">
+          <span>Name</span>
+          <span class="row">
+            <input
+              name="name"
+              value={host.name}
+              spellcheck="false"
+              onchange={async (event) => {
+                const input = event.currentTarget;
+                if (onedit) onedit({ name: input.value });
+                else await renameTo(item, input.value);
+                input.value = host.name;
+              }}
+            />
+            <CopyButton value={host.name} what="name" />
+          </span>
+        </label>
+        <label class="field">
+          <span>Role</span>
+          <span class="row">
+            {#if role}
+              <RoleIcon {role} />
+            {/if}
+            <select
+              name="role"
+              value={role?.id ?? ""}
+              onchange={async (event) => {
+                const select = event.currentTarget;
+                await save({ role: select.value === "" ? null : select.value });
+                select.value = role?.id ?? "";
+              }}
+            >
+              <option value="">No role</option>
+              {#each roles as option (option.id)}
+                <option value={option.id}>{option.name}</option>
+              {/each}
+              {#if role?.source === "undefined"}
+                <option value={role.id}>{role.name} (not defined)</option>
+              {/if}
+            </select>
+          </span>
+        </label>
+        {#each deviceFields as [key, label] (key)}
+          <label class="field">
+            <span>{label}</span>
+            <span class="row">
+              <input
+                name={key}
+                value={host[key] ?? ""}
+                spellcheck="false"
+                onchange={(event) =>
+                  commit(
+                    event,
+                    (value) => ({ [key]: value }),
+                    () => host[key] ?? "",
+                  )}
+              />
+              <CopyButton value={host[key] ?? ""} what={label.toLowerCase()} />
+            </span>
+          </label>
+        {/each}
+        <SettingsPanel
+          part="device"
+          {item}
+          settings={host.settings}
+          saved={saved?.settings}
+          effective={effective.current}
+          hostIds={otherHosts}
+          onchange={(change) =>
+            save((current) => ({ settings: change(current.settings) }))}
+        />
+      </section>
+
+      <section aria-label="Location" data-details-section="location">
+        <h3>Location</h3>
+        {#each locationFields as [key, label] (key)}
+          <label class="field">
+            <span>{label}</span>
+            <span class="row">
+              <input
+                name={key}
+                value={host[key] ?? ""}
+                spellcheck="false"
+                onchange={(event) =>
+                  commit(
+                    event,
+                    (value) => ({ [key]: value }),
+                    () => host[key] ?? "",
+                  )}
+              />
+              <CopyButton value={host[key] ?? ""} what={label.toLowerCase()} />
+            </span>
+          </label>
+        {/each}
+      </section>
+
+      <section aria-label="Connection" data-details-section="connection">
+        <h3>Connection</h3>
+        <label class="field">
+          <span>Management address</span>
+          <span class="row">
+            <input
+              name="address"
+              value={host.address}
+              spellcheck="false"
+              onchange={(event) =>
+                commit(
+                  event,
+                  (address) => ({ address }),
+                  () => host.address,
+                )}
+            />
+            <CopyButton value={host.address} what="management address" />
+          </span>
+        </label>
+        <SettingsPanel
+          part="connection"
+          {item}
+          settings={host.settings}
+          saved={saved?.settings}
+          effective={effective.current}
+          hostIds={otherHosts}
+          onchange={(change) =>
+            save((current) => ({ settings: change(current.settings) }))}
+        />
+      </section>
+
+      <div data-details-section="tags">
+        <TagEditor
+          tags={host.tags}
+          effective={effective.current?.tags ?? null}
+          {item}
+          onchange={(change) =>
+            save((current) => ({ tags: change(current.tags) }))}
+        />
+      </div>
+
+      <section aria-label="Custom fields" data-details-section="custom">
+        <h3>Custom fields</h3>
+        {#each host.custom as field (field.key)}
+          <div class="row custom">
+            <input
+              class="key"
+              aria-label="Field name"
+              value={field.key}
+              spellcheck="false"
+              onchange={(event) =>
+                commit(
+                  event,
+                  (key) => changeCustom(field.key, { key }),
+                  () => field.key,
+                )}
+            />
+            <input
+              class="value"
+              aria-label="{field.key} value"
+              data-custom={field.key}
+              value={field.value}
+              spellcheck="false"
+              onchange={(event) =>
+                commit(
+                  event,
+                  (value) => changeCustom(field.key, { value }),
+                  () => field.value,
+                )}
+            />
+            <CopyButton value={field.value} what={field.key} />
+            <IconButton
+              icon={X}
+              size="compact"
+              label="Remove field {field.key}"
+              onclick={() =>
+                save((current) => ({
+                  custom: current.custom.filter((f) => f.key !== field.key),
+                }))}
+            />
+          </div>
+        {/each}
+        <form class="row custom" onsubmit={addCustom}>
           <input
-            name={key}
-            value={host[key] ?? ""}
+            class="key"
+            name="new-key"
+            placeholder="Name"
             spellcheck="false"
+            bind:value={newKey}
+          />
+          <input
+            class="value"
+            name="new-value"
+            placeholder="Value"
+            spellcheck="false"
+            bind:value={newValue}
+          />
+          <button type="submit" disabled={newKey.trim() === ""}>Add</button>
+        </form>
+      </section>
+
+      <section aria-label="Description" data-details-section="description">
+        <h3>Description</h3>
+        <span class="row">
+          <textarea
+            name="description"
+            aria-label="Description"
+            rows="3"
+            value={host.description ?? ""}
             onchange={(event) =>
               commit(
                 event,
-                (value) => ({ [key]: value }),
-                () => host[key] ?? "",
-              )}
-          />
-          <CopyButton value={host[key] ?? ""} what={label.toLowerCase()} />
+                (description) => ({ description }),
+                () => host.description ?? "",
+              )}></textarea>
+          <CopyButton value={host.description ?? ""} what="description" />
         </span>
-      </label>
-    {/each}
-    <SettingsPanel
-      part="device"
-      {item}
-      settings={host.settings}
-      saved={saved?.settings}
-      effective={effective.current}
-      hostIds={otherHosts}
-      onchange={(change) =>
-        save((current) => ({ settings: change(current.settings) }))}
-    />
-  </section>
-
-  <section aria-label="Connection" data-details-section="connection">
-    <h3>Connection</h3>
-    <label class="field">
-      <span>Management address</span>
-      <span class="row">
-        <input
-          name="address"
-          value={host.address}
-          spellcheck="false"
-          onchange={(event) =>
-            commit(
-              event,
-              (address) => ({ address }),
-              () => host.address,
-            )}
-        />
-        <CopyButton value={host.address} what="management address" />
-      </span>
-    </label>
-    <SettingsPanel
-      part="connection"
-      {item}
-      settings={host.settings}
-      saved={saved?.settings}
-      effective={effective.current}
-      hostIds={otherHosts}
-      onchange={(change) =>
-        save((current) => ({ settings: change(current.settings) }))}
-    />
-  </section>
-
-  <div data-details-section="tags">
-    <TagEditor
-      tags={host.tags}
-      effective={effective.current?.tags ?? null}
-      {item}
-      onchange={(change) => save((current) => ({ tags: change(current.tags) }))}
-    />
+      </section>
+    </div>
   </div>
-
-  <section aria-label="Custom fields" data-details-section="custom">
-    <h3>Custom fields</h3>
-    {#each host.custom as field (field.key)}
-      <div class="row custom">
-        <input
-          class="key"
-          aria-label="Field name"
-          value={field.key}
-          spellcheck="false"
-          onchange={(event) =>
-            commit(
-              event,
-              (key) => changeCustom(field.key, { key }),
-              () => field.key,
-            )}
-        />
-        <input
-          class="value"
-          aria-label="{field.key} value"
-          data-custom={field.key}
-          value={field.value}
-          spellcheck="false"
-          onchange={(event) =>
-            commit(
-              event,
-              (value) => changeCustom(field.key, { value }),
-              () => field.value,
-            )}
-        />
-        <CopyButton value={field.value} what={field.key} />
-        <IconButton
-          icon={X}
-          size="compact"
-          label="Remove field {field.key}"
-          onclick={() =>
-            save((current) => ({
-              custom: current.custom.filter((f) => f.key !== field.key),
-            }))}
-        />
-      </div>
-    {/each}
-    <form class="row custom" onsubmit={addCustom}>
-      <input
-        class="key"
-        name="new-key"
-        placeholder="Name"
-        spellcheck="false"
-        bind:value={newKey}
-      />
-      <input
-        class="value"
-        name="new-value"
-        placeholder="Value"
-        spellcheck="false"
-        bind:value={newValue}
-      />
-      <button type="submit" disabled={newKey.trim() === ""}>Add</button>
-    </form>
-  </section>
-
-  <section aria-label="Description" data-details-section="description">
-    <h3>Description</h3>
-    <span class="row">
-      <textarea
-        name="description"
-        aria-label="Description"
-        rows="3"
-        value={host.description ?? ""}
-        onchange={(event) =>
-          commit(
-            event,
-            (description) => ({ description }),
-            () => host.description ?? "",
-          )}></textarea>
-      <CopyButton value={host.description ?? ""} what="description" />
-    </span>
-  </section>
 </div>
 
 <style>
   .details {
+    /* The label column and the widest the form grows, when there is room. */
+    --label-col: 180px;
+    --form-max: 720px;
+    --nav-col: 10rem;
+    container: host-details / inline-size;
     display: grid;
     gap: var(--space-4);
     padding: var(--space-3);
     font-size: var(--text-sm);
+  }
+
+  /* The host editor caps its children at 48rem; this sizes itself (the
+     header and form below), so the list of sections fits beside the form. */
+  .details.details {
+    max-width: none;
   }
 
   header {
@@ -663,5 +767,83 @@
 
   .custom .key {
     flex: 0 1 40%;
+  }
+
+  .layout {
+    display: grid;
+    gap: var(--space-4);
+  }
+
+  .form {
+    display: grid;
+    gap: var(--space-4);
+    min-width: 0;
+  }
+
+  .sections-nav {
+    display: none;
+  }
+
+  /* Room for it (the host editor, not the narrow details sheet): the
+     header and form stay as wide as they need, the label goes beside its
+     field. Below this, one column, as in the sheet. */
+  @container host-details (min-width: 560px) {
+    header,
+    .layout {
+      width: 100%;
+      max-width: var(--form-max);
+      margin-inline: auto;
+    }
+
+    .field {
+      grid-template-columns: var(--label-col) minmax(0, 1fr);
+      align-items: center;
+      column-gap: var(--space-3);
+    }
+
+    .custom .key {
+      flex-basis: var(--label-col);
+    }
+  }
+
+  /* Wide enough for the list of sections beside the form. */
+  @container host-details (min-width: 760px) {
+    header,
+    .layout {
+      max-width: calc(var(--nav-col) + var(--space-4) + var(--form-max));
+    }
+
+    .layout {
+      grid-template-columns: var(--nav-col) minmax(0, 1fr);
+      align-items: start;
+    }
+
+    .sections-nav {
+      position: sticky;
+      top: var(--space-3);
+      display: grid;
+      gap: var(--space-0-5);
+    }
+
+    .sections-nav button {
+      justify-content: flex-start;
+      min-height: var(--control-height-small);
+      padding: 0 var(--space-2);
+      border-color: transparent;
+      background: none;
+      color: var(--muted);
+      font-size: var(--text-sm);
+      text-align: left;
+    }
+
+    .sections-nav button:hover {
+      color: var(--text);
+    }
+
+    .sections-nav button[aria-current="true"] {
+      border-left: 2px solid var(--accent);
+      color: var(--text);
+      font-weight: var(--weight-semibold);
+    }
   }
 </style>

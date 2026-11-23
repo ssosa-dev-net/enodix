@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Info from "@lucide/svelte/icons/info";
   import X from "@lucide/svelte/icons/x";
   import Button from "./Button.svelte";
   import IconButton from "./IconButton.svelte";
@@ -43,6 +44,14 @@
 
   let { item, settings, saved, effective, hostIds, onchange, part }: Props =
     $props();
+
+  const uid = $props.id();
+  /** Which groups of inherited settings are shown, by group. */
+  let inheritedShown = $state<Record<string, boolean>>({});
+  /** Whose help note is open, by setting. */
+  let noteShown = $state<Record<string, boolean>>({});
+  /** The serial line was asked for, though nothing says it is used. */
+  let serialAsked = $state(false);
 
   type Options = readonly (readonly [string, string])[];
 
@@ -329,6 +338,13 @@
     if (part === "connection") void refreshPorts();
   });
 
+  /** The serial line matters when it is the protocol or a port is set. */
+  const serialUsed = $derived(
+    effective?.protocol.value === "serial" ||
+      settings.serial.port != null ||
+      effective?.serial.port != null,
+  );
+
   const BAUD_RATES = [
     1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400,
   ];
@@ -383,54 +399,57 @@
   }
 </script>
 
-{#snippet rowsOf(rows: Row[])}
-  {#each rows as row (row.key)}
-    {@const own = row.own(settings)}
-    {@const applied = effective ? row.effective(effective) : null}
-    {@const edited = saved !== undefined && row.own(saved) !== own}
-    <div class="setting" data-setting={row.key}>
-      <label class="field">
-        <span>{row.label}</span>
-        <span class="row">
-          {#if row.input.kind === "choice"}
-            <select
-              name="setting-{row.key}"
-              value={own}
-              onchange={(event) =>
-                commit(row, event.currentTarget.value, event.currentTarget)}
-            >
-              <option value="">Inherit</option>
-              {#each row.input.options as [value, label] (value)}
-                <option {value}>{label}</option>
-              {/each}
-            </select>
-          {:else}
-            <input
-              name="setting-{row.key}"
-              type={row.input.kind}
-              min={row.input.kind === "number" ? row.input.min : undefined}
-              max={row.input.kind === "number" ? row.input.max : undefined}
-              list={row.input.list}
-              spellcheck="false"
-              value={own}
-              placeholder={own === "" && applied && !edited
-                ? show(applied.value)
-                : ""}
-              onchange={(event) =>
-                commit(row, event.currentTarget.value, event.currentTarget)}
-            />
-          {/if}
-          {#if own !== ""}
-            <IconButton
-              icon={X}
-              size="compact"
-              label="Clear {row.label}"
-              title="Clear: inherit from above"
-              onclick={() => commit(row, "")}
-            />
-          {/if}
-        </span>
-      </label>
+{#snippet settingRow(row: Row)}
+  {@const own = row.own(settings)}
+  {@const applied = effective ? row.effective(effective) : null}
+  {@const edited = saved !== undefined && row.own(saved) !== own}
+  {@const warning =
+    row.key === "logging" &&
+    (own === "" ? applied?.value === true : own === "on")}
+  <div class="setting" data-setting={row.key}>
+    <label class="field">
+      <span>{row.label}</span>
+      <span class="row">
+        {#if row.input.kind === "choice"}
+          <select
+            name="setting-{row.key}"
+            value={own}
+            onchange={(event) =>
+              commit(row, event.currentTarget.value, event.currentTarget)}
+          >
+            <option value="">Inherit</option>
+            {#each row.input.options as [value, label] (value)}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+        {:else}
+          <input
+            name="setting-{row.key}"
+            type={row.input.kind}
+            min={row.input.kind === "number" ? row.input.min : undefined}
+            max={row.input.kind === "number" ? row.input.max : undefined}
+            list={row.input.list}
+            spellcheck="false"
+            value={own}
+            placeholder={own === "" && applied && !edited
+              ? show(applied.value)
+              : ""}
+            onchange={(event) =>
+              commit(row, event.currentTarget.value, event.currentTarget)}
+          />
+        {/if}
+        {#if own !== ""}
+          <IconButton
+            icon={X}
+            size="compact"
+            label="Clear {row.label}"
+            title="Clear: inherit from above"
+            onclick={() => commit(row, "")}
+          />
+        {/if}
+      </span>
+    </label>
+    <span class="meta">
       <span
         class="origin"
         data-origin={row.key}
@@ -446,21 +465,70 @@
           {row.unset ?? "not set"}
         {/if}
       </span>
-      {#if row.note}
-        <p
-          class="note"
-          class:warn={row.key === "logging"}
-          data-setting-note={row.key}
-        >
-          {row.note}
-        </p>
+      {#if row.note && !warning}
+        <IconButton
+          icon={Info}
+          size="compact"
+          label="About {row.label}"
+          aria-expanded={noteShown[row.key] === true}
+          aria-controls="{uid}-note-{row.key}"
+          onclick={() => (noteShown[row.key] = !noteShown[row.key])}
+        />
       {/if}
-    </div>
+    </span>
+    {#if row.note}
+      <!-- Kept in the page when closed (hidden), so it can be found. -->
+      <p
+        id="{uid}-note-{row.key}"
+        class="note"
+        class:warn={row.key === "logging"}
+        hidden={!warning && noteShown[row.key] !== true}
+        data-setting-note={row.key}
+      >
+        {row.note}
+      </p>
+    {/if}
+  </div>
+{/snippet}
+
+<!--
+  The settings, the ones this item sets first; with `fold`, what it only
+  inherits is behind a button.
+-->
+{#snippet rowsOf(rows: Row[], group: string, fold: boolean)}
+  {@const isSet = (row: Row) =>
+    row.own(settings) !== "" ||
+    (saved !== undefined && row.own(saved) !== row.own(settings))}
+  {@const mine = fold ? rows.filter(isSet) : rows}
+  {@const inherited = fold ? rows.filter((row) => !isSet(row)) : []}
+  {#each mine as row (row.key)}
+    {@render settingRow(row)}
   {/each}
+  {#if inherited.length > 0}
+    <Button
+      size="compact"
+      variant="ghost"
+      class="fold"
+      data-inherited-toggle={group}
+      aria-expanded={inheritedShown[group] === true}
+      aria-controls="{uid}-{group}"
+      onclick={() => (inheritedShown[group] = !inheritedShown[group])}
+    >
+      {inheritedShown[group]
+        ? "Hide inherited settings"
+        : `Show ${inherited.length} inherited ${inherited.length === 1 ? "setting" : "settings"}`}
+    </Button>
+    <!-- Kept in the page when closed (hidden): each still says what applies. -->
+    <div id="{uid}-{group}" class="inherited" hidden={!inheritedShown[group]}>
+      {#each inherited as row (row.key)}
+        {@render settingRow(row)}
+      {/each}
+    </div>
+  {/if}
 {/snippet}
 
 {#if part === "device"}
-  {@render rowsOf(device)}
+  {@render rowsOf(device, "device", false)}
   {#if platformMatch}
     <p
       class="platform-match"
@@ -488,7 +556,7 @@
     {/each}
   </datalist>
 {:else}
-  {@render rowsOf(connection)}
+  {@render rowsOf(connection, "connection", true)}
   <datalist id="jump-hosts">
     {#each hostIds as id (id)}
       <option value={id}></option>
@@ -500,7 +568,21 @@
     {/each}
   </datalist>
 
-  <section aria-label="Serial line">
+  {#if !serialUsed && !serialAsked}
+    <Button
+      size="compact"
+      variant="ghost"
+      class="fold"
+      data-serial-add
+      onclick={() => (serialAsked = true)}>Set up a serial line</Button
+    >
+  {/if}
+  <!-- Kept in the page when unused (hidden): its settings still say what applies. -->
+  <section
+    aria-label="Serial line"
+    data-serial-line
+    hidden={!serialUsed && !serialAsked}
+  >
     <h4>
       Serial line
       <Button
@@ -510,7 +592,7 @@
         onclick={refreshPorts}>Refresh ports</Button
       >
     </h4>
-    {@render rowsOf(serial)}
+    {@render rowsOf(serial, "serial", true)}
     {#if portsError}
       <span class="origin" role="alert">{portsError}</span>
     {/if}
@@ -587,6 +669,51 @@
   section {
     display: grid;
     gap: var(--space-1-5);
+  }
+
+  section[hidden],
+  .inherited[hidden],
+  .note[hidden] {
+    display: none;
+  }
+
+  .inherited {
+    display: grid;
+    gap: var(--space-1-5);
+  }
+
+  :global(.btn.fold) {
+    justify-self: start;
+  }
+
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  /* Beside its label, the origin and help sit under the field. */
+  @container host-details (min-width: 560px) {
+    .field {
+      grid-template-columns: var(--label-col, 180px) minmax(0, 1fr);
+      align-items: center;
+      column-gap: var(--space-3);
+    }
+
+    .meta,
+    .note {
+      margin-left: calc(var(--label-col, 180px) + var(--space-3));
+    }
+
+    .link {
+      grid-template-columns: var(--label-col, 180px) minmax(0, 1fr);
+      column-gap: var(--space-3);
+      align-items: center;
+    }
+
+    .link .origin {
+      grid-column: 2;
+    }
   }
 
   h4 {
