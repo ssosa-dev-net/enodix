@@ -375,6 +375,9 @@
     color: var(--muted);
     background: var(--surface);
     border-right: 1px solid var(--border);
+    /* The gap to the text sits outside the textarea, so it stays when the
+       text scrolls sideways (padding inside would scroll away with it). */
+    margin-right: var(--space-3);
     user-select: none;
     font-variant-numeric: tabular-nums;
   }
@@ -382,7 +385,7 @@
   textarea {
     flex: 1;
     min-width: 82ch;
-    padding-left: var(--space-3);
+    padding-left: 0;
     padding-right: var(--space-2);
     border: 0;
     border-radius: 0;
