@@ -126,6 +126,7 @@
 
   .note {
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .error {

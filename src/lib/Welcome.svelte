@@ -274,6 +274,7 @@
     margin: 0;
     color: var(--muted);
     font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   ul {

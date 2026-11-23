@@ -88,11 +88,9 @@
     align-items: center;
     justify-content: space-between;
     margin: 0 0 var(--space-1-5);
-    font-size: var(--text-xs);
+    font-size: var(--text-md);
     font-weight: var(--weight-semibold);
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    color: var(--text);
   }
 
   .row {

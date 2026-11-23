@@ -343,7 +343,7 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
@@ -351,6 +351,7 @@
     margin: 0;
     color: var(--muted);
     font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   .error {
@@ -424,6 +425,7 @@
   .hint {
     grid-column: 1 / -1;
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .fields .actions {
