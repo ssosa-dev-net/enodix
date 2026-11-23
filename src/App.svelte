@@ -753,8 +753,9 @@
       if (shows.view === "host") {
         const host = shows.subject ?? following.host;
         void settleUnsaved(host ? [host] : [], "closing the tab").then((go) => {
-          if (go) closeViewTab(tab, true);
-          else requestKeys();
+          if (!go) return requestKeys();
+          go();
+          closeViewTab(tab, true);
         });
         return;
       }
@@ -1128,7 +1129,10 @@
   void getCurrentWindow().onCloseRequested(async (event) => {
     event.preventDefault();
     if (quitting) return;
-    // Unsaved host edits first (#10): Cancel keeps the window open.
+    // Unsaved host edits first (#10): Cancel keeps the window open. A
+    // field being typed in is committed first, so that it is asked about.
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    await tick();
     if (!(await settleUnsaved(hostsWithUnsaved(), `closing ${name}`))) return;
     const elsewhere = await liveInSessionWindows();
     const live = liveSessions + elsewhere;
@@ -1173,9 +1177,13 @@
     const current = inventory.workspace;
     // The keys go back to the terminal at the end unless moved meanwhile.
     let mark = keyMark();
-    // Unsaved host edits are of this workspace (#10).
-    if (!(await settleUnsaved(hostsWithUnsaved(), "opening another workspace")))
-      return null;
+    // Unsaved host edits are of this workspace (#10); discarded ones go
+    // only once the other workspace opened.
+    const settled = await settleUnsaved(
+      hostsWithUnsaved(),
+      "opening another workspace",
+    );
+    if (!settled) return null;
     const tabs = current
       ? Object.keys(sessions)
           .map(Number)
@@ -1215,6 +1223,7 @@
         inventory.editError = `Cannot close the sessions in session windows: ${error}`;
       });
     }
+    settled();
     // Saved or discarded above; what is left belongs to no host now.
     if (current && next.root !== current.root) revertAll();
     setWorkspace(next);
