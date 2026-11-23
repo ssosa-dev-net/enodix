@@ -365,7 +365,7 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
@@ -398,6 +398,8 @@
     display: grid;
     gap: var(--space-0-5);
     width: 100%;
+    min-height: 0;
+    justify-content: normal;
     padding: var(--space-1-5) var(--space-2);
     text-align: left;
     background: none;
@@ -497,6 +499,7 @@
   .note {
     margin: 0;
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .error {

@@ -260,7 +260,7 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
   }
 
@@ -290,11 +290,6 @@
     gap: var(--space-1);
   }
 
-  .modes button {
-    padding: var(--space-0-5) var(--space-3);
-    font-size: var(--text-sm);
-  }
-
   .modes button[aria-pressed="true"] {
     border-color: var(--accent, var(--border));
     font-weight: var(--weight-semibold);
@@ -303,6 +298,7 @@
   p {
     margin: 0 0 var(--space-0-5);
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .row {
@@ -320,7 +316,8 @@
   label {
     display: grid;
     gap: var(--space-1);
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
     color: var(--muted);
   }
 
@@ -329,10 +326,10 @@
     font: inherit;
     font-size: var(--text-md);
     color: var(--text);
-    background: var(--surface);
+    background-color: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-2);
+    padding-left: var(--space-2);
     min-width: 0;
   }
 

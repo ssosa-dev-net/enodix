@@ -380,7 +380,7 @@
 
   input {
     margin: var(--space-2);
-    padding: var(--space-1-5) var(--space-2);
+    padding-inline: var(--space-2);
     font-size: var(--text-md);
   }
 
@@ -434,6 +434,7 @@
     margin: 0 var(--space-3) var(--space-2);
     color: var(--muted);
     font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   footer {

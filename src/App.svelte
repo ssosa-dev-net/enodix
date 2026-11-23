@@ -18,6 +18,14 @@
   import ConfirmSwitch from "./lib/ConfirmSwitch.svelte";
   import ConfirmOpenFolder from "./lib/ConfirmOpenFolder.svelte";
   import ConfirmQuit from "./lib/ConfirmQuit.svelte";
+  import ConfirmUnsaved from "./lib/ConfirmUnsaved.svelte";
+  import {
+    following,
+    hostsWithUnsaved,
+    question as unsavedQuestion,
+    revertAll,
+    settleUnsaved,
+  } from "./lib/hostDrafts.svelte";
   import { activeTransfers } from "./lib/fileTransfers.svelte";
   import { addressBesides, hostConnection } from "./lib/hostConnect";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -25,6 +33,8 @@
   import CredentialsView from "./lib/CredentialsView.svelte";
   import Dialog from "./lib/Dialog.svelte";
   import DetailsSheet from "./lib/DetailsSheet.svelte";
+  import HostEditor from "./lib/HostEditor.svelte";
+  import SnippetEditor from "./lib/SnippetEditor.svelte";
   import HighlightRules from "./lib/HighlightRules.svelte";
   import HostsView from "./lib/HostsView.svelte";
   import PaneView, {
@@ -40,7 +50,12 @@
   } from "./lib/sessionWindows.svelte";
   import BackupsView from "./lib/BackupsView.svelte";
   import PreferencesView from "./lib/PreferencesView.svelte";
-  import { openRunTab, setViewOpener, VIEWS } from "./lib/views";
+  import {
+    EDIT_HOST_SHORTCUT,
+    openRunTab,
+    setViewOpener,
+    VIEWS,
+  } from "./lib/views";
   import {
     closeDetachedWindows,
     closeMainWindow,
@@ -429,6 +444,9 @@
     untrack(followKeys);
   });
 
+  /** The host editor on the selected host (what Edit host opens). */
+  const HOST_EDITOR: ViewRef = { view: "host", subject: null };
+
   /** Shows `view` in a tab (its own if open). */
   function openViewTab(view: ViewRef) {
     requestKeys();
@@ -452,7 +470,9 @@
         }
         for (const item of viewTabs) {
           if (
-            (item.view !== "configs" && item.view !== "files") ||
+            (item.view !== "configs" &&
+              item.view !== "files" &&
+              item.view !== "host") ||
             item.subject === null
           )
             continue;
@@ -737,6 +757,16 @@
   function closeTab(tab: TabId) {
     const shows = layout ? viewOf(layout, tab) : null;
     if (shows) {
+      // The host editor's unsaved edits are asked about first (#10).
+      if (shows.view === "host") {
+        const host = shows.subject ?? following.host;
+        void settleUnsaved(host ? [host] : [], "closing the tab").then((go) => {
+          if (!go) return requestKeys();
+          go();
+          closeViewTab(tab, true);
+        });
+        return;
+      }
       if (
         shows.view === "files" &&
         shows.subject &&
@@ -794,9 +824,10 @@
     void edit({ kind: "closeTab", tab });
   }
 
-  // Job, run, config history, import and fill-in review tabs belong to the
-  // workspace they were opened in (host ids, run ids and folders mean
-  // nothing elsewhere): switching closes them. Their jobs go on running.
+  // Job, run, config history, Files, host editor, import and fill-in
+  // review tabs belong to the workspace they were opened in (host ids, run
+  // ids and folders mean nothing elsewhere): switching closes them. Their
+  // jobs go on running.
   let shownRoot: string | null | undefined = undefined;
   $effect(() => {
     const root = inventory.workspace?.root ?? null;
@@ -808,6 +839,8 @@
             item.view === "run" ||
             item.view === "configs" ||
             item.view === "files" ||
+            item.view === "host" ||
+            item.view === "snippet" ||
             item.view === "csv-import" ||
             item.view === "nornir-import" ||
             item.view === "enrich"
@@ -964,6 +997,22 @@
       run: () => openNornirImport(targetFolder()),
     },
     {
+      id: "edit-host",
+      label: "Edit host",
+      words: "host details settings change edit form",
+      detail: EDIT_HOST_SHORTCUT,
+      icon: VIEWS.host.icon,
+      run: () => openViewTab(HOST_EDITOR),
+    },
+    {
+      id: "new-snippet",
+      label: "New snippet",
+      words: "snippets commands variables editor add create",
+      detail: "Open in a tab",
+      icon: VIEWS.snippet.icon,
+      run: () => openViewTab({ view: "snippet", subject: null }),
+    },
+    {
       id: "switch-workspace",
       label: "Switch workspace",
       words: "open create add workspaces folder",
@@ -1088,6 +1137,11 @@
   void getCurrentWindow().onCloseRequested(async (event) => {
     event.preventDefault();
     if (quitting) return;
+    // Unsaved host edits first (#10): Cancel keeps the window open. A
+    // field being typed in is committed first, so that it is asked about.
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    await tick();
+    if (!(await settleUnsaved(hostsWithUnsaved(), `closing ${name}`))) return;
     const elsewhere = await liveInSessionWindows();
     const live = liveSessions + elsewhere;
     // Files tabs are in this window only (#106).
@@ -1131,6 +1185,13 @@
     const current = inventory.workspace;
     // The keys go back to the terminal at the end unless moved meanwhile.
     let mark = keyMark();
+    // Unsaved host edits are of this workspace (#10); discarded ones go
+    // only once the other workspace opened.
+    const settled = await settleUnsaved(
+      hostsWithUnsaved(),
+      "opening another workspace",
+    );
+    if (!settled) return null;
     const tabs = current
       ? Object.keys(sessions)
           .map(Number)
@@ -1170,6 +1231,9 @@
         inventory.editError = `Cannot close the sessions in session windows: ${error}`;
       });
     }
+    settled();
+    // Saved or discarded above; what is left belongs to no host now.
+    if (current && next.root !== current.root) revertAll();
     setWorkspace(next);
     inventory.openError = null;
     switcher = false;
@@ -1646,6 +1710,10 @@
     if (!event.shiftKey && (event.code === "Comma" || event.key === ",")) {
       return () => openViewTab({ view: "preferences", subject: null });
     }
+    // Edit host (#10): the host editor tab on the selected host.
+    if (event.shiftKey && letter("E")) {
+      return selectedHost() ? () => openViewTab(HOST_EDITOR) : null;
+    }
     // Opens or closes the details sheet on the selection.
     if (event.shiftKey && letter("D")) {
       if (inventory.details) return closeDetails;
@@ -1917,6 +1985,17 @@
                 run={item.subject}
                 onclose={() => closeViewTab(item.tab, true)}
               />
+            {:else if item.view === "host" && inventory.workspace}
+              <HostEditor
+                subject={item.subject}
+                onconnect={prompt}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
+            {:else if item.view === "snippet" && inventory.workspace}
+              <SnippetEditor
+                subject={item.subject}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
             {:else if item.view === "python-setup"}
               <PythonSetup onclose={() => closeViewTab(item.tab, true)} />
             {/if}
@@ -2100,6 +2179,7 @@
     <span>{notice.text} Find it in Jobs.</span>
     <button
       type="button"
+      class="compact"
       data-job-notice="show"
       onclick={() => {
         jobNotice = null;
@@ -2108,7 +2188,7 @@
     >
     <button
       type="button"
-      class="dismiss"
+      class="compact dismiss"
       data-job-notice="dismiss"
       aria-label="Dismiss"
       onclick={() => (jobNotice = null)}
@@ -2125,11 +2205,13 @@
     >
     <button
       type="button"
+      class="compact"
       data-not-answering-action="take-back"
       onclick={() => void takeBack(hung.window)}>Bring them here</button
     >
     <button
       type="button"
+      class="compact"
       data-not-answering-action="wait"
       onclick={() =>
         (notAnswering = notAnswering.filter(
@@ -2143,7 +2225,7 @@
     <span>The sessions could not be brought here: {takeBackError}</span>
     <button
       type="button"
-      class="dismiss"
+      class="compact dismiss"
       aria-label="Dismiss"
       onclick={() => (takeBackError = null)}
       ><X size={14} aria-hidden="true" /></button
@@ -2159,6 +2241,18 @@
       switcher = false;
       requestKeys();
     }}
+  />
+{/if}
+
+{#if unsavedQuestion.current}
+  {@const asked = unsavedQuestion.current}
+  <ConfirmUnsaved
+    hosts={asked.hosts}
+    doing={asked.doing}
+    error={asked.error}
+    onsave={() => asked.answer("save")}
+    ondiscard={() => asked.answer("discard")}
+    oncancel={() => asked.answer("cancel")}
   />
 {/if}
 
@@ -2324,7 +2418,9 @@
   .job-notice .dismiss {
     border-color: transparent;
     background: none;
-    padding: var(--space-0-5);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    padding: 0;
     color: var(--muted);
   }
 

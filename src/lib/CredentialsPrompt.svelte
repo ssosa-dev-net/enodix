@@ -177,7 +177,7 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: var(--space-2) var(--space-2);
+    padding-inline: var(--space-2);
     min-width: 0;
   }
 
@@ -194,6 +194,7 @@
 
   .link {
     justify-self: start;
+    min-height: 0;
     padding: 0;
     border: none;
     background: none;

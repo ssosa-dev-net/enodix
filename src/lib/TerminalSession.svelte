@@ -723,16 +723,20 @@
         results = null;
         return;
       }
-      const dark = isDark();
+      // The colours are the theme's --highlight-* tokens (app.css), read
+      // now: the window sets the theme on the root before this runs again.
+      const style = getComputedStyle(document.documentElement);
+      const token = (name: string) =>
+        style.getPropertyValue(`--highlight-${name}`).trim();
       const options: ISearchOptions = {
         caseSensitive,
         regex,
         incremental,
         decorations: {
-          matchBackground: dark ? "#5c4a00" : "#fff1a8",
-          activeMatchBackground: dark ? "#b36b00" : "#ffb340",
-          matchOverviewRuler: "#d29922",
-          activeMatchColorOverviewRuler: "#ff8800",
+          matchBackground: token("match"),
+          activeMatchBackground: token("match-active"),
+          matchOverviewRuler: token("match-ruler"),
+          activeMatchColorOverviewRuler: token("match-active-ruler"),
         },
       };
       try {
@@ -1115,7 +1119,12 @@
     void caseSensitive;
     void regex;
     void isDark();
-    if (untrack(() => searching)) untrack(() => find("next", true));
+    // After the window's own effect has set the root's theme (the colours
+    // are read from it), so on the next frame.
+    const frame = requestAnimationFrame(() => {
+      if (untrack(() => searching)) untrack(() => find("next", true));
+    });
+    return () => cancelAnimationFrame(frame);
   });
 </script>
 
@@ -1274,6 +1283,7 @@
         }}
       >
         <input
+          class="compact"
           name="search"
           aria-label="Search the scrollback"
           placeholder="Search"
@@ -1301,6 +1311,7 @@
         </label>
         <button
           type="button"
+          class="compact"
           data-search="previous"
           title="Previous match (Shift+Enter)"
           aria-label="Previous match"
@@ -1309,6 +1320,7 @@
         >
         <button
           type="button"
+          class="compact"
           data-search="next"
           title="Next match (Enter)"
           aria-label="Next match"
@@ -1317,6 +1329,7 @@
         >
         <button
           type="button"
+          class="compact"
           data-search="close"
           title="Close (Escape)"
           aria-label="Close the search"
@@ -1690,8 +1703,9 @@
     flex: none;
     display: inline-grid;
     place-items: center;
-    width: 26px;
-    height: 24px;
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
     padding: 0;
     border-color: transparent;
     background: none;
@@ -1741,7 +1755,15 @@
 
   .ended button {
     margin-left: auto;
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
+    font-size: var(--text-xs);
+  }
+
+  .log-failed button,
+  .backup-failed button {
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     font-size: var(--text-xs);
   }
 
@@ -1788,7 +1810,8 @@
   }
 
   .search button {
-    padding: var(--space-0-5) var(--space-1-5);
+    min-width: var(--control-height-small);
+    padding: 0 var(--space-1-5);
   }
 
   .terminal {

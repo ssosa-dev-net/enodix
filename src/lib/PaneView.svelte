@@ -786,6 +786,7 @@
     place-items: center;
     width: var(--pane-tool-size);
     height: var(--pane-tool-size);
+    min-height: 0;
     padding: 0;
     color: var(--muted);
     background: none;
@@ -821,6 +822,7 @@
     gap: var(--space-2);
     color: var(--muted);
     font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   .empty p {
