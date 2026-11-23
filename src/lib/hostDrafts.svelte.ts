@@ -134,10 +134,18 @@ export function shown(host: Host): Host {
   return drafts[host.id]?.edited ?? host;
 }
 
-/** How many fields of the host `id` are edited and not saved. */
+/** Whether the host `id` is in the workspace. */
+function exists(id: string): boolean {
+  const tree = inventory.workspace?.tree;
+  return !!tree && !!findHost(tree, id);
+}
+
+/** How many fields of the host `id` are edited and not saved. Edits to a
+ * host that is gone (deleted, or removed by a git pull) count as none:
+ * there is nothing left to save them to, so nothing asks about them. */
 export function unsaved(id: string | null): number {
   const draft = id ? drafts[id] : undefined;
-  return draft ? changedFields(draft).length : 0;
+  return draft && exists(id!) ? changedFields(draft).length : 0;
 }
 
 /** Whether the setting `key` of the host `id` is edited and not saved. */
