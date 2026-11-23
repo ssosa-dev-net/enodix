@@ -1047,6 +1047,7 @@
     padding: var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .empty p {

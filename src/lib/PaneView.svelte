@@ -822,6 +822,7 @@
     gap: var(--space-2);
     color: var(--muted);
     font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   .empty p {

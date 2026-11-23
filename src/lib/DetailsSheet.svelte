@@ -99,9 +99,7 @@
   .what {
     margin-left: auto;
     color: var(--muted);
-    font-size: var(--text-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-size: var(--text-xs);
   }
 
   .body {

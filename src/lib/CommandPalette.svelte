@@ -434,6 +434,7 @@
     margin: 0 var(--space-3) var(--space-2);
     color: var(--muted);
     font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   footer {

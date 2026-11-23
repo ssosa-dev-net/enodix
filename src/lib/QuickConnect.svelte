@@ -260,7 +260,7 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
   }
 
@@ -298,6 +298,7 @@
   p {
     margin: 0 0 var(--space-0-5);
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .row {
@@ -315,7 +316,8 @@
   label {
     display: grid;
     gap: var(--space-1);
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
     color: var(--muted);
   }
 

@@ -365,7 +365,7 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
@@ -499,6 +499,7 @@
   .note {
     margin: 0;
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .error {
