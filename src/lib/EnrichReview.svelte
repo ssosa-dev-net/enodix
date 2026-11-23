@@ -281,13 +281,15 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
   h3 {
     margin: var(--space-1) 0;
-    font-size: var(--text-sm);
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
+    color: var(--text);
   }
 
   .scroll {
@@ -355,6 +357,7 @@
   }
 
   .link {
+    min-height: 0;
     padding: 0;
     border: 0;
     background: none;
@@ -372,6 +375,7 @@
   .note {
     margin: 0;
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .actions {

@@ -34,7 +34,11 @@ everything 0.2.0 could do, the app still does, reached differently.
   Details in a session's menu), over the lower part of the Hosts view. It
   follows the selection and goes back to the tree with "Back to the tree"
   or Escape. It shows one item only: it closes when several hosts are
-  selected.
+  selected. A host shows as a summary that fits the sheet without
+  scrolling: name, environment, address, jump host, Connect (and the
+  other protocols), the Open, Run and More menus, a short list (vendor,
+  model, site, platform, credential profile) and Edit host (Ctrl+Shift+E),
+  which opens the host editor tab with every field.
 - **Several hosts** (#110): Ctrl+click in the Hosts view's tree adds a
   host to the selection or takes it out; Shift+click selects the hosts
   between the last one clicked and this one, as the tree shows them (open
@@ -316,6 +320,7 @@ everything 0.2.0 could do, the app still does, reached differently.
 | Ctrl+Shift+H / S / J / G / L          | Hosts / Snippets / Jobs / Config backups / Credentials (again: fold) |
 | Ctrl+Shift+B                          | Fold or unfold the side view        |
 | Ctrl+Shift+D                          | Open or close the details sheet     |
+| Ctrl+Shift+E                          | Edit the selected host in a tab     |
 | Ctrl+,                                | Preferences                         |
 | Ctrl+Shift+O                          | Workspace switcher                  |
 | Ctrl+Tab / Ctrl+PageDown              | Next tab                            |

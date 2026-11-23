@@ -1,5 +1,8 @@
 <script lang="ts">
+  import Info from "@lucide/svelte/icons/info";
   import X from "@lucide/svelte/icons/x";
+  import Button from "./Button.svelte";
+  import IconButton from "./IconButton.svelte";
   import {
     describeOrigin,
     inventory,
@@ -7,6 +10,7 @@
     platformDefinition,
     type Item,
   } from "./inventory.svelte";
+  import { tick } from "svelte";
   import { profileNames } from "./profiles.svelte";
   import { openView } from "./views";
   import { serialPorts, type SerialPortInfo } from "./session";
@@ -15,6 +19,7 @@
     type Effective,
     type EffectiveSettings,
     type Folder,
+    type Origin,
     type Settings,
   } from "./workspace";
 
@@ -22,6 +27,10 @@
     item: Item;
     /** What the host or folder sets itself. */
     settings: Settings;
+    /** The settings as saved, when `settings` holds unsaved edits (the
+     * host editor, #10): an edited setting says so instead of what applied
+     * before the edit. */
+    saved?: Settings;
     /** What applies to it (null while loading). */
     effective: EffectiveSettings | null;
     /** Host ids a jump host can be chosen from. */
@@ -35,7 +44,21 @@
     part: "device" | "connection";
   }
 
-  let { item, settings, effective, hostIds, onchange, part }: Props = $props();
+  let { item, settings, saved, effective, hostIds, onchange, part }: Props =
+    $props();
+
+  const uid = $props.id();
+  /** Which groups of inherited settings are shown, by group. */
+  let inheritedShown = $state<Record<string, boolean>>({});
+  /** Whose help note is open, by setting. */
+  let noteShown = $state<Record<string, boolean>>({});
+  /** The serial line was asked for, though nothing says it is used. */
+  let serialAsked = $state(false);
+
+  /** Settings whose value is being overridden (the input is shown), by key. */
+  let overriding = $state<Record<string, boolean>>({});
+  /** Why a setting's value was refused, by key; shown under its field. */
+  let errors = $state<Record<string, string>>({});
 
   type Options = readonly (readonly [string, string])[];
 
@@ -322,21 +345,95 @@
     if (part === "connection") void refreshPorts();
   });
 
+  /** The serial line matters when it is the protocol or a port is set. */
+  const serialUsed = $derived(
+    effective?.protocol.value === "serial" ||
+      settings.serial.port != null ||
+      effective?.serial.port != null,
+  );
+
   const BAUD_RATES = [
     1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400,
   ];
 
+  /** Why `value` cannot be a setting's value, when that is plain to see. */
+  function check(row: Row, value: string): string | null {
+    if (row.input.kind !== "number" || value.trim() === "") return null;
+    const number = Number(value);
+    const { min, max } = row.input;
+    if (!Number.isInteger(number))
+      return `${row.label} must be a whole number.`;
+    if (number < min || number > max) {
+      return `${row.label} must be between ${min} and ${max}.`;
+    }
+    return null;
+  }
+
+  /** What an overridden setting starts from: what applies now. */
+  function prefill(row: Row): string {
+    const applied = effective ? row.effective(effective) : null;
+    return applied ? show(applied.value) : "";
+  }
+
+  /** The control of `row`. */
+  const controlId = (row: Row) => `${uid}-in-${row.key}`;
+  const errorId = (row: Row) => `${uid}-err-${row.key}`;
+
   /**
-   * Saves a setting edited in `control`; afterwards the control shows what
-   * the file holds, which is the old value if the edit was refused.
+   * Saves a setting edited in `control`. A value that is refused stays in
+   * the control, with the reason under it; one that is saved shows as the
+   * file holds it.
    */
   async function commit(
     row: Row,
     value: string,
     control?: HTMLInputElement | HTMLSelectElement,
   ) {
+    const problem = check(row, value);
+    if (problem) {
+      errors[row.key] = problem;
+      overriding[row.key] = true;
+      return;
+    }
+    delete errors[row.key];
+    const expected = row.own(row.set(settings, value));
     await onchange((current) => row.set(current, value));
-    if (control) control.value = row.own(settings);
+    // Without the host editor's draft, a refused save is shown by the
+    // inventory above the tree; this field says it instead.
+    if (
+      saved === undefined &&
+      inventory.editError !== null &&
+      row.own(settings) !== expected
+    ) {
+      errors[row.key] = inventory.editError;
+      overriding[row.key] = true;
+      inventory.editError = null;
+      return;
+    }
+    if (control)
+      control.value =
+        row.own(settings) || (overriding[row.key] ? prefill(row) : "");
+  }
+
+  /** Shows the input of an inherited setting, to give it a value. */
+  async function override(row: Row) {
+    overriding[row.key] = true;
+    await tick();
+    document.getElementById(controlId(row))?.focus();
+  }
+
+  /** Back to the inherited value. */
+  async function useInherited(row: Row) {
+    overriding[row.key] = false;
+    delete errors[row.key];
+    if (row.own(settings) !== "") await commit(row, "");
+  }
+
+  /** Where an inherited value comes from, for its chip. */
+  function inheritedFrom(origin: Origin): string {
+    if (origin.kind === "default") return "Default";
+    if (origin.kind === "host") return "this host";
+    return `Inherited from ${origin.path === "" ? "workspace" : origin.path}`;
   }
 
   let newLinkName = $state("");
@@ -376,53 +473,118 @@
   }
 </script>
 
-{#snippet rowsOf(rows: Row[])}
-  {#each rows as row (row.key)}
-    {@const own = row.own(settings)}
-    {@const applied = effective ? row.effective(effective) : null}
-    <div class="setting" data-setting={row.key}>
-      <label class="field">
-        <span>{row.label}</span>
-        <span class="row">
-          {#if row.input.kind === "choice"}
-            <select
-              name="setting-{row.key}"
-              value={own}
-              onchange={(event) =>
-                commit(row, event.currentTarget.value, event.currentTarget)}
-            >
-              <option value="">Inherit</option>
-              {#each row.input.options as [value, label] (value)}
-                <option {value}>{label}</option>
-              {/each}
-            </select>
-          {:else}
-            <input
-              name="setting-{row.key}"
-              type={row.input.kind}
-              min={row.input.kind === "number" ? row.input.min : undefined}
-              max={row.input.kind === "number" ? row.input.max : undefined}
-              list={row.input.list}
-              spellcheck="false"
-              value={own}
-              placeholder={own === "" && applied ? show(applied.value) : ""}
-              onchange={(event) =>
-                commit(row, event.currentTarget.value, event.currentTarget)}
-            />
-          {/if}
-          {#if own !== ""}
-            <button
-              class="remove"
-              aria-label="Clear {row.label}"
-              title="Clear: inherit from above"
-              onclick={() => commit(row, "")}
-              ><X size={14} aria-hidden="true" /></button
-            >
-          {/if}
+{#snippet settingRow(row: Row)}
+  {@const own = row.own(settings)}
+  {@const applied = effective ? row.effective(effective) : null}
+  {@const edited = saved !== undefined && row.own(saved) !== own}
+  {@const error = errors[row.key]}
+  {@const inherits = own === "" && !overriding[row.key] && !error}
+  {@const warning =
+    row.key === "logging" &&
+    (own === "" ? applied?.value === true : own === "on")}
+  {@const describedBy =
+    [
+      error ? errorId(row) : null,
+      row.note && noteShown[row.key] ? `${uid}-note-${row.key}` : null,
+    ]
+      .filter(Boolean)
+      .join(" ") || undefined}
+  <div class="setting" data-setting={row.key}>
+    <div class="field">
+      <label for={controlId(row)}>{row.label}</label>
+      {#if inherits}
+        <span class="row chip-row" data-inherited={row.key}>
+          <span class="chip" data-edited={edited || undefined}>
+            {#if edited}
+              <span class="chip-origin">Inherited</span>
+            {:else if !effective}
+              <span class="chip-value">…</span>
+            {:else if applied}
+              <span class="chip-value">{show(applied.value)}</span>
+              <span class="chip-origin">{inheritedFrom(applied.origin)}</span>
+            {:else}
+              <span class="chip-value">{row.unset ?? "not set"}</span>
+            {/if}
+          </span>
+          <Button
+            size="compact"
+            data-override={row.key}
+            aria-label="Override {row.label}"
+            onclick={() => override(row)}>Override</Button
+          >
         </span>
-      </label>
-      <span class="origin" data-origin={row.key}>
-        {#if !effective}
+      {/if}
+      <!-- Kept in the page when the setting is inherited (hidden). -->
+      <span class="row" hidden={inherits}>
+        {#if row.input.kind === "choice"}
+          <select
+            id={controlId(row)}
+            name="setting-{row.key}"
+            value={own || (overriding[row.key] ? prefill(row) : "")}
+            aria-invalid={error ? "true" : undefined}
+            aria-describedby={describedBy}
+            onchange={(event) =>
+              commit(row, event.currentTarget.value, event.currentTarget)}
+          >
+            <option value="">Inherit</option>
+            {#each row.input.options as [value, label] (value)}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+        {:else}
+          <input
+            id={controlId(row)}
+            name="setting-{row.key}"
+            type={row.input.kind}
+            min={row.input.kind === "number" ? row.input.min : undefined}
+            max={row.input.kind === "number" ? row.input.max : undefined}
+            list={row.input.list}
+            spellcheck="false"
+            value={own || (overriding[row.key] ? prefill(row) : "")}
+            aria-invalid={error ? "true" : undefined}
+            aria-describedby={describedBy}
+            oninput={() => delete errors[row.key]}
+            onkeydown={(event) => {
+              // Enter gives an overridden setting the value it shows, even
+              // when that is the inherited one (no change to commit).
+              if (event.key === "Enter" && own === "") {
+                commit(row, event.currentTarget.value, event.currentTarget);
+              }
+            }}
+            onchange={(event) =>
+              commit(row, event.currentTarget.value, event.currentTarget)}
+          />
+        {/if}
+        <IconButton
+          icon={X}
+          label="Clear {row.label}"
+          title="Use inherited value"
+          onclick={() => useInherited(row)}
+        />
+      </span>
+    </div>
+    {#if error}
+      <p
+        class="error"
+        id={errorId(row)}
+        role="alert"
+        data-setting-error={row.key}
+      >
+        {error}
+      </p>
+    {/if}
+    <span class="meta">
+      <!-- Said by the chip and the field; shown only for an unsaved edit. -->
+      <span
+        class="origin"
+        class:visually-hidden={!edited}
+        aria-hidden={edited ? undefined : "true"}
+        data-origin={row.key}
+        data-edited={edited || undefined}
+      >
+        {#if edited}
+          {own === "" ? "Inherits" : show(own)} · not saved yet
+        {:else if !effective}
           …
         {:else if applied}
           {show(applied.value)} · {describeOrigin(applied.origin, item)}
@@ -430,15 +592,70 @@
           {row.unset ?? "not set"}
         {/if}
       </span>
-      {#if row.note}
-        <p class="note" data-setting-note={row.key}>{row.note}</p>
+      {#if row.note && !warning}
+        <IconButton
+          icon={Info}
+          size="compact"
+          label="About {row.label}"
+          aria-expanded={noteShown[row.key] === true}
+          aria-controls="{uid}-note-{row.key}"
+          onclick={() => (noteShown[row.key] = !noteShown[row.key])}
+        />
       {/if}
-    </div>
+    </span>
+    {#if row.note}
+      <!-- Kept in the page when closed (hidden), so it can be found. -->
+      <p
+        id="{uid}-note-{row.key}"
+        class="note"
+        class:warn={row.key === "logging"}
+        hidden={!warning && noteShown[row.key] !== true}
+        data-setting-note={row.key}
+      >
+        {row.note}
+      </p>
+    {/if}
+  </div>
+{/snippet}
+
+<!--
+  The settings, the ones this item sets first; with `fold`, what it only
+  inherits is behind a button.
+-->
+{#snippet rowsOf(rows: Row[], group: string, fold: boolean)}
+  {@const isSet = (row: Row) =>
+    row.own(settings) !== "" ||
+    (saved !== undefined && row.own(saved) !== row.own(settings))}
+  {@const mine = fold ? rows.filter(isSet) : rows}
+  {@const inherited = fold ? rows.filter((row) => !isSet(row)) : []}
+  {#each mine as row (row.key)}
+    {@render settingRow(row)}
   {/each}
+  {#if inherited.length > 0}
+    <Button
+      size="compact"
+      variant="ghost"
+      class="fold"
+      data-inherited-toggle={group}
+      aria-expanded={inheritedShown[group] === true}
+      aria-controls="{uid}-{group}"
+      onclick={() => (inheritedShown[group] = !inheritedShown[group])}
+    >
+      {inheritedShown[group]
+        ? "Hide inherited settings"
+        : `Show ${inherited.length} inherited ${inherited.length === 1 ? "setting" : "settings"}`}
+    </Button>
+    <!-- Kept in the page when closed (hidden): each still says what applies. -->
+    <div id="{uid}-{group}" class="inherited" hidden={!inheritedShown[group]}>
+      {#each inherited as row (row.key)}
+        {@render settingRow(row)}
+      {/each}
+    </div>
+  {/if}
 {/snippet}
 
 {#if part === "device"}
-  {@render rowsOf(device)}
+  {@render rowsOf(device, "device", false)}
   {#if platformMatch}
     <p
       class="platform-match"
@@ -466,7 +683,7 @@
     {/each}
   </datalist>
 {:else}
-  {@render rowsOf(connection)}
+  {@render rowsOf(connection, "connection", true)}
   <datalist id="jump-hosts">
     {#each hostIds as id (id)}
       <option value={id}></option>
@@ -478,17 +695,31 @@
     {/each}
   </datalist>
 
-  <section aria-label="Serial line">
+  {#if !serialUsed && !serialAsked}
+    <Button
+      size="compact"
+      variant="ghost"
+      class="fold"
+      data-serial-add
+      onclick={() => (serialAsked = true)}>Set up a serial line</Button
+    >
+  {/if}
+  <!-- Kept in the page when unused (hidden): its settings still say what applies. -->
+  <section
+    aria-label="Serial line"
+    data-serial-line
+    hidden={!serialUsed && !serialAsked}
+  >
     <h4>
       Serial line
-      <button
-        class="small"
+      <Button
+        size="compact"
         data-serial-refresh
         title="Look for serial ports again"
-        onclick={refreshPorts}>Refresh ports</button
+        onclick={refreshPorts}>Refresh ports</Button
       >
     </h4>
-    {@render rowsOf(serial)}
+    {@render rowsOf(serial, "serial", true)}
     {#if portsError}
       <span class="origin" role="alert">{portsError}</span>
     {/if}
@@ -524,12 +755,12 @@
                     ?.url ?? "";
               }}
             />
-            <button
-              class="remove"
-              aria-label="Remove link {link.value.name}"
+            <IconButton
+              icon={X}
+              size="compact"
+              label="Remove link {link.value.name}"
               onclick={() => removeLink(link.value.name)}
-              ><X size={14} aria-hidden="true" /></button
-            >
+            />
           </span>
         {:else}
           <span class="url">{link.value.url}</span>
@@ -554,7 +785,6 @@
       />
       <button
         type="submit"
-        class="small"
         disabled={newLinkName.trim() === "" || newLinkUrl.trim() === ""}
         >Add</button
       >
@@ -568,28 +798,80 @@
     gap: var(--space-1-5);
   }
 
+  section[hidden],
+  .inherited[hidden],
+  .row[hidden],
+  .note[hidden] {
+    display: none;
+  }
+
+  .inherited {
+    display: grid;
+    gap: var(--space-1-5);
+  }
+
+  :global(.btn.fold) {
+    justify-self: start;
+  }
+
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  /* Beside its label, the origin and help sit under the field. */
+  @container host-details (min-width: 560px) {
+    .field {
+      grid-template-columns: var(--label-col, 180px) minmax(0, 1fr);
+      align-items: center;
+      column-gap: var(--space-3);
+    }
+
+    .meta,
+    .note,
+    .error {
+      margin-left: calc(var(--label-col, 180px) + var(--space-3));
+    }
+
+    .link {
+      grid-template-columns: var(--label-col, 180px) minmax(0, 1fr);
+      column-gap: var(--space-3);
+      align-items: center;
+    }
+
+    .link .origin {
+      grid-column: 2;
+    }
+  }
+
   h4 {
     display: flex;
     align-items: center;
     justify-content: space-between;
     margin: 0 0 var(--space-1-5);
-    font-size: var(--text-xs);
+    font-size: var(--text-md);
     font-weight: var(--weight-semibold);
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    color: var(--text);
   }
 
   .setting,
   .link {
     display: grid;
-    gap: var(--space-0-5);
+    row-gap: var(--space-0-5);
   }
 
   .field {
     display: grid;
-    gap: var(--space-0-5);
+    /* Rows only: the column gap beside the label is set above. */
+    row-gap: var(--space-0-5);
     font-size: var(--text-xs);
+    color: var(--muted);
+  }
+
+  .field > label {
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
     color: var(--muted);
   }
 
@@ -605,17 +887,67 @@
     width: 100%;
   }
 
+  /* What an inherited setting is, in place of its input: the value, where
+     it comes from, and the way to give it a value of its own. */
+  .chip-row {
+    min-height: var(--control-height);
+  }
+
+  .chip {
+    display: inline-flex;
+    flex: 1;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 var(--space-2);
+    min-width: 0;
+    padding: var(--space-1) var(--space-2);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+  }
+
+  .chip-value {
+    color: var(--text);
+  }
+
+  .chip-origin {
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+
+  .error {
+    margin: 0;
+    color: var(--danger);
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
+  }
+
+  input[aria-invalid="true"],
+  select[aria-invalid="true"] {
+    border-color: var(--danger);
+  }
+
   .origin {
     font-size: var(--text-2xs);
     color: var(--muted);
     overflow-wrap: anywhere;
   }
 
+  /* Help under a setting; the warning colour is kept for the one note
+     that warns (logs can hold secrets). */
   .note {
     margin: var(--space-0-5) 0 0;
     padding: var(--space-1) var(--space-1-5);
-    border-left: 2px solid var(--warning);
+    border-left: 2px solid var(--border-strong);
     font-size: var(--text-2xs);
+    line-height: 1.5;
+    color: var(--muted);
+  }
+
+  .note.warn {
+    border-left-color: var(--warning);
     color: var(--text);
   }
 
@@ -634,6 +966,7 @@
   }
 
   .definitions {
+    min-height: 0;
     padding: 0;
     border: 0;
     background: none;
@@ -652,21 +985,5 @@
 
   .row .link-name {
     flex: 0 1 35%;
-  }
-
-  .small {
-    padding: var(--space-0-5) var(--space-2);
-    font-size: var(--text-xs);
-  }
-
-  .remove {
-    padding: 0 var(--space-1-5);
-    border: 0;
-    background: none;
-    color: var(--muted);
-  }
-
-  .remove:hover:not(:disabled) {
-    color: var(--danger);
   }
 </style>

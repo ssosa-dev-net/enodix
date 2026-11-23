@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from "./Button.svelte";
   import { serialPorts, type SerialPortInfo } from "./session";
 
   interface Props {
@@ -33,12 +34,11 @@
 <div class="ports" data-serial-ports>
   <div class="head">
     <span>Detected ports</span>
-    <button
-      type="button"
-      class="small"
+    <Button
+      size="compact"
       data-serial-refresh
       disabled={loading}
-      onclick={refresh}>{loading ? "Looking…" : "Refresh"}</button
+      onclick={refresh}>{loading ? "Looking…" : "Refresh"}</Button
     >
   </div>
   {#if error}
@@ -85,11 +85,6 @@
     gap: var(--space-2);
   }
 
-  .small {
-    padding: var(--space-0-5) var(--space-2);
-    font-size: var(--text-xs);
-  }
-
   ul {
     margin: 0;
     padding: 0;
@@ -103,7 +98,9 @@
     display: flex;
     gap: var(--space-2);
     align-items: baseline;
+    justify-content: normal;
     text-align: left;
+    min-height: 0;
     padding: var(--space-1) var(--space-2);
   }
 

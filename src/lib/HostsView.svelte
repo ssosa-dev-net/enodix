@@ -1,4 +1,5 @@
 <script lang="ts">
+  import IconButton from "./IconButton.svelte";
   // The Hosts side view: the workspace's name (opening the switcher), a
   // filter field with the saved filters as chips, the host tree, one add
   // control and a line for the workspace's problems at the foot.
@@ -484,44 +485,41 @@
       <span>{workspace?.tree.name ?? "No workspace"}</span>
       <ChevronDown size={14} aria-hidden="true" />
     </button>
-    <button
-      class="tool"
-      aria-label="Search hosts"
+    <IconButton
+      icon={Search}
+      label="Search hosts"
       title="Search hosts and snippets (Ctrl+K)"
       disabled={!workspace}
       onclick={() => (inventory.palette = true)}
-      ><Search size={16} aria-hidden="true" /></button
-    >
-    <button
-      class="tool"
+    />
+    <IconButton
+      icon={SlidersHorizontal}
       data-workspace-settings
-      aria-label="Workspace settings"
-      aria-pressed={inventory.selected?.kind === "folder" &&
+      label="Workspace settings"
+      pressed={inventory.selected?.kind === "folder" &&
         inventory.selected.path === ""}
       title="Settings of the whole workspace (its top folder)"
       disabled={!workspace}
       onclick={() => select({ kind: "folder", path: "" })}
-      ><SlidersHorizontal size={16} aria-hidden="true" /></button
-    >
-    <button
-      class="tool"
+    />
+    <IconButton
+      icon={Cpu}
       data-open-platforms
-      aria-label="Platform definitions"
+      label="Platform definitions"
       title="Platform definitions: how jobs drive each kind of device"
       disabled={!workspace}
       onclick={() => openView("platforms")}
-      ><Cpu size={16} aria-hidden="true" /></button
-    >
-    <button
-      class="tool"
+    />
+    <IconButton
+      icon={Plus}
       data-add-menu
-      aria-label="Add"
+      label="Add"
       aria-haspopup="menu"
       aria-expanded={adding !== null}
       title="Add a host or folder, or import hosts, in the selected folder"
       disabled={!workspace}
-      onclick={openAdd}><Plus size={16} aria-hidden="true" /></button
-    >
+      onclick={openAdd}
+    />
   </header>
 
   {#if workspace}
@@ -588,50 +586,45 @@
                 : `${inventory.filterView.hosts.size} hosts`
               : ""}
           </span>
-          <button
-            class="tool"
+          <IconButton
+            icon={Play}
             data-filter-run-snippet
-            aria-label="Run snippet"
+            label="Run snippet"
             title="Run a saved snippet on the hosts this filter shows, as a job"
             disabled={!inventory.filterView?.hosts.size}
             onclick={() => runOnFilter(name)}
-            ><Play size={15} aria-hidden="true" /></button
-          >
-          <button
-            class="tool"
+          />
+          <IconButton
+            icon={FileCode}
             data-filter-run-script
-            aria-label="Run script"
+            label="Run script"
             title="Run a Python script of the workspace for the hosts this filter shows, as a job"
             disabled={!inventory.filterView?.hosts.size}
             onclick={() => scriptOnFilter(name)}
-            ><FileCode size={15} aria-hidden="true" /></button
-          >
-          <button
-            class="tool"
+          />
+          <IconButton
+            icon={FileUp}
             data-filter-send-file
-            aria-label="Send file"
+            label="Send file"
             title="Send a file from this computer to the hosts this filter shows, as a job"
             disabled={!inventory.filterView?.hosts.size}
             onclick={() => sendFileToFilter(name)}
-            ><FileUp size={15} aria-hidden="true" /></button
-          >
-          <button
-            class="tool"
+          />
+          <IconButton
+            icon={Archive}
             data-filter-back-up
-            aria-label="Back up configs"
+            label="Back up configs"
             title="Back up the configuration of the hosts this filter shows"
             disabled={!inventory.filterView?.hosts.size}
             onclick={() => backUpFilter(name)}
-            ><Archive size={15} aria-hidden="true" /></button
-          >
-          <button
-            class="tool"
+          />
+          <IconButton
+            icon={Trash}
             data-filter-delete
-            aria-label="Delete filter"
+            label="Delete filter"
             title="Delete this saved filter from the workspace"
             onclick={() => removeFilter(name)}
-            ><Trash size={15} aria-hidden="true" /></button
-          >
+          />
         </div>
       {/if}
     </div>
@@ -667,12 +660,13 @@
   {#if inventory.editError}
     <p class="error edit-error" role="alert">
       <span>{inventory.editError}</span>
-      <button
+      <IconButton
+        icon={X}
+        size="compact"
         class="dismiss"
-        aria-label="Dismiss"
+        label="Dismiss"
         onclick={() => (inventory.editError = null)}
-        ><X size={14} aria-hidden="true" /></button
-      >
+      />
     </p>
   {/if}
 
@@ -683,13 +677,14 @@
         <span
           >{report.item} moved, but not everything that belongs to it followed:</span
         >
-        <button
+        <IconButton
+          icon={X}
+          size="compact"
           class="dismiss"
-          aria-label="Dismiss"
+          label="Dismiss"
           data-move-report-dismiss
           onclick={() => (inventory.moveReport = null)}
-          ><X size={14} aria-hidden="true" /></button
-        >
+        />
       </p>
       <ul>
         {#each report.left as left (left.kind + left.from)}
@@ -757,13 +752,13 @@
         title="Right-click one of them for the jobs to run on them all"
       >
         <span class="count">{inventory.several.length} hosts selected</span>
-        <button
-          class="tool"
+        <IconButton
+          icon={X}
           data-selection-clear
-          aria-label="Clear the selection"
+          label="Clear the selection"
           title="Clear the selection (Escape)"
-          onclick={clearSelection}><X size={15} aria-hidden="true" /></button
-        >
+          onclick={clearSelection}
+        />
       </div>
     {/if}
 
@@ -876,7 +871,8 @@
     gap: var(--space-1);
     border-color: transparent;
     background: none;
-    padding: var(--space-1) var(--space-1-5);
+    justify-content: normal;
+    padding: 0 var(--space-1-5);
     font-weight: var(--weight-semibold);
     font-size: var(--text-sm);
     color: var(--text);
@@ -894,25 +890,6 @@
     color: var(--muted);
   }
 
-  .tool {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  .tool:hover:not(:disabled),
-  .tool[aria-pressed="true"],
-  .tool[aria-expanded="true"] {
-    color: var(--text);
-    background: var(--surface-raised);
-  }
-
   .filtering {
     display: grid;
     gap: var(--space-1-5);
@@ -923,6 +900,7 @@
   .field {
     display: flex;
     align-items: center;
+    height: var(--control-height);
     gap: var(--space-1-5);
     padding: 0 var(--space-1-5) 0 var(--space-2);
     background: var(--input);
@@ -940,7 +918,8 @@
     min-width: 0;
     border: 0;
     background: none;
-    padding: var(--space-1) 0;
+    height: 100%;
+    padding: 0;
     font-size: var(--text-sm);
     outline: none;
   }
@@ -952,7 +931,10 @@
   .field .clear {
     display: inline-grid;
     place-items: center;
-    padding: var(--space-0-5);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
+    padding: 0;
     border: 0;
     background: none;
     color: var(--muted);
@@ -972,7 +954,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     border-radius: var(--radius-full);
     font-size: var(--text-xs);
     color: var(--muted);
@@ -1040,6 +1023,7 @@
     padding: var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .empty p {
@@ -1073,13 +1057,6 @@
 
   .edit-error span {
     flex: 1;
-  }
-
-  .dismiss {
-    border: 0;
-    background: none;
-    padding: 0 var(--space-1);
-    color: var(--muted);
   }
 
   .unavailable {
@@ -1150,6 +1127,8 @@
     border: 0;
     border-radius: 0;
     background: none;
+    min-height: 0;
+    justify-content: normal;
     padding: var(--space-1-5) var(--space-2-5);
     color: var(--warning);
     text-align: left;
@@ -1193,6 +1172,8 @@
     border-radius: var(--radius-sm);
     background: none;
     text-align: left;
+    min-height: 0;
+    justify-content: normal;
     padding: var(--space-1-5) var(--space-2-5);
   }
 

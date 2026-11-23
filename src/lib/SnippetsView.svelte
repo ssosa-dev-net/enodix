@@ -1,17 +1,19 @@
 <script lang="ts">
+  import IconButton from "./IconButton.svelte";
   // The Snippets side view: the workspace's snippets by group, a filter the
   // core matches (every word in the name, group or text, as the palette's
   // `>` search), and one click sending a snippet to the active pane's
   // session through the app's one way of sending (`onsend`), so variables,
-  // paste safety and multi-send groups are as everywhere else.
+  // paste safety and multi-send groups are as everywhere else. Editing a
+  // snippet opens it in a tab (SnippetEditor).
   import Pencil from "@lucide/svelte/icons/pencil";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
   import Trash from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import { inventory, removeSnippet } from "./inventory.svelte";
-  import SnippetForm from "./SnippetForm.svelte";
   import { bySnippetGroup, snippets } from "./snippets.svelte";
+  import { openView } from "./views";
   import { findSnippets, type Snippet } from "./workspace";
 
   interface Props {
@@ -22,26 +24,10 @@
 
   let { target, onsend }: Props = $props();
 
-  /** The snippet in the form, drawn in place of the list (`previous`: its
-   * name; null for a new one); null: the list. Leaving the view drops it. */
-  let editing = $state<{ previous: string | null; snippet: Snippet } | null>(
-    null,
-  );
-  const newSnippet = () =>
-    (editing = {
-      previous: null,
-      snippet: { name: "", group: null, text: "" },
-    });
-  const editSnippet = (snippet: Snippet) =>
-    (editing = { previous: snippet.name, snippet: { ...snippet } });
-
-  // Escape inside the form goes back to the list.
-  function onkeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && editing) {
-      event.stopPropagation();
-      editing = null;
-    }
-  }
+  // New and Edit open the snippet in a tab of its own (#10): room for its
+  // lines, with the variables found listed beside it.
+  const newSnippet = () => openView("snippet", null);
+  const editSnippet = (snippet: Snippet) => openView("snippet", snippet.name);
 
   const workspace = $derived(inventory.workspace);
   const list = $derived(workspace?.snippets ?? []);
@@ -81,42 +67,26 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="snippets"
-  data-snippets
-  data-mode={editing ? "edit" : "list"}
-  {onkeydown}
->
+<div class="snippets" data-snippets>
   <header data-window-bar data-tauri-drag-region="deep">
     <h2>
       Snippets
       {#if list.length > 0}<span class="count">{list.length}</span>{/if}
     </h2>
-    <button
-      class="tool"
+    <IconButton
+      icon={Plus}
       data-snippet-new
-      aria-label="New snippet"
+      label="New snippet"
       title="New snippet, saved in the workspace for the team"
       disabled={!workspace}
-      onclick={() => newSnippet()}><Plus size={16} aria-hidden="true" /></button
-    >
+      onclick={() => newSnippet()}
+    />
   </header>
 
   {#if !workspace}
     <p class="hint" data-needs-workspace>
       Snippets live in a workspace: open or create one to see them here.
     </p>
-  {:else if editing}
-    <div class="form">
-      {#key editing}
-        <SnippetForm
-          previous={editing.previous}
-          initial={editing.snippet}
-          onclose={() => (editing = null)}
-        />
-      {/key}
-    </div>
   {:else if list.length === 0}
     <div class="empty" data-snippets-empty>
       <p>
@@ -193,22 +163,24 @@
                     >{firstLine(snippet.text)}</span
                   >
                 </button>
-                <button
-                  class="small"
+                <IconButton
+                  icon={Pencil}
+                  size="compact"
+                  class="row-action"
                   data-snippet-edit={snippet.name}
                   title="Edit"
-                  aria-label={`Edit ${snippet.name}`}
+                  label={`Edit ${snippet.name}`}
                   onclick={() => editSnippet(snippet)}
-                  ><Pencil size={13} aria-hidden="true" /></button
-                >
-                <button
-                  class="small"
+                />
+                <IconButton
+                  icon={Trash}
+                  size="compact"
+                  class="row-action"
                   data-snippet-delete={snippet.name}
                   title="Delete"
-                  aria-label={`Delete ${snippet.name}`}
+                  label={`Delete ${snippet.name}`}
                   onclick={() => removeSnippet(snippet.name)}
-                  ><Trash size={13} aria-hidden="true" /></button
-                >
+                />
               </li>
             {/each}
           </ul>
@@ -239,7 +211,7 @@
     flex: 1;
     margin: 0;
     padding: var(--space-1) 0;
-    font-size: var(--text-sm);
+    font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
   }
 
@@ -248,23 +220,7 @@
     color: var(--muted);
     font-weight: normal;
     font-size: var(--text-xs);
-  }
-
-  .tool {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  .tool:hover:not(:disabled) {
-    color: var(--text);
-    background: var(--surface-raised);
+    font-variant-numeric: tabular-nums;
   }
 
   .filtering {
@@ -277,6 +233,7 @@
   .field {
     display: flex;
     align-items: center;
+    height: var(--control-height);
     gap: var(--space-1-5);
     padding: 0 var(--space-1-5) 0 var(--space-2);
     background: var(--input);
@@ -294,7 +251,8 @@
     min-width: 0;
     border: 0;
     background: none;
-    padding: var(--space-1) 0;
+    height: 100%;
+    padding: 0;
     font-size: var(--text-sm);
     outline: none;
   }
@@ -306,7 +264,10 @@
   .field .clear {
     display: inline-grid;
     place-items: center;
-    padding: var(--space-0-5);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
+    padding: 0;
     border: 0;
     background: none;
     color: var(--muted);
@@ -334,16 +295,11 @@
     padding: var(--space-0-5) 0 var(--space-2);
   }
 
-  .form {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-  }
-
   .hint {
     margin: var(--space-2) var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .empty {
@@ -353,10 +309,12 @@
     padding: var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .empty p {
     margin: 0;
+    line-height: 1.5;
   }
 
   .empty button {
@@ -367,11 +325,9 @@
 
   h3 {
     margin: var(--space-2) var(--space-3) var(--space-0-5);
-    color: var(--muted);
-    font-size: var(--text-2xs);
+    color: var(--text);
+    font-size: var(--text-sm);
     font-weight: var(--weight-semibold);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   ul {
@@ -395,6 +351,8 @@
     text-align: left;
     border-color: transparent;
     background: none;
+    justify-content: normal;
+    min-height: 0;
     padding: var(--space-1) var(--space-1-5);
   }
 
@@ -419,23 +377,13 @@
     opacity: 0.75;
   }
 
-  .small {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    padding: var(--space-1);
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
+  /* The row's actions show on hover or focus. */
+  li :global(.row-action) {
     visibility: hidden;
   }
 
-  .small:hover {
-    color: var(--text);
-  }
-
-  li:hover .small,
-  li:focus-within .small {
+  li:hover :global(.row-action),
+  li:focus-within :global(.row-action) {
     visibility: visible;
   }
 </style>

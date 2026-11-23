@@ -920,7 +920,7 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
@@ -932,11 +932,6 @@
   label {
     display: grid;
     gap: var(--space-0-5);
-  }
-
-  input,
-  select {
-    padding: var(--space-1) var(--space-2);
   }
 
   pre {
@@ -1101,6 +1096,7 @@
   .note {
     margin: 0;
     color: var(--muted);
+    line-height: 1.5;
   }
 
   .python-off {
@@ -1137,5 +1133,9 @@
     margin: 0;
     color: var(--danger);
     overflow-wrap: anywhere;
+  }
+  [data-job-progress],
+  [data-job-summary] {
+    font-variant-numeric: tabular-nums;
   }
 </style>
