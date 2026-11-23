@@ -18,8 +18,9 @@ import Highlighter from "@lucide/svelte/icons/highlighter";
 import ListChecks from "@lucide/svelte/icons/list-checks";
 import Package from "@lucide/svelte/icons/package";
 import Settings from "@lucide/svelte/icons/settings";
+import SquarePen from "@lucide/svelte/icons/square-pen";
 import type { Component } from "svelte";
-import { inventory } from "./inventory.svelte";
+import { inventory, selectedHost } from "./inventory.svelte";
 import type { ViewName, ViewRef } from "./layout";
 import { findHost } from "./workspace";
 import {
@@ -63,6 +64,15 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
   /** A host's files over SFTP (#103; subject: the host; one per host,
    * main window only). */
   files: { title: (host) => `Files ${hostName(host)}`, icon: FolderOpen },
+  /** The host editor (#10): subject null follows the selected host;
+   * a host's id keeps the tab on that host (pinned). */
+  host: {
+    title: (host) => {
+      const name = host ? hostName(host) : (selectedHost()?.name ?? null);
+      return name ? `Edit ${name}` : "Edit host";
+    },
+    icon: SquarePen,
+  },
 };
 
 /** The open workspace's name for the host `id` (else the id). */
@@ -83,6 +93,11 @@ export function setViewOpener(open: (view: ViewRef) => void) {
  * active pane. */
 export function openView(view: ViewName, subject: string | null = null) {
   opener?.({ view, subject });
+}
+
+/** Shows the host editor tab that follows the selection (#10). */
+export function openHostEditor() {
+  openView("host", null);
 }
 
 /** Opens a new job tab for `draft`'s job. */
