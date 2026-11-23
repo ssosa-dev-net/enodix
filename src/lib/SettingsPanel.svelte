@@ -10,6 +10,7 @@
     platformDefinition,
     type Item,
   } from "./inventory.svelte";
+  import { tick } from "svelte";
   import { profileNames } from "./profiles.svelte";
   import { openView } from "./views";
   import { serialPorts, type SerialPortInfo } from "./session";
@@ -18,6 +19,7 @@
     type Effective,
     type EffectiveSettings,
     type Folder,
+    type Origin,
     type Settings,
   } from "./workspace";
 
@@ -52,6 +54,11 @@
   let noteShown = $state<Record<string, boolean>>({});
   /** The serial line was asked for, though nothing says it is used. */
   let serialAsked = $state(false);
+
+  /** Settings whose value is being overridden (the input is shown), by key. */
+  let overriding = $state<Record<string, boolean>>({});
+  /** Why a setting's value was refused, by key; shown under its field. */
+  let errors = $state<Record<string, string>>({});
 
   type Options = readonly (readonly [string, string])[];
 
@@ -349,17 +356,84 @@
     1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400,
   ];
 
+  /** Why `value` cannot be a setting's value, when that is plain to see. */
+  function check(row: Row, value: string): string | null {
+    if (row.input.kind !== "number" || value.trim() === "") return null;
+    const number = Number(value);
+    const { min, max } = row.input;
+    if (!Number.isInteger(number))
+      return `${row.label} must be a whole number.`;
+    if (number < min || number > max) {
+      return `${row.label} must be between ${min} and ${max}.`;
+    }
+    return null;
+  }
+
+  /** What an overridden setting starts from: what applies now. */
+  function prefill(row: Row): string {
+    const applied = effective ? row.effective(effective) : null;
+    return applied ? show(applied.value) : "";
+  }
+
+  /** The control of `row`. */
+  const controlId = (row: Row) => `${uid}-in-${row.key}`;
+  const errorId = (row: Row) => `${uid}-err-${row.key}`;
+
   /**
-   * Saves a setting edited in `control`; afterwards the control shows what
-   * the file holds, which is the old value if the edit was refused.
+   * Saves a setting edited in `control`. A value that is refused stays in
+   * the control, with the reason under it; one that is saved shows as the
+   * file holds it.
    */
   async function commit(
     row: Row,
     value: string,
     control?: HTMLInputElement | HTMLSelectElement,
   ) {
+    const problem = check(row, value);
+    if (problem) {
+      errors[row.key] = problem;
+      overriding[row.key] = true;
+      return;
+    }
+    delete errors[row.key];
+    const expected = row.own(row.set(settings, value));
     await onchange((current) => row.set(current, value));
-    if (control) control.value = row.own(settings);
+    // Without the host editor's draft, a refused save is shown by the
+    // inventory above the tree; this field says it instead.
+    if (
+      saved === undefined &&
+      inventory.editError !== null &&
+      row.own(settings) !== expected
+    ) {
+      errors[row.key] = inventory.editError;
+      overriding[row.key] = true;
+      inventory.editError = null;
+      return;
+    }
+    if (control)
+      control.value =
+        row.own(settings) || (overriding[row.key] ? prefill(row) : "");
+  }
+
+  /** Shows the input of an inherited setting, to give it a value. */
+  async function override(row: Row) {
+    overriding[row.key] = true;
+    await tick();
+    document.getElementById(controlId(row))?.focus();
+  }
+
+  /** Back to the inherited value. */
+  async function useInherited(row: Row) {
+    overriding[row.key] = false;
+    delete errors[row.key];
+    if (row.own(settings) !== "") await commit(row, "");
+  }
+
+  /** Where an inherited value comes from, for its chip. */
+  function inheritedFrom(origin: Origin): string {
+    if (origin.kind === "default") return "Default";
+    if (origin.kind === "host") return "this host";
+    return `Inherited from ${origin.path === "" ? "workspace" : origin.path}`;
   }
 
   let newLinkName = $state("");
@@ -403,17 +477,52 @@
   {@const own = row.own(settings)}
   {@const applied = effective ? row.effective(effective) : null}
   {@const edited = saved !== undefined && row.own(saved) !== own}
+  {@const error = errors[row.key]}
+  {@const inherits = own === "" && !overriding[row.key] && !error}
   {@const warning =
     row.key === "logging" &&
     (own === "" ? applied?.value === true : own === "on")}
+  {@const describedBy =
+    [
+      error ? errorId(row) : null,
+      row.note && noteShown[row.key] ? `${uid}-note-${row.key}` : null,
+    ]
+      .filter(Boolean)
+      .join(" ") || undefined}
   <div class="setting" data-setting={row.key}>
-    <label class="field">
-      <span>{row.label}</span>
-      <span class="row">
+    <div class="field">
+      <label for={controlId(row)}>{row.label}</label>
+      {#if inherits}
+        <span class="row chip-row" data-inherited={row.key}>
+          <span class="chip" data-edited={edited || undefined}>
+            {#if edited}
+              <span class="chip-origin">Inherited</span>
+            {:else if !effective}
+              <span class="chip-value">…</span>
+            {:else if applied}
+              <span class="chip-value">{show(applied.value)}</span>
+              <span class="chip-origin">{inheritedFrom(applied.origin)}</span>
+            {:else}
+              <span class="chip-value">{row.unset ?? "not set"}</span>
+            {/if}
+          </span>
+          <Button
+            size="compact"
+            data-override={row.key}
+            aria-label="Override {row.label}"
+            onclick={() => override(row)}>Override</Button
+          >
+        </span>
+      {/if}
+      <!-- Kept in the page when the setting is inherited (hidden). -->
+      <span class="row" hidden={inherits}>
         {#if row.input.kind === "choice"}
           <select
+            id={controlId(row)}
             name="setting-{row.key}"
-            value={own}
+            value={own || (overriding[row.key] ? prefill(row) : "")}
+            aria-invalid={error ? "true" : undefined}
+            aria-describedby={describedBy}
             onchange={(event) =>
               commit(row, event.currentTarget.value, event.currentTarget)}
           >
@@ -424,34 +533,52 @@
           </select>
         {:else}
           <input
+            id={controlId(row)}
             name="setting-{row.key}"
             type={row.input.kind}
             min={row.input.kind === "number" ? row.input.min : undefined}
             max={row.input.kind === "number" ? row.input.max : undefined}
             list={row.input.list}
             spellcheck="false"
-            value={own}
-            placeholder={own === "" && applied && !edited
-              ? show(applied.value)
-              : ""}
+            value={own || (overriding[row.key] ? prefill(row) : "")}
+            aria-invalid={error ? "true" : undefined}
+            aria-describedby={describedBy}
+            oninput={() => delete errors[row.key]}
+            onkeydown={(event) => {
+              // Enter gives an overridden setting the value it shows, even
+              // when that is the inherited one (no change to commit).
+              if (event.key === "Enter" && own === "") {
+                commit(row, event.currentTarget.value, event.currentTarget);
+              }
+            }}
             onchange={(event) =>
               commit(row, event.currentTarget.value, event.currentTarget)}
           />
         {/if}
-        {#if own !== ""}
-          <IconButton
-            icon={X}
-            size="compact"
-            label="Clear {row.label}"
-            title="Clear: inherit from above"
-            onclick={() => commit(row, "")}
-          />
-        {/if}
+        <IconButton
+          icon={X}
+          label="Clear {row.label}"
+          title="Use inherited value"
+          onclick={() => useInherited(row)}
+        />
       </span>
-    </label>
+    </div>
+    {#if error}
+      <p
+        class="error"
+        id={errorId(row)}
+        role="alert"
+        data-setting-error={row.key}
+      >
+        {error}
+      </p>
+    {/if}
     <span class="meta">
+      <!-- Said by the chip and the field; shown only for an unsaved edit. -->
       <span
         class="origin"
+        class:visually-hidden={!edited}
+        aria-hidden={edited ? undefined : "true"}
         data-origin={row.key}
         data-edited={edited || undefined}
       >
@@ -673,6 +800,7 @@
 
   section[hidden],
   .inherited[hidden],
+  .row[hidden],
   .note[hidden] {
     display: none;
   }
@@ -701,7 +829,8 @@
     }
 
     .meta,
-    .note {
+    .note,
+    .error {
       margin-left: calc(var(--label-col, 180px) + var(--space-3));
     }
 
@@ -729,17 +858,18 @@
   .setting,
   .link {
     display: grid;
-    gap: var(--space-0-5);
+    row-gap: var(--space-0-5);
   }
 
   .field {
     display: grid;
-    gap: var(--space-0-5);
+    /* Rows only: the column gap beside the label is set above. */
+    row-gap: var(--space-0-5);
     font-size: var(--text-xs);
     color: var(--muted);
   }
 
-  .field > span:first-child {
+  .field > label {
     font-size: var(--text-sm);
     font-weight: var(--weight-medium);
     color: var(--muted);
@@ -755,6 +885,48 @@
   .row select {
     flex: 1;
     width: 100%;
+  }
+
+  /* What an inherited setting is, in place of its input: the value, where
+     it comes from, and the way to give it a value of its own. */
+  .chip-row {
+    min-height: var(--control-height);
+  }
+
+  .chip {
+    display: inline-flex;
+    flex: 1;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 var(--space-2);
+    min-width: 0;
+    padding: var(--space-1) var(--space-2);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+  }
+
+  .chip-value {
+    color: var(--text);
+  }
+
+  .chip-origin {
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+
+  .error {
+    margin: 0;
+    color: var(--danger);
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
+  }
+
+  input[aria-invalid="true"],
+  select[aria-invalid="true"] {
+    border-color: var(--danger);
   }
 
   .origin {
