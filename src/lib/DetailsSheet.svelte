@@ -5,8 +5,10 @@
   // terminal. Back (or Escape, or Ctrl+Shift+D) closes it.
   import { tick } from "svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
+  import SquarePen from "@lucide/svelte/icons/square-pen";
   import FolderDetails from "./FolderDetails.svelte";
   import HostDetails from "./HostDetails.svelte";
+  import { openHostEditor } from "./views";
   import type { Folder, Host, Protocol } from "./workspace";
 
   interface Props {
@@ -58,6 +60,15 @@
       ><ChevronLeft size={14} aria-hidden="true" /> Back to the tree</button
     >
     <span class="what">{host ? "Host" : "Folder"} details</span>
+    {#if host}
+      <button
+        class="compact"
+        data-details-edit
+        title="Edit this host in a tab beside the terminals, with room for every field"
+        onclick={openHostEditor}
+        ><SquarePen size={14} aria-hidden="true" /> Edit</button
+      >
+    {/if}
   </div>
   <div class="body" bind:this={sheet}>
     {#if host}
@@ -96,8 +107,13 @@
     font-size: var(--text-xs);
   }
 
+  .bar button {
+    white-space: nowrap;
+  }
+
   .what {
     margin-left: auto;
+    white-space: nowrap;
     color: var(--muted);
     font-size: var(--text-xs);
   }

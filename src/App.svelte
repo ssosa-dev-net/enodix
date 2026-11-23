@@ -25,6 +25,7 @@
   import CredentialsView from "./lib/CredentialsView.svelte";
   import Dialog from "./lib/Dialog.svelte";
   import DetailsSheet from "./lib/DetailsSheet.svelte";
+  import HostEditor from "./lib/HostEditor.svelte";
   import HighlightRules from "./lib/HighlightRules.svelte";
   import HostsView from "./lib/HostsView.svelte";
   import PaneView, {
@@ -452,7 +453,9 @@
         }
         for (const item of viewTabs) {
           if (
-            (item.view !== "configs" && item.view !== "files") ||
+            (item.view !== "configs" &&
+              item.view !== "files" &&
+              item.view !== "host") ||
             item.subject === null
           )
             continue;
@@ -794,9 +797,10 @@
     void edit({ kind: "closeTab", tab });
   }
 
-  // Job, run, config history, import and fill-in review tabs belong to the
-  // workspace they were opened in (host ids, run ids and folders mean
-  // nothing elsewhere): switching closes them. Their jobs go on running.
+  // Job, run, config history, Files, host editor, import and fill-in
+  // review tabs belong to the workspace they were opened in (host ids, run
+  // ids and folders mean nothing elsewhere): switching closes them. Their
+  // jobs go on running.
   let shownRoot: string | null | undefined = undefined;
   $effect(() => {
     const root = inventory.workspace?.root ?? null;
@@ -808,6 +812,7 @@
             item.view === "run" ||
             item.view === "configs" ||
             item.view === "files" ||
+            item.view === "host" ||
             item.view === "csv-import" ||
             item.view === "nornir-import" ||
             item.view === "enrich"
@@ -962,6 +967,14 @@
       detail: "Open in a tab",
       icon: VIEWS["nornir-import"].icon,
       run: () => openNornirImport(targetFolder()),
+    },
+    {
+      id: "edit-host",
+      label: "Edit host",
+      words: "host details settings change edit form",
+      detail: "Open in a tab",
+      icon: VIEWS.host.icon,
+      run: () => openViewTab({ view: "host", subject: null }),
     },
     {
       id: "switch-workspace",
@@ -1915,6 +1928,12 @@
             {:else if item.view === "enrich" && item.subject && inventory.workspace}
               <EnrichReview
                 run={item.subject}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
+            {:else if item.view === "host" && inventory.workspace}
+              <HostEditor
+                subject={item.subject}
+                onconnect={prompt}
                 onclose={() => closeViewTab(item.tab, true)}
               />
             {:else if item.view === "python-setup"}
