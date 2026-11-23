@@ -26,6 +26,10 @@
     revertAll,
     settleUnsaved,
   } from "./lib/hostDrafts.svelte";
+  import {
+    settleUnsavedSnippets,
+    snippetsWithUnsaved,
+  } from "./lib/snippetDrafts.svelte";
   import { activeTransfers } from "./lib/fileTransfers.svelte";
   import { addressBesides, hostConnection } from "./lib/hostConnect";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -767,6 +771,14 @@
         });
         return;
       }
+      // So are a snippet editor's (#10).
+      if (shows.view === "snippet") {
+        void settleUnsavedSnippets([tab], "closing the tab").then((go) => {
+          if (!go) return requestKeys();
+          closeViewTab(tab, true);
+        });
+        return;
+      }
       if (
         shows.view === "files" &&
         shows.subject &&
@@ -1142,6 +1154,11 @@
     (document.activeElement as HTMLElement | null)?.blur?.();
     await tick();
     if (!(await settleUnsaved(hostsWithUnsaved(), `closing ${name}`))) return;
+    // Then the snippet editors' (not asked if the hosts' was cancelled).
+    if (
+      !(await settleUnsavedSnippets(snippetsWithUnsaved(), `closing ${name}`))
+    )
+      return;
     const elsewhere = await liveInSessionWindows();
     const live = liveSessions + elsewhere;
     // Files tabs are in this window only (#106).
@@ -1192,6 +1209,15 @@
       "opening another workspace",
     );
     if (!settled) return null;
+    // Snippet editors close with the workspace: asked about alike. Edits
+    // discarded above are dropped only after this (a Cancel keeps them).
+    if (
+      !(await settleUnsavedSnippets(
+        snippetsWithUnsaved(),
+        "opening another workspace",
+      ))
+    )
+      return null;
     const tabs = current
       ? Object.keys(sessions)
           .map(Number)
@@ -1993,6 +2019,7 @@
               />
             {:else if item.view === "snippet" && inventory.workspace}
               <SnippetEditor
+                tab={item.tab}
                 subject={item.subject}
                 onclose={() => closeViewTab(item.tab, true)}
               />
@@ -2248,6 +2275,7 @@
   {@const asked = unsavedQuestion.current}
   <ConfirmUnsaved
     hosts={asked.hosts}
+    snippets={asked.snippets}
     doing={asked.doing}
     error={asked.error}
     onsave={() => asked.answer("save")}

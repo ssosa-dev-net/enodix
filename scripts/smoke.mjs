@@ -5641,6 +5641,52 @@ async function snippets({
   );
   step("a snippet created in the panel was saved to the workspace");
 
+  // Closing the tab with unsaved text asks first (#10): Cancel keeps the
+  // tab and the text, Discard closes it and writes nothing.
+  const savedText = fileText();
+  // Typed, not submitted (fillForm submits).
+  await evaluate(`(() => {
+    const area = document.querySelector("[data-view=snippet] textarea");
+    area.value += "unsaved edit\\n";
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await until("the unsaved mark", () =>
+    exists("[data-view=snippet][data-unsaved]"),
+  );
+  const snippetTab = await evaluate(
+    `document.querySelector(${json(inTab)})?.closest(".slot")?.dataset.tab ?? null`,
+  );
+  if (snippetTab === null) fail("no tab holds the snippet editor");
+  const closeSnippetTab = () =>
+    clickOn(`[data-tab-bar] [data-tab="${snippetTab}"] [data-tab-close]`);
+  await closeSnippetTab();
+  await until("the unsaved-changes question", () =>
+    exists("[data-confirm-unsaved]"),
+  );
+  await clickOn("[data-confirm-unsaved] [data-unsaved=cancel]");
+  await until(
+    "the question answered",
+    async () => !(await exists("[data-confirm-unsaved]")),
+  );
+  if (!(await exists(inTab))) fail("Cancel closed the snippet editor tab");
+  if (
+    !(await evaluate(
+      `document.querySelector("[data-view=snippet] textarea").value.includes("unsaved edit")`,
+    ))
+  )
+    fail("Cancel dropped the snippet's text");
+  await closeSnippetTab();
+  await until("the unsaved-changes question", () =>
+    exists("[data-confirm-unsaved]"),
+  );
+  await clickOn("[data-confirm-unsaved] [data-unsaved=discard]");
+  await until(
+    "the snippet editor tab closed by Discard",
+    async () => !(await exists(inTab)),
+  );
+  if (fileText() !== savedText) fail("Discard changed the snippets file");
+  step("closing a snippet tab with unsaved text asked first");
+
   // The filter narrows the list as the user types (the core matches every
   // word in the name, group or text), keeping the groups.
   const saved = fileText();

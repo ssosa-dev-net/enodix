@@ -257,6 +257,9 @@ export const question = $state<{
   current: {
     /** The hosts with unsaved edits. */
     hosts: string[];
+    /** The snippets with unsaved changes, by name (asked about on their
+     * own, so `hosts` is empty then; see snippetDrafts). */
+    snippets: string[];
     /** What the user is doing, as the question says it ("closing the tab"). */
     doing: string;
     /** Saving failed: why, for the dialog to show. */
@@ -283,15 +286,22 @@ export async function settleUnsaved(
   question.current?.answer("cancel");
   let error: string | null = null;
   for (;;) {
-    let asked: NonNullable<typeof question.current> | null = null;
+    let asked: ((choice: "save" | "discard" | "cancel") => void) | null = null;
     const choice = await new Promise<"save" | "discard" | "cancel">(
       (answer) => {
-        asked = { hosts: pending, doing, error, answer };
-        question.current = asked;
+        asked = answer;
+        question.current = {
+          hosts: pending,
+          snippets: [],
+          doing,
+          error,
+          answer,
+        };
       },
     );
-    // A later question may already have taken the slot.
-    if (question.current === asked) question.current = null;
+    // A later question may already have taken the slot. Compared by its
+    // answer: the state holds a proxy of the question, not the object.
+    if (question.current?.answer === asked) question.current = null;
     if (choice === "cancel") return false;
     if (choice === "discard") {
       return () => {
