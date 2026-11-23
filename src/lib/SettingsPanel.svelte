@@ -24,6 +24,10 @@
     item: Item;
     /** What the host or folder sets itself. */
     settings: Settings;
+    /** The settings as saved, when `settings` holds unsaved edits (the
+     * host editor, #10): an edited setting says so instead of what applied
+     * before the edit. */
+    saved?: Settings;
     /** What applies to it (null while loading). */
     effective: EffectiveSettings | null;
     /** Host ids a jump host can be chosen from. */
@@ -37,7 +41,8 @@
     part: "device" | "connection";
   }
 
-  let { item, settings, effective, hostIds, onchange, part }: Props = $props();
+  let { item, settings, saved, effective, hostIds, onchange, part }: Props =
+    $props();
 
   type Options = readonly (readonly [string, string])[];
 
@@ -382,6 +387,7 @@
   {#each rows as row (row.key)}
     {@const own = row.own(settings)}
     {@const applied = effective ? row.effective(effective) : null}
+    {@const edited = saved !== undefined && row.own(saved) !== own}
     <div class="setting" data-setting={row.key}>
       <label class="field">
         <span>{row.label}</span>
@@ -407,7 +413,9 @@
               list={row.input.list}
               spellcheck="false"
               value={own}
-              placeholder={own === "" && applied ? show(applied.value) : ""}
+              placeholder={own === "" && applied && !edited
+                ? show(applied.value)
+                : ""}
               onchange={(event) =>
                 commit(row, event.currentTarget.value, event.currentTarget)}
             />
@@ -423,8 +431,14 @@
           {/if}
         </span>
       </label>
-      <span class="origin" data-origin={row.key}>
-        {#if !effective}
+      <span
+        class="origin"
+        data-origin={row.key}
+        data-edited={edited || undefined}
+      >
+        {#if edited}
+          {own === "" ? "Inherits" : show(own)} · not saved yet
+        {:else if !effective}
           …
         {:else if applied}
           {show(applied.value)} · {describeOrigin(applied.origin, item)}

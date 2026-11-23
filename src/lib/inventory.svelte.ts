@@ -1004,6 +1004,35 @@ export function saveHost(
   return saving;
 }
 
+/**
+ * Saves some fields of the host `id` as `saveHost` does, queued with the
+ * other saves, but answers why it failed (or null) instead of showing it
+ * in the Hosts view: the host editor's Save shows it by its fields.
+ */
+export function saveHostOrSay(
+  id: string,
+  changes: (current: Host) => Partial<Host>,
+): Promise<string | null> {
+  let failure: string | null = null;
+  saving = saving.then(async () => {
+    try {
+      const tree = inventory.workspace?.tree;
+      const found = tree ? api.findHost(tree, id) : null;
+      if (!found) throw new Error(`${id} is no longer in the workspace`);
+      const current = $state.snapshot(found);
+      apply(await api.saveHost({ ...current, ...changes(current) }));
+    } catch (error) {
+      failure = String(error);
+    }
+  });
+  return saving.then(() => failure);
+}
+
+/** Renames the host `id`, answering why it failed (or null). */
+export function renameHostOrSay(id: string, name: string) {
+  return inDialog(() => renameItem({ kind: "host", id }, name));
+}
+
 export function setFolderDescription(path: string, description: string) {
   return attempt(async () => {
     apply(await api.setFolderDescription(path, description));

@@ -52,12 +52,23 @@
   } from "./workspace";
 
   interface Props {
+    /** The host as shown: as saved, or with the editor's unsaved edits. */
     host: Host;
     /** Connects over `protocol`, or over the host's own if none is given. */
     onconnect: (host: Host, protocol?: Protocol) => void;
+    /**
+     * Where edits go (the host editor's draft, #10). Without it, each edit
+     * is saved at once (the details sheet), the name by renaming.
+     */
+    onedit?: (
+      changes: Partial<Host> | ((current: Host) => Partial<Host>),
+    ) => void;
+    /** The host as saved, when `host` shows unsaved edits: the settings
+     * tell an edited setting from a saved one by it. */
+    saved?: Host;
   }
 
-  let { host, onconnect }: Props = $props();
+  let { host, onconnect, onedit, saved }: Props = $props();
 
   const item = $derived({ kind: "host" as const, id: host.id });
   const effective = effectiveSettings(() => item);
@@ -132,6 +143,10 @@
 
   /** Saves the host with some fields changed. */
   function save(changes: Partial<Host> | ((current: Host) => Partial<Host>)) {
+    if (onedit) {
+      onedit(changes);
+      return Promise.resolve();
+    }
     return saveHost(host.id, changes);
   }
 
@@ -321,7 +336,8 @@
           spellcheck="false"
           onchange={async (event) => {
             const input = event.currentTarget;
-            await renameTo(item, input.value);
+            if (onedit) onedit({ name: input.value });
+            else await renameTo(item, input.value);
             input.value = host.name;
           }}
         />
@@ -376,6 +392,7 @@
       part="device"
       {item}
       settings={host.settings}
+      saved={saved?.settings}
       effective={effective.current}
       hostIds={otherHosts}
       onchange={(change) =>
@@ -406,6 +423,7 @@
       part="connection"
       {item}
       settings={host.settings}
+      saved={saved?.settings}
       effective={effective.current}
       hostIds={otherHosts}
       onchange={(change) =>
