@@ -5,6 +5,67 @@ in the project's tracker.
 
 ## Unreleased
 
+## 0.7.0
+
+Hosts are now edited in a tab of their own, with Save and Revert, and a
+change reaches the host's file (and git) only when you save it. This
+release also has the new enodix icon and fixes from an internal security
+review.
+
+### New
+
+- **Edit host** (the details sheet, the palette, Ctrl+Shift+E) opens a host
+  editor tab beside the terminals [10]. It follows the selected host or can
+  be pinned to one. Edits collect until **Save** (Ctrl+S), which writes
+  only the fields you changed, or **Revert**; the tab title counts them.
+  Switching host, closing the tab, quitting and opening another workspace
+  ask Save / Discard / Cancel.
+- Inherited settings show where they come from ("Inherited from
+  Europe/Madrid") with **Override**, and the ones a host sets itself come
+  first, with "Show N inherited settings" for the rest. A port or timeout
+  the app would refuse is explained under its field as you type.
+- The details sheet is a short summary of the host, with its actions in
+  three menus (Open, Run, More) that work from the keyboard.
+- Snippets are edited in a tab: at least 82 columns, line numbers, no
+  wrapping, and the variables the snippet uses beside it. Closing a snippet
+  tab with unsaved changes asks first, as the host editor does [12].
+- The enodix logo, as the app icon at every size [16].
+
+### Changed
+
+- Buttons, inputs and menus share two heights, headings and labels have a
+  clearer scale, and every text colour passes 4.5:1 contrast in both
+  themes.
+- The current search match in a dark terminal is readable.
+- **Fill in from devices** and the Nornir plugin check the host key of a
+  device reached directly, not only through a tunnel, against the keys the
+  app trusts [6]. Fill in from devices refuses a host whose key is not
+  trusted yet; the Nornir plugin warns about it.
+
+### Fixed
+
+- The Save / Discard / Cancel question for unsaved host edits stayed on
+  screen after any answer [12].
+- Snippet text no longer touches the line numbers, also when scrolled
+  sideways [13, 14].
+
+### Security
+
+From an internal review [5]:
+
+- A download whose name would leave the chosen folder on Windows (`..\`, a
+  drive, a `\\server` path), or that Windows cannot hold, is refused.
+- A platform definition with a line break in `disable_paging`,
+  `privilege_command` or `show_config` is an error and is not used.
+- A workspace cannot replace the `enodix` Python package that **Fill in
+  from devices** runs, and the Python package never looks in the current
+  folder for `enodix-cli`.
+- A host name that would match other hosts in `known_hosts` (a comma, a
+  wildcard) is not remembered.
+- New vault master passwords need at least 8 characters; on Unix the vault
+  and its folder are readable by their owner only.
+- Links printed in a terminal open nothing.
+
 ## 0.6.0
 
 The first release of enodix on GitHub, and the first with automatic
