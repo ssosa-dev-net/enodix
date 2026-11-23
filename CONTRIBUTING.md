@@ -9,6 +9,26 @@ happened, with the enodix version, the operating system and, for a device
 session, the device's platform and software version. Leave out passwords,
 keys, addresses and configurations you would not publish.
 
+## Building from source
+
+You need Node.js, a Rust toolchain and the
+[Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your
+system. Then, from a clone:
+
+```sh
+npm install          # JavaScript dependencies
+npm run app:dev      # run the app with live reload
+npm run check        # format check, lint and every test
+npm run app:build    # build the app, without installers
+```
+
+`npm run test:python` runs the Python bridge tests and `npm run test:linux`
+the Linux checks. The maintainer pages under [docs/dev](docs/dev) cover the
+[containerlab device suite](docs/dev/containerlab.md), the
+[Linux checks](docs/dev/linux.md) and [making a release](docs/dev/releasing.md).
+[docs/demo-workspace](docs/demo-workspace) is the example network the
+screenshots in the documentation come from.
+
 ## Pull requests
 
 1. Talk about larger changes in an issue first, so the work fits the plan.

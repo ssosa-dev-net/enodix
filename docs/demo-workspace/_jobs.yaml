@@ -1,0 +1,6 @@
+Core BGP check:
+  snippet: BGP summary
+  filter: Core routers
+London OSPF:
+  snippet: OSPF neighbours
+  folder: Europe/London

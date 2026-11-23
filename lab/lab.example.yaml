@@ -1,4 +1,4 @@
-# The containerlab device suite's lab file (docs/containerlab.md).
+# The containerlab device suite's lab file (docs/dev/containerlab.md).
 #
 # Copy this file to lab/lab.yaml (ignored by git) or anywhere else and point
 # ENODIX_LAB_CONFIG at it. Do not commit the copy. Prefer `password_env`

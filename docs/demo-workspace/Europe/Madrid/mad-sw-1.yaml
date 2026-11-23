@@ -1,0 +1,10 @@
+address: 198.51.100.13
+site: Madrid DC1
+platform: eos
+vendor: Arista
+model: 7050SX3-48YC8
+role: access
+environment: production
+tags: [access]
+rack: R12
+rack_unit: 40

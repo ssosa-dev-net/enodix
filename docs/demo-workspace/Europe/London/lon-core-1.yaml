@@ -1,0 +1,8 @@
+address: 198.51.100.21
+site: London LD5
+platform: frr
+vendor: FRRouting
+role: core
+environment: production
+tags: [core]
+backup_on_login: true

@@ -1,0 +1,6 @@
+bgp-not-up:
+  pattern: '\b(Idle|Active|Connect|OpenSent)\b'
+  color: red
+bgp-established:
+  pattern: '\b(Full|Established)\b'
+  color: green

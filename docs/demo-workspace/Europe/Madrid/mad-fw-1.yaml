@@ -1,0 +1,8 @@
+address: 198.51.100.15
+site: Madrid DC1
+platform: junos
+vendor: Juniper
+model: SRX345
+role: firewall
+environment: production
+tags: [edge]

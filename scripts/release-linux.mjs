@@ -12,7 +12,7 @@
 // pre-release with no update check, in `target/dist/<version>-unsigned/`.
 // On Linux itself, run `npm run release`.
 // The distribution needs WebKitGTK and the other Tauri packages: see
-// docs/linux.md.
+// docs/dev/linux.md.
 
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,7 +30,7 @@ if (process.platform !== "win32")
 const unsigned = process.argv.includes("--unsigned");
 const endpoint = process.env.ENODIX_UPDATE_ENDPOINT?.trim();
 if (!endpoint && !unsigned)
-  fail("ENODIX_UPDATE_ENDPOINT is not set (see docs/releasing.md)");
+  fail("ENODIX_UPDATE_ENDPOINT is not set (see docs/dev/releasing.md)");
 const version = readFileSync(join(ROOT, "Cargo.toml"), "utf8").match(
   /\[workspace\.package\][^[]*?\nversion\s*=\s*"([^"]+)"/,
 )?.[1];
@@ -55,4 +55,4 @@ wsl(
 
 console.log(`\nrelease:linux: ${dist} now holds:`);
 for (const name of writeChecksums(dist)) console.log(`  ${name}`);
-console.log("\nNothing was uploaded (see docs/releasing.md).");
+console.log("\nNothing was uploaded (see docs/dev/releasing.md).");

@@ -1,0 +1,10 @@
+address: 198.51.100.25
+site: London LD5
+platform: ios
+vendor: Cisco
+model: ISR4331
+role: edge_router
+environment: production
+tags: [legacy]
+legacy_crypto: true
+description: Due for replacement

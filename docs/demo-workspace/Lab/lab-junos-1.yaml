@@ -1,0 +1,5 @@
+address: 198.51.100.33
+platform: junos
+vendor: Juniper
+model: cJunos Evolved
+tags: [lab]
