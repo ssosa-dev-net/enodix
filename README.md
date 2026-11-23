@@ -1,8 +1,9 @@
-<!-- Logo: replace this comment with the logo image once it exists, e.g.
-<p align="center"><img src="docs/images/logo.svg" alt="enodix" width="96"></p>
--->
-
-<h1 align="center">enodix</h1>
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg">
+    <img src="docs/images/logo-light.svg" alt="enodix" height="64">
+  </picture>
+</h1>
 
 <p align="center">
   <strong>A terminal for network engineers.</strong><br>
