@@ -20,6 +20,7 @@ import Package from "@lucide/svelte/icons/package";
 import Settings from "@lucide/svelte/icons/settings";
 import SquarePen from "@lucide/svelte/icons/square-pen";
 import type { Component } from "svelte";
+import { following, unsaved } from "./hostDrafts.svelte";
 import { inventory, selectedHost } from "./inventory.svelte";
 import type { ViewName, ViewRef } from "./layout";
 import { findHost } from "./workspace";
@@ -68,8 +69,11 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
    * a host's id keeps the tab on that host (pinned). */
   host: {
     title: (host) => {
-      const name = host ? hostName(host) : (selectedHost()?.name ?? null);
-      return name ? `Edit ${name}` : "Edit host";
+      const id = host ?? following.host ?? selectedHost()?.id ?? null;
+      if (!id) return "Edit host";
+      // Unsaved edits show in the tab, as an editor's would.
+      const count = unsaved(id);
+      return `Edit ${hostName(id)}${count > 0 ? ` (${count})` : ""}`;
     },
     icon: SquarePen,
   },

@@ -18,6 +18,14 @@
   import ConfirmSwitch from "./lib/ConfirmSwitch.svelte";
   import ConfirmOpenFolder from "./lib/ConfirmOpenFolder.svelte";
   import ConfirmQuit from "./lib/ConfirmQuit.svelte";
+  import ConfirmUnsaved from "./lib/ConfirmUnsaved.svelte";
+  import {
+    following,
+    hostsWithUnsaved,
+    question as unsavedQuestion,
+    revertAll,
+    settleUnsaved,
+  } from "./lib/hostDrafts.svelte";
   import { activeTransfers } from "./lib/fileTransfers.svelte";
   import { addressBesides, hostConnection } from "./lib/hostConnect";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -740,6 +748,15 @@
   function closeTab(tab: TabId) {
     const shows = layout ? viewOf(layout, tab) : null;
     if (shows) {
+      // The host editor's unsaved edits are asked about first (#10).
+      if (shows.view === "host") {
+        const host = shows.subject ?? following.host;
+        void settleUnsaved(host ? [host] : [], "closing the tab").then((go) => {
+          if (go) closeViewTab(tab, true);
+          else requestKeys();
+        });
+        return;
+      }
       if (
         shows.view === "files" &&
         shows.subject &&
@@ -1101,6 +1118,8 @@
   void getCurrentWindow().onCloseRequested(async (event) => {
     event.preventDefault();
     if (quitting) return;
+    // Unsaved host edits first (#10): Cancel keeps the window open.
+    if (!(await settleUnsaved(hostsWithUnsaved(), `closing ${name}`))) return;
     const elsewhere = await liveInSessionWindows();
     const live = liveSessions + elsewhere;
     // Files tabs are in this window only (#106).
@@ -1144,6 +1163,9 @@
     const current = inventory.workspace;
     // The keys go back to the terminal at the end unless moved meanwhile.
     let mark = keyMark();
+    // Unsaved host edits are of this workspace (#10).
+    if (!(await settleUnsaved(hostsWithUnsaved(), "opening another workspace")))
+      return null;
     const tabs = current
       ? Object.keys(sessions)
           .map(Number)
@@ -1183,6 +1205,8 @@
         inventory.editError = `Cannot close the sessions in session windows: ${error}`;
       });
     }
+    // Saved or discarded above; what is left belongs to no host now.
+    if (current && next.root !== current.root) revertAll();
     setWorkspace(next);
     inventory.openError = null;
     switcher = false;
@@ -2181,6 +2205,18 @@
       switcher = false;
       requestKeys();
     }}
+  />
+{/if}
+
+{#if unsavedQuestion.current}
+  {@const asked = unsavedQuestion.current}
+  <ConfirmUnsaved
+    hosts={asked.hosts}
+    doing={asked.doing}
+    error={asked.error}
+    onsave={() => asked.answer("save")}
+    ondiscard={() => asked.answer("discard")}
+    oncancel={() => asked.answer("cancel")}
   />
 {/if}
 
