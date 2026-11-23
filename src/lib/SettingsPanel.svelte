@@ -431,7 +431,13 @@
         {/if}
       </span>
       {#if row.note}
-        <p class="note" data-setting-note={row.key}>{row.note}</p>
+        <p
+          class="note"
+          class:warn={row.key === "logging"}
+          data-setting-note={row.key}
+        >
+          {row.note}
+        </p>
       {/if}
     </div>
   {/each}
@@ -611,11 +617,18 @@
     overflow-wrap: anywhere;
   }
 
+  /* Help under a setting; the warning colour is kept for the one note
+     that warns (logs can hold secrets). */
   .note {
     margin: var(--space-0-5) 0 0;
     padding: var(--space-1) var(--space-1-5);
-    border-left: 2px solid var(--warning);
+    border-left: 2px solid var(--border-strong);
     font-size: var(--text-2xs);
+    color: var(--muted);
+  }
+
+  .note.warn {
+    border-left-color: var(--warning);
     color: var(--text);
   }
 
