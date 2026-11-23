@@ -1,5 +1,6 @@
 <script lang="ts">
   import X from "@lucide/svelte/icons/x";
+  import IconButton from "./IconButton.svelte";
   import CopyButton from "./CopyButton.svelte";
   import { describeOrigin, isOwn, type Item } from "./inventory.svelte";
   import type { Effective } from "./workspace";
@@ -55,13 +56,13 @@
       {#each tags as tag (tag)}
         <li class="tag">
           {tag}
-          <button
-            class="remove"
-            aria-label="Remove tag {tag}"
+          <IconButton
+            icon={X}
+            size="compact"
+            label="Remove tag {tag}"
             onclick={() =>
               onchange((current) => current.filter((t) => t !== tag))}
-            ><X size={12} aria-hidden="true" /></button
-          >
+          />
         </li>
       {/each}
     </ul>
@@ -127,19 +128,5 @@
     border-style: dashed;
     background: none;
     color: var(--muted);
-  }
-
-  .remove {
-    width: var(--control-height-small);
-    height: var(--control-height-small);
-    min-height: 0;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--muted);
-  }
-
-  .remove:hover:not(:disabled) {
-    color: var(--danger);
   }
 </style>

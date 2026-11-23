@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Button from "./Button.svelte";
+  import IconButton from "./IconButton.svelte";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import X from "@lucide/svelte/icons/x";
@@ -110,21 +112,24 @@
                   >
                 {/if}
               </button>
-              <button
-                class="small"
+              <Button
+                variant="ghost"
+                size="compact"
+                class="row-action"
                 data-saved-job-rename={job.name}
                 title="Rename"
                 aria-label={`Rename ${job.name}`}
-                onclick={() => renameJob(job)}>Rename</button
+                onclick={() => renameJob(job)}>Rename</Button
               >
-              <button
-                class="small"
+              <IconButton
+                icon={X}
+                size="compact"
+                class="row-action"
                 data-saved-job-delete={job.name}
                 title="Delete"
-                aria-label={`Delete ${job.name}`}
+                label={`Delete ${job.name}`}
                 onclick={() => removeJob(job.name)}
-                ><X size={13} aria-hidden="true" /></button
-              >
+              />
             </li>
           {/each}
         </ul>
@@ -250,20 +255,13 @@
     color: var(--muted);
   }
 
-  .small {
-    flex: none;
-    min-width: var(--control-height-small);
-    min-height: var(--control-height-small);
-    padding: 0 var(--space-1-5);
-    font-size: var(--text-2xs);
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
+  /* The row's actions show on hover or focus. */
+  li :global(.row-action) {
     visibility: hidden;
   }
 
-  li:hover .small,
-  li:focus-within .small {
+  li:hover :global(.row-action),
+  li:focus-within :global(.row-action) {
     visibility: visible;
   }
 

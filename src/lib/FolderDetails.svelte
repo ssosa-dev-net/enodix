@@ -10,6 +10,7 @@
   import ServerPlus from "@lucide/svelte/icons/server-plus";
   import Table from "@lucide/svelte/icons/table";
   import Trash from "@lucide/svelte/icons/trash";
+  import IconButton from "./IconButton.svelte";
   import CopyButton from "./CopyButton.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
   import TagEditor from "./TagEditor.svelte";
@@ -66,95 +67,85 @@
       · {hosts === 1 ? "1 host" : `${hosts} hosts`}
     </span>
     <div class="actions more" aria-label="Actions">
-      <button
+      <IconButton
+        icon={FolderPlus}
+        label="New folder…"
         title="New folder in this folder"
         onclick={() => newFolder(folder.path)}
-        ><FolderPlus size={15} aria-hidden="true" /><span
-          class="visually-hidden">New folder…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={ServerPlus}
+        label="New host…"
         title="New host in this folder"
         onclick={() => newHost(folder.path)}
-        ><ServerPlus size={15} aria-hidden="true" /><span
-          class="visually-hidden">New host…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={Table}
+        label="Import CSV…"
         data-folder-import
         title="Import hosts from a CSV file into this folder"
         onclick={() => openCsvImport(folder.path)}
-        ><Table size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Import CSV…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={FileInput}
+        label="Import Nornir…"
         data-folder-nornir-import
         title="Import hosts from a Nornir inventory into this folder"
         onclick={() => openNornirImport(folder.path)}
-        ><FileInput size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Import Nornir…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={Play}
+        label="Run snippet…"
         data-folder-run-snippet
         title="Run a saved snippet on every host in this folder, as a job"
         onclick={() =>
           openJob({ kind: "folder", path: folder.path }, folder.name)}
-        ><Play size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Run snippet…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={FileCode}
+        label="Run script…"
         data-folder-run-script
         title="Run a Python script of the workspace for every host in this folder, as a job"
         onclick={() =>
           openScript({ kind: "folder", path: folder.path }, folder.name)}
-        ><FileCode size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Run script…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={FileUp}
+        label="Send file…"
         data-folder-send-file
         title="Send a file from this computer to every host in this folder, as a job"
         onclick={() =>
           openSendFile({ kind: "folder", path: folder.path }, folder.name)}
-        ><FileUp size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Send file…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={Archive}
+        label="Back up configs"
         data-folder-back-up
         title="Fetch the configuration of every host in this folder and keep each in its host's config history if it changed"
         onclick={() =>
           openBackup({ kind: "folder", path: folder.path }, folder.name)}
-        ><Archive size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Back up configs</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={ScanSearch}
+        label="Fill in from devices…"
         data-folder-enrich
         title="Ask every host in this folder for its vendor, model, serial number and OS version (NAPALM), then review what to fill in"
         onclick={() =>
           openEnrich({ kind: "folder", path: folder.path }, folder.name)}
-        ><ScanSearch size={15} aria-hidden="true" /><span
-          class="visually-hidden">Fill in from devices…</span
-        ></button
-      >
+      />
       {#if !isRoot}
         <button title="Move this folder" onclick={() => move(item)}
           ><FolderInput size={15} aria-hidden="true" /><span
             class="visually-hidden">Move…</span
           ></button
         >
-        <button
-          class="danger"
+        <IconButton
+          icon={Trash}
+          variant="danger"
+          label="Delete"
           title="Delete this folder"
           onclick={() => remove(item)}
-          ><Trash size={15} aria-hidden="true" /><span class="visually-hidden"
-            >Delete</span
-          ></button
-        >
+        />
       {/if}
     </div>
   </header>
@@ -267,43 +258,10 @@
     margin-top: var(--space-1);
   }
 
-  .actions button {
-    min-height: var(--control-height-small);
-    padding: 0 var(--space-2);
-    font-size: var(--text-xs);
-  }
-
   /* One quiet row of icons: each button keeps its name for screen readers
      and shows it as its tooltip. */
   .actions.more {
     gap: var(--space-0-5);
-  }
-
-  .actions.more button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--control-height);
-    height: var(--control-height);
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  .actions.more button:hover,
-  .actions.more button:focus-visible {
-    background: var(--surface-raised);
-    color: var(--text);
-  }
-
-  .actions.more button.danger:hover,
-  .actions.more button.danger:focus-visible {
-    color: var(--danger);
-  }
-
-  .danger:hover:not(:disabled) {
-    color: var(--danger);
   }
 
   .field {

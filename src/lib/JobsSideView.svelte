@@ -1,4 +1,5 @@
 <script lang="ts">
+  import IconButton from "./IconButton.svelte";
   // The Jobs side view (#69): the jobs running here at the top with their
   // progress, the workspace's saved jobs, then every kept run, newest
   // first. A run opens in a tab (its job's own tab if that is still open);
@@ -115,14 +116,15 @@
       <span class="meta">{when(entry.started)} · {progress(entry)}</span>
     </button>
     {#if state === "running" && liveJob(entry.id)}
-      <button
-        class="small"
+      <IconButton
+        icon={Square}
+        size="compact"
+        variant="danger"
         data-run-cancel={entry.id}
         title="Cancel this job"
-        aria-label={`Cancel ${stepTitle(entry.step)}`}
+        label={`Cancel ${stepTitle(entry.step)}`}
         onclick={() => cancel(entry.id)}
-        ><Square size={13} aria-hidden="true" /></button
-      >
+      />
     {/if}
   </li>
 {/snippet}
@@ -281,21 +283,6 @@
   }
 
   li.damaged .meta {
-    color: var(--danger);
-  }
-
-  .small {
-    flex: none;
-    width: var(--control-height-small);
-    height: var(--control-height-small);
-    min-height: 0;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  .small:hover {
     color: var(--danger);
   }
 
