@@ -175,6 +175,7 @@
     color: var(--muted);
     font-weight: normal;
     font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .body {
@@ -187,6 +188,7 @@
     margin: var(--space-1-5) var(--space-2);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   ul {
@@ -230,6 +232,7 @@
   .meta {
     color: var(--muted);
     font-size: var(--text-2xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .problem {

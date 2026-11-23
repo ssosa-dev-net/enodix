@@ -267,12 +267,13 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
   p {
     margin: 0;
+    line-height: 1.5;
     overflow-wrap: anywhere;
   }
 
@@ -312,6 +313,7 @@
 
   .hint {
     color: var(--muted);
+    line-height: 1.5;
   }
 
   pre {

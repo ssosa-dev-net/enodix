@@ -195,18 +195,16 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
   }
 
   h3 {
     margin: 0;
     padding: var(--space-1-5) var(--space-3) var(--space-0-5);
-    color: var(--muted);
-    font-size: var(--text-2xs);
+    color: var(--text);
+    font-size: var(--text-sm);
     font-weight: var(--weight-semibold);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   .group {
@@ -273,6 +271,7 @@
   .meta {
     color: var(--muted);
     font-size: var(--text-2xs);
+    font-variant-numeric: tabular-nums;
   }
 
   li.damaged {
@@ -304,6 +303,7 @@
     margin: var(--space-1-5) var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .error {

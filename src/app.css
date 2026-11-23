@@ -315,6 +315,11 @@ input[type="radio"] {
   accent-color: var(--accent);
 }
 
+/* Ports, timeouts and counts line up in columns. */
+input[type="number"] {
+  font-variant-numeric: tabular-nums;
+}
+
 input::placeholder,
 textarea::placeholder {
   color: var(--faint);

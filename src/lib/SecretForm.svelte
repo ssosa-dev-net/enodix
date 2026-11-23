@@ -86,13 +86,15 @@
   label {
     display: grid;
     gap: var(--space-1);
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
     color: var(--muted);
   }
 
   .note {
     margin: 0;
     font-size: var(--text-xs);
+    line-height: 1.5;
     color: var(--muted);
   }
 

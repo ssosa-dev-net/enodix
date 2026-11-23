@@ -227,7 +227,7 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-semibold);
   }
 
@@ -237,6 +237,12 @@
     align-items: center;
     gap: var(--space-2) var(--space-3);
     font-size: var(--text-sm);
+  }
+
+  .fields > label:not(.check) {
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    color: var(--muted);
   }
 
   .check {
@@ -249,6 +255,7 @@
     margin: 0;
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
     overflow-wrap: anywhere;
   }
 

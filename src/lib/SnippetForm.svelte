@@ -121,7 +121,7 @@
 
   h3 {
     margin: 0 0 var(--space-1);
-    font-size: var(--text-sm);
+    font-size: var(--text-md);
     font-weight: var(--weight-semibold);
     overflow-wrap: anywhere;
   }
@@ -129,7 +129,8 @@
   label {
     margin-top: var(--space-1);
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
   }
 
   textarea {
@@ -142,6 +143,7 @@
     margin: var(--space-1) 0 0;
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .error {

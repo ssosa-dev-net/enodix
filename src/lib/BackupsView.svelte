@@ -164,7 +164,7 @@
 
   h2 {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
   }
 
@@ -212,6 +212,7 @@
   .meta {
     color: var(--muted);
     font-size: var(--text-2xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .last.changed {
@@ -223,6 +224,7 @@
     display: grid;
     gap: var(--space-2);
     padding: var(--space-1-5) 0;
+    line-height: 1.5;
   }
 
   .row {
@@ -241,6 +243,7 @@
     margin: var(--space-1-5) var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .empty .hint {

@@ -333,7 +333,7 @@
     flex: 1;
     margin: 0;
     padding: var(--space-1) 0;
-    font-size: var(--text-sm);
+    font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
   }
 
@@ -373,6 +373,7 @@
     margin: var(--space-2) var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .form .hint {
@@ -417,6 +418,7 @@
     border-radius: var(--radius-sm);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .error {
@@ -431,19 +433,15 @@
     align-items: center;
     gap: var(--space-1);
     margin: var(--space-2) var(--space-3) var(--space-0-5);
-    color: var(--muted);
-    font-size: var(--text-2xs);
+    color: var(--text);
+    font-size: var(--text-sm);
     font-weight: var(--weight-semibold);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   h3.title {
     margin: 0;
     color: var(--text);
     font-size: var(--text-sm);
-    text-transform: none;
-    letter-spacing: normal;
     overflow-wrap: anywhere;
   }
 
@@ -454,6 +452,7 @@
   .count {
     color: var(--muted);
     font-weight: normal;
+    font-variant-numeric: tabular-nums;
   }
 
   ul {
@@ -542,6 +541,7 @@
     padding: var(--space-1) var(--space-3) var(--space-2);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .empty p {

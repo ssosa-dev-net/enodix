@@ -578,11 +578,9 @@
     align-items: center;
     justify-content: space-between;
     margin: 0 0 var(--space-1-5);
-    font-size: var(--text-xs);
+    font-size: var(--text-md);
     font-weight: var(--weight-semibold);
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    color: var(--text);
   }
 
   .setting,
@@ -595,6 +593,12 @@
     display: grid;
     gap: var(--space-0-5);
     font-size: var(--text-xs);
+    color: var(--muted);
+  }
+
+  .field > span:first-child {
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
     color: var(--muted);
   }
 
@@ -623,6 +627,7 @@
     padding: var(--space-1) var(--space-1-5);
     border-left: 2px solid var(--border-strong);
     font-size: var(--text-2xs);
+    line-height: 1.5;
     color: var(--muted);
   }
 

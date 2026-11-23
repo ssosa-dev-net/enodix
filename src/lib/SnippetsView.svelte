@@ -239,7 +239,7 @@
     flex: 1;
     margin: 0;
     padding: var(--space-1) 0;
-    font-size: var(--text-sm);
+    font-size: var(--text-lg);
     font-weight: var(--weight-semibold);
   }
 
@@ -248,6 +248,7 @@
     color: var(--muted);
     font-weight: normal;
     font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .tool {
@@ -349,6 +350,7 @@
     margin: var(--space-2) var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .empty {
@@ -358,10 +360,12 @@
     padding: var(--space-3);
     color: var(--muted);
     font-size: var(--text-xs);
+    line-height: 1.5;
   }
 
   .empty p {
     margin: 0;
+    line-height: 1.5;
   }
 
   .empty button {
@@ -372,11 +376,9 @@
 
   h3 {
     margin: var(--space-2) var(--space-3) var(--space-0-5);
-    color: var(--muted);
-    font-size: var(--text-2xs);
+    color: var(--text);
+    font-size: var(--text-sm);
     font-weight: var(--weight-semibold);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
 
   ul {
