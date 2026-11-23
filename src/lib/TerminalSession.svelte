@@ -723,16 +723,20 @@
         results = null;
         return;
       }
-      const dark = isDark();
+      // The colours are the theme's --highlight-* tokens (app.css), read
+      // now: the window sets the theme on the root before this runs again.
+      const style = getComputedStyle(document.documentElement);
+      const token = (name: string) =>
+        style.getPropertyValue(`--highlight-${name}`).trim();
       const options: ISearchOptions = {
         caseSensitive,
         regex,
         incremental,
         decorations: {
-          matchBackground: dark ? "#5c4a00" : "#fff1a8",
-          activeMatchBackground: dark ? "#b36b00" : "#ffb340",
-          matchOverviewRuler: "#d29922",
-          activeMatchColorOverviewRuler: "#ff8800",
+          matchBackground: token("match"),
+          activeMatchBackground: token("match-active"),
+          matchOverviewRuler: token("match-ruler"),
+          activeMatchColorOverviewRuler: token("match-active-ruler"),
         },
       };
       try {
@@ -1115,7 +1119,12 @@
     void caseSensitive;
     void regex;
     void isDark();
-    if (untrack(() => searching)) untrack(() => find("next", true));
+    // After the window's own effect has set the root's theme (the colours
+    // are read from it), so on the next frame.
+    const frame = requestAnimationFrame(() => {
+      if (untrack(() => searching)) untrack(() => find("next", true));
+    });
+    return () => cancelAnimationFrame(frame);
   });
 </script>
 

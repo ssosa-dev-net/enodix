@@ -39,6 +39,13 @@
   --state-connecting: #9aa4b1;
   --state-connected: #5fd39a;
   --state-disconnected: #e5484d;
+  /* Scrollback search matches in a terminal (read by TerminalSession in
+     code, for xterm's decorations, so they stay #rrggbb): every match, the
+     current one, and their marks in the scrollbar. */
+  --highlight-match: #5c4a00;
+  --highlight-match-active: #b36b00;
+  --highlight-match-ruler: #d29922;
+  --highlight-match-active-ruler: #ff8800;
 
   /* Environment colours of hosts and sessions (tab, border, badge);
      production stands out the most. */
@@ -145,6 +152,10 @@
   --state-connecting: #76808c;
   --state-connected: #13703f;
   --state-disconnected: #6e0f0f;
+  --highlight-match: #fff1a8;
+  --highlight-match-active: #ffb340;
+  --highlight-match-ruler: #9a6a00;
+  --highlight-match-active-ruler: #c25e00;
 
   --env-production: #6e0f0f;
   --env-production-bg: #fbd5d6;
