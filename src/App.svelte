@@ -50,7 +50,12 @@
   } from "./lib/sessionWindows.svelte";
   import BackupsView from "./lib/BackupsView.svelte";
   import PreferencesView from "./lib/PreferencesView.svelte";
-  import { openRunTab, setViewOpener, VIEWS } from "./lib/views";
+  import {
+    EDIT_HOST_SHORTCUT,
+    openRunTab,
+    setViewOpener,
+    VIEWS,
+  } from "./lib/views";
   import {
     closeDetachedWindows,
     closeMainWindow,
@@ -438,6 +443,9 @@
     void layout;
     untrack(followKeys);
   });
+
+  /** The host editor on the selected host (what Edit host opens). */
+  const HOST_EDITOR: ViewRef = { view: "host", subject: null };
 
   /** Shows `view` in a tab (its own if open). */
   function openViewTab(view: ViewRef) {
@@ -992,9 +1000,9 @@
       id: "edit-host",
       label: "Edit host",
       words: "host details settings change edit form",
-      detail: "Open in a tab",
+      detail: EDIT_HOST_SHORTCUT,
       icon: VIEWS.host.icon,
-      run: () => openViewTab({ view: "host", subject: null }),
+      run: () => openViewTab(HOST_EDITOR),
     },
     {
       id: "new-snippet",
@@ -1701,6 +1709,10 @@
     if (chosen) return () => selectView(chosen.view);
     if (!event.shiftKey && (event.code === "Comma" || event.key === ",")) {
       return () => openViewTab({ view: "preferences", subject: null });
+    }
+    // Edit host (#10): the host editor tab on the selected host.
+    if (event.shiftKey && letter("E")) {
+      return selectedHost() ? () => openViewTab(HOST_EDITOR) : null;
     }
     // Opens or closes the details sheet on the selection.
     if (event.shiftKey && letter("D")) {

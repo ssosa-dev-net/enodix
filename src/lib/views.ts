@@ -105,6 +105,10 @@ export function openView(view: ViewName, subject: string | null = null) {
   opener?.({ view, subject });
 }
 
+/** The window's shortcut for the host editor (Ctrl+Shift and a letter no
+ * terminal program needs; see `App.svelte`'s `shortcut`). */
+export const EDIT_HOST_SHORTCUT = "Ctrl+Shift+E";
+
 /** Shows the host editor tab that follows the selection (#10). */
 export function openHostEditor() {
   openView("host", null);

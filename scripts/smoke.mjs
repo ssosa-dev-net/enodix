@@ -153,6 +153,220 @@ async function closePreferences(evaluate) {
   );
 }
 
+/** The menu (Open, Run or More; `data-menu-<name>` is its button) of the
+ * host's header that holds each action, by the action's own marker. */
+const HOST_MENU_OF = {
+  "data-open-files": "open",
+  "data-open-logs": "open",
+  "data-open-config-history": "open",
+  "data-host-run-snippet": "run",
+  "data-host-run-script": "run",
+  "data-host-send-file": "run",
+  "data-host-back-up": "run",
+  "data-host-enrich": "run",
+  "data-host-move": "more",
+  "data-host-delete": "more",
+};
+
+/** Presses `key` in the page with real input events (Escape, Enter,
+ * arrows: `code` is the key's name for all of these). */
+async function pressKey(evaluate, key, code = key, modifiers = 0) {
+  const codes = {
+    Escape: 27,
+    Enter: 13,
+    " ": 32,
+    ArrowDown: 40,
+    ArrowUp: 38,
+    Home: 36,
+    End: 35,
+    Tab: 9,
+  };
+  const press = {
+    key,
+    code: code === " " ? "Space" : code,
+    windowsVirtualKeyCode: codes[key] ?? key.toUpperCase().charCodeAt(0),
+    modifiers,
+  };
+  // A key that types (Enter, Space) carries its text, as the browser's own.
+  const text = key === "Enter" ? "\r" : key === " " ? " " : undefined;
+  await evaluate.devtools.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    ...press,
+    ...(text ? { text } : {}),
+  });
+  await evaluate.devtools.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    ...press,
+  });
+}
+
+/** Opens the header menu `name` ("open", "run", "more") of the host shown
+ * under `scope` with the mouse, unless it is open; resolves to the menu's
+ * selector. */
+async function openHostMenu(evaluate, name, scope = ".side") {
+  const trigger = `${scope} [data-menu-${name}]`;
+  await until(`the ${name} menu's button`, () =>
+    evaluate(`!!document.querySelector(${JSON.stringify(trigger)})`),
+  );
+  const menu = `${trigger} + [role=menu]`;
+  if (!(await evaluate(`!!document.querySelector(${JSON.stringify(menu)})`))) {
+    await mouseClick(evaluate, trigger);
+  }
+  await until(`the ${name} menu open`, () =>
+    evaluate(`!!document.querySelector(${JSON.stringify(menu)})`),
+  );
+  return menu;
+}
+
+/** Closes the host header menus left open (Escape on the open one). */
+async function closeHostMenus(evaluate, scope = ".side") {
+  const open = `!!document.querySelector(${JSON.stringify(`${scope} [role=menu]`)})`;
+  if (await evaluate(open)) {
+    await pressKey(evaluate, "Escape");
+    await until("the host menu closed", async () => !(await evaluate(open)));
+  }
+}
+
+/** Whether the host's header offers the action `marker` (`data-open-files`,
+ * say): opens the menu that holds it, looks, and closes it again. */
+async function hostActionOffered(evaluate, marker, scope = ".side") {
+  const menu = await openHostMenu(evaluate, HOST_MENU_OF[marker], scope);
+  const offered = await evaluate(
+    `!!document.querySelector(${JSON.stringify(`${menu} [${marker}]`)})`,
+  );
+  await closeHostMenus(evaluate, scope);
+  return offered;
+}
+
+/** Runs the host action `marker` of the header under `scope` (the details
+ * sheet by default) with the mouse: opens its menu, clicks its entry. */
+async function hostAction(evaluate, marker, scope = ".side") {
+  const menu = await openHostMenu(evaluate, HOST_MENU_OF[marker], scope);
+  // The host's settings are resolved a moment after the sheet shows, and
+  // an entry that depends on them (Files: SSH only) is added then.
+  await until(`${marker} in the menu`, () =>
+    evaluate(
+      `!!document.querySelector(${JSON.stringify(`${menu} [${marker}]`)})`,
+    ),
+  );
+  await mouseClick(evaluate, `${menu} [${marker}]`);
+  await until(
+    `the menu closed after ${marker}`,
+    async () =>
+      !(await evaluate(
+        `!!document.querySelector(${JSON.stringify(`${scope} [role=menu]`)})`,
+      )),
+  );
+}
+
+/** The host editor tab (#10) on screen. */
+const HOST_EDITOR = ".slot.view:not([hidden]) [data-view=host]";
+
+/**
+ * Opens the host editor tab on the host shown in the details sheet, by the
+ * sheet's Edit host button, and waits for its fields. Remembers the tab
+ * shown before, which `closeHostEditor` shows again.
+ */
+async function openHostEditor(evaluate) {
+  const shown = `!!document.querySelector(${JSON.stringify(HOST_EDITOR)})`;
+  if (await evaluate(shown)) return;
+  await evaluate(`(() => {
+    const shown = document.querySelector("${SHOWN_SESSION}");
+    if (shown && !document.querySelector("[data-view=host]"))
+      window.smokeBeforeHostEditor = shown.dataset.tab;
+  })()`);
+  await showDetails(evaluate);
+  await until("the sheet's Edit host button", () =>
+    evaluate(
+      `!!document.querySelector("[data-details-sheet=host] [data-details-edit]")`,
+    ),
+  );
+  await mouseClick(evaluate, "[data-details-sheet=host] [data-details-edit]");
+  await until("the host editor tab", () => evaluate(shown));
+  await until("the host editor's fields", () =>
+    evaluate(
+      `!!document.querySelector(${JSON.stringify(`${HOST_EDITOR} [name=name]`)})`,
+    ),
+  );
+}
+
+/** The host editor's count of unsaved changes. */
+const unsavedCount = (evaluate) =>
+  evaluate(
+    `Number(document.querySelector(${JSON.stringify(`${HOST_EDITOR} [data-unsaved-count]`)})?.dataset.unsavedCount ?? NaN)`,
+  );
+
+/** Sets the field `selector` of the host editor to `value` as typing and
+ * leaving it does (an unsaved edit, not yet in the host's file). */
+async function editHostField(evaluate, selector, value) {
+  await until(`the host editor's ${selector}`, () =>
+    evaluate(
+      `!!document.querySelector(${JSON.stringify(`${HOST_EDITOR} ${selector}`)})`,
+    ),
+  );
+  await evaluate(`(() => {
+    const input = document.querySelector(${JSON.stringify(`${HOST_EDITOR} ${selector}`)});
+    input.value = ${JSON.stringify(value)};
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+}
+
+/** Clicks the host editor's Save and waits for the file to be written
+ * (no unsaved changes left); fails with the editor's error if it shows
+ * one. */
+async function saveHostEdits(evaluate) {
+  await until(
+    "the edit counted as unsaved",
+    async () => (await unsavedCount(evaluate)) > 0,
+  );
+  await mouseClick(evaluate, `${HOST_EDITOR} [data-host-save]`);
+  await until("the host editor saved", async () => {
+    const error = await evaluate(
+      `document.querySelector(${JSON.stringify(`${HOST_EDITOR} [data-host-save-error]`)})?.textContent ?? null`,
+    );
+    if (error) fail(`the host editor did not save: ${error}`);
+    return (await unsavedCount(evaluate)) === 0;
+  });
+}
+
+/** Closes the host editor tab (nothing unsaved) and shows again the tab
+ * shown before it opened. */
+async function closeHostEditor(evaluate) {
+  await mouseClickIfThere(evaluate, "[data-tab-view=host] [data-tab-close]");
+  await until(
+    "the host editor tab closed",
+    async () =>
+      !(await evaluate(`!!document.querySelector("[data-view=host]")`)),
+  );
+  const before = await evaluate(`(() => {
+    const before = window.smokeBeforeHostEditor;
+    window.smokeBeforeHostEditor = undefined;
+    return before ?? null;
+  })()`);
+  if (before === null) return;
+  const tab = `[data-tab-bar] [data-tab="${before}"]`;
+  await mouseClickIfThere(evaluate, tab);
+  await until("the tab shown before the host editor", () =>
+    evaluate(`(() => {
+      const tab = document.querySelector('${tab}');
+      return !tab || tab.getAttribute("aria-selected") === "true";
+    })()`),
+  );
+}
+
+/** Edits fields of the selected host in the host editor tab (`fields`:
+ * [selector, value] pairs), saves them to the host's file, and closes the
+ * tab (the sheet and the tab shown before stay as they were). */
+async function editHost(evaluate, fields) {
+  await openHostEditor(evaluate);
+  for (const [selector, value] of fields) {
+    await editHostField(evaluate, selector, value);
+  }
+  await saveHostEdits(evaluate);
+  await closeHostEditor(evaluate);
+}
+
 // A public key the test server does not have: stored as the server's key,
 // it makes the server's real key look changed.
 const OTHER_KEY_FILE = "crates/core/tests/fixtures/keys/rsa_client.pub";
@@ -759,11 +973,13 @@ async function sidePanels({
     const sheet = document.querySelector("${sheet}").getBoundingClientRect();
     const side = document.querySelector("[data-side-view]").getBoundingClientRect();
     const centre = document.querySelector(".layout > .centre").getBoundingClientRect();
-    const sections = [...document.querySelectorAll("${sheet} [data-details-section]")].map((s) => s.dataset.detailsSection);
+    // A summary (#10): the facts, no fields.
+    const summary = [...document.querySelectorAll("${sheet} [data-summary]")].map((s) => s.dataset.summary);
+    const fields = document.querySelectorAll("${sheet} input, ${sheet} select, ${sheet} textarea").length;
     return { inside: sheet.left >= side.left - 0.5 && sheet.right <= side.right + 0.5,
       clear: sheet.right <= centre.left + 0.5, tree: !!document.querySelector("[data-side-view=hosts] nav"),
       ways: !!document.querySelector("${sheet} [data-ways-in] [data-connect=default]"),
-      sections };
+      summary, fields };
   })()`);
   if (
     !sheetPlace.inside ||
@@ -774,15 +990,174 @@ async function sidePanels({
     fail(`the details sheet's place: ${JSON.stringify(sheetPlace)}`);
   }
   if (
-    sheetPlace.sections.join(",") !==
-    "device,location,connection,tags,custom,description"
+    sheetPlace.summary.join(",") !==
+      "vendor,model,site,platform,credential_profile" ||
+    sheetPlace.fields !== 0
   ) {
-    fail(`the sheet's sections: ${sheetPlace.sections.join(",")}`);
+    fail(`the sheet's summary: ${JSON.stringify(sheetPlace)}`);
   }
   await screenshot("details-sheet");
   step(
     "a row's details control opened the sheet over the side view, with the tree above it",
   );
+
+  const json = (value) => JSON.stringify(value);
+  const text = async (selector) =>
+    evaluate(`document.querySelector(${json(selector)})?.textContent ?? ""`);
+  // The sheet fits its width without scrolling sideways, and its height
+  // without scrolling when it has the room (~400 px); the three menus sit
+  // on one row; the summary has no fields.
+  const fit = await evaluate(`(() => {
+    const sheet = document.querySelector("${sheet}");
+    const body = sheet.querySelector(".body");
+    const tops = ["open", "run", "more"].map((name) =>
+      Math.round(sheet.querySelector("[data-menu-" + name + "]")?.getBoundingClientRect().top ?? -1));
+    return { width: Math.round(sheet.getBoundingClientRect().width),
+      height: Math.round(sheet.getBoundingClientRect().height),
+      scrollX: body.scrollWidth > body.clientWidth + 1,
+      scrollY: body.scrollHeight > body.clientHeight + 1,
+      content: body.scrollHeight, tops };
+  })()`);
+  if (fit.scrollX) fail(`the sheet scrolls sideways: ${JSON.stringify(fit)}`);
+  if (fit.tops.some((top) => top < 0 || top !== fit.tops[0])) {
+    fail(
+      `the Open, Run and More menus are not on one row: ${JSON.stringify(fit)}`,
+    );
+  }
+  if (fit.height >= 400 && fit.scrollY) {
+    fail(
+      `the sheet scrolls although it is ${fit.height} px tall: ${JSON.stringify(fit)}`,
+    );
+  }
+  step(`the host's sheet is a summary that fits (${JSON.stringify(fit)})`);
+
+  // The menus: Enter, Space and the arrows open them, the arrows, Home and
+  // End move, Escape closes and returns to the button, Tab closes.
+  const trigger = (name) => `${sheet} [data-menu-${name}]`;
+  const menuOf = (name) => `${trigger(name)} + [role=menu]`;
+  const focused = () =>
+    evaluate(`(() => {
+      const item = document.activeElement;
+      return item?.getAttribute("role") === "menuitem"
+        ? [...item.closest("[role=menu]").querySelectorAll("[role=menuitem]")].indexOf(item)
+        : item?.hasAttribute("data-menu-open") ? "open button"
+        : item?.hasAttribute("data-menu-run") ? "run button"
+        : item?.tagName ?? null;
+    })()`);
+  const expanded = (name) =>
+    evaluate(
+      `document.querySelector(${json(trigger(name))}).getAttribute("aria-expanded")`,
+    );
+  const focusButton = (name) =>
+    evaluate(`document.querySelector(${json(trigger(name))}).focus()`);
+  for (const name of ["open", "run", "more"]) {
+    const attributes = await evaluate(`(() => {
+      const button = document.querySelector(${json(trigger(name))});
+      return [button.getAttribute("aria-haspopup"), button.getAttribute("aria-expanded")];
+    })()`);
+    if (json(attributes) !== json(["menu", "false"])) {
+      fail(`the ${name} button's ARIA: ${json(attributes)}`);
+    }
+  }
+  await focusButton("open");
+  await pressKey(evaluate, "Enter");
+  await until("the Open menu opened by Enter", () => exists(menuOf("open")));
+  if ((await expanded("open")) !== "true") fail("Open is not aria-expanded");
+  if ((await focused()) !== 0)
+    fail(`Enter focused ${await focused()}, not the first entry`);
+  await pressKey(evaluate, "ArrowDown");
+  if ((await focused()) !== 1) fail(`ArrowDown focused ${await focused()}`);
+  await pressKey(evaluate, "End");
+  const lastOpen = await evaluate(
+    `document.querySelectorAll(${json(menuOf("open") + " [role=menuitem]")}).length - 1`,
+  );
+  if ((await focused()) !== lastOpen) fail(`End focused ${await focused()}`);
+  await pressKey(evaluate, "ArrowDown");
+  if ((await focused()) !== 0)
+    fail("ArrowDown past the last entry did not wrap");
+  await pressKey(evaluate, "ArrowUp");
+  if ((await focused()) !== lastOpen)
+    fail("ArrowUp from the first did not wrap");
+  await pressKey(evaluate, "Home");
+  if ((await focused()) !== 0) fail("Home did not focus the first entry");
+  await screenshot("details-open-menu");
+  await pressKey(evaluate, "Escape");
+  await until(
+    "the Open menu closed by Escape",
+    async () => !(await exists(menuOf("open"))),
+  );
+  if ((await focused()) !== "open button")
+    fail("Escape did not return to the button");
+  if (!(await exists(sheet))) fail("Escape in the menu closed the sheet");
+  if ((await expanded("open")) !== "false") fail("Open stays aria-expanded");
+  // Space on the Run button, ArrowUp on it opens at the last entry.
+  await focusButton("run");
+  await pressKey(evaluate, " ");
+  await until("the Run menu opened by Space", () => exists(menuOf("run")));
+  const runItems = await evaluate(
+    `[...document.querySelectorAll(${json(menuOf("run") + " [role=menuitem]")})].map((b) => [...b.attributes].find((a) => a.name.startsWith("data-"))?.name)`,
+  );
+  if (
+    json(runItems) !==
+    json([
+      "data-host-run-snippet",
+      "data-host-run-script",
+      "data-host-send-file",
+      "data-host-back-up",
+      "data-host-enrich",
+    ])
+  ) {
+    fail(`the Run menu holds ${json(runItems)}`);
+  }
+  await pressKey(evaluate, "Tab");
+  await until(
+    "the Run menu closed by Tab",
+    async () => !(await exists(menuOf("run"))),
+  );
+  await focusButton("more");
+  await pressKey(evaluate, "ArrowUp");
+  await until("the More menu opened by ArrowUp", () => exists(menuOf("more")));
+  const more = await evaluate(`(() => {
+    const menu = document.querySelector(${json(menuOf("more"))});
+    const kids = [...menu.children].map((el) => el.getAttribute("role") === "separator" ? "---" : el.textContent.trim());
+    const del = menu.querySelector("[data-host-delete]");
+    return { kids, focusedLast: document.activeElement === del, danger: del && getComputedStyle(del).color };
+  })()`);
+  if (
+    json(more.kids) !== json(["Move…", "---", "Delete…"]) ||
+    !more.focusedLast
+  ) {
+    fail(`the More menu: ${json(more)}`);
+  }
+  // A press outside closes it, and nothing is run.
+  await mouseClick(evaluate, `${sheet} h2`);
+  await until(
+    "the More menu closed by a press outside",
+    async () => !(await exists(menuOf("more"))),
+  );
+  if (await exists("[role=dialog]"))
+    fail("a press outside the menu ran an action");
+  step(
+    "Open, Run and More menus open with Enter, Space and arrows, move with arrows, Home and End, and close with Escape, Tab or a press outside",
+  );
+
+  // Edit host: the sheet's button shows its shortcut; it and the shortcut
+  // open the host editor tab on this host.
+  const editLabel = await text(`${sheet} [data-details-edit]`);
+  if (!editLabel.includes("Edit host") || !editLabel.includes("Ctrl+Shift+E")) {
+    fail(`the Edit host button reads "${editLabel.trim()}"`);
+  }
+  await mouseClick(evaluate, `${sheet} [data-details-edit]`);
+  await until("the host editor from Edit host", () =>
+    exists("[data-view=host]"),
+  );
+  await closeHostEditor(evaluate);
+  await pressKey(evaluate, "E", "KeyE", 2 | 8);
+  await until("the host editor from Ctrl+Shift+E", () =>
+    exists("[data-view=host]"),
+  );
+  await closeHostEditor(evaluate);
+  step("Edit host, and Ctrl+Shift+E, opened the host editor tab");
 
   // It follows the selection in the tree, folders too (the workspace's
   // settings control selects the top folder).
@@ -2211,8 +2586,13 @@ async function main() {
       }
       form.requestSubmit();
     })()`);
-  // Types into a side-panel field and commits it, as leaving the field does.
-  const changeField = async (selector, value) => {
+  // Changes a field of the selected host in the host editor tab (the
+  // details sheet only summarises it) and saves it to the host's file.
+  const changeField = (selector, value) =>
+    editHost(evaluate, [[selector, value]]);
+  // Types into a side-panel field of a folder and commits it, as leaving
+  // the field does (a folder is edited in the sheet, and saved at once).
+  const changeFolderField = async (selector, value) => {
     await showDetails(evaluate);
     // The panel's fields are drawn a moment after it shows (#139: slower in
     // Windows Sandbox).
@@ -2967,10 +3347,16 @@ async function main() {
     fail(`expected a log per quick connection, found ${quickLogs.join(", ")}`);
   }
   await showDetails(evaluate);
-  if (!(await text("[data-setting-note=logging]")).includes("secrets")) {
+  await openHostEditor(evaluate);
+  if (
+    !(await text(`${HOST_EDITOR} [data-setting-note=logging]`)).includes(
+      "secrets",
+    )
+  ) {
     fail("the logging setting does not warn that logs can contain secrets");
   }
-  if (!(await evaluate(`!!document.querySelector("[data-open-logs]")`))) {
+  await closeHostEditor(evaluate);
+  if (!(await hostActionOffered(evaluate, "data-open-logs"))) {
     fail("the side panel has no action to open the host's log folder");
   }
   step("sessions were logged as plain text by workspace, path, host and time");
@@ -3088,6 +3474,7 @@ async function main() {
     click,
     fillForm,
     changeField,
+    changeFolderField,
     centreOf,
     mouse,
     devtools,
@@ -4436,10 +4823,18 @@ async function enrichment({ evaluate, screenshot, step, ready }) {
     const fillIn = async (row, button, hosts) => {
       await clickOn(row);
       await showDetails(evaluate);
-      await until("the side panel's Fill in button", () =>
-        exists(`.side ${button}`),
-      );
-      await clickOn(`.side ${button}`);
+      if (button.startsWith("[data-host-")) {
+        // The host's header holds it in its Run menu.
+        await until("the side panel's Run menu", () =>
+          exists(".side [data-menu-run]"),
+        );
+        await hostAction(evaluate, button.slice(1, -1));
+      } else {
+        await until("the side panel's Fill in button", () =>
+          exists(`.side ${button}`),
+        );
+        await clickOn(`.side ${button}`);
+      }
       const plan = await until("the fill-in pre-flight", () =>
         evaluate(`(() => {
           const d = document.querySelector("${dialog}[data-step=preflight]");
@@ -5502,11 +5897,12 @@ async function webLinks({ evaluate, text, screenshot, step }) {
   if (opened().length !== 1) fail(`refused links were opened: ${opened()}`);
   step("links that are not http/https, or lack a field, are refused");
 
-  // A link added on the host from the side panel, then the host's own GUI
-  // link replacing the folder's (in its place) and a field filling the
-  // controller's.
+  // A link added on the host in the host editor (saved with Save), then
+  // the host's own GUI link replacing the folder's (in its place) and a
+  // field filling the controller's.
+  await openHostEditor(evaluate);
   await evaluate(`(() => {
-    const form = document.querySelector(".side form:has([name=new-link-name])");
+    const form = document.querySelector(${json(`${HOST_EDITOR} form:has([name=new-link-name])`)});
     for (const [name, value] of Object.entries({
       "new-link-name": "Grafana",
       "new-link-url": "https://grafana.example.net/d/{{name}}",
@@ -5517,6 +5913,8 @@ async function webLinks({ evaluate, text, screenshot, step }) {
     }
     form.requestSubmit();
   })()`);
+  await saveHostEdits(evaluate);
+  await closeHostEditor(evaluate);
   await until("the Grafana link on the host", () => exists(link("Grafana")));
   if (!readFileSync(hostFile, "utf8").includes("Grafana:")) {
     fail(`the host file lacks the link: ${readFileSync(hostFile, "utf8")}`);
@@ -7162,10 +7560,8 @@ async function jobs({
 
     await clickOn(hostRow);
     await showDetails(evaluate);
-    await until("jobs-r1's side panel", () =>
-      exists(".side [data-host-run-snippet]"),
-    );
-    await clickOn(".side [data-host-run-snippet]");
+    await until("jobs-r1's side panel", () => exists(".side [data-menu-run]"));
+    await hostAction(evaluate, "data-host-run-snippet");
     await until("the run-snippet tab for the host", () => atStep("snippet"));
     // Trusted now: no warning.
     await preflight({}, false);
@@ -7201,7 +7597,7 @@ async function jobs({
     await until("the job tab closed", async () => !(await exists(dialog)));
 
     // A command that never returns: cancelled, its output kept.
-    await clickOn(".side [data-host-run-snippet]");
+    await hostAction(evaluate, "data-host-run-snippet");
     await until("the run-snippet tab again", () => atStep("snippet"));
     await pickSnippet("Job hang");
     await until("the hang snippet shown", async () =>
@@ -7522,11 +7918,9 @@ async function jobs({
     await until("jobs-b1 in the tree", () => exists(backupRow));
     await clickOn(backupRow);
     await showDetails(evaluate);
-    await until("jobs-b1's side panel", () =>
-      exists(".side [data-host-back-up]"),
-    );
+    await until("jobs-b1's side panel", () => exists(".side [data-menu-run]"));
     const backUp = async () => {
-      await clickOn(".side [data-host-back-up]");
+      await hostAction(evaluate, "data-host-back-up");
       await until("the backup pre-flight", async () =>
         exists(
           `${dialog}[data-step=preflight] [data-job-host="${backupHost}"]`,
@@ -7579,7 +7973,7 @@ async function jobs({
       await clickOn(backupRow);
       await showDetails(evaluate);
       await until("jobs-b1's side panel", () =>
-        exists(".side [data-host-back-up]"),
+        exists(".side [data-menu-run]"),
       );
     };
     if (!existsSync(join(appData, "configs"))) {
@@ -7645,7 +8039,7 @@ async function jobs({
 
     // The device's configuration changes (a snippet job), and the next
     // backup keeps a second version.
-    await clickOn(".side [data-host-run-snippet]");
+    await hostAction(evaluate, "data-host-run-snippet");
     await until("the run-snippet tab on jobs-b1", () => atStep("snippet"));
     await pickSnippet("Job configure");
     await until("the configure snippet shown", async () =>
@@ -7753,7 +8147,7 @@ async function jobs({
         `document.querySelectorAll('.slot.view [data-view=config-history][data-host="${backupHost}"]').length`,
       );
     await backToHost();
-    await clickOn(".side [data-open-config-history]");
+    await hostAction(evaluate, "data-open-config-history");
     await until("the history tab from the details", () => exists(history));
     await mouseClick(evaluate, backupRow, { button: "right" });
     await until("the host's context menu", () =>
@@ -7858,17 +8252,18 @@ async function jobs({
 
     // Back up on login: on for the host, each connection checks the
     // configuration over a second channel, showing nothing in the terminal.
-    await evaluate(`(() => {
-      const select = document.querySelector(".side [name=setting-backup_on_login]");
-      select.value = "on";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    })()`);
+    await openHostEditor(evaluate);
+    await editHostField(evaluate, "[name=setting-backup_on_login]", "on");
+    await saveHostEdits(evaluate);
     await until("backup on login set on the host", () =>
       readFileSync(backupHostFile, "utf8").includes("backup_on_login: true"),
     );
-    if (!(await exists('.side [data-setting-note="backup_on_login"]'))) {
+    if (
+      !(await exists(`${HOST_EDITOR} [data-setting-note="backup_on_login"]`))
+    ) {
       fail("the setting does not say where it does not apply");
     }
+    await closeHostEditor(evaluate);
     const loginBackup = `${SHOWN_SESSION} [data-login-backup]`;
     const backupMarker = () =>
       evaluate(`(() => {
@@ -8031,12 +8426,7 @@ async function jobs({
     };
     const versionsBefore = versionsOf("jobs-b1");
     await backToHost();
-    await evaluate(`(() => {
-      const input = document.querySelector(".side [name=name]");
-      input.value = "jobs-b2";
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    })()`);
+    await editHost(evaluate, [["[name=name]", "jobs-b2"]]);
     await until(
       "the renamed host file",
       () => existsSync(renamedHostFile) && !existsSync(backupHostFile),
@@ -8343,10 +8733,8 @@ async function filesTab({
     // A stored profile: no question; the platform's file folder.
     await clickOn(row(r1));
     await showDetails(evaluate);
-    await until("Files in the details", () =>
-      exists(".side [data-open-files]"),
-    );
-    await clickOn(".side [data-open-files]");
+    await until("Files in the details", () => exists(".side [data-menu-open]"));
+    await hostAction(evaluate, "data-open-files");
     await listed(r1, "/flash");
     if (json(await names(r1)) !== json(["boot.bin"]))
       fail(`/flash lists ${json(await names(r1))}`);
@@ -8619,7 +9007,7 @@ async function filesTab({
       await clickOn(row(host));
       await showDetails(evaluate);
       await sleep(500);
-      if (await exists(".side [data-open-files]"))
+      if (await hostActionOffered(evaluate, "data-open-files"))
         fail(`${host}'s details offer Files`);
     }
     // The active pane's new-tab button (folded into "…" when narrow).
@@ -12400,7 +12788,7 @@ async function liveReload({ evaluate, text, screenshot, step }) {
   await showDetails(evaluate);
   await until("the edited field in the side panel", () =>
     evaluate(
-      `document.querySelector(".side [name=vendor]")?.value === "Juniper"`,
+      `document.querySelector(".side [data-summary=vendor]")?.textContent.trim() === "Juniper"`,
     ),
   );
   if (!(await oddSelected())) fail("the reload lost the selection");
@@ -12541,13 +12929,15 @@ async function credentialProfiles({
     (await text(".side h2")).includes("smoke-r1"),
   );
   // The setting says what goes in it (#116).
+  await openHostEditor(evaluate);
   if (
-    !(await text(".side [data-setting-note=credential_profile]")).includes(
-      "a profile in the Credentials view, or a new name",
-    )
+    !(
+      await text(`${HOST_EDITOR} [data-setting-note=credential_profile]`)
+    ).includes("a profile in the Credentials view, or a new name")
   ) {
     fail("the Credential profile setting does not say what it takes");
   }
+  await closeHostEditor(evaluate);
   await changeField("[name=setting-credential_profile]", "lab-login");
   await until("the profile's name in the host file", () =>
     readFileSync(hostFile, "utf8").includes("credential_profile: lab-login\n"),
@@ -13346,11 +13736,13 @@ async function serial({
   await until("the serial host in the tree", () => exists(hostRow));
   await clickOn(hostRow);
   await showDetails(evaluate);
-  await until("its serial port in the side panel", async () =>
-    (await text('.side [data-origin="serial.port"]')).includes(
+  await openHostEditor(evaluate);
+  await until("its serial port in the host editor", async () =>
+    (await text(`${HOST_EDITOR} [data-origin="serial.port"]`)).includes(
       `${missingPort} · `,
     ),
   );
+  await closeHostEditor(evaluate);
   await doubleClick(hostRow);
   await until(`"${failure}" for the host`, async () =>
     (await status()).startsWith(failure),
@@ -13375,6 +13767,7 @@ async function editInventory({
   click,
   fillForm,
   changeField,
+  changeFolderField,
   centreOf,
   mouse,
   devtools,
@@ -13385,6 +13778,9 @@ async function editInventory({
   const contents = (path) =>
     existsSync(file(path)) ? readFileSync(file(path), "utf8") : null;
   const clickOn = (selector) => mouseClick(evaluate, selector);
+  const json = (value) => JSON.stringify(value);
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${json(selector)})`);
   const dialog = "[role=dialog] form";
   const dialogOpen = () =>
     evaluate(`!!document.querySelector(${JSON.stringify(dialog)})`);
@@ -13392,14 +13788,25 @@ async function editInventory({
   const hostRow = (id) => `nav [data-host="${id}"]`;
   const hostFile =
     "address: 10.9.0.1\nvendor: Arista\nrack_unit: 12\nrole: firewall\n";
-  // What the side panel says applies, and where it comes from.
-  const shows = async (key, expected) => {
-    await showDetails(evaluate);
+  // What the settings say applies, and where it comes from: in the
+  // details sheet (a folder's), or in the host editor tab (`scope`).
+  const shows = async (key, expected, scope = ".side") => {
+    if (scope === ".side") await showDetails(evaluate);
     return until(
       `${key} shown as "${expected}"`,
       async () =>
-        (await text(`.side [data-origin="${key}"]`)).trim() === expected,
+        (await text(`${scope} [data-origin="${key}"]`)).trim() === expected,
     );
+  };
+  // Edits a field of the host editor tab and saves it to the host's file.
+  const editorSave = async (selector, value) => {
+    await editHostField(evaluate, selector, value);
+    await saveHostEdits(evaluate);
+  };
+  // Clears a setting of the host editor tab (its Clear button) and saves.
+  const editorClear = async (label) => {
+    await clickOn(`${HOST_EDITOR} [aria-label="${label}"]`);
+    await saveHostEdits(evaluate);
   };
 
   // Every control of the Hosts view's header is fully inside the side
@@ -13462,18 +13869,20 @@ async function editInventory({
   );
   step("a folder and a host were created and written to disk");
 
-  // The side panel edits the selected host's file.
+  // The sheet summarises the selected host (no fields); the host editor
+  // tab edits it, and Save writes its file.
   await showDetails(evaluate);
   await until("the host's side panel", async () =>
     (await text(".side h2")).includes("edge-r1"),
   );
-  await changeField("[name=vendor]", "Arista");
+  await openHostEditor(evaluate);
+  await editorSave("[name=vendor]", "Arista");
   await until(
     "the vendor in the file",
     () =>
       contents("Edge/edge-r1.yaml") === "address: 10.9.0.1\nvendor: Arista\n",
   );
-  await changeField("[name=rack_unit]", "12");
+  await editorSave("[name=rack_unit]", "12");
   await until(
     "the rack unit in the file",
     () =>
@@ -13481,7 +13890,7 @@ async function editInventory({
       "address: 10.9.0.1\nvendor: Arista\nrack_unit: 12\n",
   );
   // The role is chosen from the list, built-in ones included.
-  await changeField("[name=role]", "firewall");
+  await editorSave("[name=role]", "firewall");
   await until(
     "the role in the file",
     () => contents("Edge/edge-r1.yaml") === hostFile,
@@ -13491,41 +13900,46 @@ async function editInventory({
       `document.querySelector(${JSON.stringify(hostRow("Edge/edge-r1.yaml") + " [data-role-icon]")})?.dataset.roleIcon === "firewall"`,
     ),
   );
-  await fillForm({ "new-tag": "edge" }, ".side form:has([name=new-tag])");
+  await fillForm(
+    { "new-tag": "edge" },
+    `${HOST_EDITOR} form:has([name=new-tag])`,
+  );
+  await saveHostEdits(evaluate);
   await until("the tag in the file", () =>
     contents("Edge/edge-r1.yaml")?.endsWith("tags:\n- edge\n"),
   );
   await fillForm(
     { "new-key": "circuit", "new-value": "CID-77" },
-    ".side form:has([name=new-key])",
+    `${HOST_EDITOR} form:has([name=new-key])`,
   );
+  await saveHostEdits(evaluate);
   await until("the custom field in the file", () =>
     contents("Edge/edge-r1.yaml")?.endsWith("custom:\n  circuit: CID-77\n"),
   );
-  await changeField('[data-custom="circuit"]', "CID-78");
+  await editorSave('[data-custom="circuit"]', "CID-78");
   await until("the edited custom field in the file", () =>
     contents("Edge/edge-r1.yaml")?.endsWith("custom:\n  circuit: CID-78\n"),
   );
   await screenshot("host-details");
-  await clickOn('.side [aria-label="Remove tag edge"]');
+  await editorClear("Remove tag edge");
   await until(
     "the tag removed from the file",
     async () => !contents("Edge/edge-r1.yaml")?.includes("tags:"),
   );
-  await clickOn('.side [aria-label="Remove field circuit"]');
+  await editorClear("Remove field circuit");
   await until(
     "the custom field removed from the file",
     () => contents("Edge/edge-r1.yaml") === hostFile,
   );
   step(
-    "the side panel saved fields, a role, tags and custom fields to the file",
+    "the host editor saved fields, a role, tags and custom fields to the file on Save",
   );
 
   // One click copies a field's value.
   await devtools.send("Browser.grantPermissions", {
     permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
   });
-  await clickOn('.side [aria-label="Copy management address"]');
+  await clickOn(`${HOST_EDITOR} [aria-label="Copy management address"]`);
   await until("the copied address on the clipboard", async () => {
     const { result } = await devtools.send("Runtime.evaluate", {
       expression: "navigator.clipboard.readText()",
@@ -13537,7 +13951,7 @@ async function editInventory({
   step("a field value was copied with one click");
 
   // Renaming from the side panel renames the file.
-  await changeField("[name=name]", "edge-r2");
+  await editorSave("[name=name]", "edge-r2");
   await until(
     "the renamed host file",
     () =>
@@ -13545,6 +13959,7 @@ async function editInventory({
       !existsSync(file("Edge/edge-r1.yaml")),
   );
   step("renaming a host renamed its file");
+  await closeHostEditor(evaluate);
 
   // Dragging the host onto another folder moves its file (in the whole
   // tree: the details sheet closed, back to the tree).
@@ -13583,57 +13998,208 @@ async function editInventory({
     ),
   );
   await clickOn(hostRow("Lab/edge-r2.yaml"));
-  await shows("port", `${SSH_PORT} · from Lab`);
-  await shows("protocol", "ssh · default");
-  await shows("serial.baud_rate", "9600 · default");
-  await shows("connect_timeout", "15 · default");
-  await changeField("[name=setting-connect_timeout]", "40");
+  await openHostEditor(evaluate);
+  const inEditor = HOST_EDITOR;
+  await shows("port", `${SSH_PORT} · from Lab`, inEditor);
+  await shows("protocol", "ssh · default", inEditor);
+  await shows("serial.baud_rate", "9600 · default", inEditor);
+  await shows("connect_timeout", "15 · default", inEditor);
+  await editorSave("[name=setting-connect_timeout]", "40");
   await until(
     "the connect timeout in the host's file",
     () =>
       contents("Lab/edge-r2.yaml") ===
       "address: 10.9.0.1\nconnect_timeout: 40\nvendor: Arista\nrack_unit: 12\nrole: firewall\n",
   );
-  await shows("connect_timeout", "40 · set on this host");
-  await clickOn('.side [aria-label="Clear Connect timeout (seconds)"]');
+  await shows("connect_timeout", "40 · set on this host", inEditor);
+  await editorClear("Clear Connect timeout (seconds)");
   await until(
     "the connect timeout cleared from the host's file",
     () => contents("Lab/edge-r2.yaml") === hostFile,
   );
-  await changeField("[name=setting-legacy_crypto]", "on");
+  await editorSave("[name=setting-legacy_crypto]", "on");
   await until(
     "the host's own setting in its file",
     () =>
       contents("Lab/edge-r2.yaml") ===
       "address: 10.9.0.1\nlegacy_crypto: true\nvendor: Arista\nrack_unit: 12\nrole: firewall\n",
   );
-  await shows("legacy_crypto", "on · set on this host");
+  await shows("legacy_crypto", "on · set on this host", inEditor);
   await screenshot("host-settings");
-  await clickOn('.side [aria-label="Clear Legacy crypto"]');
+  await editorClear("Clear Legacy crypto");
   await until(
     "the host's setting cleared from its file",
     () => contents("Lab/edge-r2.yaml") === hostFile,
   );
-  await shows("legacy_crypto", "off · default");
+  await shows("legacy_crypto", "off · default", inEditor);
   // The platform is a setting too: its own value goes after the vendor.
-  await shows("platform", "none");
-  await changeField("[name=setting-platform]", "srlinux");
+  await shows("platform", "none", inEditor);
+  await editorSave("[name=setting-platform]", "srlinux");
   await until(
     "the host's platform in its file",
     () =>
       contents("Lab/edge-r2.yaml") ===
       "address: 10.9.0.1\nvendor: Arista\nplatform: srlinux\nrack_unit: 12\nrole: firewall\n",
   );
-  await shows("platform", "srlinux · set on this host");
-  await clickOn('.side [aria-label="Clear Platform"]');
+  await shows("platform", "srlinux · set on this host", inEditor);
+  await editorClear("Clear Platform");
   await until(
     "the host's platform cleared from its file",
     () => contents("Lab/edge-r2.yaml") === hostFile,
   );
-  await shows("platform", "none");
+  await shows("platform", "none", inEditor);
+  await closeHostEditor(evaluate);
   step(
-    "the side panel showed effective settings and origins, set and cleared one",
+    "the host editor showed effective settings and origins, set and cleared one",
   );
+
+  // The host editor saves only on Save (#10): edits wait as unsaved changes
+  // (counted in the editor and in the tab's name) until Save writes the
+  // host's file; Revert drops them; leaving them (another host, closing
+  // the tab) asks first. Tried on the Room field of Lab/edge-r2.
+  const edge = "Lab/edge-r2.yaml";
+  const roomOf = () => contents(edge)?.match(/^room: (.*)$/m)?.[1] ?? null;
+  const unsavedIs = (count) =>
+    until(
+      `${count} unsaved changes`,
+      async () => (await unsavedCount(evaluate)) === count,
+    );
+  const tabTitle = () =>
+    evaluate(`document.querySelector("[data-tab-view=host]")?.title ?? ""`);
+  const answerUnsaved = async (choice) => {
+    await until("the unsaved-changes question", () =>
+      exists("[data-confirm-unsaved]"),
+    );
+    await clickOn(`[data-confirm-unsaved] [data-unsaved=${choice}]`);
+    await until(
+      "the unsaved-changes question answered",
+      async () => !(await exists("[data-confirm-unsaved]")),
+    );
+  };
+  const otherHost = await evaluate(
+    `document.querySelector('nav [data-host]:not([data-host="${edge}"])')?.dataset.host ?? null`,
+  );
+  if (otherHost === null) fail("no other host in the tree to switch to");
+  const selectEdge = async () => {
+    await clickOn(hostRow(edge));
+    await until("the host editor on edge-r2", () =>
+      evaluate(
+        `document.querySelector("[data-view=host]")?.dataset.hostEditor === ${json(edge)}`,
+      ),
+    );
+  };
+  await clickOn(hostRow(edge));
+  await openHostEditor(evaluate);
+
+  // Edit, see the count, Save, see the file.
+  await editHostField(evaluate, "[name=room]", "R7");
+  await unsavedIs(1);
+  if (!(await tabTitle()).includes("(1)")) {
+    fail(`the tab does not count the unsaved change: ${await tabTitle()}`);
+  }
+  if (
+    !(await text(`${HOST_EDITOR} [data-unsaved-count]`)).includes(
+      "1 unsaved change",
+    )
+  ) {
+    fail("the editor does not say how many changes are unsaved");
+  }
+  await sleep(300);
+  if (contents(edge) !== hostFile) fail("an edit was written before Save");
+  await saveHostEdits(evaluate);
+  await until("the room in the file after Save", () => roomOf() === "R7");
+  await screenshot("host-editor-saved");
+
+  // Edit again, Revert: the file and the field are as saved.
+  await editHostField(evaluate, "[name=room]", "R8");
+  await unsavedIs(1);
+  await clickOn(`${HOST_EDITOR} [data-host-revert]`);
+  await unsavedIs(0);
+  await until("the field back to what is saved", () =>
+    evaluate(
+      `document.querySelector("${HOST_EDITOR} [name=room]")?.value === "R7"`,
+    ),
+  );
+  await sleep(300);
+  if (roomOf() !== "R7") fail(`Revert changed the file: room ${roomOf()}`);
+  step(
+    "an edit showed as an unsaved change, Save wrote the file, Revert dropped the next edit",
+  );
+
+  // Edit, switch host: the question; Cancel stays, Save writes, Discard drops.
+  await editHostField(evaluate, "[name=room]", "R9");
+  await unsavedIs(1);
+  await clickOn(hostRow(otherHost));
+  await answerUnsaved("cancel");
+  await until("the tree selecting edge-r2 again", () =>
+    evaluate(
+      `document.querySelector(${json(hostRow(edge))})?.getAttribute("aria-pressed") === "true"`,
+    ),
+  );
+  await unsavedIs(1);
+  if (roomOf() !== "R7") fail("Cancel wrote or dropped the edit");
+  await clickOn(hostRow(otherHost));
+  await answerUnsaved("save");
+  await until("the room saved by the question", () => roomOf() === "R9");
+  await until("the editor on the other host", () =>
+    evaluate(
+      `document.querySelector("[data-view=host]")?.dataset.hostEditor === ${json(otherHost)}`,
+    ),
+  );
+  await selectEdge();
+  await editHostField(evaluate, "[name=room]", "R10");
+  await unsavedIs(1);
+  await clickOn(hostRow(otherHost));
+  await answerUnsaved("discard");
+  await until("the editor on the other host again", () =>
+    evaluate(
+      `document.querySelector("[data-view=host]")?.dataset.hostEditor === ${json(otherHost)}`,
+    ),
+  );
+  await sleep(300);
+  if (roomOf() !== "R9") fail(`Discard changed the file: room ${roomOf()}`);
+  step(
+    "switching host with unsaved edits asked; Cancel stayed, Save wrote them, Discard dropped them",
+  );
+
+  // Edit, close the tab: the question; Cancel keeps the tab, Discard drops,
+  // Save writes.
+  await selectEdge();
+  await editHostField(evaluate, "[name=room]", "R11");
+  await unsavedIs(1);
+  await clickOn("[data-tab-view=host] [data-tab-close]");
+  await answerUnsaved("cancel");
+  if (!(await exists("[data-view=host]"))) fail("Cancel closed the tab");
+  await unsavedIs(1);
+  await clickOn("[data-tab-view=host] [data-tab-close]");
+  await answerUnsaved("discard");
+  await until(
+    "the host editor tab closed by Discard",
+    async () => !(await exists("[data-view=host]")),
+  );
+  if (roomOf() !== "R9")
+    fail(`closing with Discard changed the file: room ${roomOf()}`);
+  await openHostEditor(evaluate);
+  await editHostField(evaluate, "[name=room]", "R12");
+  await unsavedIs(1);
+  await clickOn("[data-tab-view=host] [data-tab-close]");
+  await answerUnsaved("save");
+  await until(
+    "the host editor tab closed by Save",
+    async () => !(await exists("[data-view=host]")),
+  );
+  await until("the room saved on closing", () => roomOf() === "R12");
+  step(
+    "closing the tab with unsaved edits asked; Cancel kept the tab, Discard dropped them, Save wrote them",
+  );
+
+  // Back as it was.
+  await clickOn(hostRow(edge));
+  await openHostEditor(evaluate);
+  await editHostField(evaluate, "[name=room]", "");
+  await saveHostEdits(evaluate);
+  await until("the room removed from the file", () => roomOf() === null);
+  await closeHostEditor(evaluate);
 
   // A folder's description is saved to its settings file.
   await clickOn(folderRow("Edge"));
@@ -13642,7 +14208,7 @@ async function editInventory({
     "the folder's side panel",
     async () => (await text(".side h2")) === "Edge",
   );
-  await changeField("[name=folder-description]", "Edge routers");
+  await changeFolderField("[name=folder-description]", "Edge routers");
   await until(
     "the folder settings file",
     () => contents("Edge/_folder.yaml") === "description: Edge routers\n",
@@ -13650,7 +14216,7 @@ async function editInventory({
   step("a folder description was written to its settings file");
 
   // A setting on a folder is written to its settings file.
-  await changeField("[name=setting-environment]", "lab");
+  await changeFolderField("[name=setting-environment]", "lab");
   await until(
     "the folder's setting in its file",
     () =>
@@ -13658,7 +14224,7 @@ async function editInventory({
       "description: Edge routers\nenvironment: lab\n",
   );
   await shows("environment", "lab · set on this folder");
-  await changeField("[name=setting-platform]", "eos");
+  await changeFolderField("[name=setting-platform]", "eos");
   await until(
     "the folder's platform in its file",
     () =>
@@ -13736,7 +14302,7 @@ async function editInventory({
   const formOpen = () =>
     evaluate(`!!document.querySelector(${JSON.stringify(platformForm)})`);
 
-  await changeField("[name=setting-platform]", "RouterOS");
+  await changeFolderField("[name=setting-platform]", "RouterOS");
   await until(
     "the folder's platform finds no definition",
     async () => (await platformMatch()) === "",
