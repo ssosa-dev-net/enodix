@@ -1,4 +1,5 @@
 <script lang="ts">
+  import IconButton from "./IconButton.svelte";
   // The Snippets side view: the workspace's snippets by group, a filter the
   // core matches (every word in the name, group or text, as the palette's
   // `>` search), and one click sending a snippet to the active pane's
@@ -93,14 +94,14 @@
       Snippets
       {#if list.length > 0}<span class="count">{list.length}</span>{/if}
     </h2>
-    <button
-      class="tool"
+    <IconButton
+      icon={Plus}
       data-snippet-new
-      aria-label="New snippet"
+      label="New snippet"
       title="New snippet, saved in the workspace for the team"
       disabled={!workspace}
-      onclick={() => newSnippet()}><Plus size={16} aria-hidden="true" /></button
-    >
+      onclick={() => newSnippet()}
+    />
   </header>
 
   {#if !workspace}
@@ -193,22 +194,24 @@
                     >{firstLine(snippet.text)}</span
                   >
                 </button>
-                <button
-                  class="small"
+                <IconButton
+                  icon={Pencil}
+                  size="compact"
+                  class="row-action"
                   data-snippet-edit={snippet.name}
                   title="Edit"
-                  aria-label={`Edit ${snippet.name}`}
+                  label={`Edit ${snippet.name}`}
                   onclick={() => editSnippet(snippet)}
-                  ><Pencil size={13} aria-hidden="true" /></button
-                >
-                <button
-                  class="small"
+                />
+                <IconButton
+                  icon={Trash}
+                  size="compact"
+                  class="row-action"
                   data-snippet-delete={snippet.name}
                   title="Delete"
-                  aria-label={`Delete ${snippet.name}`}
+                  label={`Delete ${snippet.name}`}
                   onclick={() => removeSnippet(snippet.name)}
-                  ><Trash size={13} aria-hidden="true" /></button
-                >
+                />
               </li>
             {/each}
           </ul>
@@ -249,23 +252,6 @@
     font-weight: normal;
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
-  }
-
-  .tool {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    width: var(--control-height);
-    height: var(--control-height);
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  .tool:hover:not(:disabled) {
-    color: var(--text);
-    background: var(--surface-raised);
   }
 
   .filtering {
@@ -428,26 +414,13 @@
     opacity: 0.75;
   }
 
-  .small {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    width: var(--control-height-small);
-    height: var(--control-height-small);
-    min-height: 0;
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
+  /* The row's actions show on hover or focus. */
+  li :global(.row-action) {
     visibility: hidden;
   }
 
-  .small:hover {
-    color: var(--text);
-  }
-
-  li:hover .small,
-  li:focus-within .small {
+  li:hover :global(.row-action),
+  li:focus-within :global(.row-action) {
     visibility: visible;
   }
 </style>

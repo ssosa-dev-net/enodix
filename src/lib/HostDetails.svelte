@@ -11,6 +11,7 @@
   import RotateCcwClock from "@lucide/svelte/icons/rotate-ccw-clock";
   import ScanSearch from "@lucide/svelte/icons/scan-search";
   import Trash from "@lucide/svelte/icons/trash";
+  import IconButton from "./IconButton.svelte";
   import CopyButton from "./CopyButton.svelte";
   import RoleIcon from "./RoleIcon.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
@@ -231,91 +232,81 @@
       </p>
     {/if}
     <div class="actions more" aria-label="Actions">
-      <button
+      <IconButton
+        icon={Logs}
+        label="Open log folder"
         data-open-logs
         title="Show this host's session logs in the file manager"
         onclick={() =>
           openLogFolder(host.id).catch(
             (error) => (inventory.editError = String(error)),
           )}
-        ><Logs size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Open log folder</span
-        ></button
-      >
+      />
       {#if effective.current?.protocol.value === "ssh"}
-        <button
+        <IconButton
+          icon={FolderOpen}
+          label="Files"
           data-open-files
           title="Browse this host's files over SFTP, in a tab"
           onclick={() => openFiles(host.id)}
-          ><FolderOpen size={15} aria-hidden="true" /><span
-            class="visually-hidden">Files</span
-          ></button
-        >
+        />
       {/if}
-      <button
+      <IconButton
+        icon={RotateCcwClock}
+        label="Config history"
         data-open-config-history
         title="Earlier versions of this host's configuration, kept by config backups"
         onclick={() => openConfigHistory(host.id)}
-        ><RotateCcwClock size={15} aria-hidden="true" /><span
-          class="visually-hidden">Config history</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={Archive}
+        label="Back up config"
         data-host-back-up
         title="Fetch this host's configuration and keep it in its config history if it changed"
         onclick={() => openBackup({ kind: "hosts", ids: [host.id] }, host.name)}
-        ><Archive size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Back up config</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={ScanSearch}
+        label="Fill in from device…"
         data-host-enrich
         title="Ask the device for its vendor, model, serial number and OS version (NAPALM), then review what to fill in"
         onclick={() => openEnrich({ kind: "hosts", ids: [host.id] }, host.name)}
-        ><ScanSearch size={15} aria-hidden="true" /><span
-          class="visually-hidden">Fill in from device…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={Play}
+        label="Run snippet…"
         data-host-run-snippet
         title="Run a saved snippet on this host as a job, without a terminal"
         onclick={() => openJob({ kind: "hosts", ids: [host.id] }, host.name)}
-        ><Play size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Run snippet…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={FileCode}
+        label="Run script…"
         data-host-run-script
         title="Run a Python script of the workspace for this host, as a job"
         onclick={() => openScript({ kind: "hosts", ids: [host.id] }, host.name)}
-        ><FileCode size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Run script…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={FileUp}
+        label="Send file…"
         data-host-send-file
         title="Send a file from this computer to this host, as a job"
         onclick={() =>
           openSendFile({ kind: "hosts", ids: [host.id] }, host.name)}
-        ><FileUp size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Send file…</span
-        ></button
-      >
-      <button
+      />
+      <IconButton
+        icon={FolderInput}
+        label="Move…"
         title="Move this host to another folder"
         onclick={() => move(item)}
-        ><FolderInput size={15} aria-hidden="true" /><span
-          class="visually-hidden">Move…</span
-        ></button
-      >
-      <button
-        class="danger"
+      />
+      <IconButton
+        icon={Trash}
+        variant="danger"
+        label="Delete…"
         title="Delete this host"
         onclick={() => remove(item)}
-        ><Trash size={15} aria-hidden="true" /><span class="visually-hidden"
-          >Delete…</span
-        ></button
-      >
+      />
     </div>
   </header>
 
@@ -461,14 +452,15 @@
             )}
         />
         <CopyButton value={field.value} what={field.key} />
-        <button
-          class="remove"
-          aria-label="Remove field {field.key}"
+        <IconButton
+          icon={X}
+          size="compact"
+          label="Remove field {field.key}"
           onclick={() =>
             save((current) => ({
               custom: current.custom.filter((f) => f.key !== field.key),
-            }))}><X size={14} aria-hidden="true" /></button
-        >
+            }))}
+        />
       </div>
     {/each}
     <form class="row custom" onsubmit={addCustom}>
@@ -590,28 +582,6 @@
 
   /* One quiet row of icons: each button keeps its name for screen readers
      and shows it as its tooltip. */
-  .actions.more button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--control-height);
-    height: var(--control-height);
-    padding: 0;
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  .actions.more button:hover,
-  .actions.more button:focus-visible {
-    background: var(--surface-raised);
-    color: var(--text);
-  }
-
-  .actions.more button.danger:hover,
-  .actions.more button.danger:focus-visible {
-    color: var(--danger);
-  }
 
   .actions {
     display: flex;
@@ -675,22 +645,5 @@
 
   .custom .key {
     flex: 0 1 40%;
-  }
-
-  .remove {
-    width: var(--control-height);
-    height: var(--control-height);
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--muted);
-  }
-
-  .remove:hover:not(:disabled) {
-    color: var(--danger);
-  }
-
-  .danger:hover:not(:disabled) {
-    color: var(--danger);
   }
 </style>

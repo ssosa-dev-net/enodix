@@ -1,5 +1,7 @@
 <script lang="ts">
   import X from "@lucide/svelte/icons/x";
+  import Button from "./Button.svelte";
+  import IconButton from "./IconButton.svelte";
   import {
     describeOrigin,
     inventory,
@@ -411,13 +413,13 @@
             />
           {/if}
           {#if own !== ""}
-            <button
-              class="remove"
-              aria-label="Clear {row.label}"
+            <IconButton
+              icon={X}
+              size="compact"
+              label="Clear {row.label}"
               title="Clear: inherit from above"
               onclick={() => commit(row, "")}
-              ><X size={14} aria-hidden="true" /></button
-            >
+            />
           {/if}
         </span>
       </label>
@@ -487,11 +489,11 @@
   <section aria-label="Serial line">
     <h4>
       Serial line
-      <button
-        class="small"
+      <Button
+        size="compact"
         data-serial-refresh
         title="Look for serial ports again"
-        onclick={refreshPorts}>Refresh ports</button
+        onclick={refreshPorts}>Refresh ports</Button
       >
     </h4>
     {@render rowsOf(serial)}
@@ -530,12 +532,12 @@
                     ?.url ?? "";
               }}
             />
-            <button
-              class="remove"
-              aria-label="Remove link {link.value.name}"
+            <IconButton
+              icon={X}
+              size="compact"
+              label="Remove link {link.value.name}"
               onclick={() => removeLink(link.value.name)}
-              ><X size={14} aria-hidden="true" /></button
-            >
+            />
           </span>
         {:else}
           <span class="url">{link.value.url}</span>
@@ -670,24 +672,5 @@
 
   .row .link-name {
     flex: 0 1 35%;
-  }
-
-  .small {
-    min-height: var(--control-height-small);
-    padding: 0 var(--space-2);
-    font-size: var(--text-xs);
-  }
-
-  .remove {
-    width: var(--control-height);
-    height: var(--control-height);
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--muted);
-  }
-
-  .remove:hover:not(:disabled) {
-    color: var(--danger);
   }
 </style>
