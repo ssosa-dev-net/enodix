@@ -2,6 +2,7 @@
   import Check from "@lucide/svelte/icons/check";
   import Copy from "@lucide/svelte/icons/copy";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
+  import IconButton from "./IconButton.svelte";
   interface Props {
     value: string;
     /** What is copied, for the button's label. */
@@ -32,49 +33,18 @@
   }
 </script>
 
-<button
-  type="button"
-  class="copy"
-  class:compact
-  class:copied
+<IconButton
+  icon={copied ? Check : failed ? TriangleAlert : Copy}
+  size={compact ? "compact" : "default"}
+  class={copied ? "copied" : ""}
   title={failed ? "Could not copy" : `Copy ${what}`}
-  aria-label="Copy {what}"
+  label="Copy {what}"
   disabled={value === ""}
   onclick={copy}
-  >{#if copied}<Check
-      size={14}
-      aria-hidden="true"
-    />{:else if failed}<TriangleAlert
-      size={14}
-      aria-hidden="true"
-    />{:else}<Copy size={14} aria-hidden="true" />{/if}</button
->
+/>
 
 <style>
-  .copy {
-    flex: none;
-    display: inline-grid;
-    place-items: center;
-    width: var(--control-height);
-    height: var(--control-height);
-    min-height: 0;
-    padding: 0;
-    color: var(--muted);
-    background: none;
-    border-color: transparent;
-  }
-
-  .copy.compact {
-    width: var(--control-height-small);
-    height: var(--control-height-small);
-  }
-
-  .copy:hover:not(:disabled) {
-    color: var(--text);
-    border-color: var(--border);
-  }
-
-  .copied {
+  :global(.btn.icon.copied) {
     color: var(--ok);
   }
 </style>

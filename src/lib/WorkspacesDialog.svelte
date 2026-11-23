@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Button from "./Button.svelte";
   import { tick } from "svelte";
   import {
     createWorkspace,
@@ -190,9 +191,9 @@
           {#if !workspace.available}<span class="tag">folder not found</span
             >{/if}
           <span class="path" class:shown={several}>{workspace.path}</span>
-          <button
-            type="button"
-            class="remove"
+          <Button
+            variant="ghost"
+            size="compact"
             data-workspace-remove
             disabled={workspace.open}
             title={workspace.open
@@ -201,7 +202,7 @@
             onclick={(event) => {
               event.stopPropagation();
               void forget(workspace);
-            }}>Remove</button
+            }}>Remove</Button
           >
         </li>
       {/each}
@@ -362,12 +363,6 @@
   .path.shown,
   li.active .path {
     color: var(--text);
-  }
-
-  .remove {
-    min-height: var(--control-height-small);
-    padding: 0 var(--space-1-5);
-    font-size: var(--text-xs);
   }
 
   form {
