@@ -1030,7 +1030,12 @@ export function saveHostOrSay(
 
 /** Renames the host `id`, answering why it failed (or null). */
 export function renameHostOrSay(id: string, name: string) {
-  return inDialog(() => renameItem({ kind: "host", id }, name));
+  // Queued with the saves, so that none writes the host's old path.
+  const run = saving.then(() =>
+    inDialog(() => renameItem({ kind: "host", id }, name)),
+  );
+  saving = run.then(() => undefined);
+  return run;
 }
 
 export function setFolderDescription(path: string, description: string) {

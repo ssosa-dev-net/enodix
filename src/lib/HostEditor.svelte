@@ -56,7 +56,10 @@
       const tree = inventory.workspace?.tree;
       const nextName = (tree && findHost(tree, next)?.name) ?? next;
       void settleUnsaved([from], `showing ${nextName}`).then((go) => {
-        if (go) followed = next;
+        if (go) {
+          go();
+          followed = next;
+        }
         // Stay: the tree selects the host still being edited again.
         else select({ kind: "host", id: from });
       });
