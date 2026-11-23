@@ -270,7 +270,8 @@
   }
 
   .actions button {
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     font-size: var(--text-xs);
   }
 
@@ -284,8 +285,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: var(--control-height);
+    height: var(--control-height);
     padding: 0;
     border-color: transparent;
     background: none;

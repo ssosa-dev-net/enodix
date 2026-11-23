@@ -368,7 +368,8 @@
   }
 
   li button {
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
   }
 
   .fields {

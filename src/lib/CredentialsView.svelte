@@ -341,8 +341,8 @@
     flex: none;
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: var(--control-height);
+    height: var(--control-height);
     padding: 0;
     border-color: transparent;
     background: none;
@@ -506,7 +506,10 @@
     flex: none;
     display: inline-grid;
     place-items: center;
-    padding: var(--space-1);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
+    padding: 0;
     border-color: transparent;
     background: none;
     color: var(--muted);
@@ -518,7 +521,8 @@
 
   .setup {
     flex: none;
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     font-size: var(--text-xs);
   }
 

@@ -189,6 +189,8 @@
     text-align: left;
     border-color: transparent;
     background: none;
+    gap: 0;
+    min-height: 0;
     padding: var(--space-0-5) var(--space-1-5);
   }
 

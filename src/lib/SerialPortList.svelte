@@ -86,7 +86,8 @@
   }
 
   .small {
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     font-size: var(--text-xs);
   }
 
@@ -103,7 +104,9 @@
     display: flex;
     gap: var(--space-2);
     align-items: baseline;
+    justify-content: normal;
     text-align: left;
+    min-height: 0;
     padding: var(--space-1) var(--space-2);
   }
 

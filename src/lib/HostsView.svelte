@@ -876,7 +876,8 @@
     gap: var(--space-1);
     border-color: transparent;
     background: none;
-    padding: var(--space-1) var(--space-1-5);
+    justify-content: normal;
+    padding: 0 var(--space-1-5);
     font-weight: var(--weight-semibold);
     font-size: var(--text-sm);
     color: var(--text);
@@ -898,8 +899,8 @@
     flex: none;
     display: inline-grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: var(--control-height);
+    height: var(--control-height);
     padding: 0;
     border-color: transparent;
     background: none;
@@ -923,6 +924,7 @@
   .field {
     display: flex;
     align-items: center;
+    height: var(--control-height);
     gap: var(--space-1-5);
     padding: 0 var(--space-1-5) 0 var(--space-2);
     background: var(--input);
@@ -940,7 +942,8 @@
     min-width: 0;
     border: 0;
     background: none;
-    padding: var(--space-1) 0;
+    height: 100%;
+    padding: 0;
     font-size: var(--text-sm);
     outline: none;
   }
@@ -952,7 +955,10 @@
   .field .clear {
     display: inline-grid;
     place-items: center;
-    padding: var(--space-0-5);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
+    padding: 0;
     border: 0;
     background: none;
     color: var(--muted);
@@ -972,7 +978,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    padding: var(--space-0-5) var(--space-2);
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
     border-radius: var(--radius-full);
     font-size: var(--text-xs);
     color: var(--muted);
@@ -1076,9 +1083,13 @@
   }
 
   .dismiss {
+    flex: none;
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
     border: 0;
     background: none;
-    padding: 0 var(--space-1);
+    padding: 0;
     color: var(--muted);
   }
 
@@ -1150,6 +1161,8 @@
     border: 0;
     border-radius: 0;
     background: none;
+    min-height: 0;
+    justify-content: normal;
     padding: var(--space-1-5) var(--space-2-5);
     color: var(--warning);
     text-align: left;
@@ -1193,6 +1206,8 @@
     border-radius: var(--radius-sm);
     background: none;
     text-align: left;
+    min-height: 0;
+    justify-content: normal;
     padding: var(--space-1-5) var(--space-2-5);
   }
 

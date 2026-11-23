@@ -934,11 +934,6 @@
     gap: var(--space-0-5);
   }
 
-  input,
-  select {
-    padding: var(--space-1) var(--space-2);
-  }
-
   pre {
     margin: 0;
     padding: var(--space-1-5) var(--space-2);

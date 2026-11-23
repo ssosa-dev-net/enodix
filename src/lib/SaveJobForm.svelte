@@ -146,7 +146,7 @@
   }
 
   input {
-    padding: var(--space-1) var(--space-1-5);
+    padding-inline: var(--space-1-5);
     min-width: 12rem;
   }
 

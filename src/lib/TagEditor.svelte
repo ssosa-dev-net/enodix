@@ -73,9 +73,7 @@
       spellcheck="false"
       bind:value={newTag}
     />
-    <button type="submit" class="small" disabled={newTag.trim() === ""}
-      >Add</button
-    >
+    <button type="submit" disabled={newTag.trim() === ""}>Add</button>
   </form>
 </section>
 
@@ -108,11 +106,6 @@
     width: 100%;
   }
 
-  .small {
-    padding: var(--space-0-5) var(--space-2);
-    font-size: var(--text-xs);
-  }
-
   .tags {
     display: flex;
     flex-wrap: wrap;
@@ -125,7 +118,7 @@
   .tag {
     display: flex;
     align-items: center;
-    padding: var(--space-0-5) 0 var(--space-0-5) var(--space-2);
+    padding: 0 0 0 var(--space-2);
     border: 1px solid var(--border);
     border-radius: var(--radius-full);
     background: var(--surface);
@@ -139,7 +132,10 @@
   }
 
   .remove {
-    padding: 0 var(--space-1-5);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    min-height: 0;
+    padding: 0;
     border: 0;
     background: none;
     color: var(--muted);

@@ -2100,6 +2100,7 @@
     <span>{notice.text} Find it in Jobs.</span>
     <button
       type="button"
+      class="compact"
       data-job-notice="show"
       onclick={() => {
         jobNotice = null;
@@ -2108,7 +2109,7 @@
     >
     <button
       type="button"
-      class="dismiss"
+      class="compact dismiss"
       data-job-notice="dismiss"
       aria-label="Dismiss"
       onclick={() => (jobNotice = null)}
@@ -2125,11 +2126,13 @@
     >
     <button
       type="button"
+      class="compact"
       data-not-answering-action="take-back"
       onclick={() => void takeBack(hung.window)}>Bring them here</button
     >
     <button
       type="button"
+      class="compact"
       data-not-answering-action="wait"
       onclick={() =>
         (notAnswering = notAnswering.filter(
@@ -2143,7 +2146,7 @@
     <span>The sessions could not be brought here: {takeBackError}</span>
     <button
       type="button"
-      class="dismiss"
+      class="compact dismiss"
       aria-label="Dismiss"
       onclick={() => (takeBackError = null)}
       ><X size={14} aria-hidden="true" /></button
@@ -2324,7 +2327,9 @@
   .job-notice .dismiss {
     border-color: transparent;
     background: none;
-    padding: var(--space-0-5);
+    width: var(--control-height-small);
+    height: var(--control-height-small);
+    padding: 0;
     color: var(--muted);
   }
 

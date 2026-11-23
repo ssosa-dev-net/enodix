@@ -190,6 +190,13 @@ body {
   font-size: var(--text-sm);
 }
 
+/* Controls come in two sizes, both from the tokens: the default
+   (--control-height, 30px) for forms, dialogs and anything beside an input,
+   and the compact one (--control-height-small, 24px, class "compact") for
+   toolbars and dense rows. A button, an input and a select of one size are
+   the same height, so a row of them lines up. An icon-only button is square
+   at the size it uses. A button that is a row, not a control (a tree item,
+   a tab, a menu item), sets min-height: 0 or its own height. */
 button {
   font: inherit;
   font-size: var(--text-sm);
@@ -198,8 +205,12 @@ button {
   background: transparent;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-md);
-  min-height: var(--control-height-small);
-  padding: var(--space-1-5) var(--space-3);
+  min-height: var(--control-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1-5);
+  padding: 0 var(--space-3);
   cursor: pointer;
 }
 
@@ -214,7 +225,7 @@ button.primary {
   background: var(--accent);
   border-color: var(--accent);
   font-weight: var(--weight-semibold);
-  padding: var(--space-1-5) var(--space-4);
+  padding: 0 var(--space-4);
 }
 
 button[type="submit"]:hover:not(:disabled),
@@ -244,6 +255,59 @@ select {
   border-radius: var(--radius-md);
   padding: var(--space-1-5) var(--space-2);
   min-width: 0;
+}
+
+/* Text-like inputs and selects are exactly one control height. */
+input:not(
+  [type="checkbox"],
+  [type="radio"],
+  [type="range"],
+  [type="color"],
+  [type="file"]
+),
+select:not([multiple], [size]) {
+  height: var(--control-height);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* A single-choice select draws its own chevron, so that it is not the
+   native grey control. A list box (multiple, or size above 1) keeps its
+   height and has no arrow. */
+select:not([multiple], [size]) {
+  appearance: none;
+  background-color: var(--input);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: var(--space-6);
+}
+
+/* The compact size. */
+button.compact {
+  min-height: var(--control-height-small);
+  font-size: var(--text-xs);
+  padding: 0 var(--space-2);
+}
+
+input.compact,
+select.compact {
+  height: var(--control-height-small);
+  font-size: var(--text-xs);
+  padding-left: var(--space-1-5);
+  padding-right: var(--space-1-5);
+}
+
+select.compact:not([multiple], [size]) {
+  padding-right: var(--space-5);
+  background-position:
+    calc(100% - 11px) 50%,
+    calc(100% - 6px) 50%;
 }
 
 input[type="checkbox"],

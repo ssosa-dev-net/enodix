@@ -296,6 +296,7 @@
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     column-gap: var(--space-2);
+    row-gap: 0;
     align-items: center;
     text-align: start;
     background: transparent;
@@ -336,7 +337,9 @@
   }
 
   .forget {
-    padding: var(--space-1);
+    width: var(--control-height);
+    height: var(--control-height);
+    padding: 0;
     background: transparent;
     border-color: transparent;
     color: var(--muted);
