@@ -21,7 +21,7 @@
   /* Text. */
   --text: #e6e9ee;
   --muted: #9aa4b1;
-  --faint: #6c7785;
+  --faint: #838e9c;
 
   /* The one accent, and what is drawn on it. */
   --accent: #5eb3ff;
@@ -137,7 +137,7 @@
 
   --text: #14181d;
   --muted: #535c68;
-  --faint: #76808c;
+  --faint: #5b6570;
 
   --accent: #0a5fc2;
   --on-accent: #ffffff;
