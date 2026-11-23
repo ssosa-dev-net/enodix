@@ -9,7 +9,12 @@
 // a field of the file but its file name, so it is renamed after the rest
 // is saved.
 
-import { inventory, renameHostOrSay, saveHostOrSay } from "./inventory.svelte";
+import {
+  inventory,
+  onHostsMoved,
+  renameHostOrSay,
+  saveHostOrSay,
+} from "./inventory.svelte";
 import { findHost, type Host, type Settings } from "./workspace";
 
 interface Draft {
@@ -40,18 +45,88 @@ const HOST_FIELDS = (h: Host) =>
     (key): key is HostField => key !== "id" && key !== "settings",
   );
 
-/** The fields the draft changes: host fields by name, settings as
- * `settings.<key>`. */
-function changedFields(draft: Draft): string[] {
-  const { base, edited } = draft;
-  const fields: string[] = HOST_FIELDS(edited).filter(
-    (key) => !same(base[key], edited[key]),
+/** The fields that differ between two versions of a host: host fields by
+ * name, settings as `settings.<key>`. */
+function differing(a: Host, b: Host): string[] {
+  const fields: string[] = HOST_FIELDS(b).filter(
+    (key) => !same(a[key], b[key]),
   );
-  for (const key of Object.keys(edited.settings) as (keyof Settings)[]) {
-    if (!same(base.settings[key], edited.settings[key]))
-      fields.push(`settings.${key}`);
+  const keys = new Set([
+    ...Object.keys(a.settings),
+    ...Object.keys(b.settings),
+  ]) as Set<keyof Settings>;
+  for (const key of keys) {
+    if (!same(a.settings[key], b.settings[key])) fields.push(`settings.${key}`);
   }
   return fields;
+}
+
+/** The fields the draft changes. */
+function changedFields(draft: Draft): string[] {
+  return differing(draft.base, draft.edited);
+}
+
+/** `target` with the `fields` (as `differing` names them) of `source`. */
+function withFields(target: Host, source: Host, fields: string[]): Host {
+  const result: Host = { ...target, settings: { ...target.settings } };
+  for (const field of fields) {
+    if (field.startsWith("settings.")) {
+      const key = field.slice("settings.".length) as keyof Settings;
+      (result.settings as unknown as Record<string, unknown>)[key] =
+        source.settings[key];
+    } else {
+      (result as unknown as Record<string, unknown>)[field] =
+        source[field as HostField];
+    }
+  }
+  return result;
+}
+
+function savedHost(id: string): Host | null {
+  const tree = inventory.workspace?.tree;
+  const found = tree ? findHost(tree, id) : null;
+  return found ? ($state.snapshot(found) as Host) : null;
+}
+
+/** Where hosts went when renamed or moved in the app, so that a save
+ * waiting on a rename finds its draft again. */
+const movedTo = new Map<string, string>();
+
+// A host renamed or moved (its own rename, the tree, a folder's move)
+// keeps its edits under its new id. Listened to from the first edit: this
+// module is loaded while inventory's is (they import each other).
+let listening = false;
+function followMoves() {
+  if (listening) return;
+  listening = true;
+  onHostsMoved((moves) => {
+    for (const { from, to } of moves) {
+      movedTo.set(from, to);
+      const draft = drafts[from];
+      if (!draft || from === to) continue;
+      const copy = $state.snapshot(draft) as Draft;
+      delete drafts[from];
+      const saved = savedHost(to);
+      // A name not being edited follows the host's new name.
+      const name =
+        copy.edited.name === copy.base.name && saved ? saved.name : null;
+      drafts[to] = {
+        base: { ...copy.base, id: to, ...(name ? { name } : {}) },
+        edited: { ...copy.edited, id: to, ...(name ? { name } : {}) },
+        error: copy.error,
+      };
+    }
+  });
+}
+
+/** The id the host `id` has now, after the moves seen since. */
+function current(id: string): string {
+  const seen = new Set<string>();
+  while (movedTo.has(id) && !seen.has(id)) {
+    seen.add(id);
+    id = movedTo.get(id)!;
+  }
+  return id;
 }
 
 /** The host `id` as the editor shows it: its draft, else as saved. */
@@ -86,6 +161,7 @@ export function edit(
   host: Host,
   changes: Partial<Host> | ((current: Host) => Partial<Host>),
 ) {
+  followMoves();
   drafts[host.id] ??= {
     base: $state.snapshot(host) as Host,
     edited: $state.snapshot(host) as Host,
@@ -112,31 +188,42 @@ export function revertAll() {
 }
 
 /**
+ * After a save of `written` (the edited host as it was sent): the draft of
+ * the host `id` now starts from the host as saved, keeping only the edits
+ * made while the save was on its way; with none, it goes.
+ */
+function settle(id: string, written: Host) {
+  const draft = drafts[id];
+  if (!draft) return;
+  const saved = savedHost(id);
+  if (!saved) {
+    delete drafts[id];
+    return;
+  }
+  const edited = $state.snapshot(draft.edited) as Host;
+  const since = differing({ ...written, id }, { ...edited, id });
+  draft.base = saved;
+  draft.edited = withFields(saved, edited, since);
+  draft.error = null;
+  if (changedFields(draft).length === 0) delete drafts[id];
+}
+
+/**
  * Saves the edits of the host `id`: its fields, then its name. Resolves to
  * true once everything is saved; on failure the draft stays, with why.
+ * Edits made while it saves stay in the draft, unsaved.
  */
 export async function save(id: string): Promise<boolean> {
   const draft = drafts[id];
   if (!draft) return true;
   const fields = changedFields(draft);
-  const edited = $state.snapshot(draft.edited) as Host;
+  const written = $state.snapshot(draft.edited) as Host;
   const nameChanged = fields.includes("name");
   const others = fields.filter((field) => field !== "name");
   if (others.length > 0) {
-    const error = await saveHostOrSay(id, (current) => {
-      const changes: Partial<Host> = {};
-      const settings: Settings = { ...current.settings };
-      for (const field of others) {
-        if (field.startsWith("settings.")) {
-          const key = field.slice("settings.".length) as keyof Settings;
-          (settings as unknown as Record<string, unknown>)[key] =
-            edited.settings[key];
-        } else {
-          (changes as Record<string, unknown>)[field] =
-            edited[field as HostField];
-        }
-      }
-      return { ...changes, settings };
+    const error = await saveHostOrSay(id, (saved) => {
+      const changes = withFields(saved, written, others);
+      return { ...changes, name: saved.name, id: saved.id };
     });
     if (error) {
       if (drafts[id]) drafts[id].error = error;
@@ -144,23 +231,16 @@ export async function save(id: string): Promise<boolean> {
     }
   }
   if (nameChanged) {
-    const error = await renameHostOrSay(id, edited.name);
+    const error = await renameHostOrSay(id, written.name);
     if (error) {
-      // The other fields are saved: what is left to save is the name.
-      const tree = inventory.workspace?.tree;
-      const saved = tree ? findHost(tree, id) : null;
-      if (saved && drafts[id]) {
-        drafts[id].base = $state.snapshot(saved) as Host;
-        drafts[id].edited = {
-          ...($state.snapshot(saved) as Host),
-          name: edited.name,
-        };
-        drafts[id].error = error;
-      }
+      // The other fields are saved: what is left is the name, and any
+      // edits made meanwhile.
+      settle(id, { ...written, name: savedHost(id)?.name ?? written.name });
+      if (drafts[id]) drafts[id].error = error;
       return false;
     }
   }
-  delete drafts[id];
+  settle(current(id), written);
   return true;
 }
 
@@ -180,30 +260,40 @@ export const question = $state<{
 /**
  * Before something that would drop or leave the unsaved edits of `hosts`
  * (closing their tab, showing another host, quitting, another workspace):
- * asks whether to save them, drop them or stay. Resolves to true to go on
- * (saved or dropped), false to stay. Asks nothing when nothing is unsaved.
+ * asks whether to save them, discard them or stay. Resolves to false to
+ * stay, else to a function that the caller runs once it really goes on:
+ * discarded edits are dropped only then, so that a later Cancel (of a
+ * session question, say) keeps them. Asks nothing when nothing is unsaved.
  */
 export async function settleUnsaved(
   hosts: string[],
   doing: string,
-): Promise<boolean> {
+): Promise<false | (() => void)> {
   const pending = hosts.filter((id) => unsaved(id) > 0);
-  if (pending.length === 0) return true;
+  if (pending.length === 0) return () => {};
+  // One question at a time: an earlier one still open is cancelled.
+  question.current?.answer("cancel");
   let error: string | null = null;
   for (;;) {
+    let asked: NonNullable<typeof question.current> | null = null;
     const choice = await new Promise<"save" | "discard" | "cancel">(
-      (answer) => (question.current = { hosts: pending, doing, error, answer }),
+      (answer) => {
+        asked = { hosts: pending, doing, error, answer };
+        question.current = asked;
+      },
     );
-    question.current = null;
+    // A later question may already have taken the slot.
+    if (question.current === asked) question.current = null;
     if (choice === "cancel") return false;
     if (choice === "discard") {
-      for (const id of pending) revert(id);
-      return true;
+      return () => {
+        for (const id of pending) revert(current(id));
+      };
     }
-    for (const id of pending) await save(id);
-    const failed = pending.find((id) => unsaved(id) > 0);
-    if (!failed) return true;
-    // Asked again, with why: the edits stay until saved or dropped.
+    for (const id of pending) await save(current(id));
+    const failed = pending.map(current).find((id) => unsaved(id) > 0);
+    if (!failed) return () => {};
+    // Asked again, with why: the edits stay until saved or discarded.
     error = saveError(failed);
   }
 }
