@@ -43,7 +43,7 @@
      code, for xterm's decorations, so they stay #rrggbb): every match, the
      current one, and their marks in the scrollbar. */
   --highlight-match: #5c4a00;
-  --highlight-match-active: #b36b00;
+  --highlight-match-active: #8c3f00;
   --highlight-match-ruler: #d29922;
   --highlight-match-active-ruler: #ff8800;
 
