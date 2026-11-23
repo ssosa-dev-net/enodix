@@ -382,7 +382,7 @@
   textarea {
     flex: 1;
     min-width: 82ch;
-    padding-left: var(--space-2);
+    padding-left: var(--space-3);
     padding-right: var(--space-2);
     border: 0;
     border-radius: 0;

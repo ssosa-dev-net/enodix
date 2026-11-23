@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ChevronDown from "@lucide/svelte/icons/chevron-down";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Info from "@lucide/svelte/icons/info";
   import X from "@lucide/svelte/icons/x";
   import Button from "./Button.svelte";
@@ -491,7 +493,20 @@
       .join(" ") || undefined}
   <div class="setting" data-setting={row.key}>
     <div class="field">
-      <label for={controlId(row)}>{row.label}</label>
+      <!-- The help button sits beside the label, not on a row of its own. -->
+      <span class="label">
+        <label for={controlId(row)}>{row.label}</label>
+        {#if row.note && !warning}
+          <IconButton
+            icon={Info}
+            size="compact"
+            label="About {row.label}"
+            aria-expanded={noteShown[row.key] === true}
+            aria-controls="{uid}-note-{row.key}"
+            onclick={() => (noteShown[row.key] = !noteShown[row.key])}
+          />
+        {/if}
+      </span>
       {#if inherits}
         <span class="row chip-row" data-inherited={row.key}>
           <span class="chip" data-edited={edited || undefined}>
@@ -592,16 +607,6 @@
           {row.unset ?? "not set"}
         {/if}
       </span>
-      {#if row.note && !warning}
-        <IconButton
-          icon={Info}
-          size="compact"
-          label="About {row.label}"
-          aria-expanded={noteShown[row.key] === true}
-          aria-controls="{uid}-note-{row.key}"
-          onclick={() => (noteShown[row.key] = !noteShown[row.key])}
-        />
-      {/if}
     </span>
     {#if row.note}
       <!-- Kept in the page when closed (hidden), so it can be found. -->
@@ -641,6 +646,11 @@
       aria-controls="{uid}-{group}"
       onclick={() => (inheritedShown[group] = !inheritedShown[group])}
     >
+      {#if inheritedShown[group]}
+        <ChevronDown size={14} aria-hidden="true" />
+      {:else}
+        <ChevronRight size={14} aria-hidden="true" />
+      {/if}
       {inheritedShown[group]
         ? "Hide inherited settings"
         : `Show ${inherited.length} inherited ${inherited.length === 1 ? "setting" : "settings"}`}
@@ -810,8 +820,24 @@
     gap: var(--space-1-5);
   }
 
-  :global(.btn.fold) {
+  /* A disclosure, so it reads as something to press: a chevron, in the
+     accent colour, lined up with the labels. */
+  :global(.btn.ghost.compact.fold) {
     justify-self: start;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    margin-left: calc(-1 * var(--space-1));
+    padding: 0 var(--space-1);
+    color: var(--accent);
+    font-weight: var(--weight-medium);
+  }
+
+  .label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
   }
 
   .meta {
@@ -820,7 +846,7 @@
     gap: var(--space-1);
   }
 
-  /* Beside its label, the origin and help sit under the field. */
+  /* Beside its label, the origin and the note sit under the field. */
   @container host-details (min-width: 560px) {
     .field {
       grid-template-columns: var(--label-col, 180px) minmax(0, 1fr);
@@ -869,7 +895,7 @@
     color: var(--muted);
   }
 
-  .field > label {
+  .field > .label > label {
     font-size: var(--text-sm);
     font-weight: var(--weight-medium);
     color: var(--muted);
