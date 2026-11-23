@@ -10,13 +10,16 @@
   import Play from "@lucide/svelte/icons/play";
   import RotateCcwClock from "@lucide/svelte/icons/rotate-ccw-clock";
   import ScanSearch from "@lucide/svelte/icons/scan-search";
+  import SquarePen from "@lucide/svelte/icons/square-pen";
   import Trash from "@lucide/svelte/icons/trash";
   import IconButton from "./IconButton.svelte";
+  import MenuButton, { type MenuEntry } from "./MenuButton.svelte";
   import CopyButton from "./CopyButton.svelte";
   import RoleIcon from "./RoleIcon.svelte";
   import SettingsPanel from "./SettingsPanel.svelte";
   import TagEditor from "./TagEditor.svelte";
   import { ENVIRONMENT_NAMES } from "./paste";
+  import { EDIT_HOST_SHORTCUT, openHostEditor } from "./views";
   import {
     jumpHostOf,
     otherWays as waysBesides,
@@ -66,9 +69,15 @@
     /** The host as saved, when `host` shows unsaved edits: the settings
      * tell an edited setting from a saved one by it. */
     saved?: Host;
+    /**
+     * The short read-only form (the details sheet, #10): the header with
+     * its actions, a few facts and an Edit host button, in place of the
+     * fields. Edits are made in the host editor tab.
+     */
+    summary?: boolean;
   }
 
-  let { host, onconnect, onedit, saved }: Props = $props();
+  let { host, onconnect, onedit, saved, summary = false }: Props = $props();
 
   const item = $derived({ kind: "host" as const, id: host.id });
   const effective = effectiveSettings(() => item);
@@ -93,6 +102,115 @@
   const ownBlocked = $derived(ownWayBlocked(effective.current));
   const jumpHost = $derived(jumpHostOf(host.id, effective.current));
   const environment = $derived(effective.current?.environment?.value ?? null);
+
+  const target = $derived({ kind: "hosts" as const, ids: [host.id] });
+
+  /** Where the host's own things open: tabs and the file manager. */
+  const openEntries = $derived<MenuEntry[]>([
+    ...(effective.current?.protocol.value === "ssh"
+      ? [
+          {
+            label: "Files",
+            icon: FolderOpen,
+            title: "Browse this host's files over SFTP, in a tab",
+            attributes: { "data-open-files": "" },
+            run: () => openFiles(host.id),
+          },
+        ]
+      : []),
+    {
+      label: "Session logs",
+      icon: Logs,
+      title: "Show this host's session logs in the file manager",
+      attributes: { "data-open-logs": "" },
+      run: () =>
+        openLogFolder(host.id).catch(
+          (error) => (inventory.editError = String(error)),
+        ),
+    },
+    {
+      label: "Config history",
+      icon: RotateCcwClock,
+      title:
+        "Earlier versions of this host's configuration, kept by config backups",
+      attributes: { "data-open-config-history": "" },
+      run: () => openConfigHistory(host.id),
+    },
+  ]);
+
+  /** What runs on the host as a job, without a terminal. */
+  const runEntries = $derived<MenuEntry[]>([
+    {
+      label: "Snippet…",
+      icon: Play,
+      title: "Run a saved snippet on this host as a job, without a terminal",
+      attributes: { "data-host-run-snippet": "" },
+      run: () => openJob(target, host.name),
+    },
+    {
+      label: "Script…",
+      icon: FileCode,
+      title: "Run a Python script of the workspace for this host, as a job",
+      attributes: { "data-host-run-script": "" },
+      run: () => openScript(target, host.name),
+    },
+    {
+      label: "Send file…",
+      icon: FileUp,
+      title: "Send a file from this computer to this host, as a job",
+      attributes: { "data-host-send-file": "" },
+      run: () => openSendFile(target, host.name),
+    },
+    {
+      label: "Back up config",
+      icon: Archive,
+      title:
+        "Fetch this host's configuration and keep it in its config history if it changed",
+      attributes: { "data-host-back-up": "" },
+      run: () => openBackup(target, host.name),
+    },
+    {
+      label: "Fill in from device…",
+      icon: ScanSearch,
+      title:
+        "Ask the device for its vendor, model, serial number and OS version (NAPALM), then review what to fill in",
+      attributes: { "data-host-enrich": "" },
+      run: () => openEnrich(target, host.name),
+    },
+  ]);
+
+  const moreEntries = $derived<MenuEntry[]>([
+    {
+      label: "Move…",
+      icon: FolderInput,
+      title: "Move this host to another folder",
+      attributes: { "data-host-move": "" },
+      run: () => move(item),
+    },
+    { separator: true },
+    {
+      label: "Delete…",
+      icon: Trash,
+      danger: true,
+      title: "Delete this host",
+      attributes: { "data-host-delete": "" },
+      run: () => remove(item),
+    },
+  ]);
+
+  /** What the short form lists: the fields that say what the device is,
+   * and the settings that are inherited (the values that apply). */
+  const summaryRows = $derived<[string, string, string | null][]>([
+    ["vendor", "Vendor", host.vendor || null],
+    ["model", "Model", host.model || null],
+    ["site", "Site", host.site || null],
+    ["platform", "Platform", effective.current?.platform?.value ?? null],
+    [
+      "credential_profile",
+      "Credential profile",
+      effective.current?.credential_profile?.value ?? null,
+    ],
+  ]);
 
   /** The host's web links, filled from its fields by the core. */
   let webLinks = $state<HostWebLink[]>([]);
@@ -244,10 +362,14 @@
   }
 </script>
 
-<div class="details" aria-label="Host details" bind:this={root}>
+<div class="details" class:summary aria-label="Host details" bind:this={root}>
   <header>
     <h2>{host.name}</h2>
-    <span class="file" title="The host's file in the workspace">{host.id}</span>
+    {#if !summary}
+      <span class="file" title="The host's file in the workspace"
+        >{host.id}</span
+      >
+    {/if}
     <span class="facts">
       {#if environment}
         <span
@@ -301,315 +423,274 @@
         {webLinkError ?? webLinksUnavailable}
       </p>
     {/if}
-    <div class="actions more" aria-label="Actions">
-      <IconButton
-        icon={Logs}
-        label="Open log folder"
-        data-open-logs
-        title="Show this host's session logs in the file manager"
-        onclick={() =>
-          openLogFolder(host.id).catch(
-            (error) => (inventory.editError = String(error)),
-          )}
-      />
-      {#if effective.current?.protocol.value === "ssh"}
-        <IconButton
-          icon={FolderOpen}
-          label="Files"
-          data-open-files
-          title="Browse this host's files over SFTP, in a tab"
-          onclick={() => openFiles(host.id)}
-        />
-      {/if}
-      <IconButton
-        icon={RotateCcwClock}
-        label="Config history"
-        data-open-config-history
-        title="Earlier versions of this host's configuration, kept by config backups"
-        onclick={() => openConfigHistory(host.id)}
-      />
-      <IconButton
-        icon={Archive}
-        label="Back up config"
-        data-host-back-up
-        title="Fetch this host's configuration and keep it in its config history if it changed"
-        onclick={() => openBackup({ kind: "hosts", ids: [host.id] }, host.name)}
-      />
-      <IconButton
-        icon={ScanSearch}
-        label="Fill in from device…"
-        data-host-enrich
-        title="Ask the device for its vendor, model, serial number and OS version (NAPALM), then review what to fill in"
-        onclick={() => openEnrich({ kind: "hosts", ids: [host.id] }, host.name)}
-      />
-      <IconButton
-        icon={Play}
-        label="Run snippet…"
-        data-host-run-snippet
-        title="Run a saved snippet on this host as a job, without a terminal"
-        onclick={() => openJob({ kind: "hosts", ids: [host.id] }, host.name)}
-      />
-      <IconButton
-        icon={FileCode}
-        label="Run script…"
-        data-host-run-script
-        title="Run a Python script of the workspace for this host, as a job"
-        onclick={() => openScript({ kind: "hosts", ids: [host.id] }, host.name)}
-      />
-      <IconButton
-        icon={FileUp}
-        label="Send file…"
-        data-host-send-file
-        title="Send a file from this computer to this host, as a job"
-        onclick={() =>
-          openSendFile({ kind: "hosts", ids: [host.id] }, host.name)}
-      />
-      <IconButton
-        icon={FolderInput}
-        label="Move…"
-        title="Move this host to another folder"
-        onclick={() => move(item)}
-      />
-      <IconButton
-        icon={Trash}
-        variant="danger"
-        label="Delete…"
-        title="Delete this host"
-        onclick={() => remove(item)}
-      />
+    <div class="actions menus" aria-label="Actions">
+      <MenuButton label="Open" entries={openEntries} data-menu-open />
+      <MenuButton label="Run" entries={runEntries} data-menu-run />
+      <MenuButton label="More" entries={moreEntries} data-menu-more />
     </div>
   </header>
 
-  <div class="layout">
-    <nav class="sections-nav" aria-label="Host sections">
-      {#each SECTIONS as [id, label] (id)}
-        <button
-          type="button"
-          data-section-link={id}
-          aria-current={current === id ? "true" : undefined}
-          onclick={() => jumpTo(id)}>{label}</button
-        >
+  {#if summary}
+    <dl class="facts-list" data-details-summary>
+      {#each summaryRows as [key, label, value] (key)}
+        <dt>{label}</dt>
+        <dd data-summary={key} class:unset={value === null}>
+          {value ?? "Not set"}
+        </dd>
       {/each}
-    </nav>
-    <div class="form">
-      <section aria-label="Device" data-details-section="device">
-        <h3>Device</h3>
-        <label class="field">
-          <span>Name</span>
-          <span class="row">
-            <input
-              name="name"
-              value={host.name}
-              spellcheck="false"
-              onchange={async (event) => {
-                const input = event.currentTarget;
-                if (onedit) onedit({ name: input.value });
-                else await renameTo(item, input.value);
-                input.value = host.name;
-              }}
-            />
-            <CopyButton value={host.name} what="name" />
-          </span>
-        </label>
-        <label class="field">
-          <span>Role</span>
-          <span class="row">
-            {#if role}
-              <RoleIcon {role} />
-            {/if}
-            <select
-              name="role"
-              value={role?.id ?? ""}
-              onchange={async (event) => {
-                const select = event.currentTarget;
-                await save({ role: select.value === "" ? null : select.value });
-                select.value = role?.id ?? "";
-              }}
-            >
-              <option value="">No role</option>
-              {#each roles as option (option.id)}
-                <option value={option.id}>{option.name}</option>
-              {/each}
-              {#if role?.source === "undefined"}
-                <option value={role.id}>{role.name} (not defined)</option>
+    </dl>
+    <button
+      class="primary edit-host"
+      data-details-edit
+      aria-keyshortcuts="Control+Shift+E"
+      title="Edit this host in a tab beside the terminals, with room for every field ({EDIT_HOST_SHORTCUT})"
+      onclick={openHostEditor}
+    >
+      <span class="edit-label"
+        ><SquarePen size={14} aria-hidden="true" /> Edit host</span
+      >
+      <kbd>{EDIT_HOST_SHORTCUT}</kbd>
+    </button>
+  {:else}
+    <div class="layout">
+      <nav class="sections-nav" aria-label="Host sections">
+        {#each SECTIONS as [id, label] (id)}
+          <button
+            type="button"
+            data-section-link={id}
+            aria-current={current === id ? "true" : undefined}
+            onclick={() => jumpTo(id)}>{label}</button
+          >
+        {/each}
+      </nav>
+      <div class="form">
+        <section aria-label="Device" data-details-section="device">
+          <h3>Device</h3>
+          <label class="field">
+            <span>Name</span>
+            <span class="row">
+              <input
+                name="name"
+                value={host.name}
+                spellcheck="false"
+                onchange={async (event) => {
+                  const input = event.currentTarget;
+                  if (onedit) onedit({ name: input.value });
+                  else await renameTo(item, input.value);
+                  input.value = host.name;
+                }}
+              />
+              <CopyButton value={host.name} what="name" />
+            </span>
+          </label>
+          <label class="field">
+            <span>Role</span>
+            <span class="row">
+              {#if role}
+                <RoleIcon {role} />
               {/if}
-            </select>
-          </span>
-        </label>
-        {#each deviceFields as [key, label] (key)}
+              <select
+                name="role"
+                value={role?.id ?? ""}
+                onchange={async (event) => {
+                  const select = event.currentTarget;
+                  await save({
+                    role: select.value === "" ? null : select.value,
+                  });
+                  select.value = role?.id ?? "";
+                }}
+              >
+                <option value="">No role</option>
+                {#each roles as option (option.id)}
+                  <option value={option.id}>{option.name}</option>
+                {/each}
+                {#if role?.source === "undefined"}
+                  <option value={role.id}>{role.name} (not defined)</option>
+                {/if}
+              </select>
+            </span>
+          </label>
+          {#each deviceFields as [key, label] (key)}
+            <label class="field">
+              <span>{label}</span>
+              <span class="row">
+                <input
+                  name={key}
+                  value={host[key] ?? ""}
+                  spellcheck="false"
+                  onchange={(event) =>
+                    commit(
+                      event,
+                      (value) => ({ [key]: value }),
+                      () => host[key] ?? "",
+                    )}
+                />
+                <CopyButton
+                  value={host[key] ?? ""}
+                  what={label.toLowerCase()}
+                />
+              </span>
+            </label>
+          {/each}
+          <SettingsPanel
+            part="device"
+            {item}
+            settings={host.settings}
+            saved={saved?.settings}
+            effective={effective.current}
+            hostIds={otherHosts}
+            onchange={(change) =>
+              save((current) => ({ settings: change(current.settings) }))}
+          />
+        </section>
+
+        <section aria-label="Location" data-details-section="location">
+          <h3>Location</h3>
+          {#each locationFields as [key, label] (key)}
+            <label class="field">
+              <span>{label}</span>
+              <span class="row">
+                <input
+                  name={key}
+                  value={host[key] ?? ""}
+                  spellcheck="false"
+                  onchange={(event) =>
+                    commit(
+                      event,
+                      (value) => ({ [key]: value }),
+                      () => host[key] ?? "",
+                    )}
+                />
+                <CopyButton
+                  value={host[key] ?? ""}
+                  what={label.toLowerCase()}
+                />
+              </span>
+            </label>
+          {/each}
+        </section>
+
+        <section aria-label="Connection" data-details-section="connection">
+          <h3>Connection</h3>
           <label class="field">
-            <span>{label}</span>
+            <span>Management address</span>
             <span class="row">
               <input
-                name={key}
-                value={host[key] ?? ""}
+                name="address"
+                value={host.address}
                 spellcheck="false"
                 onchange={(event) =>
                   commit(
                     event,
-                    (value) => ({ [key]: value }),
-                    () => host[key] ?? "",
+                    (address) => ({ address }),
+                    () => host.address,
                   )}
               />
-              <CopyButton value={host[key] ?? ""} what={label.toLowerCase()} />
+              <CopyButton value={host.address} what="management address" />
             </span>
           </label>
-        {/each}
-        <SettingsPanel
-          part="device"
-          {item}
-          settings={host.settings}
-          saved={saved?.settings}
-          effective={effective.current}
-          hostIds={otherHosts}
-          onchange={(change) =>
-            save((current) => ({ settings: change(current.settings) }))}
-        />
-      </section>
+          <SettingsPanel
+            part="connection"
+            {item}
+            settings={host.settings}
+            saved={saved?.settings}
+            effective={effective.current}
+            hostIds={otherHosts}
+            onchange={(change) =>
+              save((current) => ({ settings: change(current.settings) }))}
+          />
+        </section>
 
-      <section aria-label="Location" data-details-section="location">
-        <h3>Location</h3>
-        {#each locationFields as [key, label] (key)}
-          <label class="field">
-            <span>{label}</span>
-            <span class="row">
+        <div data-details-section="tags">
+          <TagEditor
+            tags={host.tags}
+            effective={effective.current?.tags ?? null}
+            {item}
+            onchange={(change) =>
+              save((current) => ({ tags: change(current.tags) }))}
+          />
+        </div>
+
+        <section aria-label="Custom fields" data-details-section="custom">
+          <h3>Custom fields</h3>
+          {#each host.custom as field (field.key)}
+            <div class="row custom">
               <input
-                name={key}
-                value={host[key] ?? ""}
+                class="key"
+                aria-label="Field name"
+                value={field.key}
                 spellcheck="false"
                 onchange={(event) =>
                   commit(
                     event,
-                    (value) => ({ [key]: value }),
-                    () => host[key] ?? "",
+                    (key) => changeCustom(field.key, { key }),
+                    () => field.key,
                   )}
               />
-              <CopyButton value={host[key] ?? ""} what={label.toLowerCase()} />
-            </span>
-          </label>
-        {/each}
-      </section>
-
-      <section aria-label="Connection" data-details-section="connection">
-        <h3>Connection</h3>
-        <label class="field">
-          <span>Management address</span>
-          <span class="row">
-            <input
-              name="address"
-              value={host.address}
-              spellcheck="false"
-              onchange={(event) =>
-                commit(
-                  event,
-                  (address) => ({ address }),
-                  () => host.address,
-                )}
-            />
-            <CopyButton value={host.address} what="management address" />
-          </span>
-        </label>
-        <SettingsPanel
-          part="connection"
-          {item}
-          settings={host.settings}
-          saved={saved?.settings}
-          effective={effective.current}
-          hostIds={otherHosts}
-          onchange={(change) =>
-            save((current) => ({ settings: change(current.settings) }))}
-        />
-      </section>
-
-      <div data-details-section="tags">
-        <TagEditor
-          tags={host.tags}
-          effective={effective.current?.tags ?? null}
-          {item}
-          onchange={(change) =>
-            save((current) => ({ tags: change(current.tags) }))}
-        />
-      </div>
-
-      <section aria-label="Custom fields" data-details-section="custom">
-        <h3>Custom fields</h3>
-        {#each host.custom as field (field.key)}
-          <div class="row custom">
+              <input
+                class="value"
+                aria-label="{field.key} value"
+                data-custom={field.key}
+                value={field.value}
+                spellcheck="false"
+                onchange={(event) =>
+                  commit(
+                    event,
+                    (value) => changeCustom(field.key, { value }),
+                    () => field.value,
+                  )}
+              />
+              <CopyButton value={field.value} what={field.key} />
+              <IconButton
+                icon={X}
+                size="compact"
+                label="Remove field {field.key}"
+                onclick={() =>
+                  save((current) => ({
+                    custom: current.custom.filter((f) => f.key !== field.key),
+                  }))}
+              />
+            </div>
+          {/each}
+          <form class="row custom" onsubmit={addCustom}>
             <input
               class="key"
-              aria-label="Field name"
-              value={field.key}
+              name="new-key"
+              placeholder="Name"
               spellcheck="false"
-              onchange={(event) =>
-                commit(
-                  event,
-                  (key) => changeCustom(field.key, { key }),
-                  () => field.key,
-                )}
+              bind:value={newKey}
             />
             <input
               class="value"
-              aria-label="{field.key} value"
-              data-custom={field.key}
-              value={field.value}
+              name="new-value"
+              placeholder="Value"
               spellcheck="false"
+              bind:value={newValue}
+            />
+            <button type="submit" disabled={newKey.trim() === ""}>Add</button>
+          </form>
+        </section>
+
+        <section aria-label="Description" data-details-section="description">
+          <h3>Description</h3>
+          <span class="row">
+            <textarea
+              name="description"
+              aria-label="Description"
+              rows="3"
+              value={host.description ?? ""}
               onchange={(event) =>
                 commit(
                   event,
-                  (value) => changeCustom(field.key, { value }),
-                  () => field.value,
-                )}
-            />
-            <CopyButton value={field.value} what={field.key} />
-            <IconButton
-              icon={X}
-              size="compact"
-              label="Remove field {field.key}"
-              onclick={() =>
-                save((current) => ({
-                  custom: current.custom.filter((f) => f.key !== field.key),
-                }))}
-            />
-          </div>
-        {/each}
-        <form class="row custom" onsubmit={addCustom}>
-          <input
-            class="key"
-            name="new-key"
-            placeholder="Name"
-            spellcheck="false"
-            bind:value={newKey}
-          />
-          <input
-            class="value"
-            name="new-value"
-            placeholder="Value"
-            spellcheck="false"
-            bind:value={newValue}
-          />
-          <button type="submit" disabled={newKey.trim() === ""}>Add</button>
-        </form>
-      </section>
-
-      <section aria-label="Description" data-details-section="description">
-        <h3>Description</h3>
-        <span class="row">
-          <textarea
-            name="description"
-            aria-label="Description"
-            rows="3"
-            value={host.description ?? ""}
-            onchange={(event) =>
-              commit(
-                event,
-                (description) => ({ description }),
-                () => host.description ?? "",
-              )}></textarea>
-          <CopyButton value={host.description ?? ""} what="description" />
-        </span>
-      </section>
+                  (description) => ({ description }),
+                  () => host.description ?? "",
+                )}></textarea>
+            <CopyButton value={host.description ?? ""} what="description" />
+          </span>
+        </section>
+      </div>
     </div>
-  </div>
+  {/if}
 </div>
 
 <style>
@@ -697,13 +778,11 @@
     color: var(--text);
   }
 
-  .actions.more {
+  /* The grouped actions (Open, Run, More) in a row of their own. */
+  .actions.menus {
     margin-top: var(--space-2);
-    gap: var(--space-0-5);
+    gap: var(--space-1);
   }
-
-  /* One quiet row of icons: each button keeps its name for screen readers
-     and shows it as its tooltip. */
 
   .actions {
     display: flex;
@@ -716,6 +795,60 @@
     min-height: var(--control-height-small);
     padding: 0 var(--space-2);
     font-size: var(--text-xs);
+  }
+
+  .details.summary {
+    gap: var(--space-3);
+  }
+
+  /* The short form: what the device is, label beside value. */
+  .facts-list {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+    font-size: var(--text-sm);
+  }
+
+  .facts-list dt {
+    color: var(--muted);
+  }
+
+  .facts-list dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .facts-list dd.unset {
+    color: var(--muted);
+  }
+
+  .edit-host {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    width: 100%;
+  }
+
+  .edit-label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1-5);
+  }
+
+  /* On the primary button: the button's own text colour, not the
+     default kbd style, which is dark on the accent. */
+  .edit-host kbd {
+    font-family: var(--font-ui);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-regular, 400);
+    color: inherit;
+    background: none;
+    border: 1px solid currentColor;
+    border-radius: var(--radius-sm);
+    padding: 0 var(--space-1);
+    opacity: 0.9;
   }
 
   .web-link.refused {

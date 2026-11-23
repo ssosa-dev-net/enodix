@@ -2,13 +2,12 @@
   // The details sheet (#64): the selected host's or folder's details, over
   // the lower part of the Hosts side view, so that the tree stays above it
   // and the sheet follows what is selected there. It never covers a
-  // terminal. Back (or Escape, or Ctrl+Shift+D) closes it.
+  // terminal. Back (or Escape, or Ctrl+Shift+D) closes it. A host shows as
+  // a summary with an Edit host button (the editor tab has the fields, #10).
   import { tick } from "svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
-  import SquarePen from "@lucide/svelte/icons/square-pen";
   import FolderDetails from "./FolderDetails.svelte";
   import HostDetails from "./HostDetails.svelte";
-  import { openHostEditor } from "./views";
   import type { Folder, Host, Protocol } from "./workspace";
 
   interface Props {
@@ -60,19 +59,10 @@
       ><ChevronLeft size={14} aria-hidden="true" /> Back to the tree</button
     >
     <span class="what">{host ? "Host" : "Folder"} details</span>
-    {#if host}
-      <button
-        class="compact"
-        data-details-edit
-        title="Edit this host in a tab beside the terminals, with room for every field"
-        onclick={openHostEditor}
-        ><SquarePen size={14} aria-hidden="true" /> Edit</button
-      >
-    {/if}
   </div>
   <div class="body" bind:this={sheet}>
     {#if host}
-      <HostDetails {host} {onconnect} />
+      <HostDetails {host} {onconnect} summary />
     {:else if folder}
       <FolderDetails {folder} />
     {/if}
