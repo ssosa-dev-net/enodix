@@ -1,0 +1,171 @@
+# Puts a published release where people install software from
+# (docs/dev/releasing.md, "PyPI and winget"):
+#
+# - pypi: the Python bridge's wheel on PyPI, uploaded with PyPI's Trusted
+#   Publishing (no token: PyPI trusts this workflow's identity, in the
+#   `pypi` environment).
+# - winget: a pull request to microsoft/winget-pkgs that adds the version's
+#   manifest, made with Komac from the previous one, from the account that
+#   owns the WINGET_TOKEN secret (a classic token, scope public_repo, in the
+#   `winget` environment).
+#
+# The Release workflow starts it on the release's tag once it has published
+# the release. Run it by hand (Actions, Distribute, Run workflow, from main)
+# to distribute a release again: PyPI skips a version it already has, Komac
+# refuses a second pull request for the same version.
+#
+# It builds nothing. It downloads the release's files and checks them against
+# the release's SHA256SUMS.txt, so PyPI gets the wheel that is in the
+# portable zip, byte for byte, and the winget manifest is checked to name the
+# installer's published SHA-256 before its pull request is opened.
+name: Distribute
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The released version, without the v (0.8.0)
+        required: true
+        type: string
+      pypi:
+        description: Upload the wheel to PyPI
+        type: boolean
+        default: true
+      winget:
+        description: Open the winget pull request
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribute-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  # The package's identifier in winget, fixed for good (a new one would be a
+  # new package).
+  WINGET_ID: ssosa-dev-net.enodix
+  # Komac (https://github.com/russellbanks/Komac), pinned with the SHA-256
+  # of its x86_64 Linux archive, from the release's own digest.
+  KOMAC_VERSION: 2.17.2
+  KOMAC_SHA256: b03b020eec98acfb0b53e284a6e21815b884be33de6785b97e7a120f0e748966
+
+jobs:
+  files:
+    name: Release files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download the release's files and check them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "$VERSION" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?' ||
+            { echo "not a version: $VERSION (give it without the v)"; exit 1; }
+          mkdir release wheel
+          cd release
+          # The installer itself is not needed here: Komac downloads it, and
+          # the winget job checks the SHA-256 it writes against this list.
+          gh release download "v$VERSION" --repo "$REPO" \
+            --pattern SHA256SUMS.txt --pattern '*_x64-portable.zip'
+          ls -l
+          test "$(ls *_x64-portable.zip | wc -l)" = 1 || { echo "not one portable zip"; exit 1; }
+          test "$(grep -c '_x64-setup\.exe$' SHA256SUMS.txt)" = 1 ||
+            { echo "SHA256SUMS.txt does not list one installer"; exit 1; }
+          # The zip must have been checked, not skipped as missing from the list.
+          grep -q "  $(ls *_x64-portable.zip)\$" SHA256SUMS.txt ||
+            { echo "SHA256SUMS.txt does not list the portable zip"; exit 1; }
+          sha256sum --check --ignore-missing --strict SHA256SUMS.txt
+          unzip -j *_x64-portable.zip '*/python/*.whl' -d ../wheel
+          cd ../wheel
+          test "$(ls *.whl | wc -l)" = 1 || { echo "not one wheel in the portable zip"; exit 1; }
+          ls -l
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel
+          path: wheel/*.whl
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sums
+          path: release/SHA256SUMS.txt
+          if-no-files-found: error
+
+  pypi:
+    name: PyPI
+    needs: files
+    if: inputs.pypi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The environment PyPI's trusted publisher names; only main and v* tags
+    # may use it.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/enodix/
+    permissions:
+      # The identity token PyPI exchanges for a short upload token.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          skip-existing: true
+
+  winget:
+    name: winget
+    needs: files
+    if: inputs.winget
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # The environment holding WINGET_TOKEN; only main and v* tags may use it.
+    environment: winget
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sums
+          path: release
+      - name: Komac ${{ env.KOMAC_VERSION }}
+        run: |
+          curl -fsSL -o komac.tar.gz \
+            "https://github.com/russellbanks/Komac/releases/download/v$KOMAC_VERSION/komac-$KOMAC_VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$KOMAC_SHA256  komac.tar.gz" | sha256sum --check --strict
+          mkdir komac
+          tar -xzf komac.tar.gz -C komac
+          bin=$(find komac -type f -name komac | head -n 1)
+          test -n "$bin" || { echo "no komac in the archive"; exit 1; }
+          chmod +x "$bin"
+          echo "KOMAC=$GITHUB_WORKSPACE/$bin" >> "$GITHUB_ENV"
+      - name: Write the manifest from the previous version's
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          installer=$(grep -o '[^ ]*_x64-setup\.exe$' release/SHA256SUMS.txt)
+          "$KOMAC" update "$WINGET_ID" --version "$VERSION" \
+            --urls "https://github.com/$REPO/releases/download/v$VERSION/$installer" \
+            --release-notes-url "https://github.com/$REPO/releases/tag/v$VERSION" \
+            --output manifests --exit
+      - name: Check that the manifest names the published installer
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          expected=$(grep '_x64-setup\.exe$' release/SHA256SUMS.txt | cut -d ' ' -f 1)
+          folder=$(find manifests -type d -path "*/$VERSION" | head -n 1)
+          test -n "$folder" || { echo "Komac wrote no manifest for $VERSION"; exit 1; }
+          echo "MANIFESTS=$folder" >> "$GITHUB_ENV"
+          for file in "$folder"/*.yaml; do echo "--- $file"; cat "$file"; done
+          found=$(grep -h 'InstallerSha256:' "$folder"/*.installer.yaml | awk '{print tolower($2)}' | sort -u)
+          test "$found" = "$expected" ||
+            { echo "the manifest names $found, the release publishes $expected"; exit 1; }
+      - name: Open the pull request
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: '"$KOMAC" submit "$MANIFESTS" --yes'

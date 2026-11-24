@@ -54,6 +54,13 @@ jump_chain_error, behind_jump_host, withheld, custom`); `tags`/`enodix`
   the warning even when no tunnel is opened (before #127 it was unmarked,
   with no error, unless SSH hosts behind jump hosts made the binary refuse
   it); `endpoint` says the same. Workspace problems are warnings too.
+  PyPI: `.github/workflows/distribute.yml` uploads the wheel taken out of the
+  release's portable zip (Trusted Publishing, environment `pypi`; 0.7.0 and
+  earlier would be refused for the classifier `Framework :: Nornir`, not on
+  PyPI's list: `CLASSIFIERS` in build-wheel.mjs must hold only listed ones,
+  and `twine check` does not catch that). Metadata 2.1 with `Project-URL`s
+  from `REPOSITORY`. Same file there as in the app, so the version warning
+  is what keeps a PyPI install honest.
   Wheel: `scripts/build-wheel.mjs` (node, no Python: zip written by hand,
   fixed times, `RECORD` hashes) → `<dist>-<version>-py3-none-any.whl`,
   version = Cargo workspace version as PEP 440 (`-beta.1` → `b1`),

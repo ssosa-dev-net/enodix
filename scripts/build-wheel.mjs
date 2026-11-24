@@ -91,6 +91,30 @@ function pyString(text) {
   return JSON.stringify(text); // a JSON string is a valid Python literal
 }
 
+/** Where the package's page on PyPI links to (the wheel is published there
+ * by `.github/workflows/distribute.yml`). */
+const REPOSITORY = "https://github.com/ssosa-dev-net/enodix";
+const PROJECT_URLS = [
+  ["Homepage", REPOSITORY],
+  ["Documentation", `${REPOSITORY}/blob/main/python/README.md`],
+  ["Issues", `${REPOSITORY}/issues`],
+  ["Changelog", `${REPOSITORY}/blob/main/CHANGELOG.md`],
+];
+
+const CLASSIFIERS = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: System Administrators",
+  "Intended Audience :: Telecommunications Industry",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: System :: Networking",
+  "Typing :: Typed",
+];
+
 function metadata(version) {
   const readme = readFileSync(join(SOURCE, "README.md"), "utf8");
   return [
@@ -102,8 +126,10 @@ function metadata(version) {
     "Requires-Python: >=3.10",
     "Provides-Extra: nornir",
     'Requires-Dist: nornir>=3.3; extra == "nornir"',
-    "Classifier: Programming Language :: Python :: 3",
-    "Classifier: Framework :: Nornir",
+    ...PROJECT_URLS.map(([label, url]) => `Project-URL: ${label}, ${url}`),
+    // PyPI refuses an upload with a classifier not on its list
+    // (https://pypi.org/classifiers/): check a new one there first.
+    ...CLASSIFIERS.map((classifier) => `Classifier: ${classifier}`),
     "Description-Content-Type: text/markdown",
     "",
     readme,
