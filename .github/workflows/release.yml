@@ -4,7 +4,8 @@
 # - Pushing a tag v<version> (the version in Cargo.toml) builds the Windows
 #   installer, its updater signature, the portable zip and latest.json, and
 #   the Linux .deb, .rpm and AppImage, then publishes them with the
-#   changelog's section for the version and SHA256SUMS.txt.
+#   changelog's section for the version and SHA256SUMS.txt. It then starts
+#   distribute.yml, which puts the wheel on PyPI and the installer in winget.
 # - Run by hand (Actions, Release, Run workflow), it builds the same files
 #   and keeps them as the run's artifacts. It never publishes: only a tag
 #   does, so what is published is always a tagged commit.
@@ -148,9 +149,11 @@ jobs:
     # Only a tag publishes.
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
-    # The only job that may write: it creates the release.
+    # The only job that may write: it creates the release, then starts the
+    # Distribute workflow.
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -201,3 +204,13 @@ jobs:
             --notes-file notes.md \
             --verify-tag \
             --latest
+      # A workflow of its own (distribute.yml), so that it can also be run by
+      # hand for a release already published, and so that the PyPI identity
+      # and the winget token are never in the job that writes the release.
+      - name: Start the distribution (PyPI and winget)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh workflow run distribute.yml --repo "$GITHUB_REPOSITORY" --ref "v$VERSION" \
+            -f version="$VERSION"

@@ -162,9 +162,62 @@ no section for.
 
 5. Then step 6 below (an installed copy of the previous version offers the
    update) and step 7 (clean up).
+6. The publish job starts the Distribute workflow (next section). Check
+   that its run is green, and follow the winget pull request it opens until
+   Microsoft's moderators merge it.
 
 The steps below are the same release built and published from your own
 computer, for when GitHub's runners are not available.
+
+## PyPI and winget
+
+`.github/workflows/distribute.yml` puts a published release on PyPI (the
+Python bridge's wheel, as `enodix`) and in winget (the installer, as
+`ssosa-dev-net.enodix`; the ID never changes). The Release workflow starts
+it on the tag once the release is published. It builds nothing: it
+downloads the release's portable zip and `SHA256SUMS.txt`, checks the one
+against the other and takes the wheel out of the zip, so PyPI gets the same
+bytes as the app ships. For winget, Komac (pinned, with its SHA-256) writes
+the new version's manifest from the previous one; the job checks that the
+manifest names the installer's SHA-256 from `SHA256SUMS.txt` and only then
+opens the pull request on `microsoft/winget-pkgs`.
+
+To run it by hand (a failed run, or a release made from your computer):
+Actions, Distribute, Run workflow, from `main`, with the version without
+the `v`. Each half can be left out. Running it again is safe: PyPI skips a
+version it already has, and Komac stops if a pull request for the version
+is open.
+
+PyPI refuses a wheel whose metadata it does not accept, most often a
+classifier not on <https://pypi.org/classifiers/> (`scripts/build-wheel.mjs`
+lists them). The wheel of 0.7.0 and earlier has one, so those versions are
+not on PyPI.
+
+### Once, before the first distribution
+
+- **PyPI**: an account on pypi.org with two-factor authentication. Under
+  Your account, Publishing, add a pending publisher: project `enodix`,
+  owner `ssosa-dev-net`, repository `enodix`, workflow `distribute.yml`,
+  environment `pypi`. The first upload creates the project. Until then the
+  name is not reserved: someone else could still register it.
+- **winget**: the first version is submitted by hand (Komac can only
+  update a package that is already there): a pull request on
+  `microsoft/winget-pkgs` with the three manifests of
+  `manifests/s/ssosa-dev-net/enodix/<version>/`, from a fork of that
+  repository under your account, which Komac then reuses. On the first pull
+  request, Microsoft's bot asks you to accept its contributor licence
+  agreement. Then a classic personal access token of the same account with
+  the `public_repo` scope only, as the secret `WINGET_TOKEN` of the
+  `winget` environment. It can push to every public repository of the
+  account, enodix included: give it an expiry date, and replace it when it
+  expires (the winget job then fails with a 401).
+
+  ```powershell
+  gh secret set WINGET_TOKEN --env winget --repo ssosa-dev-net/enodix
+  ```
+
+- **The environments** `pypi` and `winget` (Settings, Environments), each
+  limited, like `release`, to the `main` branch and `v*` tags.
 
 ## Each release
 

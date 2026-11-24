@@ -14,7 +14,7 @@ use).
 
 The wheel ships with the app, in the `python` folder beside `enodix.exe`
 (and in the portable zip), so its version always matches the app's. Install
-it from that file, not from a package index:
+it from that file:
 
 ```powershell
 pip install "$env:LOCALAPPDATA\enodix\python\enodix-<version>-py3-none-any.whl"
@@ -27,6 +27,17 @@ On Linux the .deb and .rpm packages put the wheel in
 ```sh
 pip install /usr/lib/enodix/python/enodix-<version>-py3-none-any.whl
 ```
+
+The same wheel is on [PyPI](https://pypi.org/project/enodix/), for a
+requirements file or a machine where the app's folder is out of reach. Pin
+it to the version of the app you have (`enodix-cli --version` prints it):
+
+```sh
+pip install "enodix==<version>"
+```
+
+A plain `pip install enodix` takes the newest release, which may be newer
+than your app (see the warning below).
 
 The package finds `enodix-cli` through the `ENODIX_CLI` variable if set
 (the app sets it for scripts it starts), else at the Windows installer's

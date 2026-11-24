@@ -5,6 +5,17 @@ in the project's tracker.
 
 ## Unreleased
 
+### New
+
+- The Python bridge is on PyPI (`pip install "enodix==<version>"`), the
+  same wheel the app ships, and new releases go to winget
+  (`winget install ssosa-dev-net.enodix`) once its first version is
+  accepted.
+
+### Fixed
+
+- The wheel's metadata listed a classifier PyPI does not accept.
+
 ## 0.7.0
 
 Hosts are now edited in a tab of their own, with Save and Revert, and a
