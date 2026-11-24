@@ -5,16 +5,23 @@ in the project's tracker.
 
 ## Unreleased
 
+## 0.7.1
+
+A distribution release: the app is the same as 0.7.0. The Python bridge is
+now on PyPI, and releases go to winget.
+
 ### New
 
 - The Python bridge is on PyPI (`pip install "enodix==<version>"`), the
-  same wheel the app ships, and new releases go to winget
-  (`winget install ssosa-dev-net.enodix`) once its first version is
-  accepted.
+  same wheel the app ships [19]. Pin it to your app's version
+  (`enodix-cli --version`); a different version warns when it runs.
+- New releases go to winget (`winget install ssosa-dev-net.enodix`) once
+  its first version is accepted [19].
 
 ### Fixed
 
-- The wheel's metadata listed a classifier PyPI does not accept.
+- The wheel's metadata listed a classifier PyPI does not accept, so it
+  could not be uploaded there [19].
 
 ## 0.7.0
 
