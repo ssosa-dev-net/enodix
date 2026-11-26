@@ -54,6 +54,7 @@ async fn the_first_connection_shows_the_key_type_and_fingerprint() {
                     .to_string(),
             },
             stored: Vec::new(),
+            certificate: None,
         }
     );
     assert!(question.key.fingerprint.starts_with("SHA256:"));

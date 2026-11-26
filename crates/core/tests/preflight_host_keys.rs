@@ -363,3 +363,33 @@ async fn the_run_decides_whatever_the_plan_said() {
     let reason = ran.failure("never.yaml");
     assert!(reason.contains("not trusted yet"), "{reason}");
 }
+
+/// A device a `@cert-authority` line of the known hosts covers gets no
+/// warning: its host certificate will vouch for it in the run (#26).
+#[tokio::test]
+async fn a_host_a_certificate_authority_covers_has_no_warning() {
+    let lab = Lab::new(&[
+        ("covered.yaml", at("10.9.5.1", "frr", "")),
+        ("other.yaml", at("10.9.6.1", "frr", "")),
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+    ]);
+    let data = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        data.path().join(enodix_core::known_hosts::FILE_NAME),
+        format!(
+            "@cert-authority 10.9.5.* {}\n",
+            some_key().await.to_openssh().unwrap()
+        ),
+    )
+    .unwrap();
+    let known_hosts = KnownHosts::in_data_folder(data.path());
+
+    let mut plan = lab.plan(&folder(""), &snippet("Show"));
+    plan.check_host_keys(&known_hosts);
+
+    assert_eq!(planned(&plan, "covered.yaml").host_keys, None);
+    assert_eq!(
+        untrusted(&plan, "other.yaml"),
+        [(None, "10.9.6.1".to_string(), 22)]
+    );
+}

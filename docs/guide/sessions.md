@@ -63,6 +63,31 @@ Remembered keys are kept per host and port in a `known_hosts` file in the
 app's data folder, in OpenSSH's format. Every jump host on the way is checked
 the same way.
 
+### Host certificates
+
+If your devices have OpenSSH host certificates, trust the authority that
+signs them instead of each key. Add a line for it to that `known_hosts`
+file, as for OpenSSH:
+
+```
+@cert-authority *.lab.example.net,10.20.* ssh-ed25519 AAAAC3Nza... lab-ca
+```
+
+The patterns say which hosts the authority speaks for (`*` and `?`
+wildcards, `!` to leave one out; a host on another port than 22 is matched as
+`[host]:port`). For those hosts the app asks for a host certificate and
+connects without the card when the certificate:
+
+- is a host certificate signed by that authority,
+- is valid now, and
+- names the host, as you wrote it in the workspace, among its principals.
+
+A certificate that fails one of these is not accepted. The app then asks
+about the key inside it, as on a first connection, and the card says why the
+certificate was not taken. Jobs count a host an authority speaks for as
+trusted. Python scripts do not use authorities yet: they get only the
+remembered keys, so trust such a host's key once if a script needs it.
+
 ## Logins
 
 What happens at connect depends on the host:

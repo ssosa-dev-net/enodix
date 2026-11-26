@@ -122,13 +122,31 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   `SessionManager::new(known_hosts)` / `with_output_options(known_hosts,
 options)` take the store. In `ssh.rs` the russh `Client` handler checks
   the key; an untrusted one reaches the owner as
-  `SessionEvent::HostKey(HostKeyQuestion { host, port, key, stored })`
+  `SessionEvent::HostKey(HostKeyQuestion { host, port, key, stored,
+  certificate })`
   (`stored` empty = first use, else `changed()`), decided with
   `SessionManager::decide_host_key(id, HostKeyDecision::TrustAndRemember |
 TrustOnce | Cancel)` (or closing). Cancel → `OpenError::HostKeyNotTrusted`
   / `HostKeyChanged`; store failures → `OpenError::KnownHosts`. The
-  connect timeout is paused while the user decides and restarts after. Host certificates are never offered, so one is refused. Known
-  limit: writes are serialised per process only.
+  connect timeout is paused while the user decides and restarts after.
+  Host certificates (#26): `KnownHosts::certificate_authorities(host,
+  port)` reads `@cert-authority` lines (OpenSSH patterns: `*`, `?`, `!`,
+  ignoring case, `[host]:port` off port 22; a damaged key on a matching
+  line is `OpenError::KnownHosts`); the app never writes them. Only when
+  there is one does `connect_and_log_in` set
+  `Preferred::host_key_certificates` (= the key list) and
+  `Client.authorities`. `check_server_key` accepts a certificate when
+  `host_certificate_problem` finds none (host type, signer among the
+  authorities, `validate` now, the target's host among the principals,
+  ignoring case; an empty list names none); otherwise it asks about the
+  certificate's key, with `HostKeyQuestion.certificate` = the reason
+  (`[data-host-certificate]` in `HostKeyCheck.svelte`). Job pre-flight
+  (`job.rs` `host_key_warning`) counts a host with an authority as
+  trusted; tunnels and the cli export only plain keys (known limit).
+  `@revoked` is still ignored. Tests: `tests/host_certificates.rs`
+  (servers get `config.certificates` through `start_tuned`; `host_ca()`,
+  `certificate()` in support), `preflight_host_keys.rs`. Known limit:
+  writes are serialised per process only.
 - `src/session/algorithms.rs` — what SSH sessions offer and the
   legacy-crypto switch (`docs/legacy-crypto.md` is the user doc).
   `SshTarget.legacy_crypto` / `JumpHost.legacy_crypto` (each hop its
