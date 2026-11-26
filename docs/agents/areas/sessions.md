@@ -400,6 +400,10 @@ path>/<host file stem>`, `host_log(&ws, id)` → `Option<SessionLog>`
   log root = `app_log_dir()` (local app data `logs`), or
   `<ENODIX_DATA_DIR>/logs`; `logs_open_folder(id)` (tauri-plugin-opener
   `open_path`); `on_log_failure` channel on open/reconnect/duplicate.
+  `log_timestamps` (#24, inherited, off): `SessionLog::with_timestamps`
+  makes the `Logger` write `[YYYY-MM-DD HH:MM:SS] ` (local time of the write)
+  before every line; the file name is unchanged. Tests:
+  `tests/log_timestamps.rs`.
   Interface: `[data-open-logs]` in HostDetails, `[data-setting-note=
 logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   TerminalSession. Known limits: two workspaces with the same folder

@@ -92,7 +92,10 @@ impl LogFolder {
         if !resolved.settings.logging.value {
             return None;
         }
-        Some(SessionLog::new(self.host_folder(workspace, id)?))
+        Some(
+            SessionLog::new(self.host_folder(workspace, id)?)
+                .with_timestamps(resolved.settings.log_timestamps.value),
+        )
     }
 
     /// Where a session to something outside any workspace (a quick
@@ -112,13 +115,24 @@ impl LogFolder {
 #[derive(Debug, Clone)]
 pub struct SessionLog {
     folder: Arc<Mutex<PathBuf>>,
+    /// Write the time before each line.
+    timestamps: bool,
 }
 
 impl SessionLog {
     fn new(folder: PathBuf) -> Self {
         Self {
             folder: Arc::new(Mutex::new(folder)),
+            timestamps: false,
         }
+    }
+
+    /// The same log, writing the local time (`YYYY-MM-DD HH:MM:SS`, in
+    /// brackets) before each line, for change records and timelines.
+    #[must_use]
+    pub fn with_timestamps(mut self, timestamps: bool) -> Self {
+        self.timestamps = timestamps;
+        self
     }
 
     pub fn folder(&self) -> PathBuf {
@@ -175,6 +189,7 @@ pub(crate) struct Logger {
     log: SessionLog,
     name: String,
     text: PlainText,
+    timestamps: bool,
 }
 
 impl Logger {
@@ -197,6 +212,7 @@ impl Logger {
                         log: log.clone(),
                         name,
                         text: PlainText::new(),
+                        timestamps: log.timestamps,
                     })
                 }
                 // Another connection started in the same second.
@@ -232,6 +248,17 @@ impl Logger {
         if text.is_empty() {
             return Ok(());
         }
+        let stamped;
+        let text = if self.timestamps {
+            let stamp = chrono::Local::now().format("[%Y-%m-%d %H:%M:%S] ");
+            stamped = text
+                .split_inclusive('\n')
+                .map(|line| format!("{stamp}{line}"))
+                .collect::<String>();
+            &stamped
+        } else {
+            text
+        };
         self.file
             .write_all(text.as_bytes())
             .map_err(|error| LogFailure::new(&self.path(), &error))
