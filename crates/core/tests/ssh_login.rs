@@ -468,6 +468,39 @@ async fn a_key_file_with_its_certificate_beside_it_logs_in_by_the_certificate() 
 }
 
 #[tokio::test]
+async fn a_certificate_accepted_as_a_first_step_is_followed_by_the_password() {
+    let server = TestSshServer::start().await;
+    let manager = support::manager();
+    let temp = tempfile::TempDir::new().unwrap();
+    // A key the server does not know: only its certificate can be the
+    // first step.
+    let key = random_key();
+    let key_file = temp.path().join("id_ed25519");
+    let text = key
+        .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+        .unwrap();
+    std::fs::write(&key_file, text.as_bytes()).unwrap();
+    let certificate = support::user_certificate(
+        key.public_key(),
+        KEY_THEN_PASSWORD_USERNAME,
+        support::user_ca(),
+    );
+    support::write_certificate_beside(&key_file, &certificate);
+    let auth = SshAuth::PrivateKey {
+        key_file,
+        passphrase: None,
+    };
+    let (id, mut events) = open(&manager, &server, KEY_THEN_PASSWORD_USERNAME, auth);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+
+    assert_eq!(next_prompt(&mut events).await, password_prompt());
+    manager.answer(id, vec![PASSWORD.into()]).unwrap();
+
+    assert_eq!(next_state(&mut events).await, SessionState::Connected);
+    output_ending_with(&mut events, PROMPT).await;
+}
+
+#[tokio::test]
 async fn without_its_certificate_the_key_alone_is_refused_where_only_certificates_count() {
     let server = TestSshServer::start().await;
     let temp = tempfile::TempDir::new().unwrap();
