@@ -1182,7 +1182,9 @@
       <span
         class="marker unencrypted"
         data-unencrypted
-        title="Everything this session sends, passwords included, crosses the network unencrypted (telnet)"
+        title={jumpHost
+          ? `Telnet: everything this session sends, passwords included, crosses the network unencrypted from the jump host ${jumpHost} to the device`
+          : "Everything this session sends, passwords included, crosses the network unencrypted (telnet)"}
       >
         Unencrypted
       </span>

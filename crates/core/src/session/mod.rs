@@ -143,6 +143,11 @@ pub struct TelnetTarget {
     pub port: u16,
     /// How long opening the session may wait for the TCP connection.
     pub connect_timeout: Duration,
+    /// The SSH jump hosts to go through, in connect order (none: connect
+    /// directly). The last one opens the TCP connection to `host:port`
+    /// (`direct-tcpip`), so only the leg from it to the device is in the
+    /// clear.
+    pub jump_hosts: Vec<JumpHost>,
 }
 
 /// An SSH host a session tunnels through, with its own login. Its host
@@ -1090,7 +1095,7 @@ impl SessionManager {
             let reason = match target {
                 SessionTarget::Ssh(_) if channel => ssh::run_channel(parent, &mut link).await,
                 SessionTarget::Ssh(target) => ssh::run(target, known_hosts, &mut link).await,
-                SessionTarget::Telnet(target) => telnet::run(target, &mut link).await,
+                SessionTarget::Telnet(target) => telnet::run(target, known_hosts, &mut link).await,
                 SessionTarget::Serial(target) => serial::run(target, serial_ports, &mut link).await,
             };
             // Mark the session closed before announcing it, so that nobody

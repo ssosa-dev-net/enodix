@@ -338,7 +338,7 @@
           action: () => connect(item),
           blocked: ownWayBlocked(settings),
         },
-        ...otherWays(item.id, settings).map((way) => ({
+        ...otherWays(settings).map((way) => ({
           id: `connect-${way.protocol}`,
           label: `Connect by ${PROTOCOL_NAMES[way.protocol]}`,
           action: () => connect(item, way.protocol),

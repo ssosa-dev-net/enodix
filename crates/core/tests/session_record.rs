@@ -61,7 +61,7 @@ fn a_host_sessions_record_holds_what_its_header_shows_as_the_workspace_set_it() 
 }
 
 #[test]
-fn a_title_showing_the_address_leaves_it_out_and_telnet_never_has_a_jump_host() {
+fn a_title_showing_the_address_leaves_it_out_and_telnet_has_the_jump_host_too() {
     let (_temp, workspace) = workspace();
     let id = HostId::new("Prod/edge-fw.yaml");
 
@@ -75,7 +75,7 @@ fn a_title_showing_the_address_leaves_it_out_and_telnet_never_has_a_jump_host() 
     .unwrap();
 
     assert_eq!(record.address, None);
-    assert_eq!(record.jump_host, None);
+    assert_eq!(record.jump_host.as_deref(), Some("bastion.yaml"));
 }
 
 #[test]

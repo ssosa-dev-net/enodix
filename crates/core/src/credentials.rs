@@ -510,9 +510,6 @@ pub enum ProfileError {
     /// The host's jump hosts cannot be worked out (missing, a loop, ...).
     #[error("{0}")]
     JumpChain(#[from] JumpChainError),
-    /// The host is reached through a jump host, which telnet cannot use.
-    #[error("{host} is reached through the jump host {jump_host}, and telnet sessions cannot go through jump hosts")]
-    TelnetThroughJumpHost { host: HostId, jump_host: HostId },
     /// The host's settings name no serial port to open.
     #[error("{0} has no serial port set; choose one in its serial line settings")]
     NoSerialPort(HostId),
@@ -732,18 +729,13 @@ impl<'a> Profiles<'a> {
     }
 
     /// The target for reaching the host `id` by telnet, whatever protocol
-    /// its settings name (the side panel offers telnet for every host).
-    /// Telnet does not go through jump hosts: a host that has one is
-    /// refused rather than reached around it.
+    /// its settings name (the side panel offers telnet for every host),
+    /// through its jump hosts (as [`Profiles::jump_hosts`]): the last one
+    /// opens the TCP connection to the device.
     pub fn telnet_target(&self, id: &HostId) -> Result<TelnetTarget, ProfileError> {
-        let host = self.resolve(id)?;
-        if let Some(jump) = self.workspace.jump_chain(&host)?.last() {
-            return Err(ProfileError::TelnetThroughJumpHost {
-                host: id.clone(),
-                jump_host: jump.host.id.clone(),
-            });
-        }
-        Ok(host.telnet_target())
+        let mut target = self.resolve(id)?.telnet_target();
+        target.jump_hosts = self.jump_hosts(id)?;
+        Ok(target)
     }
 
     /// The target for opening the host `id`'s serial console, whatever
