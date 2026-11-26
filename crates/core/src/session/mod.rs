@@ -302,7 +302,7 @@ pub struct HostKeyQuestion {
     /// Why the host certificate the server presented was not accepted, if
     /// it presented one: the question is then about the key inside it, as
     /// OpenSSH falls back to it.
-    pub certificate: Option<String>,
+    pub certificate: Option<Box<str>>,
 }
 
 impl HostKeyQuestion {

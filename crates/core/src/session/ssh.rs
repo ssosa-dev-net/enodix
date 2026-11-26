@@ -293,7 +293,7 @@ impl client::Handler for Client {
                     None => return Ok(true),
                     Some(problem) => (
                         PublicKey::new(certificate.public_key().clone(), ""),
-                        Some(problem),
+                        Some(problem.into_boxed_str()),
                     ),
                 }
             }
