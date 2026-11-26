@@ -16,6 +16,13 @@
     themeKey,
     type ColorName,
   } from "./colorSchemes";
+  import {
+    actionFor,
+    chordFor,
+    chordOf,
+    SHORTCUT_ACTIONS,
+  } from "./keyBindings";
+  import { inventory } from "./inventory.svelte";
   import { localShells, type LocalShell } from "./session";
   import { openView } from "./views";
   import { checkNow, describeStatus, updates } from "./updates.svelte";
@@ -53,6 +60,53 @@
     const { [name]: _gone, ...rest } = current.customColors;
     void changePreferences({ customColors: rest });
   }
+
+  const snippetNames = $derived(
+    (inventory.workspace?.snippets ?? []).map((snippet) => snippet.name),
+  );
+
+  /** A key pressed in a binding field: the chord replaces the field's, or
+   * (Escape) nothing changes. Tab and the like leave the field as usual. */
+  function captureChord(event: KeyboardEvent): string | null {
+    if (event.key === "Tab" && !event.ctrlKey && !event.altKey) return null;
+    event.preventDefault();
+    event.stopPropagation();
+    return chordOf(event);
+  }
+
+  /** What a chord is bound to now, for a warning on a clash. */
+  function boundTo(chord: string, except: string): string | null {
+    const action = actionFor(chord, current.shortcuts);
+    if (action !== null && action !== except) {
+      return SHORTCUT_ACTIONS.find((each) => each.id === action)!.name;
+    }
+    return current.snippetKeys[chord] !== undefined &&
+      current.snippetKeys[chord] !== except
+      ? `the snippet ${current.snippetKeys[chord]}`
+      : null;
+  }
+
+  function moveShortcut(id: string, chord: string) {
+    const default_ = SHORTCUT_ACTIONS.find((each) => each.id === id)!.chord;
+    const { [id]: _old, ...rest } = current.shortcuts;
+    void changePreferences({
+      shortcuts: chord === default_ ? rest : { ...rest, [id]: chord },
+    });
+  }
+
+  function bindSnippet(chord: string, name: string) {
+    void changePreferences({
+      snippetKeys: { ...current.snippetKeys, [chord]: name },
+    });
+  }
+
+  function unbindSnippet(chord: string) {
+    const { [chord]: _gone, ...rest } = current.snippetKeys;
+    void changePreferences({ snippetKeys: rest });
+  }
+
+  let newChord = $state("");
+  let newSnippet = $state("");
 
   const SHORTCUTS: [string, string][] = [
     ["Copy", "Ctrl+Shift+C, Ctrl+Insert, or Ctrl+C with text selected"],
@@ -127,6 +181,99 @@
               {/if}
             </label>
           {/each}
+        </div>
+      </details>
+
+      <span></span>
+      <details class="colors" data-key-bindings>
+        <summary>
+          Key bindings{Object.keys(current.shortcuts).length +
+            Object.keys(current.snippetKeys).length >
+          0
+            ? " (changed)"
+            : ""}
+        </summary>
+        <p class="hint">
+          Click a field and press the keys. Ctrl or Alt is needed (a function
+          key stands alone). A key bound to a snippet is no longer sent to the
+          device.
+        </p>
+        <div class="bindings">
+          {#each SHORTCUT_ACTIONS as action (action.id)}
+            {@const chord = chordFor(action.id, current.shortcuts)}
+            <label for="preference-key-{action.id}">{action.name}</label>
+            <span class="binding">
+              <input
+                id="preference-key-{action.id}"
+                name="preference-key-{action.id}"
+                data-chord-capture
+                readonly
+                value={chord}
+                onkeydown={(event) => {
+                  const next = captureChord(event);
+                  if (next !== null) moveShortcut(action.id, next);
+                }}
+              />
+              {#if current.shortcuts[action.id]}
+                <button
+                  type="button"
+                  onclick={() => moveShortcut(action.id, action.chord)}
+                  >Reset</button
+                >
+              {/if}
+              {#if boundTo(chord, action.id)}
+                <span class="clash" role="status"
+                  >Also {boundTo(chord, action.id)}</span
+                >
+              {/if}
+            </span>
+          {/each}
+        </div>
+        <h3>Snippet keys</h3>
+        <div class="bindings">
+          {#each Object.entries(current.snippetKeys) as [chord, name] (chord)}
+            <span class="chord">{chord}</span>
+            <span class="binding">
+              {name}
+              {#if !snippetNames.includes(name)}
+                <span class="clash">no such snippet</span>
+              {/if}
+              <button type="button" onclick={() => unbindSnippet(chord)}
+                >Remove</button
+              >
+            </span>
+          {/each}
+          <input
+            name="preference-new-snippet-key"
+            data-chord-capture
+            readonly
+            placeholder="Press keys"
+            value={newChord}
+            onkeydown={(event) => {
+              const next = captureChord(event);
+              if (next !== null) newChord = next;
+            }}
+          />
+          <span class="binding">
+            <select
+              name="preference-new-snippet-key-snippet"
+              bind:value={newSnippet}
+            >
+              <option value="">Snippet…</option>
+              {#each snippetNames as name (name)}
+                <option value={name}>{name}</option>
+              {/each}
+            </select>
+            <button
+              type="button"
+              disabled={newChord === "" || newSnippet === ""}
+              onclick={() => {
+                bindSnippet(newChord, newSnippet);
+                newChord = "";
+                newSnippet = "";
+              }}>Add</button
+            >
+          </span>
         </div>
       </details>
 
@@ -326,6 +473,34 @@
     align-items: center;
     gap: var(--space-2);
     font-size: var(--text-sm);
+  }
+
+  .bindings {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--space-2);
+    align-items: center;
+    padding-top: var(--space-2);
+    font-size: var(--text-sm);
+  }
+
+  .binding {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .hint,
+  .clash {
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  h3 {
+    margin: var(--space-3) 0 0;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
   }
 
   .swatch .reset {

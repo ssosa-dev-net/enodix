@@ -179,6 +179,7 @@
     viewOf,
   } from "./lib/layout";
   import { askForKeys, givingKeys, keyMark, keysAsked } from "./lib/keys";
+  import { actionFor, chordOf } from "./lib/keyBindings";
   import {
     expandSnippet,
     findHost,
@@ -1752,20 +1753,51 @@
     requestKeys(mark);
   }
 
-  /** The window's shortcuts, by what they do. */
+  /** The window's shortcuts, by what they do. The ones the user can move
+   * (#24, `SHORTCUT_ACTIONS`) and the keys that send a snippet go by the
+   * chord; the rest have fixed keys. */
   function shortcut(event: KeyboardEvent): (() => void) | null {
+    const tab = layout ? (activePane?.active ?? null) : null;
+    const chord = chordOf(event);
+    if (chord !== null) {
+      const { shortcuts, snippetKeys } = preferences.current;
+      switch (actionFor(chord, shortcuts)) {
+        case "quick-open":
+          return inventory.workspace ? () => (inventory.palette = true) : null;
+        case "switch-tab":
+          return () => (switcher = true);
+        case "close-tab":
+          return tab === null ? null : () => closeTab(tab);
+        case "toggle-group":
+          return tab === null ? null : () => toggleGroup(tab);
+        case "open-in-window":
+          // The active session, if it may move now.
+          return tab === null || !sessions[tab]
+            ? null
+            : () => void openInWindow(tab);
+        case "toggle-side-view":
+          return () => toggleSideView();
+        case "preferences":
+          return () => openViewTab({ view: "preferences", subject: null });
+        case "edit-host":
+          return selectedHost() ? () => openViewTab(HOST_EDITOR) : null;
+        case "details":
+          if (inventory.details) return closeDetails;
+          return inventory.selected ? () => showDetails() : null;
+      }
+      const snippet = snippetKeys[chord];
+      if (snippet !== undefined) {
+        // A key with no session to send to is the terminal's own.
+        return tab !== null && sessions[tab] && states[tab] === "connected"
+          ? () => void sendSnippet(snippet, {}, tab)
+          : null;
+      }
+    }
     if (!event.ctrlKey || event.altKey || event.metaKey) return null;
     // By position too, so that letters work on any keyboard layout.
     const letter = (name: string) =>
       event.code === `Key${name}` ||
       event.key.toLowerCase() === name.toLowerCase();
-    const tab = layout ? (activePane?.active ?? null) : null;
-    if (!event.shiftKey && letter("K")) {
-      return inventory.workspace ? () => (inventory.palette = true) : null;
-    }
-    if (event.shiftKey && letter("O")) {
-      return () => (switcher = true);
-    }
     if (
       event.key === "Tab" ||
       event.key === "PageDown" ||
@@ -1782,39 +1814,11 @@
       }
       return () => void edit({ kind: forward ? "nextTab" : "previousTab" });
     }
-    if (event.shiftKey && letter("W")) {
-      return tab === null ? null : () => closeTab(tab);
-    }
-    if (event.shiftKey && letter("M")) {
-      return tab === null ? null : () => toggleGroup(tab);
-    }
-    // Open in window (#84): the active session, if it may move now.
-    if (event.shiftKey && letter("N")) {
-      return tab === null || !sessions[tab]
-        ? null
-        : () => void openInWindow(tab);
-    }
-    // Not Ctrl+B: that is tmux's prefix, so it must reach devices.
-    if (event.shiftKey && letter("B")) {
-      return () => toggleSideView();
-    }
     // Each side view: Ctrl+Shift and a letter no terminal program needs.
     const chosen = event.shiftKey
       ? SIDE_VIEWS.find((each) => letter(each.key))
       : undefined;
     if (chosen) return () => selectView(chosen.view);
-    if (!event.shiftKey && (event.code === "Comma" || event.key === ",")) {
-      return () => openViewTab({ view: "preferences", subject: null });
-    }
-    // Edit host (#10): the host editor tab on the selected host.
-    if (event.shiftKey && letter("E")) {
-      return selectedHost() ? () => openViewTab(HOST_EDITOR) : null;
-    }
-    // Opens or closes the details sheet on the selection.
-    if (event.shiftKey && letter("D")) {
-      if (inventory.details) return closeDetails;
-      return inventory.selected ? () => showDetails() : null;
-    }
     return null;
   }
 
@@ -1849,6 +1853,10 @@
   function onkeydowncapture(event: KeyboardEvent) {
     // The unlock screen takes every key.
     if (vaultLocked) return;
+    // A binding field in Preferences records the chord pressed in it, even
+    // one that is bound already (which would otherwise run).
+    if ((event.target as HTMLElement | null)?.closest?.("[data-chord-capture]"))
+      return;
     const busy =
       inventory.dialog ||
       inventory.palette ||

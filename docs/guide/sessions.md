@@ -146,6 +146,14 @@ one the session had. A quick connection reconnects as it was made.
 - **Font size**: Ctrl+= and Ctrl+- (or Ctrl+scroll) step the size; Ctrl+0
   resets it. The size, the **Terminal font** and the number of **Scrollback
   lines** are set in Preferences and apply to every terminal.
+- **Key bindings**: in Preferences, **Key bindings** moves the window's
+  shortcuts (search, switch workspace, close tab, multi-send group, open in
+  window, side view, Preferences, edit host, details): click a field and
+  press the new keys; **Reset** restores the default. **Snippet keys** bind a
+  key to a snippet, sent to the active session like a click in the Snippets
+  view; that key no longer reaches the device. A key needs Ctrl or Alt
+  (function keys stand alone). Tooltips and the palette still name the
+  default keys, and a separate session window keeps its own.
 - **Colour scheme**: Preferences offers Solarized Dark and Light, Dracula,
   Nord and Gruvbox Dark besides the app's own colours (which follow its
   light or dark theme). **Own colours** sets the background, text, cursor,
