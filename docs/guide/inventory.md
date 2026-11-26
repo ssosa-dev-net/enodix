@@ -141,12 +141,15 @@ options, which the host's SSH sessions open (see
 forwards:
   gui: L 8443:10.0.0.1:443 # this computer's port 8443 to 10.0.0.1:443, from the device
   proxy: D 1080 # a SOCKS5 proxy on port 1080, through the device
-  shared: L *:8830:localhost:830 # listening on every address, not only 127.0.0.1
+  netconf: L [::1]:8830:localhost:830 # on IPv6's loopback address
 ```
 
 `L [address:]port:host:port` is a local forward and `D [address:]port` a
-dynamic one (SOCKS5). Without an address a forward listens on `127.0.0.1`;
-`*` listens on every address, and an IPv6 address goes in brackets. Port `0`
+dynamic one (SOCKS5). A forward listens on this computer only: on `127.0.0.1`
+without an address, or on `localhost`, `127.0.0.1` or `[::1]` if one is
+written. Any other address, `*` included, is a problem of the file: a
+workspace is shared, and must not open your computer's ports to the network.
+Port `0`
 takes any free port. Forwards merge by name down the folders, as web links do;
 `name: "off"` drops one set further up. The settings panel lists the ones that
 apply and where each comes from; they are edited in the files.

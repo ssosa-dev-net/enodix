@@ -496,7 +496,7 @@ fn forwards_are_inherited_by_name_and_can_be_turned_off() {
         ("site/r1.yaml", "address: 10.0.0.2\n".into()),
         (
             "site/r2.yaml",
-            "address: 10.0.0.3\nforwards:\n  proxy: \"off\"\n  netconf: \"-L *:8830:localhost:830\"\n".into(),
+            "address: 10.0.0.3\nforwards:\n  proxy: \"off\"\n  netconf: \"-L [::1]:8830:localhost:830\"\n".into(),
         ),
     ]);
     assert!(
@@ -524,14 +524,17 @@ fn forwards_are_inherited_by_name_and_can_be_turned_off() {
         specs("site/r2.yaml"),
         [
             ("gui".to_string(), "L 9443:10.0.0.2:443".to_string()),
-            ("netconf".to_string(), "L *:8830:localhost:830".to_string()),
+            (
+                "netconf".to_string(),
+                "L [::1]:8830:localhost:830".to_string()
+            ),
         ]
     );
     let netconf = &workspace
         .resolve_host(&HostId::new("site/r2.yaml"))
         .unwrap()
         .port_forwards()[1];
-    assert_eq!(netconf.bind.to_string(), "0.0.0.0");
+    assert_eq!(netconf.bind.to_string(), "::1");
     assert_eq!(
         netconf.kind,
         ForwardKind::Local {
@@ -550,6 +553,51 @@ fn a_forward_that_cannot_be_read_is_a_problem_of_its_file() {
     let problems = format!("{:?}", workspace.problems());
     assert!(problems.contains("forward `gui`"), "{problems}");
     assert!(problems.contains("is not a local forward"), "{problems}");
+}
+
+#[test]
+fn a_forward_from_the_workspace_listens_on_loopback_only() {
+    for (bind, says) in [
+        ("*", "every address (`*`)"),
+        ("0.0.0.0", "every address (`*`)"),
+        ("192.168.1.10", "192.168.1.10"),
+        ("[::]", "::"),
+    ] {
+        let (_temp, loaded) = workspace(&[(
+            "r1.yaml",
+            format!("address: 10.0.0.1\nforwards:\n  proxy: D {bind}:1080\n"),
+        )]);
+        let problems = format!("{:?}", loaded.problems());
+        assert!(
+            problems.contains(&format!("would listen on {says}")),
+            "{bind}: {problems}"
+        );
+        assert!(problems.contains("127.0.0.1 or ::1 only"), "{problems}");
+    }
+    // Loopback, written any way, is fine.
+    let (_temp, loaded) = workspace(&[(
+        "r1.yaml",
+        "address: 10.0.0.1\nforwards:\n  a: D 1080\n  b: D localhost:1081\n  c: D 127.0.0.1:1082\n  d: D [::1]:1083\n"
+            .into(),
+    )]);
+    assert!(loaded.problems().is_empty(), "{:?}", loaded.problems());
+    let forwards = loaded
+        .resolve_host(&HostId::new("r1.yaml"))
+        .unwrap()
+        .port_forwards();
+    assert_eq!(forwards.len(), 4);
+
+    // Nor can the app write one.
+    let (_temp, mut editing) = workspace(&[("r1.yaml", "address: 10.0.0.1\n".into())]);
+    let settings = Settings {
+        forwards: vec![ForwardSetting::new("proxy", "D *:1080")],
+        ..Settings::default()
+    };
+    let error = editing
+        .write_folder_settings("", &settings)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("would listen on every address"), "{error}");
 }
 
 #[test]

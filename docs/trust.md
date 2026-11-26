@@ -233,7 +233,7 @@ remember its key, before a script logs in to it.
 | A job (snippet, config backup)         | You, with **Start**                                                   | Each host of the job                                           |
 | A script job, **Fill in from devices** | You, with **Start**                                                   | Whatever the script connects to (your code)                    |
 | A tunnel for a script                  | A script, through `enodix-cli tunnel`                                | Listens on `127.0.0.1`; reaches the device through the jump hosts |
-| A port forward                         | You, by opening a session to a host that sets `forwards`             | Listens on `127.0.0.1` (unless it names another address); reaches what the device reaches |
+| A port forward                         | You, by opening a session to a host that sets `forwards`             | Listens on `127.0.0.1` (or `::1`) only; reaches what the device reaches |
 | The Python setup                       | You, after confirming its list                                        | The package index, only for libraries you ticked               |
 | A web link, a release's page           | You, with a click                                                     | Your web browser opens it, not the app                         |
 | The SSH agent                          | You, with a profile that uses it                                      | The agent on this computer (a pipe, not the network)           |
@@ -286,8 +286,10 @@ logins stay in the tunnel's memory meanwhile.
 
 A host's `forwards` (in the workspace files) open with each SSH session to it
 and close when it ends; **Stop** in the header's **Forwarding** list closes one
-sooner. Each listens on `127.0.0.1` unless it names another address (`*`
-listens on every address of this computer, so on the network). Nothing reaches
+sooner. Each listens on `127.0.0.1` (or `::1`) only: a forward in the
+workspace that names any other address, `*` included, is refused as a problem
+of its file, so a shared workspace cannot open this computer's ports to the
+network. Nothing reaches
 the device until a program connects; then the device opens the connection, as
 `ssh -L` and `ssh -D` do. While a forward is open, **any program on this
 computer can connect to its port**, and reach through the device whatever the
@@ -480,10 +482,10 @@ own interpreter installs nothing.
 - It never uploads your inventory, your logins, session output or
   configs. Device output leaves the computer only if you copy it, or a
   script of yours sends it.
-- It opens no port reachable from the network unless a port forward names
-  another address than `127.0.0.1`. The only listening sockets are the
-  credential agent's pipe (your account only), a script's tunnel ports and
-  the port forwards of open sessions (on `127.0.0.1` unless set otherwise).
+- It opens no port reachable from the network. The only listening sockets
+  are the credential agent's pipe (your account only), a script's tunnel
+  ports and the port forwards of open sessions (all on `127.0.0.1`; a forward
+  may use `::1`).
 - It does not forward your SSH agent or X11 to devices, nor ports from a
   device back to this computer (`ssh -R`).
 - It does not open web pages itself: web links go to your browser.

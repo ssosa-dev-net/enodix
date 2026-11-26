@@ -158,9 +158,29 @@ impl ForwardSetting {
         self.forward.trim().eq_ignore_ascii_case(FORWARD_OFF)
     }
 
-    /// The forward it sets; `None` when it is off.
+    /// The forward it sets; `None` when it is off. A forward from the
+    /// workspace listens on a loopback address only (127.0.0.1, `localhost`,
+    /// ::1 or none): a shared workspace must not open this computer's ports
+    /// to the network (#21 review); any other address is refused.
     pub fn port_forward(&self) -> Option<Result<PortForward, String>> {
-        (!self.is_off()).then(|| PortForward::parse(&self.name, &self.forward))
+        (!self.is_off()).then(|| {
+            let forward = PortForward::parse(&self.name, &self.forward)?;
+            if !forward.bind.is_loopback() {
+                return Err(format!(
+                    "`{}` would listen on {}, reachable from the network; a forward \
+                     in the workspace listens on 127.0.0.1 or ::1 only, so leave the \
+                     address out",
+                    self.forward.trim(),
+                    match forward.bind {
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED) => {
+                            "every address (`*`)".to_owned()
+                        }
+                        address => address.to_string(),
+                    }
+                ));
+            }
+            Ok(forward)
+        })
     }
 }
 

@@ -47,7 +47,11 @@ The workspace folder format and everything read from it (`crates/core/src/worksp
   [addr:]port` | `off`; `ForwardSetting { name, forward }` as written,
   checked by `PortForward::parse` on read (a file problem `forward \`x\`:
   …`) and in `checked()`; merged by name like web links, a nearer `off`
-  drops one; `ResolvedHost::port_forwards()`; see `sessions.md`),
+  drops one; loopback binds only (127.0.0.1, `localhost`, ::1 or none,
+  Sosa's decision on the #34 review: anything else, `*` included, is a
+  file problem / `EditError` "would listen on …", in
+  `ForwardSetting::port_forward`; `PortForward::parse` itself still reads
+  any address); `ResolvedHost::port_forwards()`; see `sessions.md`),
   `serial` (mapping: `port` (e.g. `COM3`), `baud_rate`, `data_bits` 5–8,
   `parity`, `stop_bits` 1–2, `flow_control`; each inherits on its own;
   `EffectiveSerial.port` is `None` when unset). `Host.settings` /

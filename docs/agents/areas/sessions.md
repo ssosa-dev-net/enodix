@@ -725,7 +725,8 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   `core1,x` would have trusted it for `core1`. Test in `host_keys.rs`.
 
 - Port forwards (#21, `src/session/forward.rs`). `PortForward { name,
-  bind (default 127.0.0.1; `*` = 0.0.0.0, `localhost`), port (0 = any),
+  bind (default 127.0.0.1; `*` = 0.0.0.0, `localhost`; from the workspace
+  loopback only, see `workspace.md`), port (0 = any),
   kind: Local { host, port } | Dynamic }`, `PortForward::parse(name,
   "L [b:]p:h:hp" | "D [b:]p")` (`-L`/`-D`, any case, IPv6 in brackets),
   `spec()` the short form. Given in `OpenOptions::forwards` (the shell's

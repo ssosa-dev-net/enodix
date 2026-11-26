@@ -240,8 +240,8 @@ connection through it failed if one did ("the device could not reach
 opens again when the session reconnects. A port another program holds fails
 that forward alone, and says so.
 
-Forwards listen on `127.0.0.1` unless one names another address. While one is
-open, **any program on this computer can use its port**.
+Forwards listen on `127.0.0.1` (or `::1`) only, never on the network. While
+one is open, **any program on this computer can use its port**.
 
 ## Old equipment
 
