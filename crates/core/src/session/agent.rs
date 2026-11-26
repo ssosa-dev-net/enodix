@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::agent::AgentIdentity;
-use russh::keys::PublicKey;
+use russh::keys::{Algorithm, Certificate, PublicKey};
 
 use super::{AgentError, SshAgent};
 
@@ -21,10 +21,27 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) type Client = AgentClient<Box<dyn AgentStream + Send + Unpin>>;
 
+/// A key an agent holds, or an OpenSSH certificate of one.
+pub(super) enum Identity {
+    Key(PublicKey),
+    Certificate(Box<Certificate>),
+}
+
+impl Identity {
+    /// The algorithm of the key (a certificate's: the key it certifies).
+    pub fn algorithm(&self) -> Algorithm {
+        match self {
+            Self::Key(key) => key.algorithm(),
+            Self::Certificate(certificate) => certificate.algorithm(),
+        }
+    }
+}
+
 /// A running agent and the keys it holds.
 pub(super) struct Agent {
     pub client: Client,
-    pub keys: Vec<PublicKey>,
+    /// In the agent's order, certificates among them.
+    pub keys: Vec<Identity>,
 }
 
 /// Reaches every agent `which` names that runs, with their keys. Fails if
@@ -120,10 +137,11 @@ impl Endpoint {
             })?;
         let keys = identities
             .into_iter()
-            .filter_map(|identity| match identity {
-                AgentIdentity::PublicKey { key, .. } => Some(key),
-                // Certificates are not supported yet.
-                AgentIdentity::Certificate { .. } => None,
+            .map(|identity| match identity {
+                AgentIdentity::PublicKey { key, .. } => Identity::Key(key),
+                AgentIdentity::Certificate { certificate, .. } => {
+                    Identity::Certificate(Box::new(certificate))
+                }
             })
             .collect();
         Ok(Agent { client, keys })

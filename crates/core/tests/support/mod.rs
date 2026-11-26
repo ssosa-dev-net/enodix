@@ -142,6 +142,9 @@ pub const PASSWORD: &str = "correct horse";
 pub const OTP_USERNAME: &str = "engineer-otp";
 /// A user whose login the server never answers, like a device whose
 /// authentication backend hangs.
+/// A user whose own key the server does not know: it logs in only with an
+/// OpenSSH certificate that [`user_ca`] signed for this name.
+pub const CERT_USERNAME: &str = "engineer-cert";
 pub const STALLING_USERNAME: &str = "engineer-stalled";
 /// A user who logs in with the client key and then [`PASSWORD`], as with
 /// OpenSSH's `AuthenticationMethods publickey,password`: the key is
@@ -1237,6 +1240,53 @@ impl Drop for ScriptedShell {
     }
 }
 
+/// The user certificate authority every test server trusts for
+/// [`CERT_USERNAME`]: one per test process.
+pub fn user_ca() -> &'static PrivateKey {
+    static CA: std::sync::OnceLock<PrivateKey> = std::sync::OnceLock::new();
+    CA.get_or_init(|| PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap())
+}
+
+/// A user certificate of `key` for `principal`, signed by `ca`, valid
+/// from a minute ago for an hour.
+pub fn user_certificate(
+    key: &PublicKey,
+    principal: &str,
+    ca: &PrivateKey,
+) -> russh::keys::Certificate {
+    use russh::keys::ssh_key::certificate::{Builder, CertType};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut builder = Builder::new_with_random_nonce(
+        &mut rand::rng(),
+        key.key_data().clone(),
+        now - 60,
+        now + 3600,
+    )
+    .unwrap();
+    builder.cert_type(CertType::User).unwrap();
+    builder.key_id("enodix test").unwrap();
+    builder.valid_principal(principal).unwrap();
+    builder.sign(ca).unwrap()
+}
+
+/// Writes `certificate` where OpenSSH looks for the certificate of the key
+/// file `key_file`: beside it, as `<key file>-cert.pub`.
+pub fn write_certificate_beside(
+    key_file: &std::path::Path,
+    certificate: &russh::keys::Certificate,
+) {
+    let mut name = key_file.as_os_str().to_owned();
+    name.push("-cert.pub");
+    std::fs::write(
+        std::path::PathBuf::from(name),
+        certificate.to_openssh().unwrap(),
+    )
+    .unwrap();
+}
+
 /// The login of [`OTP_USERNAME`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Interactive {
@@ -1954,6 +2004,23 @@ impl Handler for ScriptedShell {
                 proceed_with_methods: Some(MethodSet::from(&[MethodKind::Password][..])),
                 partial_success: true,
             })
+        } else {
+            Ok(Auth::reject())
+        }
+    }
+
+    async fn auth_openssh_certificate(
+        &mut self,
+        user: &str,
+        certificate: &russh::keys::Certificate,
+    ) -> Result<Auth, Self::Error> {
+        self.quirks.at(Stage::Login).await?;
+        // russh has checked the signatures; trust is the server's to judge.
+        let ca = user_ca().public_key().fingerprint(Default::default());
+        let trusted = certificate.validate([&ca]).is_ok()
+            && certificate.valid_principals().iter().any(|p| p == user);
+        if user == CERT_USERNAME && trusted {
+            Ok(Auth::Accept)
         } else {
             Ok(Auth::reject())
         }

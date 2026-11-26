@@ -66,10 +66,20 @@ could not reach it ...")`. The jump connections live in `Shell.jumps`
   Agents are reached and their keys listed **before** connecting
   (failures: `OpenError::Agent(AgentError::NotRunning|NoKeys|
 KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
-  these and the interface then offers a password prompt). Certificates
-  in an agent are ignored.
+  these and the interface then offers a password prompt). Since #26 item 2
+  an agent's certificates are used too: `Agent.keys: Vec<Identity>`
+  (`Identity::Key | Certificate`, agent order), tried in `with_agents`
+  with `authenticate_certificate_with`.
 - Login flow (`ssh.rs` `authenticate`): `none` first to learn the
-  methods; then the target's method; then keyboard-interactive only if
+  methods; then the target's method (a key file with its certificate
+  beside it, `<key file>-cert.pub` read by `certificate_beside` and kept
+  only if it parses and is for that key, tries
+  `authenticate_openssh_cert` first and the bare key only after an
+  outright refusal; tests `ssh_login.rs` `a_key_file_with_its_certificate_…`
+  and the four after it, server user `CERT_USERNAME` trusting
+  `support::user_ca()`, `support::user_certificate`,
+  `write_certificate_beside`, `TestAgent::start_with_certificate`: a small
+  agent of its own, as russh's agent server holds no certificates); then keyboard-interactive only if
   offered and (partial success, or password method not offered, or a key
   file refused). After a key or agent key accepted as a first step
   (partial success) with `password` offered next and keyboard-interactive
