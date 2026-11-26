@@ -739,22 +739,63 @@ async fn a_stalled_reader_does_not_block_its_jump_connection() {
 }
 
 /// Past the buffer's limit, the stalled tunnel's connection is closed,
-/// saying why. The flood first fills the reading session's window and the
-/// loopback socket's buffers, which Linux grows to several MiB, through
-/// two SSH hops: on a slow computer (CI's runners) that took more than 20 s,
-/// so the deadline is generous (it ends as soon as the event comes).
+/// saying why.
+///
+/// The device here is a plain service that sends far more than the kernel's
+/// loopback buffers can hold (Linux grows them to several MiB), and the
+/// program never reads. A terminal session as the reader would not do: an
+/// SSH server sends only what the session's window allows (a few MiB), and
+/// whether that is more than the sockets' buffers plus the limit depends on
+/// how far the kernel has grown them, which varies with the computer's
+/// load: the limit was then never passed and the test waited out its
+/// deadline. The flood is a TCP service on the host's SSH port, which the
+/// tunnel carries as it does any bytes.
 #[tokio::test]
 async fn a_reader_that_lets_too_much_wait_loses_its_connection() {
-    let stalled = stalled(TunnelOptions {
-        buffer_limit: 256 * 1024,
-    })
+    let bastion = TestSshServer::start().await;
+    let other = TestSshServer::start().await;
+    let flooder = TcpService::flood(64 * 1024 * 1024).await;
+    // Tunnels to a host need its host key to be trusted: the flooder gets
+    // another test server's key (its bytes are never parsed as SSH).
+    let known = support::known_hosts();
+    for key in known.trusted("127.0.0.1", other.port()).unwrap() {
+        known.remember("127.0.0.1", flooder.port(), &key).unwrap();
+    }
+    let (_temp, ws) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("bastion.yaml", host(bastion.port(), "")),
+        (
+            "flooder.yaml",
+            host(flooder.port(), "jump_host: bastion.yaml\n"),
+        ),
+        (
+            "other.yaml",
+            host(other.port(), "jump_host: bastion.yaml\n"),
+        ),
+    ]);
+    let store = store(&ws);
+    let (tunnels, events) = open(
+        &ws,
+        &store,
+        support::known_hosts(),
+        &["flooder.yaml", "other.yaml"],
+        TunnelOptions {
+            buffer_limit: 256 * 1024,
+        },
+    )
     .await;
-    event_within(&stalled.events, Duration::from_secs(60), |event| {
+    // Connected, and never read.
+    let _socket = TcpStream::connect(("127.0.0.1", port(&tunnels, "flooder.yaml")))
+        .await
+        .unwrap();
+    event_within(&events, Duration::from_secs(60), |event| {
         matches!(event, TunnelEvent::Failed { host, reason }
             if host.as_str() == "flooder.yaml" && reason.contains("did not read its output"))
     })
     .await;
-    assert!(banner(stalled.other_port).await.starts_with("SSH-2.0-"));
+    assert!(banner(port(&tunnels, "other.yaml"))
+        .await
+        .starts_with("SSH-2.0-"));
 }
 
 /// Sends a line through `socket` and reads it back from the echo service.
