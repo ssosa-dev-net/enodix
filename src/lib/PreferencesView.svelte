@@ -7,12 +7,20 @@
     SUGGESTED_FONTS,
     type Theme,
   } from "./preferences.svelte";
+  import { localShells, type LocalShell } from "./session";
   import { openView } from "./views";
   import { checkNow, describeStatus, updates } from "./updates.svelte";
   import VaultSection from "./VaultSection.svelte";
   import PythonSection from "./PythonSection.svelte";
 
   const current = $derived(preferences.current);
+
+  /** The shells this computer has, for the local shell choice (#22). */
+  let shells = $state<LocalShell[]>([]);
+  localShells().then(
+    (list) => (shells = list),
+    () => (shells = []),
+  );
 
   /** A whole number from a number field, or null when it holds none. */
   function wholeNumber(input: HTMLInputElement): number | null {
@@ -93,6 +101,21 @@
           else event.currentTarget.value = String(current.scrollback);
         }}
       />
+
+      <label for="preference-local-shell">Local shell</label>
+      <select
+        id="preference-local-shell"
+        name="preference-local-shell"
+        value={current.localShell}
+        title="The shell a new local shell tab opens"
+        onchange={(event) =>
+          changePreferences({ localShell: event.currentTarget.value })}
+      >
+        <option value="">Default</option>
+        {#each shells as shell (shell.id)}
+          <option value={shell.id}>{shell.name}</option>
+        {/each}
+      </select>
 
       <span></span>
       <label class="check">

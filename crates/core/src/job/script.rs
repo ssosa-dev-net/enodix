@@ -46,10 +46,9 @@ use crate::workspace::HostId;
 pub const SCRIPT_OUTPUT: &str = "script";
 /// Names the file listing the job's hosts ([`ScriptTargets`]).
 pub const TARGETS_VARIABLE: &str = "ENODIX_JOB_TARGETS";
-/// Names the workspace folder the script runs for.
-pub const WORKSPACE_VARIABLE: &str = "ENODIX_WORKSPACE";
-/// Names the headless binary, for the Python package.
-pub const CLI_VARIABLE: &str = "ENODIX_CLI";
+// Names the workspace folder the script runs for, and the headless binary,
+// for the Python package: the same variables a local shell gets (#22).
+pub use crate::session::{CLI_VARIABLE, WORKSPACE_VARIABLE};
 /// The version of the targets file's format.
 pub const TARGETS_FORMAT: u32 = 1;
 

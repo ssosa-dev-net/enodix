@@ -23,7 +23,7 @@
 //! size, and the group's own revision ([`Windows::group_revision`]), by
 //! which the shell knows to tell every window.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Layout, LayoutError, PaneId, TabId};
 use crate::paste::PasteSafety;
-use crate::session::SessionId;
+use crate::session::{SessionId, Transport};
 
 /// Where input in a terminal came from (#34), which decides which sessions
 /// it reaches (#123); as the interface names it.
@@ -138,6 +138,10 @@ struct Group {
     members: Vec<Member>,
     /// The session each session tab shows, once known.
     sessions: HashMap<Member, SessionId>,
+    /// Sessions that never join: a local shell shows the user's own
+    /// computer, not a device (#22). By session, so that moving its tab to
+    /// another window changes nothing.
+    solo: HashSet<SessionId>,
 }
 
 impl Group {
@@ -392,10 +396,21 @@ impl Windows {
         self.group.members.contains(&Member { window, tab })
     }
 
+    /// Whether `window`'s tab `tab` shows a session that never joins the
+    /// group ([`Windows::attach_transport`]).
+    fn is_solo(&self, window: WindowId, tab: TabId) -> bool {
+        self.session_of(window, tab)
+            .is_some_and(|session| self.group.solo.contains(&session))
+    }
+
     /// Adds `window`'s tab `tab` to the group (nothing changes if it is in
-    /// it). A view tab is refused.
+    /// it). A view tab is refused, and so is a tab showing a local shell
+    /// ([`LayoutError::NeverJoins`]); a pane's join leaves local shells out.
     pub fn join_group(&mut self, window: WindowId, tab: TabId) -> Result<(), LayoutError> {
         self.existing(window)?.find_session_tab(tab)?;
+        if self.is_solo(window, tab) {
+            return Err(LayoutError::NeverJoins(tab));
+        }
         if !self.in_group(window, tab) {
             self.group.members.push(Member { window, tab });
             self.group_changed();
@@ -414,7 +429,9 @@ impl Windows {
             .tabs
             .iter()
             .copied()
-            .filter(|&tab| !layout.is_view(tab) && !self.in_group(window, tab))
+            .filter(|&tab| {
+                !layout.is_view(tab) && !self.in_group(window, tab) && !self.is_solo(window, tab)
+            })
             .collect();
         if !joining.is_empty() {
             self.group
@@ -463,7 +480,9 @@ impl Windows {
             .tabs
             .iter()
             .copied()
-            .filter(|&tab| !layout.is_view(tab) && !self.in_group(window, tab))
+            .filter(|&tab| {
+                !layout.is_view(tab) && !self.in_group(window, tab) && !self.is_solo(window, tab)
+            })
             .collect();
         if !confirmed {
             self.refuse_unconfirmed(window, &joining, &safety)?;
@@ -514,6 +533,27 @@ impl Windows {
             self.group.members.clear();
             self.group_changed();
         }
+    }
+
+    /// Records the session `window`'s tab `tab` shows, as
+    /// [`Windows::attach_session`] does, and what transport it uses: a
+    /// local shell never joins the multi-send group (#22), so it is left
+    /// out of every join and leaves the group if the tab already joined.
+    pub fn attach_transport(
+        &mut self,
+        window: WindowId,
+        tab: TabId,
+        session: SessionId,
+        transport: Transport,
+    ) -> Result<(), LayoutError> {
+        self.attach_session(window, tab, session)?;
+        if transport == Transport::Local {
+            self.group.solo.insert(session);
+            if self.in_group(window, tab) {
+                self.leave_group(window, tab)?;
+            }
+        }
+        Ok(())
     }
 
     /// Records that `window`'s tab `tab` shows `session` (a reconnect keeps

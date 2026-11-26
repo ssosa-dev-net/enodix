@@ -4,6 +4,7 @@
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import PanelLeft from "@lucide/svelte/icons/panel-left";
   import ServerPlus from "@lucide/svelte/icons/server-plus";
+  import SquareTerminal from "@lucide/svelte/icons/square-terminal";
   import X from "@lucide/svelte/icons/x";
   import ActivityRail, {
     SIDE_VIEW_ICONS,
@@ -571,10 +572,18 @@
     return `the multi-send group (${layout?.groupSize ?? 0})`;
   }
 
+  /** Whether `tab` opened a shell on this computer. */
+  function isLocalShell(tab: TabId): boolean {
+    const source = sessions[tab]?.source;
+    return source?.kind === "target" && source.target.kind === "local";
+  }
+
   /** Adds `tab` to the multi-send group, or takes it out. View tabs never
    * join (the core refuses them too). */
   function toggleGroup(tab: TabId) {
     if (!sessions[tab]) return;
+    // A local shell never joins (#22; the shell refuses it too).
+    if (isLocalShell(tab)) return;
     if (inGroup(tab)) void edit({ kind: "leaveGroup", tab }, undefined, false);
     else
       void join([tab], (confirmed) => ({ kind: "joinGroup", tab, confirmed }));
@@ -584,7 +593,7 @@
   function joinPane(pane: PaneId) {
     const joining = () =>
       (panes.find((each) => each.id === pane)?.tabs ?? []).filter(
-        (tab) => sessions[tab] && !inGroup(tab),
+        (tab) => sessions[tab] && !inGroup(tab) && !isLocalShell(tab),
       );
     void join(
       joining(),
@@ -977,6 +986,14 @@
       run: toggleSideView,
     },
     {
+      id: "local-shell",
+      label: "New local shell",
+      words: "terminal powershell cmd wsl bash zsh command line",
+      detail: "A shell on this computer, in a new tab",
+      icon: SquareTerminal,
+      run: () => localShell(),
+    },
+    {
       id: "new-host",
       label: "New host",
       words: "add create device",
@@ -1307,6 +1324,12 @@
       port,
       `${port} (${parameters.baudRate} ${parameters.dataBits}${parameters.parity[0].toUpperCase()}${parameters.stopBits})`,
     );
+  }
+
+  /** A shell on this computer (#22): `shell` is the id of one it lists,
+   * null the one the preference names. No workspace is needed. */
+  function localShell(shell: string | null = null) {
+    connect({ kind: "local", shell }, "Local shell", "Local shell");
   }
 
   /** Opens a session in a new tab of the active pane. `mark`: when the
@@ -2149,6 +2172,7 @@
                 onopen={openFolder}
                 onconnect={quickConnect}
                 onserial={quickSerial}
+                onlocal={localShell}
               />
             {:else}
               <QuickConnect
@@ -2156,6 +2180,7 @@
                 onpalette={() => (inventory.palette = true)}
                 onconnect={quickConnect}
                 onserial={quickSerial}
+                onlocal={localShell}
               />
             {/if}
           </div>

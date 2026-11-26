@@ -22,6 +22,11 @@ ships with. The paths are those of Windows unless a Linux path is given.
   and preferences are plain files. Nothing encrypts them.
 - With the update check off, the app connects only where you send it: a
   session, a Files tab, a job, a script or a Python setup you confirmed.
+  A local shell is a program the app starts as you, in a pseudo terminal:
+  it can do whatever you type, and nothing it does is seen or limited by
+  the app. The app gives it only the workspace folder and the headless
+  binary's path (`ENODIX_WORKSPACE`, `ENODIX_CLI`) and its own data
+  folder (`ENODIX_DATA_DIR`), and writes no log of it unless you ask.
   The update check is the one connection it makes on its own; unsigned
   pre-releases and builds of your own have no release server and check
   nothing. One exception existed up to 0.4.1: if Windows is signed in to
