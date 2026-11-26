@@ -201,6 +201,18 @@
       effective: (e) => e.legacy_crypto,
     },
     {
+      key: "agent_forwarding",
+      label: "Agent forwarding",
+      input: { kind: "choice", options: ON_OFF },
+      own: (s) => flag(s.agent_forwarding),
+      set: (s, v) => ({ ...s, agent_forwarding: toFlag(v) }),
+      effective: (e) => e.agent_forwarding,
+      note:
+        "SSH sessions forward your SSH agent to the device, so you can hop " +
+        "on from it with your keys. Whoever is root there can use them " +
+        "while the session lasts: turn it on only for hosts you trust.",
+    },
+    {
       key: "connect_timeout",
       label: "Connect timeout (seconds)",
       input: { kind: "number", min: 1, max: 3600 },

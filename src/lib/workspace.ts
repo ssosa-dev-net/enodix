@@ -64,6 +64,8 @@ export interface Settings {
   /** The id of another host to connect through. */
   jump_host: string | null;
   legacy_crypto: boolean | null;
+  /** Forward the SSH agent to the host (off unless set). */
+  agent_forwarding: boolean | null;
   /** Seconds opening a session may wait on the device. */
   connect_timeout: number | null;
   logging: boolean | null;
@@ -110,6 +112,8 @@ export interface EffectiveSettings {
   credential_profile: Effective<string> | null;
   jump_host: Effective<string> | null;
   legacy_crypto: Effective<boolean>;
+  /** Off by default. */
+  agent_forwarding: Effective<boolean>;
   /** In seconds. */
   connect_timeout: Effective<number>;
   logging: Effective<boolean>;

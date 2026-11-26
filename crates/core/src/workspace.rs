@@ -81,10 +81,10 @@ pub use scripts::{ScriptError, SCRIPT_EXTENSION};
 use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
-    apply_settings, settings_from_document, Level, AUTO_RECONNECT, BACKUP_ON_LOGIN,
-    CONNECT_TIMEOUT, CREDENTIAL_PROFILE, ENCODING, ENVIRONMENT, FORWARDS, JUMP_HOST, LEGACY_CRYPTO,
-    LOGGING, LOG_TIMESTAMPS, PASTE_LINE_DELAY, PLATFORM, PORT, PROTOCOL, SERIAL, TERMINAL_TYPE,
-    WEB_LINKS,
+    apply_settings, settings_from_document, Level, AGENT_FORWARDING, AUTO_RECONNECT,
+    BACKUP_ON_LOGIN, CONNECT_TIMEOUT, CREDENTIAL_PROFILE, ENCODING, ENVIRONMENT, FORWARDS,
+    JUMP_HOST, LEGACY_CRYPTO, LOGGING, LOG_TIMESTAMPS, PASTE_LINE_DELAY, PLATFORM, PORT, PROTOCOL,
+    SERIAL, TERMINAL_TYPE, WEB_LINKS,
 };
 pub use settings::{
     Effective, EffectiveSerial, EffectiveSettings, Encoding, Environment, FlowControl,
@@ -119,7 +119,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 32] = [
+pub const HOST_KEY_ORDER: [&str; 33] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -127,6 +127,7 @@ pub const HOST_KEY_ORDER: [&str; 32] = [
     CREDENTIAL_PROFILE,
     JUMP_HOST,
     LEGACY_CRYPTO,
+    AGENT_FORWARDING,
     CONNECT_TIMEOUT,
     LOGGING,
     AUTO_RECONNECT,
@@ -155,7 +156,7 @@ pub const HOST_KEY_ORDER: [&str; 32] = [
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 20] = [
+pub const FOLDER_KEY_ORDER: [&str; 21] = [
     DESCRIPTION,
     TAGS,
     PLATFORM,
@@ -164,6 +165,7 @@ pub const FOLDER_KEY_ORDER: [&str; 20] = [
     CREDENTIAL_PROFILE,
     JUMP_HOST,
     LEGACY_CRYPTO,
+    AGENT_FORWARDING,
     CONNECT_TIMEOUT,
     LOGGING,
     AUTO_RECONNECT,
@@ -448,6 +450,7 @@ impl ResolvedHost {
             auth,
             jump_hosts: Vec::new(),
             legacy_crypto: self.settings.legacy_crypto.value,
+            agent_forwarding: self.settings.agent_forwarding.value,
             connect_timeout: self.connect_timeout(),
             terminal_type: self.settings.terminal_type.value,
         }

@@ -802,3 +802,44 @@ fn backup_on_login_is_off_by_default_and_inherits_with_its_origin() {
     assert!(read(&root, "Core/core-r1.yaml").ends_with("port: 22\nbackup_on_login: false\n"));
     assert_eq!(backup(&workspace), from(false, Origin::Host));
 }
+
+#[test]
+fn agent_forwarding_is_off_by_default_inherits_and_reaches_the_target() {
+    let (_temp, root) = fixture_copy("edit");
+    let mut workspace = Workspace::open(&root).unwrap();
+    let forwarding = |workspace: &Workspace| {
+        resolved(workspace, "Core/core-r1.yaml")
+            .settings
+            .agent_forwarding
+    };
+    assert_eq!(forwarding(&workspace), from(false, Origin::Default));
+
+    let mut settings = workspace.folder("Core").unwrap().settings.clone();
+    settings.agent_forwarding = Some(true);
+    workspace.write_folder_settings("Core", &settings).unwrap();
+    assert_eq!(
+        read(&root, "Core/_folder.yaml"),
+        "description: Core layer\nagent_forwarding: true\n"
+    );
+    assert_eq!(forwarding(&workspace), from(true, folder("Core")));
+
+    let store = MemoryStore::new();
+    let target = Profiles::new(&store, &workspace)
+        .prompted_target(
+            &HostId::new("Core/core-r1.yaml"),
+            USERNAME.into(),
+            PASSWORD.into(),
+        )
+        .unwrap();
+    assert!(target.agent_forwarding);
+
+    // A host turns it off for itself (after `port`, its nearest predecessor).
+    let mut core = workspace
+        .host(&HostId::new("Core/core-r1.yaml"))
+        .unwrap()
+        .clone();
+    core.settings.agent_forwarding = Some(false);
+    workspace.write_host(&core).unwrap();
+    assert!(read(&root, "Core/core-r1.yaml").ends_with("port: 22\nagent_forwarding: false\n"));
+    assert_eq!(forwarding(&workspace), from(false, Origin::Host));
+}

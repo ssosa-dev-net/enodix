@@ -185,6 +185,8 @@ export interface Session {
   readonly id: number;
   /** Whether its traffic is encrypted on the network (telnet's is not). */
   readonly encrypted: boolean;
+  /** Whether it forwards the SSH agent to the device. */
+  readonly agentForwarded: boolean;
   readonly transport: Transport;
   /**
    * Input in this session's terminal, with where it came from (#123):
@@ -442,6 +444,7 @@ interface Attached extends Reported {
   consumer: number;
   offset: number;
   encrypted: boolean;
+  agentForwarded: boolean;
   transport: Transport;
 }
 
@@ -471,6 +474,7 @@ interface Opened {
   /** The key this window's acknowledgements name. */
   consumer: number;
   encrypted: boolean;
+  agentForwarded: boolean;
   transport: Transport;
   record: SessionRecord;
 }
@@ -488,13 +492,14 @@ export async function openSession(
   let current: ReturnType<typeof channels>;
   let id: number;
   let encrypted: boolean;
+  let agentForwarded: boolean;
   let transport: Transport;
   let record: SessionRecord;
   let taken: Reported | null = null;
   if (source.kind === "adopt") {
     const attached = await attach(source.id, handlers);
     current = attached.current;
-    ({ encrypted, transport } = attached.attached);
+    ({ encrypted, agentForwarded, transport } = attached.attached);
     id = source.id;
     const { state, algorithms, logFailure, backup } = attached.attached;
     taken = { state, algorithms, logFailure, backup };
@@ -517,13 +522,14 @@ export async function openSession(
             size,
             ...eventsOf(current),
           });
-    ({ id, encrypted, transport, record } = opened);
+    ({ id, encrypted, agentForwarded, transport, record } = opened);
     current.ready(id, opened.consumer);
   }
 
   return {
     id,
     encrypted,
+    agentForwarded,
     transport,
     record,
     taken,

@@ -96,6 +96,14 @@ impl SessionTarget {
         }
     }
 
+    /// Whether the session forwards the SSH agent to the device.
+    pub fn agent_forwarding(&self) -> bool {
+        match self {
+            Self::Ssh(target) => target.agent_forwarding,
+            Self::Telnet(_) | Self::Serial(_) | Self::Local(_) => false,
+        }
+    }
+
     /// The transport the session uses.
     pub fn transport(&self) -> Transport {
         match self {
@@ -143,6 +151,10 @@ pub struct SshTarget {
     /// Also offer the outdated algorithms old equipment needs
     /// ([`LEGACY_ALGORITHMS`]) to the target; jump hosts have their own.
     pub legacy_crypto: bool,
+    /// Forward the SSH agent to the target (never to its jump hosts): the
+    /// agent the target logs in with, else the system's. Whoever is root
+    /// on the target can use the agent while the session lasts.
+    pub agent_forwarding: bool,
     /// How long opening the session may wait on the device: for the TCP
     /// connection, the SSH handshake, each answer while logging in, and the
     /// shell to start. The time the user takes to answer a question (host
@@ -1221,6 +1233,11 @@ impl SessionManager {
     /// encrypted on the network: see [`SessionTarget::encrypted`].
     pub fn encrypted(&self, id: SessionId) -> Result<bool, SessionError> {
         self.target(id, SessionTarget::encrypted)
+    }
+
+    /// Whether the session `id` forwards the SSH agent to its device.
+    pub fn agent_forwarded(&self, id: SessionId) -> Result<bool, SessionError> {
+        self.target(id, SessionTarget::agent_forwarding)
     }
 
     /// The transport of the session `id` (open or closed, until it is

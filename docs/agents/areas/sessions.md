@@ -70,6 +70,23 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   an agent's certificates are used too: `Agent.keys: Vec<Identity>`
   (`Identity::Key | Certificate`, agent order), tried in `with_agents`
   with `authenticate_certificate_with`.
+- Agent forwarding (#26): `SshTarget.agent_forwarding` (setting
+  `agent_forwarding`, off by default; `ssh_target_with` copies it, quick
+  connect is always off). `JumpHost` has no such field: never forwarded to
+  a jump host. On: `shell_on` sends `auth-agent-req@openssh.com`
+  (`Channel::agent_forward(false)`) after the pty request, for the first
+  shell and a duplicate; `run_channel` (jobs, exec) never asks. The client
+  handler's `server_channel_open_agent_forward` is refused unless
+  `Client.forward_agent` is set (the target's own agent if its login is
+  `SshAuth::Agent`, else `SshAgent::System`); each channel the device
+  opens is joined to a fresh connection from `agent::connect_stream`
+  (`copy_bidirectional`), so a non-running agent fails only that channel.
+  `SessionManager::agent_forwarded(id)`; the shell's `Opened` /
+  `Attached` carry `agentForwarded` and the header shows **Agent
+  forwarded** (`[data-agent-forwarded]`, danger colour). Tests:
+  `tests/agent_forwarding.rs` (the scripted shell's `agent` command opens
+  `channel_open_agent` and prints `agent keys: N`, or
+  `agent: not forwarded`); the inheritance test is in `settings.rs`.
 - Login flow (`ssh.rs` `authenticate`): `none` first to learn the
   methods; then the target's method (a key file with its certificate
   beside it, `<key file>-cert.pub` read by `certificate_beside` and kept

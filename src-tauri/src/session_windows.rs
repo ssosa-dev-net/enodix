@@ -681,6 +681,7 @@ pub(super) struct Attached {
     /// The output delivered before this window's share, in bytes.
     offset: u64,
     encrypted: bool,
+    agent_forwarded: bool,
     transport: Transport,
     /// Where it stands, before the events that waited for this window;
     /// `None`: none was shown yet.
@@ -718,6 +719,9 @@ pub(super) async fn session_attach(
     let encrypted = manager
         .encrypted(session)
         .map_err(|error| error.to_string())?;
+    let agent_forwarded = manager
+        .agent_forwarded(session)
+        .map_err(|error| error.to_string())?;
     let transport = manager
         .transport(session)
         .map_err(|error| error.to_string())?;
@@ -744,6 +748,7 @@ pub(super) async fn session_attach(
         consumer: attached.key.get(),
         offset: attached.offset,
         encrypted,
+        agent_forwarded,
         transport,
         state: reported.state.map(StateMessage::from),
         algorithms: reported.algorithms,

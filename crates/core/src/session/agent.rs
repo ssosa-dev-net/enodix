@@ -148,6 +148,25 @@ impl Endpoint {
     }
 }
 
+/// A connection to the first agent of `which` that answers, as a byte
+/// stream: what a forwarded agent channel is joined to.
+pub(super) async fn connect_stream(
+    which: &SshAgent,
+) -> Result<Box<dyn AgentStream + Send + Unpin>, AgentError> {
+    let mut problems = Vec::new();
+    for endpoint in endpoints(which) {
+        let connected = match &endpoint {
+            Endpoint::Socket(path) => connect_socket(path).await,
+            Endpoint::Pageant => connect_pageant().await,
+        };
+        match connected {
+            Ok(client) => return Ok(client.into_inner()),
+            Err(error) => problems.push(format!("{endpoint}: {}", describe(error))),
+        }
+    }
+    Err(AgentError::NotRunning(problems.join("; ")))
+}
+
 fn describe(error: russh::keys::Error) -> String {
     match error {
         russh::keys::Error::IO(error) if error.kind() == std::io::ErrorKind::NotFound => {

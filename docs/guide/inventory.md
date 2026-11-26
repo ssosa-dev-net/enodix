@@ -104,6 +104,7 @@ These keys can be written in a host file or in a `_folder.yaml`, and the nearest
 | `credential_profile` | The name of a profile in the **Credentials** view. Never a secret. | none: the login is asked at each connection |
 | `jump_host` | The id of another host (see [Jump hosts](#jump-hosts)) | none: direct |
 | `legacy_crypto` | `true` or `false`: allow the old algorithms an old device may need (see [legacy-crypto.md](legacy-crypto.md)) | `false` |
+| `agent_forwarding` | `true` or `false`: let the device use your SSH agent (see [Agent forwarding](sessions.md#agent-forwarding)) | `false` |
 | `connect_timeout` | Seconds to wait for the device, 1 to 3600 | 15 |
 | `logging` | `true` or `false`: save a text log of each session on this computer | `true` |
 | `encoding` | How the device's bytes stand for characters: `utf-8`, `iso-8859-1`, `windows-1252` or `cp437`. The terminal and the session log always show UTF-8 | `utf-8` |
@@ -164,7 +165,7 @@ Keys that enodix does not know are kept as they are when the app saves a host, s
 
 ## Folders and inheritance
 
-A folder can hold a `_folder.yaml` file. It can set a `description`, `tags`, and any of the connection settings above (`platform`, `protocol`, `port`, `credential_profile`, `jump_host`, `legacy_crypto`, `connect_timeout`, `logging`, `auto_reconnect`, `log_timestamps`, `backup_on_login`, `environment`, `paste_line_delay`, `terminal_type`, `encoding`, `serial`, `web_links` and `forwards`). Everything below the folder inherits them.
+A folder can hold a `_folder.yaml` file. It can set a `description`, `tags`, and any of the connection settings above (`platform`, `protocol`, `port`, `credential_profile`, `jump_host`, `legacy_crypto`, `agent_forwarding`, `connect_timeout`, `logging`, `auto_reconnect`, `log_timestamps`, `backup_on_login`, `environment`, `paste_line_delay`, `terminal_type`, `encoding`, `serial`, `web_links` and `forwards`). Everything below the folder inherits them.
 
 ```yaml
 # Europe/_folder.yaml
