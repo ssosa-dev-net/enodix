@@ -14,8 +14,8 @@ use russh::MethodKind;
 use support::agent::TestAgent;
 use support::{
     next_prompt, next_state, output_ending_with, TestSshServer, CODE_INSTRUCTIONS, CODE_NAME,
-    CODE_QUESTION, ONE_TIME_CODE, OTP_USERNAME, PASSWORD, PASSWORD_QUESTION, PROMPT,
-    RSA_CLIENT_KEY, USERNAME,
+    CODE_QUESTION, KEY_THEN_PASSWORD_USERNAME, ONE_TIME_CODE, OTP_USERNAME, PASSWORD,
+    PASSWORD_QUESTION, PROMPT, RSA_CLIENT_KEY, USERNAME,
 };
 
 const SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
@@ -334,4 +334,101 @@ async fn a_server_that_only_offers_keyboard_interactive_gets_the_password_withou
     manager.answer(id, vec![ONE_TIME_CODE.into()]).unwrap();
 
     assert_eq!(next_state(&mut events).await, SessionState::Connected);
+}
+
+/// The password question asked after a key the server accepted as a first
+/// step.
+fn password_prompt() -> LoginPrompt {
+    LoginPrompt {
+        name: String::new(),
+        instructions: String::new(),
+        questions: vec![LoginQuestion {
+            text: PASSWORD_QUESTION.into(),
+            echo: false,
+        }],
+    }
+}
+
+/// A key profile for the server's client key, in `temp`.
+fn key_file_auth(server: &TestSshServer, temp: &tempfile::TempDir) -> SshAuth {
+    let key = temp.path().join("id_ed25519");
+    server.write_client_key(&key, None);
+    SshAuth::PrivateKey {
+        key_file: key,
+        passphrase: None,
+    }
+}
+
+#[tokio::test]
+async fn a_server_that_wants_a_password_after_the_key_asks_for_it() {
+    let server = TestSshServer::start().await;
+    let manager = support::manager();
+    let temp = tempfile::TempDir::new().unwrap();
+    let auth = key_file_auth(&server, &temp);
+    let (id, mut events) = open(&manager, &server, KEY_THEN_PASSWORD_USERNAME, auth);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+
+    assert_eq!(next_prompt(&mut events).await, password_prompt());
+    manager.answer(id, vec![PASSWORD.into()]).unwrap();
+
+    assert_eq!(next_state(&mut events).await, SessionState::Connected);
+    output_ending_with(&mut events, PROMPT).await;
+}
+
+#[tokio::test]
+async fn a_password_after_an_agent_key_is_asked_for_too() {
+    let server = TestSshServer::start().await;
+    let agent = TestAgent::start(&[server.client_key().clone()]).await;
+    let manager = support::manager();
+    let (id, mut events) = open(
+        &manager,
+        &server,
+        KEY_THEN_PASSWORD_USERNAME,
+        agent_at(&agent),
+    );
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+
+    assert_eq!(next_prompt(&mut events).await, password_prompt());
+    manager.answer(id, vec![PASSWORD.into()]).unwrap();
+
+    assert_eq!(next_state(&mut events).await, SessionState::Connected);
+}
+
+#[tokio::test]
+async fn a_wrong_password_after_the_key_fails_authentication() {
+    let server = TestSshServer::start().await;
+    let manager = support::manager();
+    let temp = tempfile::TempDir::new().unwrap();
+    let auth = key_file_auth(&server, &temp);
+    let (id, mut events) = open(&manager, &server, KEY_THEN_PASSWORD_USERNAME, auth);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    next_prompt(&mut events).await;
+
+    manager.answer(id, vec!["wrong".into()]).unwrap();
+
+    assert_eq!(
+        next_state(&mut events).await,
+        SessionState::Closed(CloseReason::Failed(OpenError::AuthenticationFailed))
+    );
+}
+
+#[tokio::test]
+async fn a_refused_key_is_not_followed_by_a_password_question() {
+    // The key is not the one the server knows: no first step, so the
+    // password method offered is not a second one, and nothing is asked.
+    let server = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+    let key = temp.path().join("id_ed25519");
+    TestSshServer::start().await.write_client_key(&key, None);
+    let auth = SshAuth::PrivateKey {
+        key_file: key,
+        passphrase: None,
+    };
+
+    let state = state_after_connecting(&server, KEY_THEN_PASSWORD_USERNAME, auth).await;
+
+    assert_eq!(
+        state,
+        SessionState::Closed(CloseReason::Failed(OpenError::AuthenticationFailed))
+    );
 }
