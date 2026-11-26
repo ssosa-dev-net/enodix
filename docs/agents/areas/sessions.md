@@ -65,7 +65,15 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
 - Login flow (`ssh.rs` `authenticate`): `none` first to learn the
   methods; then the target's method; then keyboard-interactive only if
   offered and (partial success, or password method not offered, or a key
-  file refused). A refused password or agent is reported, not turned into
+  file refused). After a key or agent key accepted as a first step
+  (partial success) with `password` offered next and keyboard-interactive
+  not logging in, "Password: " (hidden) is asked (`ask_password`) and sent
+  with the password method; a further partial success goes on to
+  keyboard-interactive (issue #26, item 8). Test server user
+  `KEY_THEN_PASSWORD_USERNAME`; tests in `ssh_login.rs`
+  (`a_server_that_wants_a_password_after_the_key_asks_for_it` and the
+  three after it). A key profile cannot hold that password: it is asked
+  every time. A refused password or agent is reported, not turned into
   a question. A lone hidden "password" question gets the stored password
   when the password method was not offered. Questions reach the owner as
   `SessionEvent::Prompt(LoginPrompt)` (while `Connecting`); answer with
