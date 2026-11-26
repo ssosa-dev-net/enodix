@@ -8,3 +8,12 @@ Interface description: |-
   interface {{interface}}
   description {{description}}
   end
+
+Save the configuration:
+  answer:
+    "Destination filename": ""
+  stop:
+    - "% Invalid input"
+  steps:
+    - copy running-config startup-config
+    - show startup-config | include hostname
