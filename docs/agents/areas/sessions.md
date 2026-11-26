@@ -753,7 +753,11 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   lastFailure }` (camelCase); every change → `SessionEvent::Forwards(all)`
   (the first one before `Connected`; empty once the connection ends,
   `Link::end_forwards` after `pump`). `SessionManager::forwards(id)`,
-  `all_forwards()` (sessions with any, by id), `stop_forward(id, name)`
+  `all_forwards()` (sessions with any, by id), `stop_forward(id, name).await`
+  (async: aborts the forward's task and awaits its `JoinHandle`, so the
+  listener is dropped before `Stopped` is reported; `Link::end_forwards`
+  likewise, before `Closed`. A bare `abort()` left the port accepting
+  for a moment: seen on Windows CI)
   → `Ok(false)` if none listening (it reopens on reconnect). Relays keep
   nothing of it; the shell maps the event to the app event
   `forwards-changed`, and the interface reads `session_forwards`,

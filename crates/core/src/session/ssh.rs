@@ -419,7 +419,7 @@ pub(super) async fn run(
     };
     link.start_forwards(device).await;
     let ended = pump(link, opened, requested_size, Some(connection.as_ref())).await;
-    link.end_forwards();
+    link.end_forwards().await;
     match ended {
         Ended::Here => close(&connection, &jumps).await,
         Ended::Exited(exit_status) => {

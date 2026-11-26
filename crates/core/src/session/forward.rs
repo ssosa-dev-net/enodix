@@ -300,34 +300,51 @@ impl Forwards {
 
     /// Stops the forward `name`: it listens no more, and the connections it
     /// carries end. `false` if it has no such forward listening.
-    pub(super) fn stop(&self, name: &str) -> bool {
-        let mut inner = self.inner();
-        let Some(slot) = inner
-            .slots
-            .iter_mut()
-            .find(|slot| slot.status.name == name && slot.status.is_listening())
-        else {
-            return false;
+    pub(super) async fn stop(&self, name: &str) -> bool {
+        let task = {
+            let mut inner = self.inner();
+            let Some(slot) = inner
+                .slots
+                .iter_mut()
+                .find(|slot| slot.status.name == name && slot.status.is_listening())
+            else {
+                return false;
+            };
+            match slot.task.take() {
+                Some(task) => task,
+                // Being stopped already.
+                None => return false,
+            }
         };
-        if let Some(task) = slot.task.take() {
-            task.abort();
+        // Its listener is closed once the task is gone, not when it is
+        // only told to go: wait for that before saying it has stopped.
+        closed(task).await;
+        let mut inner = self.inner();
+        if let Some(slot) = inner.slots.iter_mut().find(|s| s.status.name == name) {
+            slot.status.state = ForwardState::Stopped;
         }
-        slot.status.state = ForwardState::Stopped;
         Self::report(&inner);
         true
     }
 
-    /// Ends every forward (the connection has ended): none are left.
-    pub(super) fn end(&self) {
-        let mut inner = self.inner();
-        if inner.slots.is_empty() {
-            return;
-        }
-        for slot in &mut inner.slots {
-            if let Some(task) = slot.task.take() {
-                task.abort();
+    /// Ends every forward (the connection has ended): none are left, and
+    /// none listens any more once this returns.
+    pub(super) async fn end(&self) {
+        let tasks: Vec<JoinHandle<()>> = {
+            let mut inner = self.inner();
+            if inner.slots.is_empty() {
+                return;
             }
+            inner
+                .slots
+                .iter_mut()
+                .filter_map(|s| s.task.take())
+                .collect()
+        };
+        for task in tasks {
+            closed(task).await;
         }
+        let mut inner = self.inner();
         inner.slots.clear();
         Self::report(&inner);
         inner.events = None;
@@ -361,6 +378,15 @@ impl Drop for Forwards {
             }
         }
     }
+}
+
+/// Aborts a forward's task and waits until it is dropped, with the
+/// listener and the connections it carried: a task told to abort keeps
+/// them until the runtime next polls it, and the system meanwhile accepts
+/// connections on its port.
+async fn closed(task: JoinHandle<()>) {
+    task.abort();
+    let _ = task.await;
 }
 
 /// The words for a listener that could not be bound.

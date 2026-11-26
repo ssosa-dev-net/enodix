@@ -1262,13 +1262,13 @@ impl SessionManager {
     /// Stops the forward `name` of the open session `id`: it listens no
     /// more and the connections it carries end; the session goes on. It
     /// opens again when the session reconnects. `Ok(false)` if the session
-    /// has no such forward listening.
-    pub fn stop_forward(&self, id: SessionId, name: &str) -> Result<bool, SessionError> {
+    /// has no such forward listening. Once it returns, the port is closed.
+    pub async fn stop_forward(&self, id: SessionId, name: &str) -> Result<bool, SessionError> {
         let forwards = {
             let sessions = self.inner.sessions();
             open_session(&sessions, id)?.forwards.clone()
         };
-        Ok(forwards.stop(name))
+        Ok(forwards.stop(name).await)
     }
 
     fn send(&self, id: SessionId, command: Command) -> Result<(), SessionError> {
@@ -1481,9 +1481,10 @@ impl Link {
         self.forwards.start(&options, device, &self.events).await;
     }
 
-    /// Ends the session's forwards: its connection has ended.
-    fn end_forwards(&mut self) {
-        self.forwards.end();
+    /// Ends the session's forwards: its connection has ended. They listen
+    /// no more once this returns.
+    async fn end_forwards(&mut self) {
+        self.forwards.end().await;
     }
 
     fn algorithms(&mut self, algorithms: Vec<NegotiatedAlgorithms>) {

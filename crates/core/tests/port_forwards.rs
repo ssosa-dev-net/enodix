@@ -324,7 +324,7 @@ async fn a_forward_can_be_stopped_and_the_session_goes_on() {
         "every open forward, by session"
     );
 
-    assert_eq!(manager.stop_forward(id, "gui"), Ok(true));
+    assert_eq!(manager.stop_forward(id, "gui").await, Ok(true));
     let reported = next_forwards(&mut events).await;
     assert_eq!(reported[0].state, ForwardState::Stopped);
     assert!(reported[1].is_listening());
@@ -332,8 +332,8 @@ async fn a_forward_can_be_stopped_and_the_session_goes_on() {
     assert!(TcpStream::connect(("127.0.0.1", gui)).await.is_err());
     assert!(until_closed(&mut carried).await.is_empty());
     // Once only; an unknown one is not there to stop.
-    assert_eq!(manager.stop_forward(id, "gui"), Ok(false));
-    assert_eq!(manager.stop_forward(id, "nothing"), Ok(false));
+    assert_eq!(manager.stop_forward(id, "gui").await, Ok(false));
+    assert_eq!(manager.stop_forward(id, "nothing").await, Ok(false));
 
     // The terminal is still there.
     manager.write(id, b"show clock\r".to_vec()).unwrap();

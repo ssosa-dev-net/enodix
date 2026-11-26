@@ -2959,9 +2959,14 @@ fn forwards_list(
 
 /// Stops the forward `name` of the session `id`; the session goes on.
 #[tauri::command]
-fn forward_stop(manager: State<'_, SessionManager>, id: u64, name: String) -> Result<bool, String> {
+async fn forward_stop(
+    manager: State<'_, SessionManager>,
+    id: u64,
+    name: String,
+) -> Result<bool, String> {
     manager
         .stop_forward(SessionId(id), &name)
+        .await
         .map_err(|error| error.to_string())
 }
 
