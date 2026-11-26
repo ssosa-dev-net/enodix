@@ -69,16 +69,26 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   these and the interface then offers a password prompt). Since #26 item 2
   an agent's certificates are used too: `Agent.keys: Vec<Identity>`
   (`Identity::Key | Certificate`, agent order), tried in `with_agents`
-  with `authenticate_certificate_with`.
+  with `authenticate_certificate_with`. Hardware security keys (#26)
+  work through the agent with no code of their own: an agent's
+  `sk-ssh-ed25519@openssh.com` key is an `Identity::Key` like any other
+  and the agent's signature is passed on (tested by
+  `TestAgent::start_as_security_key`, which signs as a device would, and
+  the test server's `SECURITY_KEY_USERNAME`). `*_sk` key files are not
+  read (they would need libfido2/CTAP).
 - Agent forwarding (#26): `SshTarget.agent_forwarding` (setting
   `agent_forwarding`, off by default; `ssh_target_with` copies it, quick
   connect is always off). `JumpHost` has no such field: never forwarded to
   a jump host. On: `shell_on` sends `auth-agent-req@openssh.com`
   (`Channel::agent_forward(false)`) after the pty request, for the first
-  shell and a duplicate; `run_channel` (jobs, exec) never asks. The client
+  shell and a duplicate; `run_channel` (exec) never asks. Jobs open
+  shells too, so `job/run.rs` clears `agent_forwarding` on every target it
+  opens; a file connection (`connect_device` with `followed`) gets no
+  `Hop.forward_agent`. The client
   handler's `server_channel_open_agent_forward` is refused unless
   `Client.forward_agent` is set (the target's own agent if its login is
-  `SshAuth::Agent`, else `SshAgent::System`); each channel the device
+  `SshAuth::Agent`, else `SshAgent::System`; only a terminal's device
+  connection has one, which then asks in `shell_on`); each channel the device
   opens is joined to a fresh connection from `agent::connect_stream`
   (`copy_bidirectional`), so a non-running agent fails only that channel.
   `SessionManager::agent_forwarded(id)`; the shell's `Opened` /
@@ -86,7 +96,10 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   forwarded** (`[data-agent-forwarded]`, danger colour). Tests:
   `tests/agent_forwarding.rs` (the scripted shell's `agent` command opens
   `channel_open_agent` and prints `agent keys: N`, or
-  `agent: not forwarded`); the inheritance test is in `settings.rs`.
+  `agent: not forwarded`; `agent unasked` opens one anyway, which is
+  refused; `TestSshServer::agent_requests()` counts the forwards asked for,
+  to check jump hosts and jobs get none); the inheritance test is in
+  `settings.rs`.
 - Login flow (`ssh.rs` `authenticate`): `none` first to learn the
   methods; then the target's method (a key file with its certificate
   beside it, `<key file>-cert.pub` read by `certificate_beside` and kept
@@ -143,7 +156,14 @@ TrustOnce | Cancel)` (or closing). Cancel → `OpenError::HostKeyNotTrusted`
   (`[data-host-certificate]` in `HostKeyCheck.svelte`). Job pre-flight
   (`job.rs` `host_key_warning`) counts a host with an authority as
   trusted; tunnels and the cli export only plain keys (known limit).
-  `@revoked` is still ignored. Tests: `tests/host_certificates.rs`
+  Revoked keys: `KnownHosts::revoked(host, port)` reads `@revoked` lines
+  the same way (`marked` in `known_hosts.rs`); `Client.revoked` is
+  checked first in `check_server_key`: a plain key, a certificate's key or
+  its signer that is revoked is `OpenError::KnownHosts("... revoked ...")`,
+  no question. Marker-line patterns may be hashed (`|1|salt|hash`,
+  HMAC-SHA1 of the lower-cased name: `matches_hashed`); plain entries under
+  hashed names are still ignored by `check`/`trusted`. Pre-flight does not
+  read `@revoked` (the run fails on that host instead). Tests: `tests/host_certificates.rs`
   (servers get `config.certificates` through `start_tuned`; `host_ca()`,
   `certificate()` in support), `preflight_host_keys.rs`. Known limit:
   writes are serialised per process only.

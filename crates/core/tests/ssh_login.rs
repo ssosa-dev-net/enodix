@@ -559,3 +559,30 @@ async fn a_certificate_held_by_the_agent_logs_in() {
 
     assert_eq!(state, SessionState::Connected);
 }
+
+#[tokio::test]
+async fn a_security_key_held_by_the_agent_logs_in() {
+    // As a YubiKey's key in OpenSSH's agent: the agent lists an
+    // sk-ssh-ed25519@openssh.com key and signs as the device does; the
+    // server knows only the security key.
+    let server = TestSshServer::start().await;
+    let agent = TestAgent::start_as_security_key(server.client_key().clone()).await;
+
+    let state =
+        state_after_connecting(&server, support::SECURITY_KEY_USERNAME, agent_at(&agent)).await;
+
+    assert_eq!(state, SessionState::Connected);
+}
+
+#[tokio::test]
+async fn a_security_key_is_not_taken_for_the_plain_key() {
+    // The plain Ed25519 key with the same public point is not the
+    // security key: the server refuses it for the security-key user.
+    let server = TestSshServer::start().await;
+    let agent = TestAgent::start(&[server.client_key().clone()]).await;
+
+    let state =
+        state_after_connecting(&server, support::SECURITY_KEY_USERNAME, agent_at(&agent)).await;
+
+    assert_eq!(state, agent_failure(AgentError::KeysRefused));
+}

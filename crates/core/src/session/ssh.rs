@@ -61,6 +61,9 @@ struct Client {
     /// lines of the known hosts): host certificates are asked for only when
     /// there is one.
     authorities: Vec<PublicKey>,
+    /// The keys revoked for this host (`@revoked` lines of the known
+    /// hosts): refused outright, never asked about.
+    revoked: Vec<PublicKey>,
 }
 
 /// Why a host certificate is not accepted for `host`, `None` if it is:
@@ -286,6 +289,21 @@ impl client::Handler for Client {
         &mut self,
         presented: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        let revoked = |key: &russh::keys::ssh_key::public::KeyData| {
+            self.revoked.iter().any(|r| r.key_data() == key)
+        };
+        let is_revoked = match presented {
+            PublicKeyOrCertificate::PublicKey { key, .. } => revoked(key.key_data()),
+            PublicKeyOrCertificate::Certificate(certificate) => {
+                revoked(certificate.public_key()) || revoked(certificate.signature_key())
+            }
+        };
+        if is_revoked {
+            return Err(ClientError::Refused(OpenError::KnownHosts(format!(
+                "the host key of {}:{} is revoked in the known hosts (@revoked); the connection was refused",
+                self.host, self.port
+            ))));
+        }
         let (key, certificate) = match presented {
             PublicKeyOrCertificate::PublicKey { key, .. } => (key.clone(), None),
             PublicKeyOrCertificate::Certificate(certificate) => {
@@ -1235,8 +1253,13 @@ async fn connect_device(
         auth: &target.auth,
         legacy_crypto: target.legacy_crypto,
         connect_timeout: target.connect_timeout,
+        // Only a terminal forwards the agent: a file connection (followed)
+        // refuses any agent channel its server opens.
+        forward_agent: followed
+            .is_none()
+            .then(|| forwarded_agent(target))
+            .flatten(),
         followed,
-        forward_agent: forwarded_agent(target),
     };
     let through = last_via(&target.jump_hosts, &jumps);
     let connected = connect(hop, through, &known_hosts, &asker, prompter).await;
@@ -1615,9 +1638,13 @@ async fn connect_and_log_in(
     progress: &Progress,
 ) -> Result<(Handle<Client>, NegotiatedAlgorithms), OpenError> {
     let login = login(hop.auth).await?;
+    let unreadable = |error: KnownHostsError| OpenError::KnownHosts(error.to_string());
     let authorities = known_hosts
         .certificate_authorities(hop.host, hop.port)
-        .map_err(|error| OpenError::KnownHosts(error.to_string()))?;
+        .map_err(unreadable)?;
+    let revoked = known_hosts
+        .revoked(hop.host, hop.port)
+        .map_err(unreadable)?;
     let mut preferred = algorithms::preferred(hop.legacy_crypto);
     if !authorities.is_empty() {
         // Asked for only when an authority could vouch for the host: a
@@ -1648,6 +1675,7 @@ async fn connect_and_log_in(
         }),
         forward_agent: hop.forward_agent,
         authorities,
+        revoked,
     };
     // What the server sends first, for reporting a failed negotiation.
     let first_bytes = FirstBytes::new();

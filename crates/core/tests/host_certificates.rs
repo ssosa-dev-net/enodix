@@ -2,7 +2,8 @@
 //! certificate signed by an authority of a `@cert-authority` line of the
 //! known hosts connects without a host-key question; a certificate that is
 //! not accepted falls back to the key inside it, as OpenSSH does, and the
-//! question says why. The known hosts are in a temporary data folder.
+//! question says why. A key of a `@revoked` line is refused outright. The
+//! known hosts are in a temporary data folder.
 
 mod support;
 
@@ -205,19 +206,99 @@ async fn a_damaged_authority_line_for_the_host_fails_the_connection() {
     );
 }
 
+fn revoked_line(key: &russh::keys::PublicKey) -> String {
+    format!("@revoked * {}\n", key.to_openssh().unwrap())
+}
+
+fn refused_as_revoked(state: &SessionState) -> bool {
+    matches!(
+        state,
+        SessionState::Closed(CloseReason::Failed(OpenError::KnownHosts(reason)))
+            if reason.contains("revoked")
+    )
+}
+
+#[tokio::test]
+async fn a_revoked_host_key_is_refused_even_when_trusted() {
+    let server = TestSshServer::start().await;
+    let key = server.host_key().clone();
+    let (_data, manager) = manager_with(&format!(
+        "[127.0.0.1]:{} {}\n{}",
+        server.target().port,
+        key.to_openssh().unwrap(),
+        revoked_line(&key),
+    ));
+
+    let mut events = open(&manager, &server).await;
+
+    let state = next_state(&mut events).await;
+    assert!(refused_as_revoked(&state), "{state:?}");
+}
+
+#[tokio::test]
+async fn a_certificate_of_a_revoked_authority_is_refused() {
+    let server = server_with(Signed::good()).await;
+    let (_data, manager) = manager_with(&format!(
+        "{}{}",
+        authority_line("*", host_ca()),
+        revoked_line(host_ca().public_key()),
+    ));
+
+    let mut events = open(&manager, &server).await;
+
+    let state = next_state(&mut events).await;
+    assert!(refused_as_revoked(&state), "{state:?}");
+}
+
+#[tokio::test]
+async fn a_certificate_whose_key_is_revoked_is_refused() {
+    let server = server_with(Signed::good()).await;
+    let key = server.host_key().clone();
+    let (_data, manager) = manager_with(&format!(
+        "{}{}",
+        authority_line("*", host_ca()),
+        revoked_line(&key),
+    ));
+
+    let mut events = open(&manager, &server).await;
+
+    let state = next_state(&mut events).await;
+    assert!(refused_as_revoked(&state), "{state:?}");
+}
+
+#[test]
+fn revoked_keys_are_listed_for_the_hosts_their_patterns_name() {
+    let (data, _manager) = manager_with(&format!(
+        "@revoked *.lab {}\n{}",
+        host_ca().public_key().to_openssh().unwrap(),
+        authority_line("*", host_ca()),
+    ));
+    let known = KnownHosts::in_data_folder(data.path());
+
+    assert_eq!(known.revoked("r1.lab", 22).unwrap().len(), 1);
+    assert_eq!(known.revoked("core1", 22).unwrap().len(), 0);
+}
+
+/// `r7.lab` hashed as `ssh-keygen -H` hashes it (HMAC-SHA1, salt 30 to 49).
+const HASHED_R7: &str = "|1|Hh8gISIjJCUmJygpKissLS4vMDE=|MuYth0WRCeRDLwGkrEn6Tv8Vv4k=";
+
 #[test]
 fn authorities_are_listed_for_the_hosts_their_patterns_name() {
     let (data, _manager) = manager_with(&format!(
-        "{}{}r9 {}\n",
+        "{}{}r9 {}\n{}",
         authority_line("*.lab,!r2.lab", host_ca()),
         authority_line("[10.0.0.*]:2222", host_ca()),
         host_ca().public_key().to_openssh().unwrap(),
+        authority_line(HASHED_R7, host_ca()),
     ));
     let known = KnownHosts::in_data_folder(data.path());
     let count = |host: &str, port: u16| known.certificate_authorities(host, port).unwrap().len();
 
     assert_eq!(count("r1.lab", 22), 1);
     assert_eq!(count("R1.LAB", 22), 1);
+    // The hashed line names r7.lab only, besides `*.lab`.
+    assert_eq!(count("r7.lab", 22), 2);
+    assert_eq!(count("r7.lab", 2222), 0);
     assert_eq!(count("r2.lab", 22), 0);
     assert_eq!(count("r1.lab", 2222), 0);
     assert_eq!(count("10.0.0.7", 2222), 1);

@@ -6,12 +6,16 @@
 
 mod support;
 
+use std::time::Duration;
+
+use enodix_core::job::{HostState, JobOptions};
 use enodix_core::session::{
-    SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAgent, SshAuth,
-    SshTarget, TerminalSize,
+    JumpHost, SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAgent,
+    SshAuth, SshTarget, TerminalSize,
 };
 use russh::keys::{Algorithm, PrivateKey};
 use support::agent::TestAgent;
+use support::jobs::{folder, host, profile, run, snippet, Lab};
 use support::{next_state, output_ending_with, TestSshServer, AGENT_KEYS, PROMPT, USERNAME};
 
 const SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
@@ -28,6 +32,10 @@ async fn connected(
         agent_forwarding,
         ..server.target()
     };
+    connected_to(manager, target).await
+}
+
+async fn connected_to(manager: &SessionManager, target: SshTarget) -> (SessionId, SessionEvents) {
     let (id, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);
     assert_eq!(next_state(&mut events).await, SessionState::Connecting);
     assert_eq!(next_state(&mut events).await, SessionState::Connected);
@@ -78,4 +86,73 @@ async fn a_second_ask_for_the_agent_is_answered_too() {
         manager.write(id, b"agent\r".to_vec()).unwrap();
         output_ending_with(&mut events, format!("{AGENT_KEYS}1\r\n").as_bytes()).await;
     }
+}
+
+#[tokio::test]
+async fn a_server_reaching_for_an_agent_it_was_not_given_is_refused() {
+    // `agent unasked` opens an agent channel although the client asked for
+    // no forward, as a hostile server would.
+    let server = TestSshServer::start().await;
+    let agent = TestAgent::start(&[server.client_key().clone()]).await;
+    let manager = support::manager();
+    let (id, mut events) = connected(&manager, &server, &agent, false).await;
+
+    manager.write(id, b"agent unasked\r".to_vec()).unwrap();
+
+    output_ending_with(&mut events, b"agent: refused\r\n").await;
+    assert_eq!(server.agent_requests(), 0);
+}
+
+#[tokio::test]
+async fn the_agent_is_forwarded_to_the_device_and_never_to_its_jump_host() {
+    let bastion = TestSshServer::start().await;
+    let device = TestSshServer::start().await;
+    let agent = TestAgent::start(&[device.client_key().clone()]).await;
+    let bastion_target = bastion.target();
+    let target = SshTarget {
+        username: USERNAME.into(),
+        auth: SshAuth::Agent(SshAgent::At(agent.path().to_path_buf())),
+        agent_forwarding: true,
+        jump_hosts: vec![JumpHost {
+            name: "bastion".into(),
+            host: bastion_target.host,
+            port: bastion_target.port,
+            username: bastion_target.username,
+            auth: bastion_target.auth,
+            legacy_crypto: false,
+            connect_timeout: bastion_target.connect_timeout,
+        }],
+        ..device.target()
+    };
+    let manager = support::manager();
+    let (id, mut events) = connected_to(&manager, target).await;
+
+    manager.write(id, b"agent\r".to_vec()).unwrap();
+
+    output_ending_with(&mut events, format!("{AGENT_KEYS}1\r\n").as_bytes()).await;
+    assert_eq!(device.agent_requests(), 1);
+    assert_eq!(bastion.agent_requests(), 0);
+}
+
+#[tokio::test]
+async fn a_job_on_a_host_that_forwards_the_agent_does_not_forward_it() {
+    let device = TestSshServer::start_device("r1").await;
+    let lab = Lab::new(&[
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+        ("r1.yaml", host(&device, "frr", "agent_forwarding: true\n")),
+    ]);
+    lab.put(profile("lab", USERNAME));
+    let plan = lab.plan(&folder(""), &snippet("Show"));
+
+    let ran = run(
+        &support::manager(),
+        plan,
+        JobOptions::default(),
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let r1 = ran.result("r1.yaml");
+    assert_eq!(r1.state, HostState::Done, "{}", r1.output);
+    assert_eq!(device.agent_requests(), 0);
 }

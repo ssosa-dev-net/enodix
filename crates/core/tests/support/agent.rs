@@ -112,7 +112,7 @@ impl TestAgent {
     }
 }
 
-/// Agent protocol messages (draft-miller-ssh-agent) the certificate agent
+/// Agent protocol messages (draft-miller-ssh-agent) the one-identity agent
 /// answers.
 const REQUEST_IDENTITIES: u8 = 11;
 const IDENTITIES_ANSWER: u8 = 12;
@@ -120,19 +120,73 @@ const SIGN_REQUEST: u8 = 13;
 const SIGN_RESPONSE: u8 = 14;
 const FAILURE: u8 = 5;
 
+/// What the one-identity agent lists (the identity's wire blob) and how it
+/// signs for it.
+#[derive(Clone)]
+struct Identity {
+    blob: Vec<u8>,
+    sign: Sign,
+}
+
+/// Signs data for the agent's identity.
+type Sign = std::sync::Arc<dyn Fn(&[u8]) -> russh::keys::ssh_key::Signature + Send + Sync>;
+
+/// The FIDO application OpenSSH gives a security key it makes.
+const SECURITY_KEY_APPLICATION: &str = "ssh:";
+
 impl TestAgent {
     /// Starts an agent holding one OpenSSH certificate (of `key`, which
     /// signs for it), at a fresh address. russh's agent server holds no
     /// certificates, so this one answers the two requests a login makes
     /// (list, sign) itself. Ed25519 keys only.
-    #[cfg(unix)]
     pub async fn start_with_certificate(key: PrivateKey, certificate: Certificate) -> Self {
+        use russh::keys::signature::Signer;
+        use russh::keys::ssh_encoding::Encode;
+        Self::start_with_identity(Identity {
+            blob: certificate.encode_vec().unwrap(),
+            sign: std::sync::Arc::new(move |data| key.try_sign(data).unwrap()),
+        })
+        .await
+    }
+
+    /// Starts an agent holding a FIDO security key (`sk-ssh-ed25519@openssh.com`)
+    /// whose public key is the Ed25519 `key`'s, as an agent does for a key
+    /// on a YubiKey: it lists the security key and signs as the device
+    /// would (user present, counter 1), with `key` standing in for the
+    /// device. The security key is what [`security_key`] gives.
+    pub async fn start_as_security_key(key: PrivateKey) -> Self {
+        use russh::keys::signature::Signer;
+        use russh::keys::ssh_encoding::Encode;
+        use sha2::{Digest, Sha256};
+        let blob = security_key(&key).key_data().encode_vec().unwrap();
+        Self::start_with_identity(Identity {
+            blob,
+            sign: std::sync::Arc::new(move |data| {
+                // PROTOCOL.u2f: the device signs sha256(application) ||
+                // flags || counter || sha256(data); the signature is
+                // followed by the flags and counter.
+                let flags_and_counter = [0x01, 0, 0, 0, 1];
+                let mut signed = Sha256::digest(SECURITY_KEY_APPLICATION).to_vec();
+                signed.extend(flags_and_counter);
+                signed.extend(Sha256::digest(data));
+                let plain: russh::keys::ssh_key::Signature = key.try_sign(&signed).unwrap();
+                let mut bytes = plain.as_bytes().to_vec();
+                bytes.extend(flags_and_counter);
+                russh::keys::ssh_key::Signature::new(russh::keys::Algorithm::SkEd25519, bytes)
+                    .unwrap()
+            }),
+        })
+        .await
+    }
+
+    #[cfg(unix)]
+    async fn start_with_identity(identity: Identity) -> Self {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("agent.sock");
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let task = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                tokio::spawn(serve_certificate(stream, key.clone(), certificate.clone()));
+                tokio::spawn(serve_identity(stream, identity.clone()));
             }
         });
         Self {
@@ -143,7 +197,7 @@ impl TestAgent {
     }
 
     #[cfg(windows)]
-    pub async fn start_with_certificate(key: PrivateKey, certificate: Certificate) -> Self {
+    async fn start_with_identity(identity: Identity) -> Self {
         use tokio::net::windows::named_pipe::ServerOptions;
 
         let name = format!(r"\\.\pipe\enodix-test-agent-{:016x}", rand::random::<u64>());
@@ -162,27 +216,32 @@ impl TestAgent {
                     return;
                 };
                 let connected = std::mem::replace(&mut server, next);
-                tokio::spawn(serve_certificate(
-                    connected,
-                    key.clone(),
-                    certificate.clone(),
-                ));
+                tokio::spawn(serve_identity(connected, identity.clone()));
             }
         });
         Self { path, task }
     }
 }
 
-/// Answers one client of the certificate agent until it hangs up.
-async fn serve_certificate<S>(mut stream: S, key: PrivateKey, certificate: Certificate)
+/// The security key (`sk-ssh-ed25519@openssh.com`, application `ssh:`) with
+/// the Ed25519 `key`'s public key.
+pub fn security_key(key: &PrivateKey) -> russh::keys::PublicKey {
+    use russh::keys::ssh_key::public::{KeyData, SkEd25519};
+    let ed25519 = *key.public_key().key_data().ed25519().unwrap();
+    russh::keys::PublicKey::new(
+        KeyData::SkEd25519(SkEd25519::new(ed25519, SECURITY_KEY_APPLICATION)),
+        "",
+    )
+}
+
+/// Answers one client of the one-identity agent until it hangs up.
+async fn serve_identity<S>(mut stream: S, identity: Identity)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use russh::keys::signature::Signer;
     use russh::keys::ssh_encoding::Encode;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let blob = certificate.encode_vec().unwrap();
     loop {
         let Ok(length) = stream.read_u32().await else {
             return;
@@ -196,8 +255,8 @@ where
             Some(&REQUEST_IDENTITIES) => {
                 reply.push(IDENTITIES_ANSWER);
                 1u32.encode(&mut reply).unwrap();
-                blob.as_slice().encode(&mut reply).unwrap();
-                "test certificate".encode(&mut reply).unwrap();
+                identity.blob.as_slice().encode(&mut reply).unwrap();
+                "test identity".encode(&mut reply).unwrap();
             }
             Some(&SIGN_REQUEST) => {
                 // string key blob, string data, uint32 flags.
@@ -210,9 +269,8 @@ where
                     Some(value.to_vec())
                 };
                 match (read(&mut rest), read(&mut rest)) {
-                    (Some(asked), Some(data)) if asked == blob => {
-                        let signature: russh::keys::ssh_key::Signature =
-                            key.try_sign(&data).unwrap();
+                    (Some(asked), Some(data)) if asked == identity.blob => {
+                        let signature = (identity.sign)(&data);
                         reply.push(SIGN_RESPONSE);
                         signature
                             .encode_vec()
