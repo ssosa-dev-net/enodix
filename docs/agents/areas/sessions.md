@@ -81,10 +81,14 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   connect is always off). `JumpHost` has no such field: never forwarded to
   a jump host. On: `shell_on` sends `auth-agent-req@openssh.com`
   (`Channel::agent_forward(false)`) after the pty request, for the first
-  shell and a duplicate; `run_channel` (jobs, exec) never asks. The client
+  shell and a duplicate; `run_channel` (exec) never asks. Jobs open
+  shells too, so `job/run.rs` clears `agent_forwarding` on every target it
+  opens; a file connection (`connect_device` with `followed`) gets no
+  `Hop.forward_agent`. The client
   handler's `server_channel_open_agent_forward` is refused unless
   `Client.forward_agent` is set (the target's own agent if its login is
-  `SshAuth::Agent`, else `SshAgent::System`); each channel the device
+  `SshAuth::Agent`, else `SshAgent::System`; only a terminal's device
+  connection has one, which then asks in `shell_on`); each channel the device
   opens is joined to a fresh connection from `agent::connect_stream`
   (`copy_bidirectional`), so a non-running agent fails only that channel.
   `SessionManager::agent_forwarded(id)`; the shell's `Opened` /
@@ -92,7 +96,10 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   forwarded** (`[data-agent-forwarded]`, danger colour). Tests:
   `tests/agent_forwarding.rs` (the scripted shell's `agent` command opens
   `channel_open_agent` and prints `agent keys: N`, or
-  `agent: not forwarded`); the inheritance test is in `settings.rs`.
+  `agent: not forwarded`; `agent unasked` opens one anyway, which is
+  refused; `TestSshServer::agent_requests()` counts the forwards asked for,
+  to check jump hosts and jobs get none); the inheritance test is in
+  `settings.rs`.
 - Login flow (`ssh.rs` `authenticate`): `none` first to learn the
   methods; then the target's method (a key file with its certificate
   beside it, `<key file>-cert.pub` read by `certificate_beside` and kept

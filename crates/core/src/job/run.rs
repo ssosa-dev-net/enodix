@@ -966,9 +966,15 @@ impl HostRunner {
         open: Open,
     ) -> Result<(), String> {
         let connect = |runner: &Self, target: &SshTarget| {
+            // A job never forwards the agent (#26): only a terminal the user
+            // works in does.
+            let target = SshTarget {
+                agent_forwarding: false,
+                ..target.clone()
+            };
             runner
                 .manager
-                .open(SessionTarget::Ssh(target.clone()), JOB_TERMINAL_SIZE)
+                .open(SessionTarget::Ssh(target), JOB_TERMINAL_SIZE)
         };
         let Open::Channel { of } = open else {
             let Some(target) = &host.work.target else {

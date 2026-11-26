@@ -1235,8 +1235,13 @@ async fn connect_device(
         auth: &target.auth,
         legacy_crypto: target.legacy_crypto,
         connect_timeout: target.connect_timeout,
+        // Only a terminal forwards the agent: a file connection (followed)
+        // refuses any agent channel its server opens.
+        forward_agent: followed
+            .is_none()
+            .then(|| forwarded_agent(target))
+            .flatten(),
         followed,
-        forward_agent: forwarded_agent(target),
     };
     let through = last_via(&target.jump_hosts, &jumps);
     let connected = connect(hop, through, &known_hosts, &asker, prompter).await;
