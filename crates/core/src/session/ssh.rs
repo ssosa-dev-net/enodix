@@ -28,7 +28,7 @@ use super::tcp;
 use super::{
     agent, AgentError, CloseReason, Command, ConnectStage, HostKeyAsker, HostKeyDecision,
     HostKeyQuestion, JumpHost, Link, LoginPrompt, LoginQuestion, NegotiatedAlgorithms, OpenError,
-    Prompter, SessionEvent, SessionState, SshAuth, SshTarget, TerminalSize, TerminalType,
+    Prompter, SessionEvent, SessionState, SshAgent, SshAuth, SshTarget, TerminalSize, TerminalType,
 };
 use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
 
@@ -53,6 +53,9 @@ struct Client {
     ended: EndedWhy,
     /// Where its login banner goes; `None` drops it.
     banners: Option<HopBanners>,
+    /// The agent the server may reach back to, when the session forwards
+    /// one; without one, the server's agent channels are refused.
+    forward_agent: Option<SshAgent>,
 }
 
 /// What a file connection follows of its device's connection, told by the
@@ -196,6 +199,33 @@ impl From<russh::Error> for ClientError {
 
 impl client::Handler for Client {
     type Error = ClientError;
+
+    /// A program on the server uses the forwarded agent: the channel is
+    /// joined to a fresh connection to the local agent, if the session
+    /// forwards one.
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let Some(which) = self.forward_agent.clone() else {
+            reply
+                .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        };
+        let Ok(mut local) = agent::connect_stream(&which).await else {
+            reply.reject(ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        reply.accept().await;
+        tokio::spawn(async move {
+            let mut remote = channel.into_stream();
+            let _ = tokio::io::copy_bidirectional(&mut remote, &mut local).await;
+        });
+        Ok(())
+    }
 
     /// Shows the login banner, for a terminal session (#134).
     async fn auth_banner(
@@ -425,6 +455,7 @@ pub(super) async fn run(
         requested_size,
         Some(connection.as_ref()),
         target.terminal_type,
+        target.agent_forwarding,
     )
     .await;
     link.end_forwards().await;
@@ -541,7 +572,16 @@ pub(super) async fn run_channel(
             ))
         }
     };
-    match pump(link, opened, requested_size, None, TerminalType::default()).await {
+    match pump(
+        link,
+        opened,
+        requested_size,
+        None,
+        TerminalType::default(),
+        false,
+    )
+    .await
+    {
         Ended::Here => CloseReason::ClosedLocally,
         Ended::Exited(exit_status) => CloseReason::RemoteExited { exit_status },
         Ended::There(reason) => reason,
@@ -584,6 +624,7 @@ async fn pump(
     requested_size: TerminalSize,
     connection: Option<&Handle<Client>>,
     terminal_type: TerminalType,
+    forward_agent: bool,
 ) -> Ended {
     let OpenedChannel {
         channel,
@@ -621,7 +662,9 @@ async fn pump(
         if opening.is_none() {
             if let (Some(connection), Some((size, reply))) = (connection, asked.pop_front()) {
                 opening = Some(Box::pin(async move {
-                    let _ = reply.send(start_second_shell(connection, size, terminal_type).await);
+                    let _ = reply.send(
+                        start_second_shell(connection, size, terminal_type, forward_agent).await,
+                    );
                 }));
             }
         }
@@ -1082,6 +1125,15 @@ fn asks_only_for_password(prompts: &[russh::client::Prompt]) -> bool {
     matches!(prompts, [prompt] if !prompt.echo && prompt.prompt.to_lowercase().contains("password"))
 }
 
+/// The agent `target` forwards, if it forwards one: the agent it logs in
+/// with, else the system's.
+fn forwarded_agent(target: &SshTarget) -> Option<SshAgent> {
+    target.agent_forwarding.then(|| match &target.auth {
+        SshAuth::Agent(which) => which.clone(),
+        _ => SshAgent::System,
+    })
+}
+
 /// One SSH server on the way to the device: a jump host or the target.
 struct Hop<'a> {
     /// The jump host's name; `None` for the device.
@@ -1094,6 +1146,8 @@ struct Hop<'a> {
     connect_timeout: Duration,
     /// For a file connection's device: what the connection is followed by.
     followed: Option<Followed>,
+    /// The agent the device may use, when the session forwards one.
+    forward_agent: Option<SshAgent>,
 }
 
 /// The jump host a hop is reached through.
@@ -1133,6 +1187,7 @@ async fn connect_device(
         legacy_crypto: target.legacy_crypto,
         connect_timeout: target.connect_timeout,
         followed,
+        forward_agent: forwarded_agent(target),
     };
     let through = last_via(&target.jump_hosts, &jumps);
     let connected = connect(hop, through, &known_hosts, &asker, prompter).await;
@@ -1213,7 +1268,13 @@ async fn open_shell(
         target.connect_timeout,
         prompter.user_wait(),
         &progress,
-        start_shell(&connection, size, target.terminal_type, &progress),
+        start_shell(
+            &connection,
+            size,
+            target.terminal_type,
+            target.agent_forwarding,
+            &progress,
+        ),
     )
     .await;
     let (channel, early_output) = match started {
@@ -1250,6 +1311,7 @@ async fn connect_jumps(
             legacy_crypto: jump.legacy_crypto,
             connect_timeout: jump.connect_timeout,
             followed: None,
+            forward_agent: None,
         };
         let through = last_via(jump_hosts, &jumps);
         prompter.jump_host = Some(jump.name.clone());
@@ -1347,6 +1409,7 @@ async fn start_shell(
     connection: &Handle<Client>,
     size: TerminalSize,
     terminal_type: TerminalType,
+    forward_agent: bool,
     progress: &Progress,
 ) -> Result<(Channel<client::Msg>, Vec<u8>), OpenError> {
     let channel = connection
@@ -1358,7 +1421,7 @@ async fn start_shell(
             error => protocol(error),
         })?;
     progress.set(Step::At(ConnectStage::Shell));
-    shell_on(channel, size, terminal_type)
+    shell_on(channel, size, terminal_type, forward_agent)
         .await
         .map_err(|refusal| match refusal {
             ShellRefusal::Refused(reason) => OpenError::Protocol(reason),
@@ -1373,6 +1436,7 @@ async fn start_second_shell(
     connection: &Handle<Client>,
     size: TerminalSize,
     terminal_type: TerminalType,
+    forward_agent: bool,
 ) -> Result<OpenedChannel, OpenError> {
     let channel = match connection.channel_open_session().await {
         Ok(channel) => channel,
@@ -1383,7 +1447,7 @@ async fn start_second_shell(
         }
         Err(error) => return Err(protocol(error)),
     };
-    match shell_on(channel, size, terminal_type).await {
+    match shell_on(channel, size, terminal_type, forward_agent).await {
         Ok((channel, early_output)) => Ok(OpenedChannel {
             channel,
             early_output,
@@ -1409,6 +1473,7 @@ async fn shell_on(
     mut channel: Channel<client::Msg>,
     size: TerminalSize,
     terminal_type: TerminalType,
+    forward_agent: bool,
 ) -> Result<(Channel<client::Msg>, Vec<u8>), ShellRefusal> {
     let failed = |error| ShellRefusal::Failed(protocol(error));
     channel
@@ -1423,6 +1488,11 @@ async fn shell_on(
         )
         .await
         .map_err(failed)?;
+    if forward_agent {
+        // No reply asked: a server that does not forward agents says
+        // nothing, and the shell starts all the same (as with OpenSSH).
+        channel.agent_forward(false).await.map_err(failed)?;
+    }
     channel.request_shell(true).await.map_err(failed)?;
 
     let mut early_output = Vec::new();
@@ -1518,6 +1588,7 @@ async fn connect_and_log_in(
             banners,
             jump_host: hop.jump_host.map(str::to_owned),
         }),
+        forward_agent: hop.forward_agent,
     };
     // What the server sends first, for reporting a failed negotiation.
     let first_bytes = FirstBytes::new();

@@ -296,6 +296,25 @@ font and scrollback as any session, and follows the pane's size.
   reconnects (Enter) by starting the shell again. Closing the tab ends the
   shell and what it started.
 
+## Agent forwarding
+
+The **Agent forwarding** setting (`agent_forwarding: true` in a host file
+or a folder's `_folder.yaml`, or "Agent forwarding" in the side panel)
+lets the device use your SSH agent while the session is open, for example
+to log in from it to another device or to fetch a file over SSH with your
+key. It is off unless you turn it on.
+
+The device never gets the private keys, but anyone with administrator
+rights on it can ask your agent to sign with them while you are connected.
+Turn it on only for devices you trust. A session that forwards the agent
+shows **Agent forwarded** in its header.
+
+The agent forwarded is the one the host's profile logs in with, if it uses
+the SSH agent; otherwise the agent on this computer (`SSH_AUTH_SOCK`, or on
+Windows the OpenSSH agent or Pageant). It is forwarded to the device only,
+never to a jump host, and only for terminal sessions: jobs and file
+connections do not forward it.
+
 ## Old equipment
 
 Devices that speak only old SSH algorithms need the **Legacy crypto**

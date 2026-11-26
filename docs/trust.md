@@ -491,8 +491,10 @@ own interpreter installs nothing.
   are the credential agent's pipe (your account only), a script's tunnel
   ports and the port forwards of open sessions (all on `127.0.0.1`; a forward
   may use `::1`).
-- It does not forward your SSH agent or X11 to devices, nor ports from a
-  device back to this computer (`ssh -R`).
+- It does not forward X11 to devices, nor ports from a device back to this
+  computer (`ssh -R`). It forwards your SSH agent only to hosts where you
+  turn on **Agent forwarding** (off by default), and shows it in the
+  session header.
 - It does not open web pages itself: web links go to your browser.
 
 ## What it does not protect against

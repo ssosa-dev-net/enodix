@@ -2251,6 +2251,7 @@ async fn session_open(
                 jump_hosts: Vec::new(),
                 // Quick connections have no settings to switch it on.
                 legacy_crypto: false,
+                agent_forwarding: false,
                 connect_timeout: DEFAULT_CONNECT_TIMEOUT,
                 terminal_type: TerminalType::default(),
             });
@@ -2310,10 +2311,12 @@ async fn session_open(
             host_made(&shell, &configs, id, HostWay::Serial, &name, &title)?
         }
     };
-    let (encrypted, transport) = match &made {
-        Made::Quick(target) | Made::Host(HostSession { target, .. }) => {
-            (target.encrypted(), target.transport())
-        }
+    let (encrypted, agent_forwarded, transport) = match &made {
+        Made::Quick(target) | Made::Host(HostSession { target, .. }) => (
+            target.encrypted(),
+            target.agent_forwarding(),
+            target.transport(),
+        ),
     };
     let (id, events) = match made {
         Made::Quick(target) => manager.open_with(target, size.into(), options),
@@ -2341,6 +2344,7 @@ async fn session_open(
         id: id.0,
         consumer: consumer.get(),
         encrypted,
+        agent_forwarded,
         transport,
         record,
     })
@@ -2533,6 +2537,9 @@ struct Opened {
     consumer: u64,
     /// Whether its traffic is encrypted on the network; telnet's is not.
     encrypted: bool,
+    /// Whether it forwards the SSH agent to the device.
+    #[serde(rename = "agentForwarded")]
+    agent_forwarded: bool,
     /// `ssh`, `telnet` or `serial` (serial and telnet sessions can send a break).
     transport: Transport,
     /// What the app keeps of it, for any window showing it (#84).
@@ -2775,6 +2782,9 @@ async fn session_duplicate(
         },
     );
     let encrypted = manager.encrypted(copy).map_err(|error| error.to_string())?;
+    let agent_forwarded = manager
+        .agent_forwarded(copy)
+        .map_err(|error| error.to_string())?;
     let transport = manager.transport(copy).map_err(|error| error.to_string())?;
     let record = records
         .get(copy)
@@ -2783,6 +2793,7 @@ async fn session_duplicate(
         id: copy.0,
         consumer: consumer.get(),
         encrypted,
+        agent_forwarded,
         transport,
         record,
     })
