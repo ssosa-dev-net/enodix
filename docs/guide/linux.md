@@ -1,8 +1,22 @@
 # enodix on Linux
 
 The same app runs on Linux, packaged as a .deb, an .rpm and an AppImage.
-This page says how it differs from the Windows one and where things are.
+Linux is a supported platform. This page says how it differs from the Windows
+one, where things are, and what the support rests on.
 For installing, see [Install, update and uninstall](install.md).
+
+## Support
+
+Every pull request runs the full check (`npm run check`: format, clippy,
+svelte-check and every Rust test) and the Python bridge tests on
+`ubuntu-24.04`, beside Windows. Beyond that:
+
+- **WSL**: `npm run test:linux`; the desktop check (`npm run test:linux-desktop`)
+  in XFCE and GNOME sessions; the .rpm in a Fedora container.
+- **An Ubuntu 24.04 cloud container**, 26 November 2026: the core's and the
+  headless binary's tests (1,367 passed, none failed, 24 ignored), and the
+  interface type-checks and builds. The desktop shell was not built or run
+  in that run.
 
 ## Install
 
@@ -77,7 +91,10 @@ Nothing is kept in a system keychain on Linux.
 
 ## Limits
 
-- Linux is not claimed as supported yet: the packages have been checked in
-  XFCE and GNOME desktop sessions inside WSL, and the .rpm in a Fedora
-  container, but not on a Linux computer of its own.
-- A USB serial adapter, KDE and high-DPI scaling have not been tried.
+What has not been tried, on a supported platform:
+
+- a Linux desktop that is not WSL;
+- a USB serial adapter;
+- KDE and high-DPI scaling;
+- a native GPU driver;
+- SELinux on a real Fedora.

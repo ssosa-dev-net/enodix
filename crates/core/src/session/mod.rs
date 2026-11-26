@@ -12,6 +12,7 @@ pub(crate) mod connection;
 mod forward;
 mod origin;
 mod output;
+mod output_watch;
 mod record;
 mod recording;
 mod relay;
@@ -41,6 +42,8 @@ pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward, SOCKS_H
 pub use origin::{HostOrigin, HostSession, HostWay, ReconnectRefused, Reconnection, TypedLogin};
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
+use output_watch::Watchers;
+pub use output_watch::{OutputWatch, WATCH_LIMIT};
 pub use record::{SessionRecord, SessionRecords};
 pub use relay::{Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay, Reported};
 pub use relays::SessionRelays;
@@ -726,6 +729,8 @@ struct SessionHandle {
     connected: Arc<AtomicBool>,
     /// This connection's port forwards.
     forwards: Arc<forward::Forwards>,
+    /// Who watches its output beside its consumer (#23).
+    watchers: Arc<Watchers>,
 }
 
 /// What [`SessionManager::write_to_each`] did, per session, in the order
@@ -1065,11 +1070,13 @@ impl SessionManager {
         let flow = Arc::new(Flow::new(self.inner.output.window));
         let connected = Arc::new(AtomicBool::new(false));
         let forwards = Arc::new(forward::Forwards::default());
+        let watchers = Arc::new(Watchers::new());
         entry.open = Some(SessionHandle {
             commands: command_tx,
             flow: flow.clone(),
             connected: connected.clone(),
             forwards: forwards.clone(),
+            watchers: watchers.clone(),
         });
 
         // The task holds the manager weakly so that dropping the last manager
@@ -1108,6 +1115,7 @@ impl SessionManager {
                 log,
                 logger: None,
                 connected,
+                watchers,
                 when_connected,
                 login_banner,
                 forward_options,
@@ -1193,6 +1201,25 @@ impl SessionManager {
             }
         }
         fanout
+    }
+
+    /// A copy of the output of the connected session `id` from now on,
+    /// beside its consumer, until this connection ends (a reconnect is
+    /// another connection): see [`OutputWatch`]. For a snippet's steps
+    /// waiting for the device (#23).
+    pub fn watch_output(&self, id: SessionId) -> Result<OutputWatch, SessionError> {
+        let sessions = self.inner.sessions();
+        let session = open_session(&sessions, id)?;
+        if !session.connected.load(Ordering::Acquire) {
+            return Err(SessionError::NotConnected);
+        }
+        Ok(session.watchers.watch())
+    }
+
+    /// Whether the session `id` is open and connected.
+    pub fn is_connected(&self, id: SessionId) -> bool {
+        open_session(&self.inner.sessions(), id)
+            .is_ok_and(|session| session.connected.load(Ordering::Acquire))
     }
 
     /// Tells the device the terminal has a new size.
@@ -1341,6 +1368,8 @@ struct Link {
     logger: Option<Logger>,
     /// Shared with the manager's handle: set once connected.
     connected: Arc<AtomicBool>,
+    /// Shared with the manager's handle: given a copy of the output.
+    watchers: Arc<Watchers>,
     /// Called on every [`SessionState::Connected`].
     when_connected: Option<OnConnected>,
     /// Whether an SSH session shows its login banners
@@ -1442,6 +1471,7 @@ impl Link {
                 self.log_failed(failure);
             }
         }
+        self.watchers.output(&bytes);
         self.events.send(SessionEvent::Output(bytes)).is_ok()
     }
 
@@ -1493,7 +1523,9 @@ impl Link {
 
     fn state(&mut self, state: SessionState) {
         if let SessionState::Closed(_) = state {
-            // The log is complete before anybody learns the session closed.
+            // Watches end, and the log is complete, before anybody learns
+            // the session closed.
+            self.watchers.close();
             self.log = None;
             if let Some(Err(failure)) = self.logger.take().map(Logger::finish) {
                 self.log_failed(failure);

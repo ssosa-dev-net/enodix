@@ -16,8 +16,8 @@ planned. What each release added is in [CHANGELOG.md](CHANGELOG.md).
   features.
 - **Python is optional.** Everything except script jobs and Fill in from
   devices works without it.
-- **Windows first, then Linux.** The core has no Windows-only assumptions.
-  macOS is not planned for now.
+- **Windows and Linux.** Both are supported; the core has no Windows-only
+  assumptions. macOS is not planned for now.
 
 ## Next
 
@@ -35,10 +35,11 @@ planned. What each release added is in [CHANGELOG.md](CHANGELOG.md).
 
 These need hardware, devices or setups the project does not have.
 
-- **Linux on a real computer.** The app, the packages and the checks run
-  under WSL (XFCE and GNOME sessions, and Fedora in a container); see
-  [docs/dev/linux.md](docs/dev/linux.md). Not checked: a USB serial adapter, a native
-  GPU driver, KDE, SELinux on a real Fedora.
+- **Linux beyond the checks so far.** Linux is supported; the checks run in
+  CI, under WSL (XFCE and GNOME sessions, and Fedora in a container) and in a
+  cloud container; see [docs/dev/linux.md](docs/dev/linux.md). Not checked: a
+  Linux desktop that is not WSL, a USB serial adapter, a native GPU driver,
+  KDE, SELinux on a real Fedora.
 - **Real devices.** Everything is checked against virtual devices in a
   containerlab lab ([docs/dev/containerlab.md](docs/dev/containerlab.md)): SR Linux,
   cEOS, FRR, IOS-XE (CSR 1000v) and cJunos Evolved. Not checked: Cisco NX-OS
@@ -55,7 +56,6 @@ These need hardware, devices or setups the project does not have.
 - Dragging tabs out of a window and between windows; remembering session
   windows across restarts.
 - Checking TLS certificates for ports a script reaches through a tunnel.
-- Expect-style scripting of live terminal sessions.
 - Remote port forwards (`ssh -R`), and port forwards opened without a
   terminal, as a Files connection is.
 - Quick tools: ping, traceroute, a subnet calculator, MAC vendor lookup.

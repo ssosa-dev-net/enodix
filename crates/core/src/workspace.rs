@@ -1155,6 +1155,20 @@ impl Workspace {
         let snippet = self
             .snippet(name)
             .ok_or_else(|| ExpandError::NoSuchSnippet(name.to_string()))?;
+        if snippet.steps.is_some() {
+            return Err(ExpandError::HasSteps(snippet.name.clone()));
+        }
+        let values = self.snippet_values(host, answers)?;
+        snippet.expand(&values).map_err(ExpandError::Missing)
+    }
+
+    /// The values a snippet is filled with for a session to `host`: the
+    /// host's, then `answers` for the gaps.
+    fn snippet_values(
+        &self,
+        host: Option<&HostId>,
+        answers: &Variables,
+    ) -> Result<Variables, ExpandError> {
         let mut values = match host {
             Some(id) => self
                 .resolve_host(id)
@@ -1163,7 +1177,37 @@ impl Workspace {
             None => Variables::new(),
         };
         values.fill_gaps(answers);
-        snippet.expand(&values).map_err(ExpandError::Missing)
+        Ok(values)
+    }
+
+    /// The steps of the snippet called `name` (#23), ready to run on a
+    /// session with `host` (`None`: to no host of the workspace): filled as
+    /// [`Self::expand_snippet`] fills a text, waiting for the prompt of the
+    /// host's platform definition (none: [`crate::steps::DEFAULT_PROMPT`]).
+    /// A snippet without steps is [`ExpandError::NoSteps`].
+    pub fn plan_snippet_steps(
+        &self,
+        name: &str,
+        host: Option<&HostId>,
+        answers: &Variables,
+    ) -> Result<crate::steps::StepsPlan, ExpandError> {
+        let snippet = self
+            .snippet(name)
+            .ok_or_else(|| ExpandError::NoSuchSnippet(name.to_string()))?;
+        let Some(steps) = &snippet.steps else {
+            return Err(ExpandError::NoSteps(snippet.name.clone()));
+        };
+        let values = self.snippet_values(host, answers)?;
+        let prompt = host
+            .and_then(|id| self.host_platform(id))
+            .map(|platform| platform.prompt.as_str());
+        steps.fill(&values, prompt).map_err(|error| match error {
+            crate::steps::FillError::Missing(missing) => ExpandError::Missing(missing),
+            crate::steps::FillError::Invalid(problem) => ExpandError::BadSteps {
+                name: snippet.name.clone(),
+                problem,
+            },
+        })
     }
 
     /// The snippet `name` ready to send to each member of the multi-send

@@ -47,6 +47,7 @@ use enodix_core::session::{
     SessionTarget, SshAuth, SshTarget, TerminalSize, Transport, TypedLogin, WhenConnected,
     DEFAULT_CONNECT_TIMEOUT,
 };
+use enodix_core::steps::StepRuns;
 use enodix_core::template::Variables;
 use enodix_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
 use enodix_core::workspace::{
@@ -65,6 +66,7 @@ mod group;
 mod page_watch;
 mod python;
 mod session_windows;
+mod steps;
 
 /// Overrides the per-user application data folder (the smoke test uses it to
 /// start from a known state).
@@ -1198,6 +1200,9 @@ enum Expansion {
     Lines { lines: Vec<String> },
     /// Ask the user for these variables first, then expand again.
     Missing { names: Vec<String> },
+    /// It has steps (#23): they run on the session through `steps_preview`
+    /// and `steps_start`, with the same answers.
+    Steps,
 }
 
 /// The lines of the snippet `name` for a session to `host` (none: not an
@@ -1212,8 +1217,14 @@ fn snippet_expand(
 ) -> Result<Expansion, String> {
     let answers: Variables = answers.into_iter().collect();
     read(&shell, |workspace| {
-        match workspace.expand_snippet(&name, host.as_ref(), &answers) {
-            Ok(lines) => Ok(Expansion::Lines { lines }),
+        let expanded = match workspace.expand_snippet(&name, host.as_ref(), &answers) {
+            Err(ExpandError::HasSteps(_)) => workspace
+                .plan_snippet_steps(&name, host.as_ref(), &answers)
+                .map(|_| Expansion::Steps),
+            expanded => expanded.map(|lines| Expansion::Lines { lines }),
+        };
+        match expanded {
+            Ok(expansion) => Ok(expansion),
             Err(ExpandError::Missing(missing)) => Ok(Expansion::Missing {
                 names: missing.names,
             }),
@@ -2875,11 +2886,15 @@ fn session_decide_host_key(
 fn session_input(
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
+    runs: State<'_, StepRuns>,
     id: u64,
     data: Vec<u8>,
     origin: InputOrigin,
 ) {
     let targets = tabs.lock().input_targets(SessionId(id), origin);
+    // The user's input stops a snippet's steps running on a target, which
+    // then does not get it (#23).
+    let targets = runs.user_input(targets, origin);
     manager.write_to_each(&targets, &data);
 }
 
@@ -3456,6 +3471,7 @@ pub fn run() {
             app.manage(Tabs::new());
             app.manage(SessionRelays::new());
             app.manage(SessionRecords::new());
+            app.manage(StepRuns::new());
             app.manage(CsvFile(Mutex::new(None)));
             app.manage(NornirFiles(Mutex::new(None)));
             app.manage(JobPlans::default());
@@ -3672,6 +3688,9 @@ pub fn run() {
             session_open,
             session_write,
             session_input,
+            steps::steps_preview,
+            steps::steps_start,
+            steps::steps_stop,
             session_answer,
             session_decide_host_key,
             session_acknowledge,
