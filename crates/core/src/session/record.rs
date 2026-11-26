@@ -35,6 +35,10 @@ pub struct SessionRecord {
     pub safety: PasteSafety,
     /// The host's role.
     pub role: Option<Role>,
+    /// Why the session is not safe, when it is not an enodix session at all:
+    /// the system's ssh client with outdated algorithms (#27). The header
+    /// shows it as a marker.
+    pub insecure: Option<String>,
 }
 
 impl SessionRecord {
@@ -50,7 +54,14 @@ impl SessionRecord {
             workspace: None,
             safety: PasteSafety::default(),
             role: None,
+            insecure: None,
         }
+    }
+
+    /// The same record, marked insecure for `warning` (#27).
+    pub fn insecure(mut self, warning: impl Into<String>) -> Self {
+        self.insecure = Some(warning.into());
+        self
     }
 
     /// A session over `transport` to `workspace`'s host `id`, with what the
@@ -85,6 +96,7 @@ impl SessionRecord {
             workspace: Some(workspace.root().to_path_buf()),
             safety: resolved.paste_safety(),
             role: workspace.host_role(id),
+            insecure: None,
         })
     }
 

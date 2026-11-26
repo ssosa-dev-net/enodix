@@ -104,6 +104,12 @@
      */
     onpasswordlogin?: (reason: string) => void;
     /**
+     * Opens the session's host through the system's ssh client, when the
+     * app's own SSH cannot negotiate with it (#27); without it, the
+     * negotiation message does not offer that.
+     */
+    onsystemssh?: () => void;
+    /**
      * Opens the details sheet on the session's host; without it (quick
      * connect, or a host no longer in the open workspace) there is none.
      */
@@ -149,6 +155,7 @@
     ondismiss,
     onduplicate,
     onpasswordlogin,
+    onsystemssh,
     ondetails,
     onfiles,
     moves = [],
@@ -1296,6 +1303,15 @@
         {ENVIRONMENT_NAMES[safety.environment]}
       </span>
     {/if}
+    {#if session?.record.insecure}
+      <span
+        class="marker unencrypted"
+        data-insecure
+        title={session.record.insecure}
+      >
+        Insecure
+      </span>
+    {/if}
     {#if session && !session.encrypted}
       <span
         class="marker unencrypted"
@@ -1591,7 +1607,11 @@
       />
     {/if}
     {#if status.state === "closed" && status.negotiation}
-      <NegotiationFailure failure={status.negotiation} {ondismiss} />
+      <NegotiationFailure
+        failure={status.negotiation}
+        {ondismiss}
+        {onsystemssh}
+      />
     {/if}
     {#if status.state === "closed" && status.offersPasswordLogin && onpasswordlogin}
       {@const reason = status.reason}
