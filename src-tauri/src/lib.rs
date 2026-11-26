@@ -2761,7 +2761,7 @@ fn layout_edit(
         let mut windows = tabs.lock();
         let mut created = None;
         for edit in without_local_joins(&windows, &manager, window, edit)? {
-            created = apply_layout_edit(&mut windows, window, edit, &safety)
+            created = apply_layout_edit(&mut windows, window, edit, safety)
                 .map_err(|error| error.to_string())?;
         }
         LayoutChanged {

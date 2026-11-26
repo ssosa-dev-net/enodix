@@ -412,6 +412,7 @@ right_panel_hidden: true
             left_panel_width: 512,
             left_panel_hidden: true,
             side_view: SideView::Hosts,
+            local_shell: String::new(),
         }
     );
 }
