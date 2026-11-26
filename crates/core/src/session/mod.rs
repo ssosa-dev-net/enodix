@@ -681,8 +681,8 @@ pub enum SessionError {
     /// The session is still open, so it cannot be reconnected.
     #[error("the session is still open")]
     StillOpen,
-    /// Only serial sessions can send a break.
-    #[error("only serial sessions can send a break")]
+    /// Only serial and telnet sessions can send a break.
+    #[error("only serial and telnet sessions can send a break")]
     BreakUnsupported,
     /// Only SSH sessions carry more than one channel.
     #[error("only SSH sessions can open a second channel")]
@@ -1308,13 +1308,19 @@ impl SessionManager {
         self.send(id, Command::HostKey(decision))
     }
 
-    /// Sends a break on a serial session's line (held for
-    /// [`BREAK_DURATION`]), after the input written before it; for
-    /// interrupting a device's boot. Other sessions refuse it.
+    /// Sends a break after the input written before it; for interrupting
+    /// a device's boot or reaching ROMMON. On a serial line it is held for
+    /// [`BREAK_DURATION`]; on telnet it is the BREAK command (RFC 854),
+    /// which a terminal server turns into a break on its console line. SSH
+    /// sessions refuse it: `russh` cannot send the `break` request
+    /// (RFC 4335) yet.
     pub fn send_break(&self, id: SessionId) -> Result<(), SessionError> {
         let sessions = self.inner.sessions();
         let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
-        if entry.target.transport() != Transport::Serial {
+        if !matches!(
+            entry.target.transport(),
+            Transport::Serial | Transport::Telnet
+        ) {
             return Err(SessionError::BreakUnsupported);
         }
         open_session(&sessions, id)?

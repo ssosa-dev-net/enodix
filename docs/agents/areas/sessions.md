@@ -393,7 +393,13 @@ SessionLogin, note }` (through `profile_target` / `prompted_target` /
   counts `flow.read` itself, then `Link::forward_counted`; while paused it
   calls `check()` every poll so an unplug is noticed) and a writer thread
   (input and breaks in order; `BREAK_DURATION` 500 ms). `send_break(id)`
-  (`SessionError::BreakUnsupported` for other transports);
+  (`SessionError::BreakUnsupported` for SSH). Telnet (#24): `Command::Break`
+  sends `IAC BRK` (RFC 854) through the same writer queue, after the input
+  before it; a terminal server turns it into a break on its console line.
+  SSH cannot yet: `russh` 0.65.1 has no `break` request (RFC 4335) and no raw
+  channel request, so it needs a deliberate `russh` bump or a patch (known
+  limit). Tests: `tests/telnet_session.rs` (`breaks` counter in
+  `support/telnet.rs`), `an_ssh_session_cannot_send_a_break`;
   `transport(id)` / `SessionTarget::transport()` → `Transport`. A
   failing read/write/check → `CloseReason::PortLost { port, reason }`
   ("…stopped working; was the adapter unplugged?"); open failures →
@@ -407,7 +413,7 @@ parameters }`, `serial_ports`, `session_break`, `Opened.transport`.
   `SerialPortList.svelte` (`[data-serial-ports]`, `[data-serial-port=…]`,
   `[data-serial-refresh]`); SettingsPanel's `serial.port` row has a
   datalist of detected ports; TerminalSession's menu offers
-  `[data-send-break]` for connected serial sessions. Tests: `tests/serial_session.rs` over
+  `[data-send-break]` for connected serial and telnet sessions. Tests: `tests/serial_session.rs` over
   `support/serial.rs` (`VirtualSerialPorts`: loopback-TCP-backed virtual
   pair; exclusive open, records parameters, breaks, reader thread names;
   `VirtualDevice::unplug`). No com0com here: the `serialport` driver

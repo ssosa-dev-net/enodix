@@ -762,11 +762,17 @@
         },
       });
     }
-    if (session?.transport === "serial" && status.state === "connected") {
+    if (
+      (session?.transport === "serial" || session?.transport === "telnet") &&
+      status.state === "connected"
+    ) {
       list.push({
         id: "send-break",
         label: "Send break",
-        title: "Send a break signal on the line (to interrupt a device's boot)",
+        title:
+          session?.transport === "telnet"
+            ? "Send the telnet BREAK command (a terminal server turns it into a break on the console line)"
+            : "Send a break signal on the line (to interrupt a device's boot)",
         attributes: { "data-send-break": "" },
         run: () => {
           session?.sendBreak();
