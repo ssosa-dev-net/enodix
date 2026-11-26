@@ -835,6 +835,23 @@
       >
     </form>
   </section>
+
+  {#if (effective?.forwards ?? []).length > 0}
+    <section aria-label="Port forwards" data-forwards-setting>
+      <h4>Port forwards</h4>
+      {#each effective?.forwards ?? [] as forward (forward.value.name)}
+        <div class="link" data-forward={forward.value.name}>
+          <span class="name">{forward.value.name}</span>
+          <span class="url">{forward.value.forward}</span>
+          <span class="origin">{describeOrigin(forward.origin, item)}</span>
+        </div>
+      {/each}
+      <p class="note">
+        Opened with each SSH session; set in the workspace files under
+        <code>forwards</code>.
+      </p>
+    </section>
+  {/if}
 {/if}
 
 <style>

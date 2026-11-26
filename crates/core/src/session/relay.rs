@@ -105,7 +105,10 @@ impl Reported {
             SessionEvent::Algorithms(algorithms) => self.algorithms = Some(algorithms.clone()),
             SessionEvent::LogFailed(failure) => self.log_failure = Some(failure.clone()),
             SessionEvent::Backup(outcome) => self.backup = Some(outcome.clone()),
-            SessionEvent::Output(_) | SessionEvent::Prompt(_) | SessionEvent::HostKey(_) => {}
+            SessionEvent::Output(_)
+            | SessionEvent::Prompt(_)
+            | SessionEvent::HostKey(_)
+            | SessionEvent::Forwards(_) => {}
         }
     }
 }
