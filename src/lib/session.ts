@@ -103,8 +103,10 @@ export type SessionState =
       /** What to check next, from the core (#116); null when the reason
        * says it, or for a session that ended rather than failed. */
       advice?: string | null;
-      /** Trying again by itself is safe for this reason (#24). */
-      autoReconnect?: boolean;
+      /** The next automatic try, from the core (#24): wait, reconnect. */
+      retry?: { seconds: number; attempt: number; of: number } | null;
+      /** The automatic tries ran out. */
+      gaveUp?: boolean;
     };
 
 export type AlgorithmKind = "keyExchange" | "hostKey" | "cipher" | "mac";
@@ -340,9 +342,19 @@ export type SessionSource =
    */
   | { kind: "adopt"; id: number; snapshot: string | null };
 
-/** The wait before each automatic reconnect try, in seconds. */
-export function autoReconnectDelays(): Promise<number[]> {
-  return invoke<number[]>("auto_reconnect_delays");
+/** Tells the core whether the session's host reconnects by itself. */
+export function enableAutoReconnect(id: number, enabled: boolean) {
+  return invoke<void>("session_auto_reconnect_enable", { id, enabled });
+}
+
+/** A key was pressed in the closed session: no more automatic tries. */
+export function stopAutoReconnect(id: number) {
+  return invoke<void>("session_auto_reconnect_stop", { id });
+}
+
+/** The user reconnects by hand: the automatic tries start afresh. */
+export function restartAutoReconnect(id: number) {
+  return invoke<void>("session_auto_reconnect_restart", { id });
 }
 
 export function appName(): Promise<string> {

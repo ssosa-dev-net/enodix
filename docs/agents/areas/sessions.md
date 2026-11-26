@@ -161,20 +161,26 @@ ConnectionRefused | TimedOut { after, stage } | AuthenticationFailed`
   beside the original; "New connection" on a closed session dismisses
   its tab (connect view in that pane).
 - Automatic reconnect (#24). `auto_reconnect` setting (inherited, off).
-  The policy is the core's: `CloseReason::allows_auto_reconnect` /
-  `OpenError::allows_auto_reconnect` (connection lost, name not resolved,
-  unreachable, refused, timed out, `Connect`, closed before login, a jump
-  host's such error; never a refused login, key or agent failure, host key,
-  or a close the user made) and `AUTO_RECONNECT_DELAYS` (2, 4, 8, 16, 30,
-  60, 60, 60 s). The shell sends `autoReconnect` in `StateMessage::Closed`,
-  `reconnecting_hosts` in the workspace view and the delays through
-  `auto_reconnect_delays`. `TerminalSession` (prop `autoReconnect`, from
-  `reconnectsByItself(host)`) counts down in the closed bar
-  (`[data-auto-reconnect]`, then `[data-auto-reconnect-gave-up]`), then calls
-  its own `reconnect()`; any key stops it, Enter reconnects at once, and a
-  connected session resets the count. Tests: `tests/auto_reconnect.rs` (the
-  setting and the policy). Not verified: the countdown in the real window
-  (no smoke step; smoke needs Windows).
+  All of it is the core's (`session/auto_reconnect.rs`):
+  `CloseReason::allows_auto_reconnect` (connection lost, name not resolved,
+  unreachable, refused, `Connect`, closed before login, a timeout only at
+  the TCP, identification or key-exchange stage, a jump host's such error;
+  never a timeout from the login on, a refused login, key or agent failure,
+  host key, or a close the user made: the credentials may have reached a
+  RADIUS or TACACS+ server that counts each try); `AutoReconnect`
+  (`after_close(&CloseReason)` → `Option<Retry>`, `connected`, `restart`,
+  `stop`, `gave_up`; waits `AUTO_RECONNECT_DELAYS` 2, 4, 8, 16, 30, 60, 60,
+  60 s, then it gives up) and `AutoReconnects`, one per session id. The
+  shell keeps one `AutoReconnects`; `Channels` feeds it every state
+  (`Connected` resets, `Closed` plans) and sends `retry { seconds, attempt,
+  of }` and `gaveUp` in `StateMessage::Closed`; the interface tells it
+  `session_auto_reconnect_enable` (the host's setting, from
+  `reconnecting_hosts` in the workspace view, applied as the session shows),
+  `_stop` (a key) and `_restart` (Enter). `TerminalSession` only counts the
+  wait down in the closed bar (`[data-auto-reconnect]`, then
+  `[data-auto-reconnect-gave-up]`) and calls its own `reconnect()`.
+  Tests: `tests/auto_reconnect.rs`. Not verified: the countdown in the real
+  window (no smoke step; smoke needs Windows).
 - What to check next (#116). `OpenError::advice()` / `CloseReason::advice()`
   → `Option<String>`, a sentence for the user: `NameNotResolved`,
   `Unreachable`, `ConnectionRefused { port }` (the Port setting, SSH or

@@ -8,6 +8,7 @@
 
 mod agent;
 mod algorithms;
+mod auto_reconnect;
 pub(crate) mod connection;
 mod forward;
 mod local;
@@ -41,6 +42,7 @@ pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
 };
+pub use auto_reconnect::{AutoReconnect, AutoReconnects, Retry, AUTO_RECONNECT_DELAYS};
 pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward, SOCKS_HANDSHAKE_TIMEOUT};
 pub use local::{
     local_environment, local_shells, local_start_folder, pick_local_shell, LocalShell, LocalTarget,
@@ -595,19 +597,6 @@ impl ConnectStage {
     }
 }
 
-/// How long an automatic reconnect waits before each try, one entry per
-/// try: spaced further apart each time. After the last, it gives up.
-pub const AUTO_RECONNECT_DELAYS: [Duration; 8] = [
-    Duration::from_secs(2),
-    Duration::from_secs(4),
-    Duration::from_secs(8),
-    Duration::from_secs(16),
-    Duration::from_secs(30),
-    Duration::from_secs(60),
-    Duration::from_secs(60),
-    Duration::from_secs(60),
-];
-
 impl OpenError {
     /// Whether trying the same login again by itself is safe: the device
     /// was not reached, or hung up before a login began. Never a refused
@@ -618,9 +607,15 @@ impl OpenError {
             Self::NameNotResolved { .. }
             | Self::Unreachable { .. }
             | Self::ConnectionRefused { .. }
-            | Self::TimedOut { .. }
             | Self::Connect(_)
             | Self::ClosedBeforeLogin => true,
+            // Only before anything of the login was sent: from the login
+            // on, the credentials may have reached an AAA server (RADIUS,
+            // TACACS+) that counts each try against the account.
+            Self::TimedOut { stage, .. } => matches!(
+                stage,
+                ConnectStage::Tcp { .. } | ConnectStage::Identification | ConnectStage::KeyExchange
+            ),
             Self::JumpHost { error, .. } => error.allows_auto_reconnect(),
             _ => false,
         }
