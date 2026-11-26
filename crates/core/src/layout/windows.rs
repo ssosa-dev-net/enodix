@@ -535,9 +535,6 @@ impl Windows {
         }
     }
 
-    /// Records that `window`'s tab `tab` shows `session` (a reconnect keeps
-    /// the same session). Not part of what the interface is sent, so no
-    /// revision changes. A view tab is refused.
     /// Records the session `window`'s tab `tab` shows, as
     /// [`Windows::attach_session`] does, and what transport it uses: a
     /// local shell never joins the multi-send group (#22), so it is left
@@ -559,6 +556,9 @@ impl Windows {
         Ok(())
     }
 
+    /// Records that `window`'s tab `tab` shows `session` (a reconnect keeps
+    /// the same session). Not part of what the interface is sent, so no
+    /// revision changes. A view tab is refused.
     pub fn attach_session(
         &mut self,
         window: WindowId,

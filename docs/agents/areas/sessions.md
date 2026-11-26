@@ -773,7 +773,10 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   Preferences select `preference-local-shell`; header protocol `Local`.
 - Tests: `tests/local_session.rs` (Unix only; runs `/bin/sh`),
   `tests/local_session_windows.rs` (`cmd.exe`, exit statuses; written
-  without a Windows machine, first run is the CI's), the solo tests in
+  without a Windows machine, first run is the CI's; portable-pty makes
+  ConPTY inherit the cursor, so it starts by sending `ESC [ 6 n` and holds
+  the program until the terminal answers `ESC [ row ; col R`: xterm.js does
+  in the app, the tests' `until_closed` does), the solo tests in
   `tests/windows.rs`, unit tests in `local.rs`, `preferences.rs`. Not
   verified: ConPTY, the Windows shells and WSL (no Windows here), the
   interface in a built app and the smoke test (no run). Known limits: a
