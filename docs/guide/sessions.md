@@ -77,6 +77,9 @@ What happens at connect depends on the host:
 - **A login with questions** (a one-time code, a push approval) shows each
   question as a card at the bottom of the terminal. Answers that should not
   show are hidden as you type.
+- **A password after a key.** A server that wants both (OpenSSH's
+  `AuthenticationMethods publickey,password`) accepts the profile's key or
+  agent key first; the pane then asks for the password the same way.
 - **Telnet and serial** have no login of their own: the device asks in the
   terminal.
 - **The SSH agent.** If a host's profile logs in through the agent and the
