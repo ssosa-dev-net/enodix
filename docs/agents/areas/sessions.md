@@ -741,7 +741,10 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   the drain + 8 MiB limit). Dynamic: SOCKS5 no-auth, CONNECT, IPv4 /
   name / IPv6 (names resolved by the device); replies 0 ok, 2
   prohibited, 5 refused, 4 timed out, 1 other, 7 not CONNECT, 8 address
-  type; no SOCKS4. A refused channel → `ForwardStatus.last_failure` "the
+  type; no SOCKS4. The handshake has `SOCKS_HANDSHAKE_TIMEOUT` (10 s;
+  a silent or half-greeting client is closed, review of #34). 50 failed
+  accepts in a row (100 ms apart) → the forward `Failed { "it stopped
+  accepting connections: …" }`. A refused channel → `ForwardStatus.last_failure` "the
   device could not reach H port P (it does not allow forwarding | the
   connection failed | …)" (`ssh::forwarding_failure`). Status: `Forwards`
   (shared `Arc` in `SessionHandle` and `Link`): `ForwardStatus { name,
@@ -762,7 +765,8 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   `tests/port_forwards.rs` (local, SOCKS by address and name, a SOCKS
   refusal, BIND and no-acceptable-method, a device refusing forwarding
   in words + SOCKS 2, stop, close + reconnect, port in use, duplicate and
-  second channel, through a jump host from the workspace, inheritance /
+  second channel, a silent SOCKS client closed after the timeout (~10 s),
+  through a jump host from the workspace, inheritance /
   `off`, a bad forward as a file problem, folder edits) and the parse
   unit tests in `forward.rs`. Not tried on a real device or by the smoke
   test.

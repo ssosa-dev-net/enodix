@@ -14,6 +14,7 @@ use enodix_core::credentials::{
 use enodix_core::session::{
     ForwardKind, ForwardState, ForwardStatus, OpenOptions, PortForward, SessionEvent,
     SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
+    SOCKS_HANDSHAKE_TIMEOUT,
 };
 use enodix_core::workspace::{ForwardSetting, HostId, Settings, Workspace};
 use support::tcp::TcpService;
@@ -234,6 +235,37 @@ async fn a_socks_client_that_asks_for_something_else_is_answered_no() {
     socket.write_all(&[5, 1, 2]).await.unwrap();
     assert_eq!(until_closed(&mut socket).await, [5, 0xff]);
     assert_eq!(server.forwarded(), 0);
+}
+
+#[tokio::test]
+async fn a_socks_client_that_says_nothing_is_closed_after_a_while() {
+    let server = TestSshServer::start().await;
+    let service = TcpService::echo("api").await;
+    let manager = support::manager();
+    let (id, _events) = open(&manager, server.target(), vec![forward("proxy", "D 0")]).await;
+    let port = listening(&statuses(&manager, id)[0]);
+
+    // One silent, one that stops after a byte of its greeting.
+    let mut silent = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut halfway = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    halfway.write_all(&[5]).await.unwrap();
+    let started = std::time::Instant::now();
+    for socket in [&mut silent, &mut halfway] {
+        let mut rest = Vec::new();
+        tokio::time::timeout(
+            SOCKS_HANDSHAKE_TIMEOUT + WAIT,
+            socket.read_to_end(&mut rest),
+        )
+        .await
+        .expect("still open after the handshake timeout")
+        .ok();
+        assert!(rest.is_empty());
+    }
+    assert!(started.elapsed() >= SOCKS_HANDSHAKE_TIMEOUT - Duration::from_millis(500));
+    // A client that does speak still gets through.
+    let (mut socket, reply) = socks(port, "127.0.0.1", service.port()).await;
+    assert_eq!(reply, 0);
+    assert_eq!(banner(&mut socket).await, "api");
 }
 
 #[tokio::test]

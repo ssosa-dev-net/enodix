@@ -333,6 +333,16 @@ impl Forwards {
         inner.events = None;
     }
 
+    /// The listener of `name` stopped working, and why: it listens no more.
+    fn broke(&self, name: &str, reason: String) {
+        let mut inner = self.inner();
+        if let Some(slot) = inner.slots.iter_mut().find(|s| s.status.name == name) {
+            slot.task = None;
+            slot.status.state = ForwardState::Failed { reason };
+            Self::report(&inner);
+        }
+    }
+
     /// A connection through `name` could not be carried, and why.
     fn failed(&self, name: &str, reason: String) {
         let mut inner = self.inner();
@@ -363,6 +373,16 @@ fn listen_failure(error: &std::io::Error) -> String {
     }
 }
 
+/// How long a SOCKS client has to say where it goes, once connected: one
+/// that says nothing is closed then, rather than held as long as the
+/// session (#21 review).
+pub const SOCKS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How many accepts in a row may fail (100 ms apart) before a forward
+/// counts as broken: out of sockets for a moment is retried, a listener
+/// that stays broken is reported.
+const ACCEPT_FAILURES: u32 = 50;
+
 /// Accepts connections to one forward until aborted; aborting it ends the
 /// connections it carries too.
 async fn serve(
@@ -373,10 +393,12 @@ async fn serve(
 ) {
     let forward = Arc::new(forward);
     let mut carried = JoinSet::new();
+    let mut failures = 0;
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((socket, from)) => {
+                    failures = 0;
                     let forward = forward.clone();
                     let device = device.clone();
                     let forwards = forwards.clone();
@@ -388,8 +410,20 @@ async fn serve(
                         }
                     });
                 }
-                // Out of sockets, say: try again shortly.
-                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                // Out of sockets, say: try again shortly, a while.
+                Err(error) => {
+                    failures += 1;
+                    if failures >= ACCEPT_FAILURES {
+                        if let Some(forwards) = forwards.upgrade() {
+                            forwards.broke(
+                                &forward.name,
+                                format!("it stopped accepting connections: {error}"),
+                            );
+                        }
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
             },
             Some(_) = carried.join_next(), if !carried.is_empty() => {}
         }
@@ -409,15 +443,19 @@ async fn carry(
             .await
             .map_err(|refusal| refusal.reason)?,
         ForwardKind::Dynamic => {
-            let (host, port) = match socks_request(&mut socket).await {
-                Ok(asked) => asked,
+            let asked =
+                tokio::time::timeout(SOCKS_HANDSHAKE_TIMEOUT, socks_request(&mut socket)).await;
+            let (host, port) = match asked {
+                // Silent too long: closed.
+                Err(_) => return Ok(()),
+                Ok(Ok(asked)) => asked,
                 // Not SOCKS5, or not a connection: nothing to report but
                 // to the program.
-                Err(Some(reply)) => {
+                Ok(Err(Some(reply))) => {
                     let _ = socket.write_all(&socks_reply(reply)).await;
                     return Ok(());
                 }
-                Err(None) => return Ok(()),
+                Ok(Err(None)) => return Ok(()),
             };
             match device.direct_tcpip(&host, port, from).await {
                 Ok(channel) => {

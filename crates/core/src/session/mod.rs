@@ -37,7 +37,7 @@ pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
 };
-pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward};
+pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward, SOCKS_HANDSHAKE_TIMEOUT};
 pub use origin::{HostOrigin, HostSession, HostWay, ReconnectRefused, Reconnection, TypedLogin};
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
