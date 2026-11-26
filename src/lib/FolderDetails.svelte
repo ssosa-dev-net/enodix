@@ -27,6 +27,7 @@
     openScript,
     openSendFile,
     openNornirImport,
+    openSshConfigImport,
     remove,
     renameTo,
     saveFolderSettings,
@@ -92,6 +93,13 @@
         data-folder-nornir-import
         title="Import hosts from a Nornir inventory into this folder"
         onclick={() => openNornirImport(folder.path)}
+      />
+      <IconButton
+        icon={FileInput}
+        label="Import SSH config…"
+        data-folder-ssh-config-import
+        title="Import hosts from an OpenSSH config file (~/.ssh/config) into this folder"
+        onclick={() => openSshConfigImport(folder.path)}
       />
       <IconButton
         icon={Play}

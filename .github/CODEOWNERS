@@ -1,0 +1,4 @@
+# Changes to the repository's automation (workflows, including the
+# Attribution check) need the owner's approval. Enforced only once "Require
+# review from Code Owners" is on in the main branch ruleset.
+/.github/ @ssosa-dev-net

@@ -382,7 +382,18 @@ A host that already exists (same folder and name) is never overwritten unless yo
 
 As with CSV, you see a preview first, and existing hosts are replaced only if you tick them.
 
-Both imports finish with a report of what was created, replaced, skipped and what failed.
+### From an SSH config file
+
+**Import from SSH config…** reads an OpenSSH client config, `~/.ssh/config` by default, so the hosts you reach with `ssh name` become hosts of the workspace.
+
+- Each name on a `Host` line becomes a host, unless it has a wildcard (`*`, `?`) or a `!`. Its values are worked out as `ssh` does: the lines before the first `Host`, then every `Host` block that matches the name, in order, with the first value of each keyword winning.
+- `HostName` becomes the address (the name itself when there is none, as for `ssh`; `%h` in it stands for the name). `Port` becomes the port.
+- A `ProxyJump` to one other host of the same file becomes the host's jump host. Several hops, a hop that is not a host of the file, and `ProxyCommand` are listed instead, for you to set the jump host by hand.
+- `User` and `IdentityFile` are not imported: set up a credential profile with that username and key file, and name it on the folder. `Match` blocks, `Include` and other keywords are not imported either. The preview lists each one once.
+
+As with the other imports, you see a preview first, and existing hosts are replaced only if you tick them.
+
+Every import finishes with a report of what was created, replaced, skipped and what failed.
 
 ## Limits
 

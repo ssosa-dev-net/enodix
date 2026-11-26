@@ -26,9 +26,9 @@ export interface WayIn {
 const NO_PORT = "Choose the serial port in the serial line settings first";
 
 /**
- * The jump host `effective` reaches the host `id` through, which telnet
- * cannot use. A host that inherits itself as its jump host connects
- * directly.
+ * The jump host `effective` reaches the host `id` through (SSH and telnet
+ * both go through it). A host that inherits itself as its jump host
+ * connects directly.
  */
 export function jumpHostOf(
   id: string,
@@ -49,21 +49,12 @@ export function ownWayBlocked(
 }
 
 /** The other ways in (all three while `effective` is not known yet). */
-export function otherWays(
-  id: string,
-  effective: EffectiveSettings | null,
-): WayIn[] {
-  const jumpHost = jumpHostOf(id, effective);
+export function otherWays(effective: EffectiveSettings | null): WayIn[] {
   const noSerialPort = effective !== null && effective.serial.port === null;
   return (["ssh", "telnet", "serial"] as const)
     .filter((protocol) => protocol !== effective?.protocol.value)
     .map((protocol) => ({
       protocol,
-      blocked:
-        protocol === "telnet" && jumpHost !== null
-          ? `Telnet cannot go through the jump host ${jumpHost}`
-          : protocol === "serial" && noSerialPort
-            ? NO_PORT
-            : null,
+      blocked: protocol === "serial" && noSerialPort ? NO_PORT : null,
     }));
 }
