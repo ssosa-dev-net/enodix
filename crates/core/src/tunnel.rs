@@ -529,7 +529,7 @@ async fn carry(
 /// side ends (or either breaks). The device's output is taken from the
 /// channel at once, whatever the socket's reader does, and waits in a
 /// buffer of at most `limit` bytes.
-async fn pump(
+pub(crate) async fn pump(
     socket: TcpStream,
     channel: russh::Channel<russh::client::Msg>,
     limit: usize,

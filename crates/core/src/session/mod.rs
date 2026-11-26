@@ -9,6 +9,7 @@
 mod agent;
 mod algorithms;
 pub(crate) mod connection;
+mod forward;
 mod local;
 mod origin;
 mod output;
@@ -39,6 +40,7 @@ pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
 };
+pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward, SOCKS_HANDSHAKE_TIMEOUT};
 pub use local::{
     local_environment, local_shells, local_start_folder, pick_local_shell, LocalShell, LocalTarget,
     CLI_VARIABLE, WORKSPACE_VARIABLE,
@@ -257,6 +259,11 @@ pub enum SessionEvent {
     /// [`SessionState::Connected`], whenever the backup ends; the session
     /// itself is never held up by it.
     Backup(crate::job::LoginBackupOutcome),
+    /// The session's port forwards ([`OpenOptions::forwards`]) as they are
+    /// now: sent once they listen, after each change (one stopped, a
+    /// connection through one that failed), and empty when the connection
+    /// ends. [`SessionManager::forwards`] gives the same list.
+    Forwards(Vec<ForwardStatus>),
 }
 
 /// Whether to trust a host key the server presented.
@@ -656,6 +663,10 @@ pub struct OpenOptions {
     /// connection shows them again (a reconnect does: the device sends them
     /// again); a second channel has none.
     pub login_banner: bool,
+    /// The port forwards an SSH session opens each time it connects, over
+    /// its connection (see [`PortForward`]); others, second channels and
+    /// duplicates open none.
+    pub forwards: Vec<PortForward>,
 }
 
 /// Something done each time a session connects, beside it.
@@ -734,6 +745,8 @@ struct SessionHandle {
     flow: Arc<Flow>,
     /// Set once the session is connected (its transport sets it).
     connected: Arc<AtomicBool>,
+    /// This connection's port forwards.
+    forwards: Arc<forward::Forwards>,
     /// Who watches its output beside its consumer (#23).
     watchers: Arc<Watchers>,
 }
@@ -1003,9 +1016,14 @@ impl SessionManager {
         let (target, options, origin, channel_of) = {
             let sessions = self.inner.sessions();
             let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
+            // A duplicate forwards nothing: the session it copies does.
+            let options = OpenOptions {
+                forwards: Vec::new(),
+                ..entry.options.clone()
+            };
             (
                 entry.target.clone(),
-                entry.options.clone(),
+                options,
                 entry.origin.clone(),
                 entry.channel_of,
             )
@@ -1069,11 +1087,13 @@ impl SessionManager {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let flow = Arc::new(Flow::new(self.inner.output.window));
         let connected = Arc::new(AtomicBool::new(false));
+        let forwards = Arc::new(forward::Forwards::default());
         let watchers = Arc::new(Watchers::new());
         entry.open = Some(SessionHandle {
             commands: command_tx,
             flow: flow.clone(),
             connected: connected.clone(),
+            forwards: forwards.clone(),
             watchers: watchers.clone(),
         });
 
@@ -1087,6 +1107,11 @@ impl SessionManager {
         let log = entry.options.log.clone();
         let channel = entry.channel_of.is_some();
         let login_banner = entry.options.login_banner && !channel;
+        let forward_options = if channel {
+            Vec::new()
+        } else {
+            entry.options.forwards.clone()
+        };
         let when_connected = entry.options.when_connected.clone().map(|hook| {
             let manager = manager.clone();
             Box::new(move |events: &mpsc::UnboundedSender<SessionEvent>| {
@@ -1111,6 +1136,8 @@ impl SessionManager {
                 watchers,
                 when_connected,
                 login_banner,
+                forward_options,
+                forwards,
             };
             link.state(SessionState::Connecting);
             let reason = match target {
@@ -1255,6 +1282,41 @@ impl SessionManager {
         self.send(id, Command::Close)
     }
 
+    /// The port forwards of the open session `id` ([`OpenOptions::forwards`])
+    /// as they are now; empty until it has connected, and once its
+    /// connection has ended.
+    pub fn forwards(&self, id: SessionId) -> Result<Vec<ForwardStatus>, SessionError> {
+        let sessions = self.inner.sessions();
+        Ok(open_session(&sessions, id)?.forwards.status())
+    }
+
+    /// Every open session that has forwards, with them, in the order of
+    /// their ids.
+    pub fn all_forwards(&self) -> Vec<(SessionId, Vec<ForwardStatus>)> {
+        let sessions = self.inner.sessions();
+        let mut all: Vec<_> = sessions
+            .iter()
+            .filter_map(|(id, entry)| {
+                let forwards = entry.open.as_ref()?.forwards.status();
+                (!forwards.is_empty()).then_some((*id, forwards))
+            })
+            .collect();
+        all.sort_by_key(|(id, _)| id.0);
+        all
+    }
+
+    /// Stops the forward `name` of the open session `id`: it listens no
+    /// more and the connections it carries end; the session goes on. It
+    /// opens again when the session reconnects. `Ok(false)` if the session
+    /// has no such forward listening. Once it returns, the port is closed.
+    pub async fn stop_forward(&self, id: SessionId, name: &str) -> Result<bool, SessionError> {
+        let forwards = {
+            let sessions = self.inner.sessions();
+            open_session(&sessions, id)?.forwards.clone()
+        };
+        Ok(forwards.stop(name).await)
+    }
+
     fn send(&self, id: SessionId, command: Command) -> Result<(), SessionError> {
         let sessions = self.inner.sessions();
         open_session(&sessions, id)?
@@ -1332,6 +1394,10 @@ struct Link {
     /// Whether an SSH session shows its login banners
     /// ([`OpenOptions::login_banner`]).
     login_banner: bool,
+    /// The forwards to open once connected ([`OpenOptions::forwards`]).
+    forward_options: Vec<PortForward>,
+    /// Those forwards, as they run (shared with the manager's handle).
+    forwards: Arc<forward::Forwards>,
 }
 
 impl Link {
@@ -1455,6 +1521,19 @@ impl Link {
                 let _ = self.events.send(event);
             }
         }
+    }
+
+    /// Opens the session's forwards over `device` (an SSH session, once
+    /// its shell has started).
+    async fn start_forwards(&mut self, device: ssh::DeviceConnection) {
+        let options = std::mem::take(&mut self.forward_options);
+        self.forwards.start(&options, device, &self.events).await;
+    }
+
+    /// Ends the session's forwards: its connection has ended. They listen
+    /// no more once this returns.
+    async fn end_forwards(&mut self) {
+        self.forwards.end().await;
     }
 
     fn algorithms(&mut self, algorithms: Vec<NegotiatedAlgorithms>) {

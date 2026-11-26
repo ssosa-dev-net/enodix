@@ -176,7 +176,12 @@ vault]` and JobTab's `[data-job-python-preferences]` call
   only), `[data-session-protocol=ssh|telnet|serial]`, the markers
   (`[data-environment-badge]`, `[data-unencrypted]`,
   `[data-legacy-crypto]`, `[data-multi-send-bar]`, `[data-login-backup]`,
-  `[data-log-failed-marker]` "Not logging"), the status (`role=status`)
+  `[data-log-failed-marker]` "Not logging", `[data-forwards-marker=<n
+  listening>]` "Forwarding n" from `ForwardsMarker.svelte` (#21), whose
+  click opens `[data-forwards-panel]`: every session's forwards
+  (`forwards.svelte.ts`, refreshed on the `forwards-changed` event),
+  `[data-forward-row=<name>][data-forward-state]`, `[data-forward-stop]`),
+  the status (`role=status`)
   and `[data-session-menu]` (the one button). Production keeps its 3px
   edge and the header's tint; the tab keeps its own markers. The
   multi-send bar is gone (the marker plus a line under the header).
