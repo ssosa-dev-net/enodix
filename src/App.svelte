@@ -1853,6 +1853,10 @@
   function onkeydowncapture(event: KeyboardEvent) {
     // The unlock screen takes every key.
     if (vaultLocked) return;
+    // A binding field in Preferences records the chord pressed in it, even
+    // one that is bound already (which would otherwise run).
+    if ((event.target as HTMLElement | null)?.closest?.("[data-chord-capture]"))
+      return;
     const busy =
       inventory.dialog ||
       inventory.palette ||

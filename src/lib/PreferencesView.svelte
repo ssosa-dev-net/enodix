@@ -206,6 +206,7 @@
               <input
                 id="preference-key-{action.id}"
                 name="preference-key-{action.id}"
+                data-chord-capture
                 readonly
                 value={chord}
                 onkeydown={(event) => {
@@ -244,6 +245,7 @@
           {/each}
           <input
             name="preference-new-snippet-key"
+            data-chord-capture
             readonly
             placeholder="Press keys"
             value={newChord}
