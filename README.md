@@ -110,11 +110,11 @@ NAPALM, for you to review. Python is optional.
 
 ## Install
 
-| You have                   | Download                                                                                              |
-| -------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Windows 10 or 11 (64-bit)  | `enodix_<version>_x64-setup.exe`: installs for your user, no admin rights                             |
-| Windows, nothing installed | `enodix_<version>_x64-portable.zip`: unpack and run `enodix.exe`                                      |
-| Linux                      | `.deb`, `.rpm` or `.AppImage` (not yet checked on a Linux computer; see [Linux](docs/guide/linux.md)) |
+| You have                   | Download                                                                   |
+| -------------------------- | -------------------------------------------------------------------------- |
+| Windows 10 or 11 (64-bit)  | `enodix_<version>_x64-setup.exe`: installs for your user, no admin rights  |
+| Windows, nothing installed | `enodix_<version>_x64-portable.zip`: unpack and run `enodix.exe`           |
+| Linux                      | `.deb`, `.rpm` or `.AppImage`: supported, see [Linux](docs/guide/linux.md) |
 
 Get them from the [latest release](https://github.com/ssosa-dev-net/enodix/releases/latest).
 Releases are not code-signed yet, so Windows SmartScreen may warn the first
