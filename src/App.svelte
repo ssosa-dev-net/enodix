@@ -118,6 +118,7 @@
   import {
     hostRole,
     hostSafety,
+    reconnectsByItself,
     inventory,
     newFolder,
     newHost,
@@ -554,6 +555,12 @@
   function safetyOf(session: OpenSession): PasteSafety {
     const id = liveHost(session);
     return (id ? hostSafety(id) : null) ?? session.safety;
+  }
+
+  /** Whether the session's host reconnects by itself, likewise. */
+  function reconnectsOf(session: OpenSession): boolean {
+    const id = liveHost(session);
+    return id !== null && reconnectsByItself(id);
   }
 
   /** The session's host's role, likewise. */
@@ -1948,6 +1955,7 @@
               onsize={(size) => (sizes[tab] = size)}
               role={roleOf(session)}
               safety={safetyOf(session)}
+              autoReconnect={reconnectsOf(session)}
               name={session.name}
               {shown}
               {focused}

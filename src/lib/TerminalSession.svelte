@@ -36,6 +36,9 @@
     discardSession,
     openSession,
     reconnectFailure,
+    enableAutoReconnect,
+    restartAutoReconnect,
+    stopAutoReconnect,
     type HostKeyDecision,
     type HostKeyQuestion,
     type LoginPrompt,
@@ -82,6 +85,11 @@
     role: Role | null;
     /** Its host's environment (the border colour) and paste line delay. */
     safety: PasteSafety;
+    /**
+     * Whether the session's host tries again by itself when the connection
+     * drops (its `auto_reconnect` setting, #24).
+     */
+    autoReconnect?: boolean;
     /** The session's name, as its tab shows it (for the paste question). */
     name: string;
     /** Whether this session is on screen (the tab its pane shows). */
@@ -147,6 +155,7 @@
     onsize,
     role,
     safety,
+    autoReconnect = false,
     name,
     shown,
     focused,
@@ -405,6 +414,49 @@
       (status.negotiation !== null ||
         (status.offersPasswordLogin && onpasswordlogin !== undefined)),
   );
+
+  /** The wait before the next automatic try, which the core planned when
+   * the session closed (#24); null: none. */
+  let retry = $state<{ seconds: number; attempt: number; of: number } | null>(
+    null,
+  );
+  let retryTimer: ReturnType<typeof setInterval> | undefined;
+
+  function stopCountdown() {
+    clearInterval(retryTimer);
+    retryTimer = undefined;
+    retry = null;
+  }
+
+  /** Counts the core's wait down, then reconnects. */
+  function countDown(next: { seconds: number; attempt: number; of: number }) {
+    stopCountdown();
+    retry = next;
+    retryTimer = setInterval(() => {
+      if (!retry) return;
+      if (retry.seconds > 1) {
+        retry = { ...retry, seconds: retry.seconds - 1 };
+      } else {
+        stopCountdown();
+        reconnect();
+      }
+    }, 1000);
+  }
+
+  $effect(() => {
+    const now = status;
+    if (now.state === "closed" && now.retry) {
+      const next = now.retry;
+      untrack(() => countDown(next));
+    } else {
+      untrack(stopCountdown);
+    }
+  });
+
+  /** Whether the session's host reconnects by itself, told to the core. */
+  $effect(() => {
+    if (session) void enableAutoReconnect(session.id, autoReconnect);
+  });
 
   /** For reconnecting at the terminal's current size. */
   let currentSize: () => { cols: number; rows: number } = () => ({
@@ -1070,6 +1122,12 @@
     input = terminalInput(terminal, ({ data, binary, origin }) => {
       // A closed session keeps its scrollback; Enter reconnects it.
       if (status.state === "closed") {
+        // Any key stops the automatic tries; Enter reconnects at once.
+        if (session) {
+          if (data === "\r") void restartAutoReconnect(session.id);
+          else void stopAutoReconnect(session.id);
+        }
+        stopCountdown();
         if (data === "\r") reconnect();
         return;
       }
@@ -1218,6 +1276,7 @@
         if (session) session.discard();
         else if (adopted.kind === "adopt") discardSession(adopted.id);
       }
+      stopCountdown();
       highlights.dispose();
       input?.dispose();
       webgl.dispose();
@@ -1548,6 +1607,16 @@
         {#if status.advice}
           <!-- What to change (#116); Enter then uses it (#130). -->
           <span data-session-advice>{status.advice}</span>
+        {/if}
+        {#if retry}
+          <span data-auto-reconnect>
+            Reconnecting in {retry.seconds} s (try {retry.attempt} of {retry.of}).
+            Press any key to stop.
+          </span>
+        {:else if status.gaveUp}
+          <span data-auto-reconnect-gave-up
+            >Gave up reconnecting by itself.</span
+          >
         {/if}
         <span>Press <kbd>Enter</kbd> to reconnect.</span>
         <button data-session-new-connection onclick={ondismiss}

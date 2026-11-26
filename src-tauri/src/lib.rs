@@ -2,7 +2,7 @@
 //! interface. No behaviour lives here; it only translates between the
 //! interface's messages and the core's workspace and session interfaces.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -41,12 +41,12 @@ use enodix_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use enodix_core::preferences::{FontZoom, Preferences, Theme};
 use enodix_core::session::{
     local_environment, local_shells, local_start_folder, pick_local_shell, system_ssh_target,
-    AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, ForwardStatus,
-    HostKeyDecision, HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms,
-    OpenOptions, Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent,
-    SessionId, SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState,
-    SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType, Transport, TypedLogin,
-    WhenConnected, DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
+    AlgorithmKind, AlgorithmLists, AutoReconnects, Consumer, ConsumerGone, ConsumerKey,
+    ForwardStatus, HostKeyDecision, HostKeyQuestion, HostSession, HostWay, LoginPrompt,
+    NegotiatedAlgorithms, OpenOptions, Reconnection, SerialParameters, SerialPortInfo,
+    SerialTarget, SessionEvent, SessionId, SessionManager, SessionRecord, SessionRecords,
+    SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType,
+    Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
 };
 use enodix_core::steps::StepRuns;
 use enodix_core::template::Variables;
@@ -394,6 +394,8 @@ struct WorkspaceView {
     roles: Vec<Role>,
     /// The role each host that has one shows, by host id.
     host_roles: BTreeMap<HostId, Role>,
+    /// The hosts that reconnect by themselves when a session drops.
+    reconnecting_hosts: BTreeSet<HostId>,
     /// Every host's environment and paste line delay, by host id.
     host_safety: BTreeMap<HostId, PasteSafety>,
     /// The saved filters, in file order.
@@ -445,6 +447,7 @@ impl From<&Workspace> for WorkspaceView {
             tree: workspace.tree().clone(),
             roles: workspace.roles().to_vec(),
             host_roles: workspace.host_roles(),
+            reconnecting_hosts: workspace.hosts_reconnecting_by_themselves(),
             host_safety: workspace.host_paste_safety(),
             filters: workspace.filters().to_vec(),
             highlight_rules: workspace.highlight_rules().to_vec(),
@@ -487,6 +490,9 @@ impl From<Size> for TerminalSize {
 /// A session state as the interface receives it.
 #[derive(Serialize, Clone)]
 #[serde(tag = "state", rename_all = "camelCase")]
+// Sent once per state change and serialized at once: boxing the closed
+// variant would only add noise.
+#[allow(clippy::large_enum_variant)]
 enum StateMessage {
     Connecting,
     Connected,
@@ -500,7 +506,20 @@ enum StateMessage {
         negotiation: Option<NegotiationMessage>,
         /// What to check next (`CloseReason::advice`, #116).
         advice: Option<String>,
+        /// The next automatic try, when the session reconnects by itself
+        /// and this reason allows it (`AutoReconnect`, #24).
+        retry: Option<RetryMessage>,
+        /// The automatic tries ran out.
+        gave_up: bool,
     },
+}
+
+/// The next automatic reconnect try: wait, then reconnect.
+#[derive(Serialize, Clone)]
+struct RetryMessage {
+    seconds: u64,
+    attempt: usize,
+    of: usize,
 }
 
 /// A failed algorithm negotiation as the interface shows it.
@@ -539,6 +558,8 @@ impl From<SessionState> for StateMessage {
                     }
                 }),
                 advice: reason.advice(),
+                retry: None,
+                gave_up: false,
                 reason: reason.to_string(),
             },
         }
@@ -552,6 +573,25 @@ fn product_name(app: &AppHandle) -> String {
         .product_name
         .clone()
         .unwrap_or_else(|| app.package_info().name.clone())
+}
+
+/// Whether `session`'s host reconnects by itself (its `auto_reconnect`
+/// setting, #24); the interface tells it when the session shows.
+#[tauri::command]
+fn session_auto_reconnect_enable(auto: State<'_, AutoReconnects>, id: u64, enabled: bool) {
+    auto.enable(SessionId(id), enabled);
+}
+
+/// The user pressed a key in a closed session: no more automatic tries.
+#[tauri::command]
+fn session_auto_reconnect_stop(auto: State<'_, AutoReconnects>, id: u64) {
+    auto.stop(SessionId(id));
+}
+
+/// The user reconnects a session by hand: the automatic tries start afresh.
+#[tauri::command]
+fn session_auto_reconnect_restart(auto: State<'_, AutoReconnects>, id: u64) {
+    auto.restart(SessionId(id));
 }
 
 #[tauri::command]
@@ -2227,6 +2267,7 @@ async fn session_open(
         window,
         events,
         Channels {
+            session: id,
             output: on_output,
             state: on_state,
             prompt: on_prompt,
@@ -2437,6 +2478,8 @@ struct Opened {
 
 /// Where a session's events go in the interface.
 struct Channels {
+    /// The session these channels show.
+    session: SessionId,
     output: Channel<InvokeResponseBody>,
     state: Channel<StateMessage>,
     prompt: Channel<LoginPrompt>,
@@ -2457,7 +2500,25 @@ impl Consumer for Channels {
     fn deliver(&mut self, event: SessionEvent) -> Result<(), ConsumerGone> {
         let delivered = match event {
             SessionEvent::Output(bytes) => self.output.send(InvokeResponseBody::Raw(bytes)),
-            SessionEvent::State(state) => self.state.send(state.into()),
+            SessionEvent::State(state) => {
+                let auto = self.app.state::<AutoReconnects>();
+                let mut message = StateMessage::from(state.clone());
+                match (&state, &mut message) {
+                    (SessionState::Connected, _) => auto.connected(self.session),
+                    (SessionState::Closed(reason), StateMessage::Closed { retry, gave_up, .. }) => {
+                        *retry = auto
+                            .after_close(self.session, reason)
+                            .map(|next| RetryMessage {
+                                seconds: next.after.as_secs(),
+                                attempt: next.attempt,
+                                of: next.of,
+                            });
+                        *gave_up = auto.gave_up(self.session);
+                    }
+                    _ => {}
+                }
+                self.state.send(message)
+            }
             SessionEvent::Prompt(prompt) => self.prompt.send(prompt),
             SessionEvent::HostKey(question) => self.host_key.send(question),
             SessionEvent::Algorithms(algorithms) => self.algorithms.send(algorithms),
@@ -2587,6 +2648,7 @@ async fn session_reconnect(
         window,
         events,
         Channels {
+            session: SessionId(id),
             output: on_output,
             state: on_state,
             prompt: on_prompt,
@@ -2638,6 +2700,7 @@ async fn session_duplicate(
         window,
         events,
         Channels {
+            session: copy,
             output: on_output,
             state: on_state,
             prompt: on_prompt,
@@ -2912,11 +2975,13 @@ fn session_discard(
     manager: State<'_, SessionManager>,
     relays: State<'_, SessionRelays>,
     records: State<'_, SessionRecords>,
+    auto: State<'_, AutoReconnects>,
     id: u64,
 ) {
     relays.forget(SessionId(id));
     manager.discard(SessionId(id));
     records.forget(SessionId(id));
+    auto.forget(SessionId(id));
 }
 
 /// Answers the questions the session's server asked last.
@@ -3545,6 +3610,7 @@ pub fn run() {
             app.manage(Tabs::new());
             app.manage(SessionRelays::new());
             app.manage(SessionRecords::new());
+            app.manage(AutoReconnects::new());
             app.manage(StepRuns::new());
             app.manage(CsvFile(Mutex::new(None)));
             app.manage(NornirFiles(Mutex::new(None)));
@@ -3689,6 +3755,9 @@ pub fn run() {
             jobs_forget_finished,
             enrich_apply,
             app_name,
+            session_auto_reconnect_enable,
+            session_auto_reconnect_stop,
+            session_auto_reconnect_restart,
             app_quit,
             vault_status,
             vault_keychain,

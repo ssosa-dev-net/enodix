@@ -81,9 +81,9 @@ pub use scripts::{ScriptError, SCRIPT_EXTENSION};
 use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
-    apply_settings, settings_from_document, Level, BACKUP_ON_LOGIN, CONNECT_TIMEOUT,
-    CREDENTIAL_PROFILE, ENVIRONMENT, FORWARDS, JUMP_HOST, LEGACY_CRYPTO, LOGGING, LOG_TIMESTAMPS,
-    PASTE_LINE_DELAY, PLATFORM, PORT, PROTOCOL, SERIAL, TERMINAL_TYPE, WEB_LINKS,
+    apply_settings, settings_from_document, Level, AUTO_RECONNECT, BACKUP_ON_LOGIN,
+    CONNECT_TIMEOUT, CREDENTIAL_PROFILE, ENVIRONMENT, FORWARDS, JUMP_HOST, LEGACY_CRYPTO, LOGGING,
+    LOG_TIMESTAMPS, PASTE_LINE_DELAY, PLATFORM, PORT, PROTOCOL, SERIAL, TERMINAL_TYPE, WEB_LINKS,
 };
 pub use settings::{
     Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, ForwardSetting,
@@ -118,7 +118,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 30] = [
+pub const HOST_KEY_ORDER: [&str; 31] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -128,6 +128,7 @@ pub const HOST_KEY_ORDER: [&str; 30] = [
     LEGACY_CRYPTO,
     CONNECT_TIMEOUT,
     LOGGING,
+    AUTO_RECONNECT,
     LOG_TIMESTAMPS,
     BACKUP_ON_LOGIN,
     ENVIRONMENT,
@@ -152,7 +153,7 @@ pub const HOST_KEY_ORDER: [&str; 30] = [
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 18] = [
+pub const FOLDER_KEY_ORDER: [&str; 19] = [
     DESCRIPTION,
     TAGS,
     PLATFORM,
@@ -163,6 +164,7 @@ pub const FOLDER_KEY_ORDER: [&str; 18] = [
     LEGACY_CRYPTO,
     CONNECT_TIMEOUT,
     LOGGING,
+    AUTO_RECONNECT,
     LOG_TIMESTAMPS,
     BACKUP_ON_LOGIN,
     ENVIRONMENT,
@@ -714,6 +716,35 @@ impl Workspace {
         let mut roles = BTreeMap::new();
         walk(self, &self.tree, &mut roles);
         roles
+    }
+
+    /// The ids of the hosts whose resolved `auto_reconnect` is on.
+    pub fn hosts_reconnecting_by_themselves(&self) -> std::collections::BTreeSet<HostId> {
+        fn walk<'a>(
+            folder: &'a Folder,
+            levels: &mut Vec<Level<'a>>,
+            found: &mut std::collections::BTreeSet<HostId>,
+        ) {
+            levels.push(Level::of(folder));
+            for host in &folder.hosts {
+                levels.push(Level {
+                    origin: Origin::Host,
+                    settings: &host.settings,
+                    tags: &host.tags,
+                });
+                if settings::resolve(levels).auto_reconnect.value {
+                    found.insert(host.id.clone());
+                }
+                levels.pop();
+            }
+            for child in &folder.folders {
+                walk(child, levels, found);
+            }
+            levels.pop();
+        }
+        let mut found = std::collections::BTreeSet::new();
+        walk(&self.tree, &mut Vec::new(), &mut found);
+        found
     }
 
     /// [`ResolvedHost::paste_safety`] for every host, by host id: its

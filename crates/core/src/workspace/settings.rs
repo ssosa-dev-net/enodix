@@ -29,6 +29,7 @@ pub(super) const JUMP_HOST: &str = "jump_host";
 pub(super) const LEGACY_CRYPTO: &str = "legacy_crypto";
 pub(super) const CONNECT_TIMEOUT: &str = "connect_timeout";
 pub(super) const LOGGING: &str = "logging";
+pub(super) const AUTO_RECONNECT: &str = "auto_reconnect";
 pub(super) const LOG_TIMESTAMPS: &str = "log_timestamps";
 pub(super) const BACKUP_ON_LOGIN: &str = "backup_on_login";
 pub(super) const ENVIRONMENT: &str = "environment";
@@ -76,6 +77,9 @@ pub struct Settings {
     /// to [`MAX_CONNECT_TIMEOUT_SECONDS`]).
     pub connect_timeout: Option<u32>,
     pub logging: Option<bool>,
+    /// Whether a session that drops tries again by itself (see
+    /// [`crate::session::CloseReason::allows_auto_reconnect`]).
+    pub auto_reconnect: Option<bool>,
     /// Whether session logs write the time before each line.
     pub log_timestamps: Option<bool>,
     /// Whether every SSH session to the host saves its configuration in
@@ -313,6 +317,8 @@ pub struct EffectiveSettings {
     pub connect_timeout: Effective<u32>,
     pub logging: Effective<bool>,
     /// Off by default.
+    pub auto_reconnect: Effective<bool>,
+    /// Off by default.
     pub log_timestamps: Effective<bool>,
     /// Off by default.
     pub backup_on_login: Effective<bool>,
@@ -416,6 +422,7 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
             DEFAULT_CONNECT_TIMEOUT_SECONDS,
         ),
         logging: or_default(nearest(levels, |s| s.logging), true),
+        auto_reconnect: or_default(nearest(levels, |s| s.auto_reconnect), false),
         log_timestamps: or_default(nearest(levels, |s| s.log_timestamps), false),
         backup_on_login: or_default(nearest(levels, |s| s.backup_on_login), false),
         environment: nearest(levels, |s| s.environment),
@@ -459,6 +466,7 @@ pub(super) fn settings_from_document(document: &Mapping) -> Result<Settings, Str
         legacy_crypto: read_flag(document, LEGACY_CRYPTO)?,
         connect_timeout: read_connect_timeout(document)?,
         logging: read_flag(document, LOGGING)?,
+        auto_reconnect: read_flag(document, AUTO_RECONNECT)?,
         log_timestamps: read_flag(document, LOG_TIMESTAMPS)?,
         backup_on_login: read_flag(document, BACKUP_ON_LOGIN)?,
         environment: read_choice(
@@ -807,6 +815,7 @@ pub(super) fn apply_settings(
     for (key, old, new) in [
         (LEGACY_CRYPTO, current.legacy_crypto, edit.legacy_crypto),
         (LOGGING, current.logging, edit.logging),
+        (AUTO_RECONNECT, current.auto_reconnect, edit.auto_reconnect),
         (LOG_TIMESTAMPS, current.log_timestamps, edit.log_timestamps),
         (
             BACKUP_ON_LOGIN,
