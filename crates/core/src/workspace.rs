@@ -83,11 +83,11 @@ pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
     apply_settings, settings_from_document, Level, BACKUP_ON_LOGIN, CONNECT_TIMEOUT,
     CREDENTIAL_PROFILE, ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PASTE_LINE_DELAY, PLATFORM,
-    PORT, PROTOCOL, SERIAL, WEB_LINKS,
+    PORT, PROTOCOL, SERIAL, TERMINAL_TYPE, WEB_LINKS,
 };
 pub use settings::{
     Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, Origin, Parity,
-    Protocol, SerialSettings, Settings, WebLink, DEFAULT_BAUD_RATE,
+    Protocol, SerialSettings, Settings, TerminalType, WebLink, DEFAULT_BAUD_RATE,
     DEFAULT_CONNECT_TIMEOUT_SECONDS, DEFAULT_DATA_BITS, DEFAULT_STOP_BITS,
     MAX_CONNECT_TIMEOUT_SECONDS,
 };
@@ -118,7 +118,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 27] = [
+pub const HOST_KEY_ORDER: [&str; 28] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -131,6 +131,7 @@ pub const HOST_KEY_ORDER: [&str; 27] = [
     BACKUP_ON_LOGIN,
     ENVIRONMENT,
     PASTE_LINE_DELAY,
+    TERMINAL_TYPE,
     SERIAL,
     VENDOR,
     PLATFORM,
@@ -149,7 +150,7 @@ pub const HOST_KEY_ORDER: [&str; 27] = [
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 15] = [
+pub const FOLDER_KEY_ORDER: [&str; 16] = [
     DESCRIPTION,
     TAGS,
     PLATFORM,
@@ -163,6 +164,7 @@ pub const FOLDER_KEY_ORDER: [&str; 15] = [
     BACKUP_ON_LOGIN,
     ENVIRONMENT,
     PASTE_LINE_DELAY,
+    TERMINAL_TYPE,
     SERIAL,
     WEB_LINKS,
 ];
@@ -438,6 +440,7 @@ impl ResolvedHost {
             jump_hosts: Vec::new(),
             legacy_crypto: self.settings.legacy_crypto.value,
             connect_timeout: self.connect_timeout(),
+            terminal_type: self.settings.terminal_type.value,
         }
     }
 
@@ -450,6 +453,7 @@ impl ResolvedHost {
             host: self.host.address.clone(),
             port: self.port_or(DEFAULT_TELNET_PORT),
             connect_timeout: self.connect_timeout(),
+            terminal_type: self.settings.terminal_type.value,
         }
     }
 
