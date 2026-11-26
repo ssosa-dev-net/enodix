@@ -98,6 +98,22 @@ impl PythonSetup {
         })
     }
 
+    /// The headless binary beside the program, if it is there: given to
+    /// local shells as `ENODIX_CLI` (#22).
+    pub fn cli(&self) -> Option<PathBuf> {
+        Some(
+            self.program_folder
+                .join(format!("enodix-cli{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .filter(|cli| cli.is_file())
+    }
+
+    /// This app's data folder, which the headless binary asks for
+    /// credentials: given to local shells as `ENODIX_DATA_DIR`.
+    pub fn data_folder(&self) -> &PathBuf {
+        &self.data_folder
+    }
+
     fn view(&self) -> PythonView {
         let wheel = self.wheel();
         PythonView {

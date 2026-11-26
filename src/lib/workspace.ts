@@ -330,12 +330,36 @@ export interface Snippet {
   name: string;
   /** What the panel lists it under; null: no group. */
   group: string | null;
+  /** Empty when it has steps. */
   text: string;
+  /** Its steps (#23), run on the open session in place of a text. */
+  steps?: SnippetSteps;
 }
 
-/** A snippet made ready to send: its lines, or the variables to ask for. */
+/** What a step waits for after its line (or, with none, by itself). */
+export type StepWait =
+  { kind: "prompt" } | { kind: "for"; pattern: string } | { kind: "nothing" };
+
+/** A snippet's steps, as the snippets file holds them (#23). */
+export interface SnippetSteps {
+  steps: {
+    send: string | null;
+    wait: StepWait;
+    timeoutSecs: number | null;
+  }[];
+  answers: { when: string; send: string }[];
+  stops: string[];
+  timeoutSecs: number;
+}
+
+/**
+ * A snippet made ready to send: its lines, the variables to ask for, or
+ * (one with steps, #23) ready for its steps to run on the session.
+ */
 export type Expansion =
-  { kind: "lines"; lines: string[] } | { kind: "missing"; names: string[] };
+  | { kind: "lines"; lines: string[] }
+  | { kind: "missing"; names: string[] }
+  | { kind: "steps" };
 
 export interface WorkspaceView {
   /** Higher is newer: a view older than the one shown is stale. */

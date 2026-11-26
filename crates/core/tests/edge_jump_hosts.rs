@@ -238,7 +238,7 @@ async fn a_jump_host_going_silent_while_the_next_one_logs_in_is_named() {
 /// one that refused and says why.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_jump_host_that_refuses_to_forward_is_named_with_the_reason() {
-    for hop in 0..2 {
+    for (hop, name) in HOPS.iter().enumerate().take(2) {
         let chain = Chain::start().await;
         chain.servers[hop].quirks().refuse_forwarding();
         let manager = support::manager();
@@ -248,9 +248,9 @@ async fn a_jump_host_that_refuses_to_forward_is_named_with_the_reason() {
         let (_, reason) = output_until_closed(&mut events, WAIT).await;
 
         let message = reason.to_string();
-        eprintln!("{} refuses: {message}", HOPS[hop]);
+        eprintln!("{name} refuses: {message}");
         assert!(
-            message.contains(&format!("the jump host {} could not reach it", HOPS[hop])),
+            message.contains(&format!("the jump host {name} could not reach it")),
             "{message}"
         );
         assert!(message.contains("does not allow forwarding"), "{message}");

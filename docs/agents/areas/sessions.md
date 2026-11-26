@@ -16,6 +16,12 @@ The core's session manager and its transports (`crates/core/src/session/`), SSH 
   stops after `OutputOptions::window` (256 KiB). A transport only reads from
   the device inside `flow.room_to_read()` and keeps taking commands meanwhile
   (see `ssh.rs`); telnet/serial do the same.
+- `src/session/output_watch.rs` (#23) — `SessionManager::watch_output(id)`
+  gives an `OutputWatch`: a copy of a connected session's output from then
+  on (fed in `Link::forward_counted`, beside the log), ended when that
+  connection closes. It never acknowledges and never holds reading back
+  (at most `WATCH_LIMIT`, 1 MiB, waits in it; the oldest is dropped). Used
+  by snippet steps (`terminal.md`); the consumer still acknowledges.
 - russh quirk: it adjusts the SSH window by itself; when we stop reading its
   channel, its 100-message buffer fills and its whole connection loop blocks,
   including outgoing data and keepalives. So while the interface is stalled,
@@ -731,3 +737,65 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   name the file would read as other hosts (a comma, whitespace, a control
   character, `*`, `?`, `!`, a leading `#`, `@` or `|`): trusting a key for
   `core1,x` would have trusted it for `core1`. Test in `host_keys.rs`.
+
+## Local shell (#22)
+
+- `src/session/local.rs` — the fourth transport, `Transport::Local` /
+  `SessionTarget::Local(LocalTarget { program, args, folder, environment })`,
+  on a pseudo terminal through `portable-pty` (ConPTY on Windows, a pty on
+  Unix). `LocalTarget` runs any program, not only a shell. `local::run`
+  mirrors `serial::run`: a reader thread (blocking pty read, started only
+  while `Flow::room_to_read` allows, `wait_on_thread` shared with serial)
+  and a writer thread; output goes through `Link::forward_counted`, so
+  batching and acknowledgement are the usual ones. Resize resizes the pty.
+  `TERM` is `xterm-256color`.
+- Ending: the shell's process is watched on its own thread (`wait()`),
+  because ConPTY's output does not end when the child exits, only when the
+  pseudo console closes (dropping `master`): its exit ends the session,
+  `CloseReason::LocalExited { exit_status }`, after output already queued
+  is let through (300 ms). On Unix the read ending (EIO) comes first and
+  the status is then waited for (1 s; `None` if there is none).
+  Failing to start is `OpenError::LocalShell { program, reason }`; closing
+  kills the child (`clone_killer`) and waits for it (2 s), never for the
+  reader (dropping the master ends it). Reconnect
+  starts the program again (a quick target is kept by the manager).
+- `local_shells()` lists what the computer has: Windows `pwsh` if on the
+  `PATH` (`pwsh`, plus `powershell`), else `powershell`; `cmd`; each WSL
+  distribution (`wsl.exe -l -q`, UTF-16, ids `wsl:<name>`). Unix: `$SHELL`
+  (id `login`) then the existing shells of `/etc/shells` (id = the path),
+  all started with `-l`. `pick_local_shell(shells, preference)` matches the
+  id ignoring case, else the first. `Preferences.local_shell` holds the id
+  (empty = first).
+- Decisions on the ticket: not logged (the shell passes no `SessionLog`);
+  never joins multi-send (in the core: `Windows::attach_transport` marks the
+  session solo when its transport is `Local`; `join_group` then refuses its
+  tab with `LayoutError::NeverJoins`, `join_pane` leaves it out, and a tab
+  that had joined before its session was known leaves; by session id, so a
+  moved tab stays out; the shell attaches through `Tabs::attach` with the
+  transport, in `session_open` and `session_duplicate`; the interface also
+  hides the menu entry and skips them); the multi-line paste
+  question is the usual one (a quick session has the default
+  `PasteSafety`); starts in the workspace folder else the home folder
+  (`local_start_folder`); environment `ENODIX_WORKSPACE`, `ENODIX_CLI`
+  (the binary beside the program, if there) and `ENODIX_DATA_DIR`
+  (`local_environment`, the variables of `job/script.rs`). Jobs, backups and
+  the Files tab never see it: they open SSH targets only.
+- Interface: `ConnectTarget { kind: "local", shell }` →
+  `ConnectTarget::Local` in `session_open`; the quick connect form's third
+  mode (`[data-quick-mode=local]`, `[data-quick-local]`,
+  `[data-open-local-shell]`), the palette's `local-shell` action, the
+  Preferences select `preference-local-shell`; header protocol `Local`.
+- Tests: `tests/local_session.rs` (Unix only; runs `/bin/sh`),
+  `tests/local_session_windows.rs` (`cmd.exe`, exit statuses; written
+  without a Windows machine, first run is the CI's; portable-pty makes
+  ConPTY inherit the cursor, so it starts by sending `ESC [ 6 n` and holds
+  the program until the terminal answers `ESC [ row ; col R`: xterm.js does
+  in the app, the tests' `until_closed` does), the solo tests in
+  `tests/windows.rs`, unit tests in `local.rs`, `preferences.rs`. Not
+  verified: ConPTY, the Windows shells and WSL (no Windows here), the
+  interface in a built app and the smoke test (no run). Known limits: a
+  Windows shell's program must be on the `PATH`; a shell the user closed
+  while it printed may keep a ConPTY reader thread until the pty drops;
+  `open_failure`'s hint matches English error text (portable-pty wraps its
+  errors as `anyhow`, so `ErrorKind::NotFound` is not reliable), so on a
+  non-English Windows the "is the shell installed" hint may not show.

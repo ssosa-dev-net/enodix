@@ -9,8 +9,10 @@
 mod agent;
 mod algorithms;
 pub(crate) mod connection;
+mod local;
 mod origin;
 mod output;
+mod output_watch;
 mod record;
 mod recording;
 mod relay;
@@ -37,9 +39,15 @@ pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
 };
+pub use local::{
+    local_environment, local_shells, local_start_folder, pick_local_shell, LocalShell, LocalTarget,
+    CLI_VARIABLE, WORKSPACE_VARIABLE,
+};
 pub use origin::{HostOrigin, HostSession, HostWay, ReconnectRefused, Reconnection, TypedLogin};
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
+use output_watch::Watchers;
+pub use output_watch::{OutputWatch, WATCH_LIMIT};
 pub use record::{SessionRecord, SessionRecords};
 pub use relay::{Attached, Consumer, ConsumerGone, ConsumerKey, HandoverError, Relay, Reported};
 pub use relays::SessionRelays;
@@ -66,16 +74,17 @@ pub enum SessionTarget {
     Ssh(SshTarget),
     Telnet(TelnetTarget),
     Serial(SerialTarget),
+    Local(LocalTarget),
 }
 
 impl SessionTarget {
     /// Whether the session's traffic is safe from eavesdroppers on the
     /// network: SSH encrypts it; telnet sends everything, passwords
     /// included, in the clear. A serial line does not cross a network, so
-    /// it counts as safe.
+    /// it counts as safe, and so does a local shell.
     pub fn encrypted(&self) -> bool {
         match self {
-            Self::Ssh(_) | Self::Serial(_) => true,
+            Self::Ssh(_) | Self::Serial(_) | Self::Local(_) => true,
             Self::Telnet(_) => false,
         }
     }
@@ -86,6 +95,7 @@ impl SessionTarget {
             Self::Ssh(_) => Transport::Ssh,
             Self::Telnet(_) => Transport::Telnet,
             Self::Serial(_) => Transport::Serial,
+            Self::Local(_) => Transport::Local,
         }
     }
 }
@@ -97,6 +107,8 @@ pub enum Transport {
     Ssh,
     Telnet,
     Serial,
+    /// A shell on this computer (#22), not a device.
+    Local,
 }
 
 /// The port SSH uses when nothing sets one.
@@ -321,6 +333,10 @@ pub enum CloseReason {
     /// The connection went away while the session was open.
     #[error("connection lost")]
     ConnectionLost,
+    /// The shell of a local session ended, for example because the user
+    /// typed `exit`.
+    #[error("the shell ended{}", exit_status_suffix(.exit_status))]
+    LocalExited { exit_status: Option<u32> },
     /// The serial port stopped working while the session was open: most
     /// often, its USB adapter was unplugged.
     #[error("the serial port {port} stopped working; was the adapter unplugged? ({reason})")]
@@ -393,6 +409,10 @@ pub enum OpenError {
     /// program holds it, or it refused the line parameters.
     #[error("cannot open the serial port {port}: {reason}")]
     SerialPort { port: String, reason: String },
+    /// A local shell could not be started: the program is not there, or
+    /// the pseudo terminal could not be made.
+    #[error("cannot start {program}: {reason}")]
+    LocalShell { program: String, reason: String },
     /// The device was reached but the session could not be set up.
     #[error("could not open the session: {0}")]
     Protocol(String),
@@ -714,6 +734,8 @@ struct SessionHandle {
     flow: Arc<Flow>,
     /// Set once the session is connected (its transport sets it).
     connected: Arc<AtomicBool>,
+    /// Who watches its output beside its consumer (#23).
+    watchers: Arc<Watchers>,
 }
 
 /// What [`SessionManager::write_to_each`] did, per session, in the order
@@ -1047,10 +1069,12 @@ impl SessionManager {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let flow = Arc::new(Flow::new(self.inner.output.window));
         let connected = Arc::new(AtomicBool::new(false));
+        let watchers = Arc::new(Watchers::new());
         entry.open = Some(SessionHandle {
             commands: command_tx,
             flow: flow.clone(),
             connected: connected.clone(),
+            watchers: watchers.clone(),
         });
 
         // The task holds the manager weakly so that dropping the last manager
@@ -1084,6 +1108,7 @@ impl SessionManager {
                 log,
                 logger: None,
                 connected,
+                watchers,
                 when_connected,
                 login_banner,
             };
@@ -1093,6 +1118,7 @@ impl SessionManager {
                 SessionTarget::Ssh(target) => ssh::run(target, known_hosts, &mut link).await,
                 SessionTarget::Telnet(target) => telnet::run(target, &mut link).await,
                 SessionTarget::Serial(target) => serial::run(target, serial_ports, &mut link).await,
+                SessionTarget::Local(target) => local::run(target, &mut link).await,
             };
             // Mark the session closed before announcing it, so that nobody
             // who has seen `Closed` can still reach it, and anybody can
@@ -1167,6 +1193,25 @@ impl SessionManager {
             }
         }
         fanout
+    }
+
+    /// A copy of the output of the connected session `id` from now on,
+    /// beside its consumer, until this connection ends (a reconnect is
+    /// another connection): see [`OutputWatch`]. For a snippet's steps
+    /// waiting for the device (#23).
+    pub fn watch_output(&self, id: SessionId) -> Result<OutputWatch, SessionError> {
+        let sessions = self.inner.sessions();
+        let session = open_session(&sessions, id)?;
+        if !session.connected.load(Ordering::Acquire) {
+            return Err(SessionError::NotConnected);
+        }
+        Ok(session.watchers.watch())
+    }
+
+    /// Whether the session `id` is open and connected.
+    pub fn is_connected(&self, id: SessionId) -> bool {
+        open_session(&self.inner.sessions(), id)
+            .is_ok_and(|session| session.connected.load(Ordering::Acquire))
     }
 
     /// Tells the device the terminal has a new size.
@@ -1280,6 +1325,8 @@ struct Link {
     logger: Option<Logger>,
     /// Shared with the manager's handle: set once connected.
     connected: Arc<AtomicBool>,
+    /// Shared with the manager's handle: given a copy of the output.
+    watchers: Arc<Watchers>,
     /// Called on every [`SessionState::Connected`].
     when_connected: Option<OnConnected>,
     /// Whether an SSH session shows its login banners
@@ -1377,6 +1424,7 @@ impl Link {
                 self.log_failed(failure);
             }
         }
+        self.watchers.output(&bytes);
         self.events.send(SessionEvent::Output(bytes)).is_ok()
     }
 
@@ -1415,7 +1463,9 @@ impl Link {
 
     fn state(&mut self, state: SessionState) {
         if let SessionState::Closed(_) = state {
-            // The log is complete before anybody learns the session closed.
+            // Watches end, and the log is complete, before anybody learns
+            // the session closed.
+            self.watchers.close();
             self.log = None;
             if let Some(Err(failure)) = self.logger.take().map(Logger::finish) {
                 self.log_failed(failure);

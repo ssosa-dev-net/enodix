@@ -138,6 +138,9 @@ pub enum LayoutError {
     LastPane,
     #[error("the tab {0} shows a view, not a session")]
     NotASession(TabId),
+    /// A local shell shows the user's own computer, not a device (#22).
+    #[error("the tab {0} shows a local shell, which never joins the multi-send group")]
+    NeverJoins(TabId),
     #[error("a session window shows no view tabs")]
     NoViewTabs,
     #[error("there is no window {0}")]

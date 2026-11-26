@@ -15,6 +15,7 @@
   import { bySnippetGroup, snippets } from "./snippets.svelte";
   import { openView } from "./views";
   import { findSnippets, type Snippet } from "./workspace";
+  import { firstSent, stepsText } from "./steps";
 
   interface Props {
     /** The session snippets go to (the active pane's), by name; null: none. */
@@ -58,6 +59,11 @@
     found === null ? list : list.filter((snippet) => found!.has(snippet.name)),
   );
   const groups = $derived(bySnippetGroup(shown));
+
+  /** What a snippet sends, as its row's tooltip shows it. */
+  function shownText(snippet: Snippet) {
+    return snippet.steps ? stepsText(snippet.steps) : snippet.text;
+  }
 
   function firstLine(text: string) {
     const lines = text.split(/\r\n|\n|\r/).filter((line) => line.trim());
@@ -154,13 +160,22 @@
                   data-snippet={snippet.name}
                   disabled={target === null}
                   title={target === null
-                    ? snippet.text
-                    : `Send to ${target}:\n${snippet.text}`}
+                    ? shownText(snippet)
+                    : `${snippet.steps ? "Run on" : "Send to"} ${target}:\n${shownText(snippet)}`}
                   onclick={() => onsend(snippet.name)}
                 >
-                  <span class="name">{snippet.name}</span>
+                  <span class="name"
+                    >{snippet.name}{#if snippet.steps}<span
+                        class="steps"
+                        data-snippet-steps
+                        title="Runs step by step, waiting for the device"
+                        >Steps</span
+                      >{/if}</span
+                  >
                   <span class="preview" data-snippet-preview
-                    >{firstLine(snippet.text)}</span
+                    >{snippet.steps
+                      ? firstSent(snippet.steps)
+                      : firstLine(snippet.text)}</span
                   >
                 </button>
                 <IconButton
@@ -361,6 +376,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .send .steps {
+    margin-left: var(--space-1-5);
+    font-size: var(--text-xs);
+    color: var(--accent);
   }
 
   .send .preview {

@@ -2,12 +2,19 @@
 // the tree's context menu offer them: which protocols, and why one cannot
 // be used (the core refuses those anyway; this only says so beforehand).
 
+import type { Transport } from "./session";
 import type { EffectiveSettings, Protocol } from "./workspace";
 
 export const PROTOCOL_NAMES: Record<Protocol, string> = {
   ssh: "SSH",
   telnet: "Telnet",
   serial: "Serial",
+};
+
+/** What the header calls each kind of session. */
+export const TRANSPORT_NAMES: Record<Transport, string> = {
+  ...PROTOCOL_NAMES,
+  local: "Local",
 };
 
 export interface WayIn {
