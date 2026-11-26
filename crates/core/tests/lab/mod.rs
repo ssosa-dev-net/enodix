@@ -1453,6 +1453,7 @@ async fn second_channel(run: &LabRun, device: &Device) -> Result<String, String>
         log: None,
         when_connected: Some(Arc::new(backup)),
         login_banner: false,
+        forwards: Vec::new(),
     };
     let target = run.ssh_target(device)?;
     let password = match &target.auth {
@@ -1798,6 +1799,7 @@ async fn login_banner(run: &LabRun, device: &Device) -> Result<String, String> {
             log: None,
             when_connected: None,
             login_banner: shown,
+            forwards: Vec::new(),
         };
         let which = if shown {
             "with login_banner"
@@ -2046,6 +2048,7 @@ impl<'a> Conversation<'a> {
             log,
             when_connected: None,
             login_banner: false,
+            forwards: Vec::new(),
         };
         Self::connect_with(manager, target, options, timeout, password).await
     }
@@ -2127,6 +2130,8 @@ impl<'a> Conversation<'a> {
                 }
                 SessionEvent::Algorithms(algorithms) => session.algorithms = algorithms,
                 SessionEvent::Backup(_) => unreachable!("next_event keeps backups"),
+                // The lab opens no forwards.
+                SessionEvent::Forwards(_) => {}
                 SessionEvent::Output(bytes) => session.received.extend_from_slice(&bytes),
                 SessionEvent::LogFailed(failure) => {
                     return Err(Failure::Other(format!("log failed: {failure}")))

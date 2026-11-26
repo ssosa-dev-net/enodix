@@ -56,7 +56,8 @@ These need hardware, devices or setups the project does not have.
 - Dragging tabs out of a window and between windows; remembering session
   windows across restarts.
 - Checking TLS certificates for ports a script reaches through a tunnel.
-- Port forwarding and a SOCKS proxy.
+- Remote port forwards (`ssh -R`), and port forwards opened without a
+  terminal, as a Files connection is.
 - Quick tools: ping, traceroute, a subnet calculator, MAC vendor lookup.
 - A topology map from LLDP and CDP neighbours.
 - A macOS release.
