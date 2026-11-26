@@ -2533,7 +2533,7 @@ struct Opened {
     consumer: u64,
     /// Whether its traffic is encrypted on the network; telnet's is not.
     encrypted: bool,
-    /// `ssh`, `telnet` or `serial` (serial sessions can send a break).
+    /// `ssh`, `telnet` or `serial` (serial and telnet sessions can send a break).
     transport: Transport,
     /// What the app keeps of it, for any window showing it (#84).
     record: SessionRecord,

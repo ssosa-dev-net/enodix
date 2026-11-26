@@ -12,6 +12,7 @@
 //! | `term`      | prints the terminal type the client sent                 |
 //! | `echo off`  | stops echoing (`WONT ECHO`), as a line-mode device       |
 //! | `echo on`   | echoes again (`WILL ECHO`)                               |
+//! | `breaks`    | prints how many `IAC BRK` it received                    |
 //! | `binary`    | prints the bytes `A`, `0xFF`, `B` and a new line         |
 //! | `flood`     | prints [`FLOOD_LINE`] without end until Ctrl+C           |
 //! | `exit`      | closes the connection                                    |
@@ -57,6 +58,8 @@ const SGA: u8 = 3;
 const TTYPE: u8 = 24;
 const NAWS: u8 = 31;
 const TIMING_MARK: u8 = 6;
+/// The telnet BREAK command (RFC 854).
+const BRK: u8 = 243;
 const TTYPE_IS: u8 = 0;
 const TTYPE_SEND: u8 = 1;
 
@@ -176,6 +179,8 @@ struct Device {
     cols: u16,
     rows: u16,
     terminal_type: String,
+    /// How many `IAC BRK` came.
+    breaks: usize,
     /// Set while a flood runs; dropping it stops the flood.
     flood: Option<tokio::sync::oneshot::Sender<()>>,
     mode: EchoMode,
@@ -202,6 +207,7 @@ async fn serve(socket: TcpStream, mode: EchoMode, asks: bool, probes: Arc<Atomic
         cols: 0,
         rows: 0,
         terminal_type: String::new(),
+        breaks: 0,
         flood: None,
         mode,
         asks,
@@ -280,6 +286,7 @@ impl Device {
                 self.parse = Parse::Data;
                 match byte {
                     IAC => return self.character(IAC).await,
+                    BRK => self.breaks += 1,
                     WILL | WONT | DO | DONT => self.parse = Parse::Verb(byte),
                     SB => {
                         self.sub.clear();
@@ -442,6 +449,7 @@ impl Device {
         let mut reply = match line {
             b"size" => format!("{}x{}\r\n", self.cols, self.rows).into_bytes(),
             b"term" => format!("{}\r\n", self.terminal_type).into_bytes(),
+            b"breaks" => format!("{}\r\n", self.breaks).into_bytes(),
             b"echo off" => {
                 self.echoing = false;
                 vec![IAC, WONT, ECHO]
