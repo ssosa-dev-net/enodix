@@ -93,7 +93,7 @@
 
   /** The ways in besides the host's own protocol. */
   const otherWays = $derived(
-    effective.current ? waysBesides(host.id, effective.current) : [],
+    effective.current ? waysBesides(effective.current) : [],
   );
   const ownWay = $derived(
     effective.current ? PROTOCOL_NAMES[effective.current.protocol.value] : null,

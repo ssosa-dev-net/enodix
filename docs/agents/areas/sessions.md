@@ -253,7 +253,7 @@ SessionLogin, note }` (through `profile_target` / `prompted_target` /
   the last connection to one that is not the session's transport (SSH
   opened on purpose on a telnet host stays SSH) → `ProtocolChanged`; no
   address (not serial) → `NoAddress`; a broken jump chain, no serial
-  port, telnet through a jump host, an unreadable store → `Unusable`
+  port, an unreadable store → `Unusable`
   (each has `advice()`). Then: profile login → the host's usable profile
   now (`note` "Logging in with the credential profile X, which r1 has
   now." when its name differs), else `SshAuth::Prompt` with an empty
@@ -321,8 +321,22 @@ SessionLogin, note }` (through `profile_target` / `prompted_target` /
   returns `HostLogin::Telnet` for telnet (`HostLogin::Serial` for
   serial); `login_with(id, Protocol)` picks one;
   `profile_target` is always SSH. `Profiles::telnet_target(id)` works for
-  any host (its port or 23) but refuses a host with a jump host
-  (`ProfileError::TelnetThroughJumpHost`): telnet is not tunnelled.
+  any host (its port or 23) and fills `TelnetTarget.jump_hosts` as
+  `Profiles::jump_hosts` does (#26 item 7; `ProfileError::
+  TelnetThroughJumpHost` is gone). `telnet::run` then opens the chain with
+  `ssh::open_jump_chain` (host keys and logins asked as for SSH, the
+  questions named "Jump host <id>"), takes a `direct-tcpip` channel from
+  the last hop (`JumpConnections::forward`, the telnet connect timeout)
+  and runs telnet over `Channel::into_stream()` split in two (the socket
+  path's `set_nodelay`/keep-alive do not apply; the timing-mark probe
+  does). The jump connections drop when the session ends. Login banners
+  of the jump hosts are not shown. `SessionRecord::for_host` gives telnet
+  its jump host (header "via X"; the Unencrypted marker's title names the
+  leg from it). Jobs (`SkipReason::TelnetBehindJumpHost`) and script
+  tunnels still skip such hosts. Tests: `jump_hosts.rs`
+  `a_telnet_host_with_a_jump_host_connects_through_it` and the three
+  after it; `telnet_session.rs`
+  `a_telnet_host_behind_a_jump_host_goes_through_it`.
   Credential profiles are not used for telnet logins (nothing types
   them). Tests: `tests/telnet_session.rs` against `support/telnet.rs`
   (`TestTelnetServer::start()` / `start_with(EchoMode::Remote|Line)` /
@@ -335,8 +349,8 @@ SessionLogin, note }` (through `profile_target` / `prompted_target` /
   the interface). Interface: `prompt(host, protocol?)` in `App.svelte`;
   the side panel has `Connect` (`[data-connect=default]`) plus
   `[data-connect=ssh|telnet]` for the ways that are not the host's own
-  (Telnet disabled, with a title, when the effective `jump_host` is
-  another host);
+  (Telnet is offered behind a jump host too since #26; `otherWays(effective)`
+  in `ways.ts` blocks only serial without a port);
   `TerminalSession` shows `[data-unencrypted]` ("Unencrypted").
 - Serial (#17, `session/serial.rs`). `SessionTarget::Serial(SerialTarget
 { port, parameters: SerialParameters })` (camelCase serde; default 9600

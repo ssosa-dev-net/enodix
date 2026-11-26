@@ -16,9 +16,8 @@ protocol** setting: SSH, telnet or serial) and opens in a new tab.
 
 - **Another protocol.** The tree's context menu and the host's details sheet
   also offer **Connect by SSH**, **Connect by Telnet** or **Connect by
-  Serial** (whichever the host is not set to). Telnet cannot be used for a
-  host behind a jump host, and serial needs the serial port chosen in the
-  host's settings first.
+  Serial** (whichever the host is not set to). Serial needs the serial
+  port chosen in the host's settings first.
 - **By name.** Ctrl+K opens the palette: type part of a host's name or
   address and press Enter.
 - **Quick connect.** An empty pane, and the first window when no workspace is
@@ -292,8 +291,11 @@ the app shows when negotiation fails.
 
 - Quick connect does SSH, serial and a local shell only, with no jump host,
   no legacy crypto and none of a host's settings.
-- Telnet sends everything, passwords included, in the clear, and cannot go
-  through a jump host.
+- Telnet sends everything, passwords included, in the clear. Behind a jump
+  host it goes through the jump host's SSH connection, so only the leg from
+  the jump host to the device is in the clear; the **Unencrypted** marker
+  stays on. Jobs and scripts still do not reach telnet hosts behind a jump
+  host.
 - Session logs are plain text and not encrypted. They can hold secrets a
   device prints.
 - A session cannot move to another window while it is connecting, while a

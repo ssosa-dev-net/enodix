@@ -13,9 +13,10 @@ use enodix_core::credentials::{
 use enodix_core::known_hosts::KnownHosts;
 use enodix_core::session::{
     CloseReason, HostKeyDecision, LoginQuestion, OpenError, SessionEvents, SessionManager,
-    SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize,
+    SessionState, SessionTarget, SshAuth, SshTarget, TelnetTarget, TerminalSize,
 };
 use enodix_core::workspace::{HostId, JumpChainError, Workspace};
+use support::telnet::{TestTelnetServer, USERNAME_PROMPT};
 use support::{
     closed_port, next_host_key_question, next_prompt, next_state, output_ending_with,
     TestSshServer, CODE_NAME, CODE_QUESTION, ONE_TIME_CODE, OTP_USERNAME, PASSWORD, PROMPT,
@@ -712,4 +713,117 @@ async fn a_prompted_login_goes_through_the_jump_host() {
     let mut events = open(&manager, target).await;
     connected(&mut events).await;
     assert_eq!(bastion.forwarded(), 1);
+}
+
+/// A telnet device behind the bastion, which logs in with `bastion`.
+fn telnet_behind_bastion(bastion_port: u16, device_port: u16) -> (TempDir, Workspace) {
+    workspace(&[
+        ("Site/_folder.yaml", "jump_host: Site/bastion.yaml\n".into()),
+        (
+            "Site/bastion.yaml",
+            host(bastion_port, "protocol: ssh\ncredential_profile: bastion\n"),
+        ),
+        ("Site/console.yaml", host(device_port, "protocol: telnet\n")),
+    ])
+}
+
+fn telnet_target(store: &MemoryStore, workspace: &Workspace, id: &str) -> TelnetTarget {
+    Profiles::new(store, workspace)
+        .telnet_target(&HostId::new(id))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_telnet_host_with_a_jump_host_connects_through_it() {
+    let bastion = TestSshServer::start().await;
+    let device = TestTelnetServer::start().await;
+    let (_temp, workspace) = telnet_behind_bastion(bastion.port(), device.port());
+    let store = store(&workspace, &[password_profile("bastion", PASSWORD)]);
+
+    let target = telnet_target(&store, &workspace, "Site/console.yaml");
+    assert_eq!(target.port, device.port());
+    let names: Vec<&str> = target.jump_hosts.iter().map(|j| j.name.as_str()).collect();
+    assert_eq!(names, ["Site/bastion.yaml"]);
+
+    let manager = support::manager();
+    let (id, mut events) = manager.open(SessionTarget::Telnet(target), SIZE);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    assert_eq!(next_state(&mut events).await, SessionState::Connected);
+    // The device's own login, through the bastion's forwarded channel.
+    output_ending_with(&mut events, USERNAME_PROMPT).await;
+    assert_eq!(bastion.forwarded(), 1);
+    // The leg from the jump host to the device is telnet, in the clear.
+    assert!(!manager.encrypted(id).unwrap());
+
+    manager.close(id).unwrap();
+    assert_eq!(
+        next_state(&mut events).await,
+        SessionState::Closed(CloseReason::ClosedLocally)
+    );
+}
+
+#[tokio::test]
+async fn a_telnet_device_the_jump_host_cannot_reach_is_reported() {
+    let bastion = TestSshServer::start().await;
+    let (_temp, workspace) = telnet_behind_bastion(bastion.port(), closed_port().await);
+    let store = store(&workspace, &[password_profile("bastion", PASSWORD)]);
+
+    let manager = support::manager();
+    let target = telnet_target(&store, &workspace, "Site/console.yaml");
+    let (_id, mut events) = manager.open(SessionTarget::Telnet(target), SIZE);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    match failure(&mut events).await {
+        OpenError::Connect(reason) => {
+            assert!(reason.contains("Site/bastion.yaml"), "{reason}")
+        }
+        other => panic!("expected a connect failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_telnet_jump_host_refusing_the_login_is_named() {
+    let bastion = TestSshServer::start().await;
+    let device = TestTelnetServer::start().await;
+    let (_temp, workspace) = telnet_behind_bastion(bastion.port(), device.port());
+    let store = store(&workspace, &[password_profile("bastion", "wrong")]);
+
+    let manager = support::manager();
+    let target = telnet_target(&store, &workspace, "Site/console.yaml");
+    let (_id, mut events) = manager.open(SessionTarget::Telnet(target), SIZE);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    match failure(&mut events).await {
+        OpenError::JumpHost { name, error } => {
+            assert_eq!(name, "Site/bastion.yaml");
+            assert_eq!(*error, OpenError::AuthenticationFailed);
+        }
+        other => panic!("expected the jump host named, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_telnet_jump_host_without_a_profile_asks_for_its_login() {
+    let bastion = TestSshServer::start().await;
+    let device = TestTelnetServer::start().await;
+    let (_temp, workspace) = workspace(&[
+        ("Site/_folder.yaml", "jump_host: Site/bastion.yaml\n".into()),
+        ("Site/bastion.yaml", host(bastion.port(), "")),
+        (
+            "Site/console.yaml",
+            host(device.port(), "protocol: telnet\n"),
+        ),
+    ]);
+    let store = store(&workspace, &[]);
+
+    let manager = support::manager();
+    let target = telnet_target(&store, &workspace, "Site/console.yaml");
+    let (id, mut events) = manager.open(SessionTarget::Telnet(target), SIZE);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    let prompt = next_prompt(&mut events).await;
+    assert_eq!(prompt.name, "Jump host Site/bastion.yaml");
+    manager
+        .answer(id, vec![USERNAME.into(), PASSWORD.into()])
+        .unwrap();
+
+    assert_eq!(next_state(&mut events).await, SessionState::Connected);
+    output_ending_with(&mut events, USERNAME_PROMPT).await;
 }

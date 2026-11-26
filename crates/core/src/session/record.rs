@@ -24,7 +24,7 @@ pub struct SessionRecord {
     pub title: String,
     /// The host's address, when the title does not show it.
     pub address: Option<String>,
-    /// The jump host an SSH session to the host goes through.
+    /// The jump host an SSH or telnet session to the host goes through.
     pub jump_host: Option<String>,
     /// The workspace host it goes to; `None` for a quick connection.
     pub host: Option<HostId>,
@@ -65,8 +65,8 @@ impl SessionRecord {
     }
 
     /// A session over `transport` to `workspace`'s host `id`, with what the
-    /// workspace sets for it now; `None` if the host is not in it. Only SSH
-    /// goes through a jump host, and never through the host itself.
+    /// workspace sets for it now; `None` if the host is not in it. SSH and
+    /// telnet go through a jump host (serial never), and never through the host itself.
     pub fn for_host(
         workspace: &Workspace,
         id: &HostId,
@@ -78,13 +78,13 @@ impl SessionRecord {
         let title = title.into();
         let address = &resolved.host.address;
         let jump_host = match transport {
-            Transport::Ssh => resolved
+            Transport::Ssh | Transport::Telnet => resolved
                 .settings
                 .jump_host
                 .as_ref()
                 .map(|jump| jump.value.clone())
                 .filter(|jump| !jump.eq_ignore_ascii_case(id.as_str())),
-            Transport::Telnet | Transport::Serial | Transport::Local => None,
+            Transport::Serial | Transport::Local => None,
         };
         Some(Self {
             name: name.into(),
