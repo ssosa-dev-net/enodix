@@ -415,3 +415,17 @@ right_panel_hidden: true
         }
     );
 }
+
+#[test]
+fn the_local_shell_is_remembered_and_defaults_to_the_computers_first() {
+    let data = TempDir::new().unwrap();
+    assert_eq!(Preferences::default().local_shell, "");
+
+    let chosen = Preferences {
+        local_shell: "  wsl:Ubuntu ".into(),
+        ..Preferences::default()
+    };
+    chosen.save(data.path()).unwrap();
+
+    assert_eq!(Preferences::load(data.path()).local_shell, "wsl:Ubuntu");
+}

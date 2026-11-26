@@ -723,3 +723,50 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   name the file would read as other hosts (a comma, whitespace, a control
   character, `*`, `?`, `!`, a leading `#`, `@` or `|`): trusting a key for
   `core1,x` would have trusted it for `core1`. Test in `host_keys.rs`.
+
+## Local shell (#22)
+
+- `src/session/local.rs` — the fourth transport, `Transport::Local` /
+  `SessionTarget::Local(LocalTarget { program, args, folder, environment })`,
+  on a pseudo terminal through `portable-pty` (ConPTY on Windows, a pty on
+  Unix). `LocalTarget` runs any program, not only a shell. `local::run`
+  mirrors `serial::run`: a reader thread (blocking pty read, started only
+  while `Flow::room_to_read` allows, `wait_on_thread` shared with serial)
+  and a writer thread; output goes through `Link::forward_counted`, so
+  batching and acknowledgement are the usual ones. Resize resizes the pty.
+  `TERM` is `xterm-256color`.
+- Ending: the pty's read ending is `CloseReason::LocalExited { exit_status }`
+  (the status is `None` if the shell did not report one within a second);
+  failing to start is `OpenError::LocalShell { program, reason }`; closing
+  kills the child and waits for it (2 s), never for the reader (a ConPTY
+  read can outlive its child; dropping the master ends it). Reconnect
+  starts the program again (a quick target is kept by the manager).
+- `local_shells()` lists what the computer has: Windows `pwsh` if on the
+  `PATH` (`pwsh`, plus `powershell`), else `powershell`; `cmd`; each WSL
+  distribution (`wsl.exe -l -q`, UTF-16, ids `wsl:<name>`). Unix: `$SHELL`
+  (id `login`) then the existing shells of `/etc/shells` (id = the path),
+  all started with `-l`. `pick_local_shell(shells, preference)` matches the
+  id ignoring case, else the first. `Preferences.local_shell` holds the id
+  (empty = first).
+- Decisions on the ticket: not logged (the shell passes no `SessionLog`);
+  never joins multi-send (`src-tauri` `without_local_joins` refuses a join
+  naming a local tab and joins a pane's other tabs one by one; the
+  interface also hides the menu entry and skips them); the multi-line paste
+  question is the usual one (a quick session has the default
+  `PasteSafety`); starts in the workspace folder else the home folder
+  (`local_start_folder`); environment `ENODIX_WORKSPACE`, `ENODIX_CLI`
+  (the binary beside the program, if there) and `ENODIX_DATA_DIR`
+  (`local_environment`, the variables of `job/script.rs`). Jobs, backups and
+  the Files tab never see it: they open SSH targets only.
+- Interface: `ConnectTarget { kind: "local", shell }` →
+  `ConnectTarget::Local` in `session_open`; the quick connect form's third
+  mode (`[data-quick-mode=local]`, `[data-quick-local]`,
+  `[data-open-local-shell]`), the palette's `local-shell` action, the
+  Preferences select `preference-local-shell`; header protocol `Local`.
+- Tests: `tests/local_session.rs` (Unix only; runs `/bin/sh`), unit tests in
+  `local.rs`, `preferences.rs`. Not verified: ConPTY and the Windows shells
+  and WSL (no Windows here), the interface in a built app and the smoke
+  test (the Linux build needs WebKitGTK; no run). Known limits: the shell
+  refusal of multi-send joins has no test (it lives in `src-tauri`); a
+  Windows shell's program must be on the `PATH`; a shell the user closed
+  while it printed may keep a ConPTY reader thread until the pty drops.
