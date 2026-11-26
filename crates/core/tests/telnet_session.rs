@@ -668,3 +668,19 @@ async fn an_inventory_host_set_to_telnet_opens_a_telnet_session() {
 
     output_ending_with(&mut events, USERNAME_PROMPT).await;
 }
+
+#[tokio::test]
+async fn a_break_is_sent_as_the_telnet_break_command_after_the_input_before_it() {
+    let server = TestTelnetServer::start().await;
+    let manager = support::manager();
+    let (id, mut events) = logged_in(&manager, &server).await;
+
+    manager.send_break(id).unwrap();
+    manager.send_break(id).unwrap();
+    let breaks = type_until(&manager, id, &mut events, b"breaks\r", TELNET_PROMPT).await;
+
+    assert_eq!(
+        breaks,
+        [b"breaks\r\n2\r\n".as_slice(), TELNET_PROMPT].concat()
+    );
+}

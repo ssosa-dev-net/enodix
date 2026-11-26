@@ -336,14 +336,15 @@ async fn a_break_is_held_for_the_break_duration_after_the_input_before_it() {
 }
 
 #[tokio::test]
-async fn only_serial_sessions_send_a_break() {
-    let server = support::telnet::TestTelnetServer::start().await;
+async fn an_ssh_session_cannot_send_a_break() {
+    // `russh` cannot send the `break` request (RFC 4335).
+    let server = support::TestSshServer::start().await;
     let ports = VirtualSerialPorts::new();
     let manager = manager(&ports);
-    let (id, mut events) = manager.open(SessionTarget::Telnet(server.target()), SIZE);
+    let (id, mut events) = manager.open(SessionTarget::Ssh(server.target()), SIZE);
     assert_eq!(next_state(&mut events).await, SessionState::Connecting);
     assert_eq!(next_state(&mut events).await, SessionState::Connected);
-    assert_eq!(manager.transport(id), Ok(Transport::Telnet));
+    assert_eq!(manager.transport(id), Ok(Transport::Ssh));
 
     assert_eq!(manager.send_break(id), Err(SessionError::BreakUnsupported));
     assert_eq!(

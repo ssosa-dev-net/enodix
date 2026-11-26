@@ -77,6 +77,9 @@ const SUPPRESS_GO_AHEAD: u8 = 3;
 const TIMING_MARK: u8 = 6;
 const TERMINAL_TYPE: u8 = 24;
 const WINDOW_SIZE: u8 = 31;
+/// The BREAK command (RFC 854): what a console reached through a terminal
+/// server takes for a serial break.
+const BRK: u8 = 243;
 
 /// Terminal-type subnegotiation: "here it is" and "send it".
 const TERMINAL_TYPE_IS: u8 = 0;
@@ -176,9 +179,10 @@ pub(super) async fn run(
                         send(report);
                     }
                 }
-                // Nothing asks for these over telnet; the manager sends
-                // breaks to serial sessions only.
-                Command::Answer(_) | Command::HostKey(_) | Command::Break | Command::OpenChannel { .. } => {}
+                // After the input written before it, as on a serial line.
+                Command::Break => send(vec![IAC, BRK]),
+                // Nothing asks for these over telnet.
+                Command::Answer(_) | Command::HostKey(_) | Command::OpenChannel { .. } => {}
                 Command::Close => break CloseReason::ClosedLocally,
             },
             // Output is read only while the consumer is less than a window
