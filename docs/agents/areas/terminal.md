@@ -71,6 +71,21 @@ canvas:not(.xterm-link-layer)` (the link layer is a 2D canvas). Smoke
   `elementFromPoint` at a control's centre is something else (also the
   login question and the negotiation failure card). The scripted shell has
   `later <s> <text>` (output after a delay) for the hidden-tab check.
+- Colour schemes (#24). `Preferences.color_scheme` (`ColorScheme`:
+  default, solarized-dark, solarized-light, dracula, nord, gruvbox-dark;
+  kebab-case in the file) and `custom_colors` (name → `#rrggbb` over the
+  scheme, names in `COLOR_NAMES`: background, foreground, cursor,
+  selection and the 16 ANSI names as highlight rules spell them;
+  `normalized` drops unknown names and bad colours, `#rgb` expands). The
+  core only keeps the choice; the palettes are `src/lib/colorSchemes.ts`
+  (`SCHEME_THEMES`) and `terminalTheme(dark)` layers scheme → own colours,
+  `default` being the old `DARK_TERMINAL`/`LIGHT_TERMINAL`. `highlightColor`
+  resolves palette names through `terminalTheme`, so rules follow the scheme;
+  the highlighter's cache key includes `paletteKey()` so rows redraw when
+  the scheme or an own colour changes. Preferences view: `preference-color-
+  scheme`, `[data-own-colors]` with `preference-color-<name>` inputs.
+  Not verified in the real app (no smoke step; typecheck and core tests
+  only).
 - Terminal comforts (#19, `src/preferences.rs`). `Preferences { theme:
 System|Light|Dark, font_family, font_size (8–36, default 14),
 scrollback (0–100,000, default 10,000), copy_on_select,
