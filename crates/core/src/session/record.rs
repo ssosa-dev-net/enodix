@@ -73,7 +73,7 @@ impl SessionRecord {
                 .as_ref()
                 .map(|jump| jump.value.clone())
                 .filter(|jump| !jump.eq_ignore_ascii_case(id.as_str())),
-            Transport::Serial => None,
+            Transport::Serial | Transport::Local => None,
         };
         Some(Self {
             name: name.into(),

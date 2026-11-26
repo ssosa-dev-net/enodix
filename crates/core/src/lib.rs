@@ -28,6 +28,7 @@ pub mod preferences;
 mod process;
 pub mod python;
 pub mod session;
+pub mod steps;
 pub mod template;
 pub mod tunnel;
 pub mod update;

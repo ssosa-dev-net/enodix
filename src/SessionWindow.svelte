@@ -634,6 +634,12 @@
       asking = { tab, name, names: expansion.names, group: false };
       return;
     }
+    if (expansion.kind === "steps") {
+      // Run on this session alone, the device waited for (#23).
+      const refused = await terminal.runSteps(name, answers);
+      if (refused) error = `Cannot run ${name}: ${refused}.`;
+      return;
+    }
     const text = expansion.lines.map((line) => `${line}\n`).join("");
     if (!terminal.sendText(text)) {
       error = `Cannot send ${name}: the session is no longer connected.`;

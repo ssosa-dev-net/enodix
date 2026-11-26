@@ -574,6 +574,10 @@ pub enum PlanError {
     /// A snippet step that the workspace does not have.
     #[error("there is no snippet called {0}")]
     NoSuchSnippet(String),
+    /// A snippet step whose snippet has steps (#23): those run on an open
+    /// session, not in a job.
+    #[error("the snippet {0} has steps, which run on an open session, not in a job")]
+    SnippetHasSteps(String),
     /// A script step whose script the workspace does not have.
     #[error("{0}")]
     NoSuchScript(#[from] ScriptError),
@@ -687,6 +691,10 @@ pub fn plan(
     let JobStep::Snippet { name, answers } = step else {
         return Ok(plan);
     };
+    // Whatever hosts it runs on, none at all included.
+    if let Some(snippet) = workspace.snippet(name).filter(|s| s.steps.is_some()) {
+        return Err(PlanError::SnippetHasSteps(snippet.name.clone()));
+    }
     let answers: Variables = answers.iter().collect();
     let ids: Vec<Option<HostId>> = plan.hosts.iter().map(|h| Some(h.id.clone())).collect();
     match workspace.expand_snippet_for_each(name, &ids, &answers) {
@@ -697,6 +705,10 @@ pub fn plan(
         }
         Err(ExpandError::Missing(missing)) => plan.missing_variables = missing.names,
         Err(ExpandError::NoSuchSnippet(name)) => return Err(PlanError::NoSuchSnippet(name)),
+        Err(ExpandError::HasSteps(name)) => return Err(PlanError::SnippetHasSteps(name)),
+        Err(ExpandError::NoSteps(_) | ExpandError::BadSteps { .. }) => {
+            unreachable!("expanding a snippet as lines never asks for its steps")
+        }
         // Every host that runs was just resolved.
         Err(ExpandError::NoSuchHost(_)) => unreachable!("a planned host is in the workspace"),
     }

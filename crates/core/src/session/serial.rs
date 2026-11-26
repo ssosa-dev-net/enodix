@@ -518,7 +518,7 @@ fn read_port(
 /// Waits on this (non-runtime) thread for `future`, at most `limit`:
 /// `None` if it was not ready by then. Needs no runtime: what it waits on
 /// (flow control, a channel closing) wakes the thread itself.
-fn wait_on_thread<T>(future: impl Future<Output = T>, limit: Duration) -> Option<T> {
+pub(super) fn wait_on_thread<T>(future: impl Future<Output = T>, limit: Duration) -> Option<T> {
     struct Unpark(Thread);
     impl Wake for Unpark {
         fn wake(self: Arc<Self>) {

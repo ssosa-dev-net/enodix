@@ -3,6 +3,8 @@
   import SerialPortList from "./SerialPortList.svelte";
   import {
     DEFAULT_SERIAL_PARAMETERS,
+    localShells,
+    type LocalShell,
     type QuickConnectTarget,
     type SerialParameters,
   } from "./session";
@@ -17,6 +19,9 @@
     onconnect: (target: QuickConnectTarget) => void;
     /** Opens a serial session on `port`, without an inventory host. */
     onserial: (port: string, parameters: SerialParameters) => void;
+    /** Opens a shell on this computer: `shell` is the id of one the
+     * computer lists, null the one the preference names (#22). */
+    onlocal: (shell: string | null) => void;
   }
 
   let {
@@ -24,10 +29,25 @@
     embedded = false,
     onconnect,
     onserial,
+    onlocal,
     onpalette,
   }: Props = $props();
 
-  let mode = $state<"ssh" | "serial">("ssh");
+  let mode = $state<"ssh" | "serial" | "local">("ssh");
+
+  /** The shells this computer has; null until it answers. */
+  let shells = $state<LocalShell[] | null>(null);
+  /** The shell picked here; empty: the preference's. */
+  let shell = $state("");
+  localShells().then(
+    (list) => (shells = list),
+    () => (shells = []),
+  );
+
+  function submitLocal(event: SubmitEvent) {
+    event.preventDefault();
+    onlocal(shell || null);
+  }
 
   let host = $state("");
   let port = $state(22);
@@ -110,6 +130,12 @@
       aria-pressed={mode === "serial"}
       onclick={() => (mode = "serial")}>Serial</button
     >
+    <button
+      type="button"
+      data-quick-mode="local"
+      aria-pressed={mode === "local"}
+      onclick={() => (mode = "local")}>Local shell</button
+    >
   </div>
 
   {#if mode === "ssh"}
@@ -162,6 +188,20 @@
       </label>
 
       <button type="submit">Connect</button>
+    </form>
+  {:else if mode === "local"}
+    <form onsubmit={submitLocal} data-quick-local>
+      <p>Open a shell on this computer</p>
+      <label>
+        Shell
+        <select name="local-shell" bind:value={shell}>
+          <option value="">Default</option>
+          {#each shells ?? [] as each (each.id)}
+            <option value={each.id}>{each.name}</option>
+          {/each}
+        </select>
+      </label>
+      <button type="submit" data-open-local-shell>Open</button>
     </form>
   {:else}
     <form onsubmit={submitSerial} data-quick-serial>

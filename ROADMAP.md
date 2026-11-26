@@ -56,7 +56,6 @@ These need hardware, devices or setups the project does not have.
 - Dragging tabs out of a window and between windows; remembering session
   windows across restarts.
 - Checking TLS certificates for ports a script reaches through a tunnel.
-- Expect-style scripting of live terminal sessions.
 - Port forwarding and a SOCKS proxy.
 - Quick tools: ping, traceroute, a subnet calculator, MAC vendor lookup.
 - A topology map from LLDP and CDP neighbours.

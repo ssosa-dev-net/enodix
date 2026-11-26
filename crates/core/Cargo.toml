@@ -27,6 +27,8 @@ regex = "1"
 # rustls (`ring` provider, the system's certificate store, the system proxy)
 # as tauri-plugin-updater, so there is one TLS stack and no extra build tools.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+# The local shell's pseudo terminal (ConPTY on Windows, a pty on Unix).
+portable-pty = "0.9.0"
 # Pinned exactly, in the workspace's Cargo.toml.
 russh = { workspace = true }
 # SFTP on a file connection, and its server half in the tests' SSH server.

@@ -17,6 +17,9 @@ There is one multi-send group for the whole app. Add a terminal to it:
   multi-send group**, or in the pane's "…" menu **Add this pane's tabs to
   multi-send**), which adds every session tab of the pane at once.
 
+A local shell never joins: the session menu does not offer it, and adding a
+pane's tabs leaves it out.
+
 A member shows **MULTI** on its tab, a dashed outline around the tab, a line
 under its header and a **Multi-send** marker with the size of the group.
 While a member is connecting or disconnected the marker says **not
@@ -38,6 +41,8 @@ Pastes and snippets are planned once for the whole group:
   delay; **Paste** sends it to all of them, **Cancel** to none;
 - a snippet is filled from each member's own host, and the card shows a
   member's text when it differs from the others. See [Snippets](snippets.md).
+  A snippet with steps is not sent to the group: it runs on one session at a
+  time, so take the tab out of the group to run it.
 
 If any member is a production host, the card says the group includes
 production devices, and **Cancel** has the focus. A group paste is sent to
