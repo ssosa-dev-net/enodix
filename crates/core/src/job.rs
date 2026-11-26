@@ -260,7 +260,18 @@ fn host_key_warning(
 ) -> Option<HostKeyWarning> {
     let mut untrusted = Vec::new();
     for place in places {
-        match known_hosts.trusted(&place.host, place.port) {
+        // An authority of the known hosts may vouch for it with a host
+        // certificate instead (#26): the run then needs no stored key.
+        let trusted = known_hosts
+            .trusted(&place.host, place.port)
+            .and_then(|keys| {
+                if keys.is_empty() {
+                    known_hosts.certificate_authorities(&place.host, place.port)
+                } else {
+                    Ok(keys)
+                }
+            });
+        match trusted {
             Ok(keys) if keys.is_empty() => untrusted.push(place),
             Ok(_) => {}
             Err(error) => {

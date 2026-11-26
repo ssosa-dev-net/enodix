@@ -299,6 +299,10 @@ pub struct HostKeyQuestion {
     /// The keys trusted for this host and port until now; empty on the
     /// first connection. Not empty means the key has changed.
     pub stored: Vec<HostKey>,
+    /// Why the host certificate the server presented was not accepted, if
+    /// it presented one: the question is then about the key inside it, as
+    /// OpenSSH falls back to it.
+    pub certificate: Option<String>,
 }
 
 impl HostKeyQuestion {

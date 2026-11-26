@@ -529,7 +529,10 @@ own interpreter installs nothing.
   (see above).
 - **A device or jump host you trusted wrongly.** The first connection
   shows the host key's fingerprint and asks; trusting a key you did not
-  check accepts whoever answered.
+  check accepts whoever answered. A `@cert-authority` line you add to the
+  known hosts trusts, without asking, every host certificate that authority
+  signs for the hosts its patterns name: anyone holding its private key can
+  stand in for those hosts. Revocation (`@revoked`) is not read yet.
 - **TLS through a tunnel.** The app checks no TLS certificate of a device;
   a script that calls an HTTPS API through a tunnel must check it itself.
 - **A forgotten master password.** There is no recovery.

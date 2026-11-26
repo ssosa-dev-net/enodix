@@ -1262,22 +1262,55 @@ pub fn user_certificate(
     principal: &str,
     ca: &PrivateKey,
 ) -> russh::keys::Certificate {
-    use russh::keys::ssh_key::certificate::{Builder, CertType};
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = unix_now();
+    certificate(
+        key,
+        russh::keys::ssh_key::certificate::CertType::User,
+        &[principal],
+        ca,
+        now - 60..now + 3600,
+    )
+}
+
+/// The authority that signs the test servers' host certificates.
+#[allow(dead_code)]
+pub fn host_ca() -> &'static PrivateKey {
+    static CA: std::sync::OnceLock<PrivateKey> = std::sync::OnceLock::new();
+    CA.get_or_init(|| PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap())
+}
+
+/// A certificate of `key` of type `cert_type` for `principals`, signed by
+/// `ca`, valid for the Unix seconds `valid`.
+#[allow(dead_code)]
+pub fn certificate(
+    key: &PublicKey,
+    cert_type: russh::keys::ssh_key::certificate::CertType,
+    principals: &[&str],
+    ca: &PrivateKey,
+    valid: std::ops::Range<u64>,
+) -> russh::keys::Certificate {
+    use russh::keys::ssh_key::certificate::Builder;
     let mut builder = Builder::new_with_random_nonce(
         &mut rand::rng(),
         key.key_data().clone(),
-        now - 60,
-        now + 3600,
+        valid.start,
+        valid.end,
     )
     .unwrap();
-    builder.cert_type(CertType::User).unwrap();
+    builder.cert_type(cert_type).unwrap();
     builder.key_id("enodix test").unwrap();
-    builder.valid_principal(principal).unwrap();
+    for principal in principals {
+        builder.valid_principal(*principal).unwrap();
+    }
     builder.sign(ca).unwrap()
+}
+
+/// Seconds since the Unix epoch.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 /// Writes `certificate` where OpenSSH looks for the certificate of the key

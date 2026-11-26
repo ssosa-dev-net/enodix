@@ -11,8 +11,9 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 use russh::client::{self, AuthResult, Handle, KeyboardInteractiveAuthResponse};
+use russh::keys::ssh_key::certificate::CertType;
 use russh::keys::{
-    load_secret_key, Algorithm, Certificate, HashAlg, PrivateKey, PrivateKeyWithHashAlg,
+    load_secret_key, Algorithm, Certificate, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey,
     PublicKeyOrCertificate,
 };
 use russh::{
@@ -56,6 +57,44 @@ struct Client {
     /// The agent the server may reach back to, when the session forwards
     /// one; without one, the server's agent channels are refused.
     forward_agent: Option<SshAgent>,
+    /// The certificate authorities trusted for this host (`@cert-authority`
+    /// lines of the known hosts): host certificates are asked for only when
+    /// there is one.
+    authorities: Vec<PublicKey>,
+}
+
+/// Why a host certificate is not accepted for `host`, `None` if it is:
+/// it must be a host certificate, signed by one of `authorities`, valid
+/// now, and name `host` among its principals (an empty list names none).
+fn host_certificate_problem(
+    certificate: &Certificate,
+    host: &str,
+    authorities: &[PublicKey],
+) -> Option<String> {
+    if certificate.cert_type() != CertType::Host {
+        return Some("it is not a host certificate".into());
+    }
+    let signer = certificate.signature_key();
+    if !authorities.iter().any(|ca| ca.key_data() == signer) {
+        return Some("no trusted certificate authority signed it".into());
+    }
+    let fingerprints: Vec<_> = authorities
+        .iter()
+        .map(|ca| ca.fingerprint(HashAlg::Sha256))
+        .collect();
+    // The signer is trusted, so what fails here is the time it is valid
+    // for, or its signature.
+    if certificate.validate(fingerprints.iter()).is_err() {
+        return Some("it is not valid now: expired, not valid yet, or badly signed".into());
+    }
+    if !certificate
+        .valid_principals()
+        .iter()
+        .any(|principal| principal.eq_ignore_ascii_case(host))
+    {
+        return Some(format!("it is not for {host}"));
+    }
+    None
 }
 
 /// What a file connection follows of its device's connection, told by the
@@ -239,18 +278,27 @@ impl client::Handler for Client {
         Ok(())
     }
 
-    /// Trusts a known key; asks the user about an unknown or changed one.
-    /// Certificates are never asked for (no certificate algorithm is
-    /// offered), so a server sending one is refused.
+    /// Trusts a known key, or a host certificate a trusted authority signed
+    /// for this host; asks the user about an unknown or changed key. A
+    /// certificate that is not accepted falls back to the key inside it, as
+    /// in OpenSSH, and the question says why.
     async fn check_server_key(
         &mut self,
-        key: &PublicKeyOrCertificate,
+        presented: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let PublicKeyOrCertificate::PublicKey { key, .. } = key else {
-            return Err(ClientError::Refused(OpenError::Protocol(
-                "the server presented a host certificate, which was not asked for".into(),
-            )));
+        let (key, certificate) = match presented {
+            PublicKeyOrCertificate::PublicKey { key, .. } => (key.clone(), None),
+            PublicKeyOrCertificate::Certificate(certificate) => {
+                match host_certificate_problem(certificate, &self.host, &self.authorities) {
+                    None => return Ok(true),
+                    Some(problem) => (
+                        PublicKey::new(certificate.public_key().clone(), ""),
+                        Some(problem),
+                    ),
+                }
+            }
         };
+        let key = &key;
         let unusable =
             |error: KnownHostsError| ClientError::Refused(OpenError::KnownHosts(error.to_string()));
         let stored = match self
@@ -267,6 +315,7 @@ impl client::Handler for Client {
             port: self.port,
             key: HostKey::of(key),
             stored,
+            certificate,
         };
         let changed = question.changed();
         let decision = self.asker.lock().await.ask(question).await;
@@ -1566,8 +1615,17 @@ async fn connect_and_log_in(
     progress: &Progress,
 ) -> Result<(Handle<Client>, NegotiatedAlgorithms), OpenError> {
     let login = login(hop.auth).await?;
+    let authorities = known_hosts
+        .certificate_authorities(hop.host, hop.port)
+        .map_err(|error| OpenError::KnownHosts(error.to_string()))?;
+    let mut preferred = algorithms::preferred(hop.legacy_crypto);
+    if !authorities.is_empty() {
+        // Asked for only when an authority could vouch for the host: a
+        // certificate nothing trusts would only fall back to its key.
+        preferred.host_key_certificates = preferred.key.clone();
+    }
     let config = Arc::new(client::Config {
-        preferred: algorithms::preferred(hop.legacy_crypto),
+        preferred,
         // A link that goes silent is lost once the device has answered no
         // keepalive for about three connect timeouts.
         keepalive_interval: Some(hop.connect_timeout),
@@ -1589,6 +1647,7 @@ async fn connect_and_log_in(
             jump_host: hop.jump_host.map(str::to_owned),
         }),
         forward_agent: hop.forward_agent,
+        authorities,
     };
     // What the server sends first, for reporting a failed negotiation.
     let first_bytes = FirstBytes::new();

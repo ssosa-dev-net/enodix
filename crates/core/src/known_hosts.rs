@@ -6,7 +6,9 @@
 //! The file is read again on every check, so keys trusted by another window
 //! (or edited by hand) count at once. Lines this module does not understand
 //! (comments, hashed host names, markers such as `@revoked`) are ignored and
-//! kept as they are when it writes the file. An entry for the host whose key
+//! kept as they are when it writes the file. `@cert-authority` lines are
+//! read by [`KnownHosts::certificate_authorities`]: the authorities whose
+//! host certificates are trusted, never written by the app. An entry for the host whose key
 //! cannot be read fails the check rather than counting as no key.
 //!
 //! Any stored key differing from the presented one counts as a change, even
@@ -150,6 +152,38 @@ impl KnownHosts {
             }
         }
         Ok(trusted)
+    }
+
+    /// The certificate authorities trusted for `host` at `port`: the keys of
+    /// the `@cert-authority` lines whose patterns match it, in file order.
+    /// Patterns are read as OpenSSH reads them: `*` and `?` wildcards,
+    /// ignoring case, a matching `!` pattern ruling the line out; a host at
+    /// another port than 22 is matched as `[host]:port`. A damaged key on a
+    /// matching line is an error, as in [`Self::check`].
+    pub fn certificate_authorities(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<Vec<PublicKey>, KnownHostsError> {
+        let store = self.lock();
+        let lines = store.load()?;
+        let name = pattern(host, port);
+        let mut authorities = Vec::new();
+        for line in &lines {
+            let Line::Other(text) = line else { continue };
+            let Some((patterns, key)) = authority_line(text) else {
+                continue;
+            };
+            if matches_patterns(patterns, &name) {
+                let key = key.parse::<PublicKey>().map_err(|_| {
+                    store.read_error(format!(
+                        "the certificate authority key for {name} cannot be read"
+                    ))
+                })?;
+                authorities.push(key);
+            }
+        }
+        Ok(authorities)
     }
 
     /// Trusts `key` for `host` at `port` from now on, replacing any key
@@ -315,4 +349,86 @@ fn pattern(host: &str, port: u16) -> String {
 /// negations are not interpreted: they never match.
 fn matches_exactly(patterns: &[String], pattern: &str) -> bool {
     patterns.iter().any(|p| p.eq_ignore_ascii_case(pattern))
+}
+
+/// The patterns and key of a `@cert-authority` line, `None` for any other
+/// line.
+fn authority_line(text: &str) -> Option<(&str, &str)> {
+    let rest = text.trim().strip_prefix("@cert-authority")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let (patterns, key) = rest.trim_start().split_once(char::is_whitespace)?;
+    Some((patterns, key.trim()))
+}
+
+/// Whether comma-separated OpenSSH host `patterns` match `name`: one
+/// pattern matches and no `!` pattern does.
+fn matches_patterns(patterns: &str, name: &str) -> bool {
+    let mut matched = false;
+    for pattern in patterns.split(',') {
+        match pattern.strip_prefix('!') {
+            Some(negated) if wildcard(negated, name) => return false,
+            Some(_) => {}
+            None => matched |= wildcard(pattern, name),
+        }
+    }
+    matched
+}
+
+/// `*` and `?` wildcard matching, ignoring ASCII case.
+fn wildcard(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.to_ascii_lowercase().chars().collect();
+    let name: Vec<char> = name.to_ascii_lowercase().chars().collect();
+    let (mut p, mut n) = (0, 0);
+    // Where the last `*` was, and the name position it stood for.
+    let mut star: Option<(usize, usize)> = None;
+    while n < name.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == name[n]) {
+            p += 1;
+            n += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some((p, n));
+            p += 1;
+        } else if let Some((star_p, star_n)) = star {
+            p = star_p + 1;
+            n = star_n + 1;
+            star = Some((star_p, star_n + 1));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&c| c == '*')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patterns_match_as_openssh_reads_them() {
+        assert!(matches_patterns("*.lab", "r1.lab"));
+        assert!(matches_patterns("R?.LAB", "r1.lab"));
+        assert!(matches_patterns("*.lab,!r2.lab", "r1.lab"));
+        assert!(!matches_patterns("*.lab,!r2.lab", "r2.lab"));
+        assert!(!matches_patterns("!r2.lab", "r1.lab"));
+        assert!(!matches_patterns("*.lab", "[r1.lab]:2222"));
+        assert!(matches_patterns("[*.lab]:2222", "[r1.lab]:2222"));
+        assert!(matches_patterns("*", "anything"));
+        assert!(!matches_patterns("r1", "r10"));
+    }
+
+    #[test]
+    fn only_cert_authority_lines_are_authority_lines() {
+        assert_eq!(
+            authority_line("@cert-authority *.lab ssh-ed25519 AAAA ca"),
+            Some(("*.lab", "ssh-ed25519 AAAA ca"))
+        );
+        assert_eq!(authority_line("@revoked r1 ssh-ed25519 AAAA"), None);
+        assert_eq!(authority_line("@cert-authorityx r1 ssh-ed25519 AAAA"), None);
+        assert_eq!(
+            authority_line("# @cert-authority r1 ssh-ed25519 AAAA"),
+            None
+        );
+    }
 }
