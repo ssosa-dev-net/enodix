@@ -69,7 +69,13 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   these and the interface then offers a password prompt). Since #26 item 2
   an agent's certificates are used too: `Agent.keys: Vec<Identity>`
   (`Identity::Key | Certificate`, agent order), tried in `with_agents`
-  with `authenticate_certificate_with`.
+  with `authenticate_certificate_with`. Hardware security keys (#26)
+  work through the agent with no code of their own: an agent's
+  `sk-ssh-ed25519@openssh.com` key is an `Identity::Key` like any other
+  and the agent's signature is passed on (tested by
+  `TestAgent::start_as_security_key`, which signs as a device would, and
+  the test server's `SECURITY_KEY_USERNAME`). `*_sk` key files are not
+  read (they would need libfido2/CTAP).
 - Agent forwarding (#26): `SshTarget.agent_forwarding` (setting
   `agent_forwarding`, off by default; `ssh_target_with` copies it, quick
   connect is always off). `JumpHost` has no such field: never forwarded to

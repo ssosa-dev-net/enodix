@@ -25,7 +25,11 @@ A profile has a name, a username and one way to log in:
 - **SSH agent**: use the keys of the SSH agent running on this computer
   (the one `SSH_AUTH_SOCK` names, or on Windows the OpenSSH agent or
   Pageant), and the certificates it holds. Nothing is stored and the
-  private keys never leave the agent.
+  private keys never leave the agent. This is also how to use a hardware
+  security key (a YubiKey or another FIDO2 key, `ed25519-sk` or
+  `ecdsa-sk`): add it to the agent (`ssh-add -K`, or `ssh-add` with the
+  key file), and the agent asks you to touch the key when a device asks
+  for it. The app cannot read a `*_sk` key file itself.
 
 Any profile can also have an **Enable secret**, for devices that ask for a
 second password when you go into privileged mode. Jobs use it to answer that

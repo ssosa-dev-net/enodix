@@ -146,6 +146,11 @@ pub const OTP_USERNAME: &str = "engineer-otp";
 /// OpenSSH certificate that [`user_ca`] signed for this name.
 pub const CERT_USERNAME: &str = "engineer-cert";
 pub const STALLING_USERNAME: &str = "engineer-stalled";
+/// A user whose authorized key is a FIDO security key: the
+/// `sk-ssh-ed25519@openssh.com` form of the client key (see
+/// [`agent::security_key`]), which only a security-key signature proves.
+#[allow(dead_code)]
+pub const SECURITY_KEY_USERNAME: &str = "engineer-sk";
 /// A user who logs in with the client key and then [`PASSWORD`], as with
 /// OpenSSH's `AuthenticationMethods publickey,password`: the key is
 /// accepted as a first step, and only the password method is offered next.
@@ -2061,7 +2066,14 @@ impl Handler for ScriptedShell {
             .authorized_keys
             .iter()
             .any(|authorized| authorized.key_data() == key.public_key.key_data());
-        if user == USERNAME && known {
+        // russh has checked the signature before asking, so a security key
+        // here has signed as one.
+        let security_key = key.public_key.key_data().sk_ed25519().is_some_and(|sk| {
+            self.authorized_keys
+                .iter()
+                .any(|authorized| authorized.key_data().ed25519() == Some(sk.public_key()))
+        });
+        if (user == USERNAME && known) || (user == SECURITY_KEY_USERNAME && security_key) {
             Ok(Auth::Accept)
         } else if user == KEY_THEN_PASSWORD_USERNAME && known {
             self.key_accepted = true;
