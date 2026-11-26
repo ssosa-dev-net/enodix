@@ -396,7 +396,10 @@ fn bad_snippets_are_problems_and_left_out() {
     assert_eq!(
         problems,
         [
-            (SNIPPETS_FILE, "snippet `No text`: missing `text` (or `steps`)"),
+            (
+                SNIPPETS_FILE,
+                "snippet `No text`: missing `text` (or `steps`)"
+            ),
             (SNIPPETS_FILE, "snippet `Empty`: it has no text"),
             (
                 SNIPPETS_FILE,
