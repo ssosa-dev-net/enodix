@@ -71,6 +71,22 @@ canvas:not(.xterm-link-layer)` (the link layer is a 2D canvas). Smoke
   `elementFromPoint` at a control's centre is something else (also the
   login question and the negotiation failure card). The scripted shell has
   `later <s> <text>` (output after a delay) for the hidden-tab check.
+- Key bindings (#24). Core: `Preferences.shortcuts` (action id → chord,
+  only moved ones; ids and defaults in `SHORTCUT_ACTIONS`, in priority
+  order) and `snippet_keys` (chord → snippet name); `normalize_chord` is the
+  one written form (`Ctrl+Alt+Shift+Key`, Ctrl or Alt required except F1–F24;
+  keys: letters, digits, some punctuation, F-keys, Tab, PageUp/Down, Home,
+  End, Insert, Delete, Space). `normalized` drops unknown actions, bad
+  chords, a second action on a taken chord, and snippet keys on a chord an
+  app action uses; `effective_shortcuts()`. Interface: `keyBindings.ts`
+  (`chordOf(event)` by `event.code`, `actionFor`, interface copy of the
+  action list), `App.svelte` `shortcut()` dispatches the nine movable
+  actions by chord, then snippet keys (only with a connected active session,
+  via `sendSnippet`), then the fixed keys (tab cycling, side views).
+  Preferences view `[data-key-bindings]` (`preference-key-<action>`,
+  `preference-new-snippet-key`). Limits: tooltips/palette hints and
+  `SessionWindow.svelte` still use the default keys; zoom and the terminal's
+  copy/paste keys are not movable. Not verified in the running app.
 - Colour schemes (#24). `Preferences.color_scheme` (`ColorScheme`:
   default, solarized-dark, solarized-light, dracula, nord, gruvbox-dark;
   kebab-case in the file) and `custom_colors` (name → `#rrggbb` over the

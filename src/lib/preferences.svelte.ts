@@ -47,6 +47,10 @@ export interface Preferences {
   colorScheme: ColorScheme;
   /** Colours set over the scheme's, by `COLOR_NAMES`, each `#rrggbb`. */
   customColors: Record<string, string>;
+  /** Shortcuts moved off their default key: action id → chord (#24). */
+  shortcuts: Record<string, string>;
+  /** Keys that send a snippet to the active session: chord → snippet name. */
+  snippetKeys: Record<string, string>;
 }
 
 /** The core's limits (`enodix_core::preferences`), for the form. */
@@ -91,6 +95,8 @@ export const preferences = $state({
     localShell: "",
     colorScheme: "default",
     customColors: {},
+    shortcuts: {},
+    snippetKeys: {},
   } as Preferences,
   /** Whether the operating system is set to dark. */
   systemDark: systemDark.matches,
