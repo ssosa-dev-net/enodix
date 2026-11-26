@@ -276,7 +276,7 @@ fn wsl_distributions() -> Vec<String> {
 /// mark, one per line (plain text is accepted too, for newer versions).
 fn parse_wsl_list(output: &[u8]) -> Vec<String> {
     let utf16 = output.starts_with(&[0xFF, 0xFE]) || (output.len() >= 2 && output[1] == 0);
-    let text = if utf16 && output.len() % 2 == 0 {
+    let text = if utf16 && output.len().is_multiple_of(2) {
         let units: Vec<u16> = output
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))

@@ -2759,9 +2759,11 @@ fn layout_edit(
         let workspace = shell.workspace();
         let safety = |session| records.paste_safety(session, workspace.as_ref());
         let mut windows = tabs.lock();
-        refuse_local_joins(&windows, &manager, window, &edit)?;
-        let created = apply_layout_edit(&mut windows, window, edit, safety)
-            .map_err(|error| error.to_string())?;
+        let mut created = None;
+        for edit in without_local_joins(&windows, &manager, window, edit)? {
+            created = apply_layout_edit(&mut windows, window, edit, safety)
+                .map_err(|error| error.to_string())?;
+        }
         LayoutChanged {
             layout: window_view(&windows, window)?,
             created,
@@ -2775,32 +2777,42 @@ fn layout_edit(
 }
 
 /// A local shell shows the user's own computer, so it never joins the
-/// multi-send group (#22): a join naming one, or a pane holding one, is
-/// refused.
-fn refuse_local_joins(
+/// multi-send group (#22). A join naming one is refused; a pane's join
+/// leaves out the local shells it holds and joins the others, tab by tab
+/// (the interface has asked its question about production sessions
+/// first, as for any join).
+fn without_local_joins(
     windows: &Windows,
     manager: &SessionManager,
     window: WindowId,
-    edit: &LayoutEdit,
-) -> Result<(), String> {
-    let tabs: Vec<TabId> = match edit {
-        LayoutEdit::JoinGroup { tab, .. } => vec![*tab],
-        LayoutEdit::JoinPane { pane, .. } => windows
-            .layout(window)
-            .and_then(|layout| layout.pane(*pane))
-            .map(|pane| pane.tabs.clone())
-            .unwrap_or_default(),
-        _ => return Ok(()),
-    };
-    let local = tabs.iter().any(|&tab| {
+    edit: LayoutEdit,
+) -> Result<Vec<LayoutEdit>, String> {
+    let local = |tab: TabId| {
         windows
             .session_of(window, tab)
             .is_some_and(|session| manager.transport(session) == Ok(Transport::Local))
-    });
-    if local {
-        Err("a local shell never joins the multi-send group".into())
-    } else {
-        Ok(())
+    };
+    match edit {
+        LayoutEdit::JoinGroup { tab, .. } if local(tab) => {
+            Err("a local shell never joins the multi-send group".into())
+        }
+        LayoutEdit::JoinPane { pane, confirmed } => {
+            let tabs = windows
+                .layout(window)
+                .and_then(|layout| layout.pane(pane))
+                .map(|pane| pane.tabs.clone())
+                .unwrap_or_default();
+            if tabs.iter().any(|&tab| local(tab)) {
+                Ok(tabs
+                    .into_iter()
+                    .filter(|&tab| !local(tab))
+                    .map(|tab| LayoutEdit::JoinGroup { tab, confirmed })
+                    .collect())
+            } else {
+                Ok(vec![LayoutEdit::JoinPane { pane, confirmed }])
+            }
+        }
+        edit => Ok(vec![edit]),
     }
 }
 

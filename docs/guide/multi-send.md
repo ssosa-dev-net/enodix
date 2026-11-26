@@ -17,6 +17,9 @@ There is one multi-send group for the whole app. Add a terminal to it:
   multi-send group**, or in the pane's "…" menu **Add this pane's tabs to
   multi-send**), which adds every session tab of the pane at once.
 
+A local shell never joins: the session menu does not offer it, and adding a
+pane's tabs leaves it out.
+
 A member shows **MULTI** on its tab, a dashed outline around the tab, a line
 under its header and a **Multi-send** marker with the size of the group.
 While a member is connecting or disconnected the marker says **not

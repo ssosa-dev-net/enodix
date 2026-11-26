@@ -32,6 +32,9 @@ export interface Preferences {
   leftPanelWidth: number;
   /** The side view folded away, for a wider terminal. */
   leftPanelHidden: boolean;
+  /** The local shell a new local session opens (`LocalShell.id`); empty:
+   * the first one the computer lists. */
+  localShell: string;
 }
 
 /** The core's limits (`enodix_core::preferences`), for the form. */
@@ -73,6 +76,7 @@ export const preferences = $state({
     sideView: "hosts",
     leftPanelWidth: PANEL_WIDTHS.left,
     leftPanelHidden: false,
+    localShell: "",
   } as Preferences,
   /** Whether the operating system is set to dark. */
   systemDark: systemDark.matches,
