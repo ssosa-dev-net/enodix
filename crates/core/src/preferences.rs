@@ -102,6 +102,10 @@ pub struct Preferences {
     pub left_panel_width: u16,
     /// The side view is folded away, for a wider terminal.
     pub left_panel_hidden: bool,
+    /// The local shell a new local session opens (#22): the id of one of
+    /// [`crate::session::local_shells`]. Empty: the first one (on Windows
+    /// PowerShell, elsewhere the login shell).
+    pub local_shell: String,
 }
 
 impl Default for Preferences {
@@ -119,6 +123,7 @@ impl Default for Preferences {
             side_view: SideView::Hosts,
             left_panel_width: DEFAULT_LEFT_PANEL_WIDTH,
             left_panel_hidden: false,
+            local_shell: String::new(),
         }
     }
 }
@@ -151,6 +156,7 @@ impl Preferences {
                 .unwrap_or(defaults.left_panel_width),
             left_panel_hidden: read(&mapping, "left_panel_hidden")
                 .unwrap_or(defaults.left_panel_hidden),
+            local_shell: read(&mapping, "local_shell").unwrap_or(defaults.local_shell),
         }
         .normalized()
     }
@@ -184,6 +190,7 @@ impl Preferences {
         );
         put("left_panel_width", preferences.left_panel_width.into());
         put("left_panel_hidden", preferences.left_panel_hidden.into());
+        put("local_shell", Value::String(preferences.local_shell));
         let text = serde_norway::to_string(&mapping).map_err(io::Error::other)?;
         fs::create_dir_all(data_folder)?;
         let temporary = data_folder.join(format!("{FILE_NAME}.tmp"));
@@ -206,6 +213,7 @@ impl Preferences {
         } else {
             family.into()
         };
+        self.local_shell = self.local_shell.trim().to_string();
         self
     }
 

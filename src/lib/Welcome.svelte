@@ -28,9 +28,11 @@
     onopen: (path: string) => Promise<string | null>;
     onconnect: (target: QuickConnectTarget) => void;
     onserial: (port: string, parameters: SerialParameters) => void;
+    onlocal: (shell: string | null) => void;
   }
 
-  let { name, onswitch, onopen, onconnect, onserial }: Props = $props();
+  let { name, onswitch, onopen, onconnect, onserial, onlocal }: Props =
+    $props();
 
   /** null until the list came. */
   let known = $state<KnownWorkspace[] | null>(null);
@@ -212,7 +214,7 @@
     </section>
 
     <section class="card">
-      <QuickConnect {name} embedded {onconnect} {onserial} />
+      <QuickConnect {name} embedded {onconnect} {onserial} {onlocal} />
     </section>
   </div>
 </div>

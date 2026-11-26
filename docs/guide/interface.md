@@ -66,7 +66,8 @@ it, and the terminals in tabs and split panes.
   the tab's context menu. While an SSH session forwards ports, its header
   shows **Forwarding n**; clicking it lists every open forward of every
   session, each with **Stop** (see [Port forwards](sessions.md#port-forwards)). An empty pane offers the palette and quick
-  connect. In a narrow pane at the window's top-right, the pane's
+  connect (SSH, serial or a local shell on your own computer; so the **+**
+  button of a pane reaches a local shell too). In a narrow pane at the window's top-right, the pane's
   buttons (new connection, multi-send, split right and down, close pane)
   fold into a "…" button that lists them.
 - **View tabs**: job (pre-flight, running, result), past run, config
@@ -104,7 +105,7 @@ it, and the terminals in tabs and split panes.
   opened from the host's details sheet, the tree's context menu, and a
   session's menu or its tab's menu. It lives in the main window only: from
   a session window it opens there, and the main window comes forward. It is
-  not offered for telnet or serial hosts or quick connections; asking
+  not offered for telnet or serial hosts, quick connections or local shells; asking
   again shows the open tab. [Files on a device](files.md) covers both: what
   each platform needs, transfers and the limits.
 - **Real windows**: a job run and a host's config history can open in a
@@ -191,7 +192,7 @@ it, and the terminals in tabs and split panes.
   session's size.
 - **Palette** (Ctrl+K): hosts, snippets (`>`), and every action that has
   no button of its own any more: each side view, fold the side view, new
-  host or folder, both imports, switch workspace, Preferences, platform
+  host or folder, a new local shell, both imports, switch workspace, Preferences, platform
   definitions, highlight rules, Python setup.
 - **Questions**: those about one terminal (host key, login questions,
   paste confirmation, a snippet's variables, a snippet's steps, closing a

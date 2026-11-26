@@ -1,7 +1,7 @@
 # Sessions
 
 A session is a live terminal to one device, over SSH, telnet or a serial
-line. This page covers everything around it: connecting, the questions the
+line, or to a shell on your own computer. This page covers everything around it: connecting, the questions the
 app asks the first time, tabs and split panes, a terminal in its own window,
 reconnecting, searching, pasting safely, session logs, keyword highlighting
 and jump hosts.
@@ -26,6 +26,13 @@ protocol** setting: SSH, telnet or serial) and opens in a new tab.
   inventory. Choose **SSH** (host, port, username, password) or **Serial**
   (pick the port from the list and set speed, data bits, parity, stop bits and
   flow control).
+
+- **A local shell.** For a ping, `git` on the workspace folder or a Python
+  script run by hand, open a shell on your own computer in a tab, a split
+  pane or a session window like any other session, with no workspace needed:
+  choose **Local shell** in the quick connect form (the form an empty pane
+  shows, and so what the **+** button of a pane opens), or **New local
+  shell** in the palette. See "Local shell" below.
 
 ![Connecting to a host from the Hosts view](../images/connect.gif)
 
@@ -246,6 +253,34 @@ that forward alone, and says so.
 Forwards listen on `127.0.0.1` (or `::1`) only, never on the network. While
 one is open, **any program on this computer can use its port**.
 
+## Local shell
+
+A local shell is a program on your computer in a terminal tab: on Windows
+PowerShell, Command Prompt (cmd) and each installed WSL distribution, on
+Linux your login shell (`$SHELL`) and the others `/etc/shells` lists. The
+**Local shell** preference picks the one a new tab opens; the quick connect
+form can pick another for one tab. It has the same search, copy and paste,
+font and scrollback as any session, and follows the pane's size.
+
+- **Where it starts.** In the open workspace's folder, else in your home
+  folder.
+- **Its environment.** `ENODIX_WORKSPACE` names the open workspace and
+  `ENODIX_CLI` the headless binary, so that the Python bridge works in it
+  with nothing to set up (it still needs the `enodix` package installed in
+  the Python you run). It also gets `ENODIX_DATA_DIR`, so that the binary
+  asks this app for credentials.
+- **Not logged.** It shows your own computer, not a device, so it writes no
+  session log, and its header has no logging marker.
+- **No multi-send.** A local shell never joins the multi-send group (the
+  session menu does not offer it, and adding a pane's tabs leaves it out).
+- **Pasting.** A paste of more than one line asks first, as elsewhere (the
+  question you can turn off in the preferences).
+- **Left out.** Jobs, config backups and the Files tab work on devices and
+  skip a local shell. It has no jump host, host key or login.
+- **When it ends.** Typing `exit` closes the session, which shows why and
+  reconnects (Enter) by starting the shell again. Closing the tab ends the
+  shell and what it started.
+
 ## Old equipment
 
 Devices that speak only old SSH algorithms need the **Legacy crypto**
@@ -254,8 +289,8 @@ the app shows when negotiation fails.
 
 ## Limits
 
-- Quick connect does SSH and serial only, with no jump host, no legacy
-  crypto and none of a host's settings.
+- Quick connect does SSH, serial and a local shell only, with no jump host,
+  no legacy crypto and none of a host's settings.
 - Telnet sends everything, passwords included, in the clear, and cannot go
   through a jump host.
 - Session logs are plain text and not encrypted. They can hold secrets a

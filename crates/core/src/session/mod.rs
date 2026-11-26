@@ -10,6 +10,7 @@ mod agent;
 mod algorithms;
 pub(crate) mod connection;
 mod forward;
+mod local;
 mod origin;
 mod output;
 mod output_watch;
@@ -39,6 +40,10 @@ pub use algorithms::{
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
 };
 pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward, SOCKS_HANDSHAKE_TIMEOUT};
+pub use local::{
+    local_environment, local_shells, local_start_folder, pick_local_shell, LocalShell, LocalTarget,
+    CLI_VARIABLE, WORKSPACE_VARIABLE,
+};
 pub use origin::{HostOrigin, HostSession, HostWay, ReconnectRefused, Reconnection, TypedLogin};
 use output::Flow;
 pub use output::{OutputOptions, SessionEvents};
@@ -70,16 +75,17 @@ pub enum SessionTarget {
     Ssh(SshTarget),
     Telnet(TelnetTarget),
     Serial(SerialTarget),
+    Local(LocalTarget),
 }
 
 impl SessionTarget {
     /// Whether the session's traffic is safe from eavesdroppers on the
     /// network: SSH encrypts it; telnet sends everything, passwords
     /// included, in the clear. A serial line does not cross a network, so
-    /// it counts as safe.
+    /// it counts as safe, and so does a local shell.
     pub fn encrypted(&self) -> bool {
         match self {
-            Self::Ssh(_) | Self::Serial(_) => true,
+            Self::Ssh(_) | Self::Serial(_) | Self::Local(_) => true,
             Self::Telnet(_) => false,
         }
     }
@@ -90,6 +96,7 @@ impl SessionTarget {
             Self::Ssh(_) => Transport::Ssh,
             Self::Telnet(_) => Transport::Telnet,
             Self::Serial(_) => Transport::Serial,
+            Self::Local(_) => Transport::Local,
         }
     }
 }
@@ -101,6 +108,8 @@ pub enum Transport {
     Ssh,
     Telnet,
     Serial,
+    /// A shell on this computer (#22), not a device.
+    Local,
 }
 
 /// The port SSH uses when nothing sets one.
@@ -330,6 +339,10 @@ pub enum CloseReason {
     /// The connection went away while the session was open.
     #[error("connection lost")]
     ConnectionLost,
+    /// The shell of a local session ended, for example because the user
+    /// typed `exit`.
+    #[error("the shell ended{}", exit_status_suffix(.exit_status))]
+    LocalExited { exit_status: Option<u32> },
     /// The serial port stopped working while the session was open: most
     /// often, its USB adapter was unplugged.
     #[error("the serial port {port} stopped working; was the adapter unplugged? ({reason})")]
@@ -402,6 +415,10 @@ pub enum OpenError {
     /// program holds it, or it refused the line parameters.
     #[error("cannot open the serial port {port}: {reason}")]
     SerialPort { port: String, reason: String },
+    /// A local shell could not be started: the program is not there, or
+    /// the pseudo terminal could not be made.
+    #[error("cannot start {program}: {reason}")]
+    LocalShell { program: String, reason: String },
     /// The device was reached but the session could not be set up.
     #[error("could not open the session: {0}")]
     Protocol(String),
@@ -1127,6 +1144,7 @@ impl SessionManager {
                 SessionTarget::Ssh(target) => ssh::run(target, known_hosts, &mut link).await,
                 SessionTarget::Telnet(target) => telnet::run(target, &mut link).await,
                 SessionTarget::Serial(target) => serial::run(target, serial_ports, &mut link).await,
+                SessionTarget::Local(target) => local::run(target, &mut link).await,
             };
             // Mark the session closed before announcing it, so that nobody
             // who has seen `Closed` can still reach it, and anybody can
