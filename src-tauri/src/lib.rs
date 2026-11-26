@@ -2261,8 +2261,6 @@ fn quick_options(log: Option<SessionLog>) -> OpenOptions {
     }
 }
 
-/// A session to the open workspace's host `id`, reached `way`, with its
-/// options and record, as the host is now.
 /// Where a program the app starts on this computer begins and what it is
 /// told: the workspace folder (else the home folder), the workspace and the
 /// headless binary in its environment, so that the Python bridge works in it.
@@ -2287,6 +2285,8 @@ fn local_start(
     )
 }
 
+/// A session to the open workspace's host `id`, reached `way`, with its
+/// options and record, as the host is now.
 fn host_made(
     shell: &Shell,
     configs: &Configs,
