@@ -40,12 +40,12 @@ use enodix_core::paste::{
 use enodix_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use enodix_core::preferences::{FontZoom, Preferences, Theme};
 use enodix_core::session::{
-    AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, HostKeyDecision,
-    HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms, OpenOptions,
-    Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent, SessionId,
-    SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState, SessionTarget,
-    SshAuth, SshTarget, TerminalSize, Transport, TypedLogin, WhenConnected,
-    DEFAULT_CONNECT_TIMEOUT,
+    local_environment, local_shells, local_start_folder, pick_local_shell, AlgorithmKind,
+    AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, HostKeyDecision, HostKeyQuestion,
+    HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms, OpenOptions, Reconnection,
+    SerialParameters, SerialPortInfo, SerialTarget, SessionEvent, SessionId, SessionManager,
+    SessionRecord, SessionRecords, SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget,
+    TerminalSize, Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
 };
 use enodix_core::steps::StepRuns;
 use enodix_core::template::Variables;
@@ -362,6 +362,9 @@ enum ConnectTarget {
         port: String,
         parameters: SerialParameters,
     },
+    /// A shell on this computer (#22): the one the preference names, or
+    /// `shell` (an id from `local_shells`) when the interface says which.
+    Local { shell: Option<String> },
 }
 
 /// A username and password the user typed.
@@ -2121,6 +2124,8 @@ async fn session_open(
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
+    python: State<'_, Arc<python::PythonSetup>>,
+    preferred: State<'_, UserPreferences>,
 ) -> Result<Opened, String> {
     let window = calling_window(&window)?;
     let (made, options, record) = match target {
@@ -2156,6 +2161,33 @@ async fn session_open(
                 SessionRecord::new(&name, &title),
             )
         }
+        ConnectTarget::Local { shell: which } => {
+            let chosen = which.unwrap_or_else(|| preferred.lock().local_shell.clone());
+            let shells = local_shells();
+            let picked = pick_local_shell(&shells, Some(&chosen))
+                .ok_or("this computer has no shell to open")?;
+            let root = shell
+                .workspace()
+                .as_ref()
+                .map(|workspace| workspace.root().to_path_buf());
+            let target = SessionTarget::Local(picked.target(
+                local_start_folder(root.as_deref()),
+                local_environment(
+                    root.as_deref(),
+                    python.cli().as_deref(),
+                    vec![(
+                        DATA_DIR_VARIABLE.into(),
+                        python.data_folder().display().to_string(),
+                    )],
+                ),
+            ));
+            // Not logged: it shows the user's own computer, not a device.
+            (
+                Made::Quick(target),
+                OpenOptions::default(),
+                SessionRecord::new(&name, &title),
+            )
+        }
         ConnectTarget::Host { id, credentials } => {
             let typed = credentials
                 .map(|Prompted { username, password }| TypedLogin { username, password });
@@ -2178,7 +2210,7 @@ async fn session_open(
         Made::Host(session) => manager.open_host(session, size.into(), options),
     };
     records.record(id, record.clone());
-    tabs.attach(window, tab, id);
+    tabs.attach(window, tab, id, transport);
     let consumer = relays.start(
         id,
         window,
@@ -2262,7 +2294,7 @@ fn host_options(
             LoginBackup::plan(workspace, profiles, host, session.login, configs.0.clone())
                 .map(|backup| Arc::new(backup) as Arc<dyn WhenConnected>)
         }
-        Transport::Telnet | Transport::Serial => None,
+        Transport::Telnet | Transport::Serial | Transport::Local => None,
     };
     OpenOptions {
         log: shell.logs.host_log(workspace, host),
@@ -2550,7 +2582,8 @@ async fn session_duplicate(
         .duplicate(SessionId(id), size.into())
         .map_err(|error| error.to_string())?;
     records.copy(SessionId(id), copy);
-    tabs.attach(window, tab, copy);
+    let transport = manager.transport(copy).map_err(|error| error.to_string())?;
+    tabs.attach(window, tab, copy, transport);
     let consumer = relays.start(
         copy,
         window,
@@ -2601,8 +2634,10 @@ impl Tabs {
 
     /// Records the session `window`'s `tab` shows. A tab closed while its
     /// session was opening is gone; the interface discards that session.
-    fn attach(&self, window: WindowId, tab: TabId, session: SessionId) {
-        let _ = self.lock().attach_session(window, tab, session);
+    fn attach(&self, window: WindowId, tab: TabId, session: SessionId, transport: Transport) {
+        let _ = self
+            .lock()
+            .attach_transport(window, tab, session, transport);
     }
 }
 
@@ -2920,6 +2955,13 @@ fn session_break(manager: State<'_, SessionManager>, id: u64) -> Result<(), Stri
 #[tauri::command]
 async fn serial_ports(manager: State<'_, SessionManager>) -> Result<Vec<SerialPortInfo>, String> {
     manager.serial_ports().map_err(|error| error.to_string())
+}
+
+/// The shells this computer can open as a local session (#22), the first
+/// being what an unset preference opens.
+#[tauri::command]
+fn local_shell_list() -> Vec<enodix_core::session::LocalShell> {
+    local_shells()
 }
 
 /// The user's preferences, as loaded at launch or last saved.
@@ -3629,6 +3671,7 @@ pub fn run() {
             session_close,
             session_break,
             serial_ports,
+            local_shell_list,
             session_reconnect,
             session_duplicate,
             session_discard,

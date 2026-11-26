@@ -44,7 +44,22 @@ export function serialPorts(): Promise<SerialPortInfo[]> {
   return invoke<SerialPortInfo[]>("serial_ports");
 }
 
-export type Transport = "ssh" | "telnet" | "serial";
+/** A shell on this computer is the one session that is not a device. */
+export type Transport = "ssh" | "telnet" | "serial" | "local";
+
+/** A shell this computer can open as a local session. */
+export interface LocalShell {
+  /** What the preference and `ConnectTarget` name it by. */
+  id: string;
+  /** What to show: `PowerShell`, `Ubuntu (WSL)`. */
+  name: string;
+}
+
+/** The shells this computer has; the first is what an unset preference
+ * opens. */
+export function localShells(): Promise<LocalShell[]> {
+  return invoke<LocalShell[]>("local_shell_list");
+}
 
 /** What a session connects to. */
 export type ConnectTarget =
@@ -61,7 +76,10 @@ export type ConnectTarget =
   /** A host of the open workspace on its serial console. */
   | { kind: "serial"; id: string }
   /** Any serial port, without an inventory host. */
-  | { kind: "quickSerial"; port: string; parameters: SerialParameters };
+  | { kind: "quickSerial"; port: string; parameters: SerialParameters }
+  /** A shell on this computer: `shell` is one of `localShells`' ids, null
+   * the one the preference names. */
+  | { kind: "local"; shell: string | null };
 
 export interface TerminalSize {
   cols: number;

@@ -17,7 +17,7 @@
     type SessionMove,
   } from "./SessionMenu.svelte";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
-  import { PROTOCOL_NAMES } from "./ways";
+  import { TRANSPORT_NAMES } from "./ways";
   import NegotiationFailure from "./NegotiationFailure.svelte";
   import PasteConfirm from "./PasteConfirm.svelte";
   import StepsConfirm from "./StepsConfirm.svelte";
@@ -667,7 +667,8 @@
         },
       });
     }
-    if (ontogglegroup) {
+    // A local shell shows the user's own computer: it never joins (#22).
+    if (ontogglegroup && session?.transport !== "local") {
       const toggle = ontogglegroup;
       list.push({
         id: "multi-send",
@@ -1280,7 +1281,7 @@
     {/if}
     {#if session}
       <span class="protocol" data-session-protocol={session.transport}
-        >{PROTOCOL_NAMES[session.transport]}</span
+        >{TRANSPORT_NAMES[session.transport]}</span
       >
     {/if}
     {#if safety.environment}

@@ -1370,6 +1370,7 @@ dependencies = [
  "md5",
  "notify",
  "open",
+ "portable-pty",
  "rand",
  "regex",
  "reqwest",
