@@ -40,12 +40,12 @@ use enodix_core::paste::{
 use enodix_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use enodix_core::preferences::{FontZoom, Preferences, Theme};
 use enodix_core::session::{
-    AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, HostKeyDecision,
-    HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms, OpenOptions,
-    Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent, SessionId,
-    SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState, SessionTarget,
-    SshAuth, SshTarget, TerminalSize, Transport, TypedLogin, WhenConnected,
-    DEFAULT_CONNECT_TIMEOUT,
+    local_environment, local_shells, local_start_folder, pick_local_shell, AlgorithmKind,
+    AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, HostKeyDecision, HostKeyQuestion,
+    HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms, OpenOptions, Reconnection,
+    SerialParameters, SerialPortInfo, SerialTarget, SessionEvent, SessionId, SessionManager,
+    SessionRecord, SessionRecords, SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget,
+    TerminalSize, Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
 };
 use enodix_core::template::Variables;
 use enodix_core::update::{InstallKind, UpdateChecker, UpdateSource, UpdateStatus};
@@ -360,6 +360,9 @@ enum ConnectTarget {
         port: String,
         parameters: SerialParameters,
     },
+    /// A shell on this computer (#22): the one the preference names, or
+    /// `shell` (an id from `local_shells`) when the interface says which.
+    Local { shell: Option<String> },
 }
 
 /// A username and password the user typed.
@@ -2110,6 +2113,8 @@ async fn session_open(
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
+    python: State<'_, Arc<python::PythonSetup>>,
+    preferred: State<'_, UserPreferences>,
 ) -> Result<Opened, String> {
     let window = calling_window(&window)?;
     let (made, options, record) = match target {
@@ -2142,6 +2147,33 @@ async fn session_open(
             (
                 Made::Quick(target),
                 quick_options(log),
+                SessionRecord::new(&name, &title),
+            )
+        }
+        ConnectTarget::Local { shell: which } => {
+            let chosen = which.unwrap_or_else(|| preferred.lock().local_shell.clone());
+            let shells = local_shells();
+            let picked = pick_local_shell(&shells, Some(&chosen))
+                .ok_or("this computer has no shell to open")?;
+            let root = shell
+                .workspace()
+                .as_ref()
+                .map(|workspace| workspace.root().to_path_buf());
+            let target = SessionTarget::Local(picked.target(
+                local_start_folder(root.as_deref()),
+                local_environment(
+                    root.as_deref(),
+                    python.cli().as_deref(),
+                    vec![(
+                        DATA_DIR_VARIABLE.into(),
+                        python.data_folder().display().to_string(),
+                    )],
+                ),
+            ));
+            // Not logged: it shows the user's own computer, not a device.
+            (
+                Made::Quick(target),
+                OpenOptions::default(),
                 SessionRecord::new(&name, &title),
             )
         }
@@ -2251,7 +2283,7 @@ fn host_options(
             LoginBackup::plan(workspace, profiles, host, session.login, configs.0.clone())
                 .map(|backup| Arc::new(backup) as Arc<dyn WhenConnected>)
         }
-        Transport::Telnet | Transport::Serial => None,
+        Transport::Telnet | Transport::Serial | Transport::Local => None,
     };
     OpenOptions {
         log: shell.logs.host_log(workspace, host),
@@ -2718,6 +2750,7 @@ fn layout_edit(
     shell: State<'_, Shell>,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
+    manager: State<'_, SessionManager>,
     edit: LayoutEdit,
 ) -> Result<LayoutChanged, String> {
     let window = calling_window(&window)?;
@@ -2726,6 +2759,7 @@ fn layout_edit(
         let workspace = shell.workspace();
         let safety = |session| records.paste_safety(session, workspace.as_ref());
         let mut windows = tabs.lock();
+        refuse_local_joins(&windows, &manager, window, &edit)?;
         let created = apply_layout_edit(&mut windows, window, edit, safety)
             .map_err(|error| error.to_string())?;
         LayoutChanged {
@@ -2738,6 +2772,36 @@ fn layout_edit(
     }
     group::tell_windows(&app, &tabs, &records);
     Ok(changed)
+}
+
+/// A local shell shows the user's own computer, so it never joins the
+/// multi-send group (#22): a join naming one, or a pane holding one, is
+/// refused.
+fn refuse_local_joins(
+    windows: &Windows,
+    manager: &SessionManager,
+    window: WindowId,
+    edit: &LayoutEdit,
+) -> Result<(), String> {
+    let tabs: Vec<TabId> = match edit {
+        LayoutEdit::JoinGroup { tab, .. } => vec![*tab],
+        LayoutEdit::JoinPane { pane, .. } => windows
+            .layout(window)
+            .and_then(|layout| layout.pane(*pane))
+            .map(|pane| pane.tabs.clone())
+            .unwrap_or_default(),
+        _ => return Ok(()),
+    };
+    let local = tabs.iter().any(|&tab| {
+        windows
+            .session_of(window, tab)
+            .is_some_and(|session| manager.transport(session) == Ok(Transport::Local))
+    });
+    if local {
+        Err("a local shell never joins the multi-send group".into())
+    } else {
+        Ok(())
+    }
 }
 
 /// What `window`'s interface is sent of its layout.
@@ -2905,6 +2969,13 @@ fn session_break(manager: State<'_, SessionManager>, id: u64) -> Result<(), Stri
 #[tauri::command]
 async fn serial_ports(manager: State<'_, SessionManager>) -> Result<Vec<SerialPortInfo>, String> {
     manager.serial_ports().map_err(|error| error.to_string())
+}
+
+/// The shells this computer can open as a local session (#22), the first
+/// being what an unset preference opens.
+#[tauri::command]
+fn local_shell_list() -> Vec<enodix_core::session::LocalShell> {
+    local_shells()
 }
 
 /// The user's preferences, as loaded at launch or last saved.
@@ -3610,6 +3681,7 @@ pub fn run() {
             session_close,
             session_break,
             serial_ports,
+            local_shell_list,
             session_reconnect,
             session_duplicate,
             session_discard,

@@ -185,6 +185,7 @@ fn transport_name(transport: &Transport) -> &'static str {
         Transport::Ssh => "an SSH",
         Transport::Telnet => "a telnet",
         Transport::Serial => "a serial",
+        Transport::Local => "a local",
     }
 }
 
