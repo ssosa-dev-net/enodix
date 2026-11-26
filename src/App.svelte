@@ -101,6 +101,7 @@
   import Welcome from "./lib/Welcome.svelte";
   import CsvImport from "./lib/CsvImport.svelte";
   import NornirImport from "./lib/NornirImport.svelte";
+  import SshConfigImport from "./lib/SshConfigImport.svelte";
   import JobTab from "./lib/JobTab.svelte";
   import JobsSideView from "./lib/JobsSideView.svelte";
   import RunView from "./lib/RunView.svelte";
@@ -129,6 +130,7 @@
     openDetails,
     openFiles,
     openNornirImport,
+    openSshConfigImport,
     select,
     selectedFolder,
     selectedHost,
@@ -871,6 +873,7 @@
             item.view === "snippet" ||
             item.view === "csv-import" ||
             item.view === "nornir-import" ||
+            item.view === "ssh-config-import" ||
             item.view === "enrich"
           )
             void edit({ kind: "closeTab", tab: item.tab }, undefined, false);
@@ -1031,6 +1034,14 @@
       detail: "Open in a tab",
       icon: VIEWS["nornir-import"].icon,
       run: () => openNornirImport(targetFolder()),
+    },
+    {
+      id: "ssh-config-import",
+      label: "Import from SSH config",
+      words: "hosts openssh ssh_config proxyjump add",
+      detail: "Open in a tab",
+      icon: VIEWS["ssh-config-import"].icon,
+      run: () => openSshConfigImport(targetFolder()),
     },
     {
       id: "edit-host",
@@ -2061,6 +2072,11 @@
             {:else if item.view === "nornir-import" && inventory.workspace}
               <NornirImport
                 folder={inventory.nornirImport ?? ""}
+                onclose={() => closeViewTab(item.tab, true)}
+              />
+            {:else if item.view === "ssh-config-import" && inventory.workspace}
+              <SshConfigImport
+                folder={inventory.sshConfigImport ?? ""}
                 onclose={() => closeViewTab(item.tab, true)}
               />
             {:else if item.view === "platforms" && inventory.workspace}

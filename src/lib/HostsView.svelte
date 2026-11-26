@@ -36,6 +36,7 @@
     openScript,
     openSendFile,
     openNornirImport,
+    openSshConfigImport,
     openConfigHistory,
     openFiles,
     remove,
@@ -111,6 +112,11 @@
     ["folder", "New folder…", () => newFolder(targetFolder())],
     ["csv", "Import from CSV…", () => openCsvImport(targetFolder())],
     ["nornir", "Import from Nornir…", () => openNornirImport(targetFolder())],
+    [
+      "ssh-config",
+      "Import from SSH config…",
+      () => openSshConfigImport(targetFolder()),
+    ],
   ];
 
   /** Applies the saved filter `name`, or clears it when it is applied. */
@@ -417,6 +423,11 @@
         id: "import-nornir",
         label: "Import Nornir inventory…",
         action: () => openNornirImport(item.path),
+      },
+      {
+        id: "import-ssh-config",
+        label: "Import SSH config…",
+        action: () => openSshConfigImport(item.path),
       },
       {
         id: "run-snippet",
@@ -813,6 +824,7 @@
         data-add={kind}
         data-open-csv-import={kind === "csv" || undefined}
         data-open-nornir-import={kind === "nornir" || undefined}
+        data-open-ssh-config-import={kind === "ssh-config" || undefined}
         onclick={() => {
           adding = null;
           action();

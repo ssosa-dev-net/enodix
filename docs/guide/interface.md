@@ -71,7 +71,7 @@ it, and the terminals in tabs and split panes.
   buttons (new connection, multi-send, split right and down, close pane)
   fold into a "…" button that lists them.
 - **View tabs**: job (pre-flight, running, result), past run, config
-  history (one per host), Preferences, CSV import, Nornir import, platform
+  history (one per host), Preferences, CSV import, Nornir import, SSH config import, platform
   definitions, highlight rules, fill-in review, Python setup and Files
   (one per host). They have an icon and no connection dot, move, split
   and close like session tabs, and never join multi-send. Several job

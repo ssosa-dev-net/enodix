@@ -16,6 +16,7 @@ use crate::workspace::{CustomField, HostId, Workspace};
 
 pub mod csv;
 pub mod nornir;
+pub mod ssh_config;
 
 use csv::HostField;
 
@@ -82,6 +83,8 @@ pub struct ImportedHost {
     pub fields: Vec<FieldValue>,
     /// The port setting, if the entry gives one.
     pub port: Option<u16>,
+    /// The jump host setting (a host id), if the entry gives one.
+    pub jump_host: Option<String>,
     pub tags: Vec<String>,
     /// Custom fields with a value.
     pub custom: Vec<CustomField>,
@@ -278,6 +281,7 @@ fn values(host: &ImportedHost) -> ImportedValues {
             .map(|field| (field.field.key(), field.value.clone()))
             .collect(),
         port: host.port,
+        jump_host: host.jump_host.clone(),
         tags: (!host.tags.is_empty()).then(|| host.tags.clone()),
         custom: host
             .custom

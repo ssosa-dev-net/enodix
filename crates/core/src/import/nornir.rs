@@ -508,6 +508,7 @@ impl<'a> Resolver<'a> {
             folder: target.to_string(),
             fields,
             port,
+            jump_host: None,
             tags: groups,
             custom,
         })

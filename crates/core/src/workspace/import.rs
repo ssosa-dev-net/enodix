@@ -22,6 +22,8 @@ pub(crate) struct ImportedValues {
     pub text: Vec<(&'static str, String)>,
     /// The port setting; `None` leaves it as it is.
     pub port: Option<u16>,
+    /// The jump host setting (a host id); `None` leaves it as it is.
+    pub jump_host: Option<String>,
     pub tags: Option<Vec<String>>,
     /// Custom fields by key; blank values remove the field.
     pub custom: Vec<(String, String)>,
@@ -322,6 +324,9 @@ fn apply(host: &mut Host, values: &ImportedValues) {
     }
     if let Some(port) = values.port {
         host.settings.port = Some(port);
+    }
+    if let Some(jump_host) = &values.jump_host {
+        host.settings.jump_host = Some(jump_host.clone());
     }
     if let Some(tags) = &values.tags {
         host.tags = tags.clone();
