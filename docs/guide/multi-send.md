@@ -38,6 +38,8 @@ Pastes and snippets are planned once for the whole group:
   delay; **Paste** sends it to all of them, **Cancel** to none;
 - a snippet is filled from each member's own host, and the card shows a
   member's text when it differs from the others. See [Snippets](snippets.md).
+  A snippet with steps is not sent to the group: it runs on one session at a
+  time, so take the tab out of the group to run it.
 
 If any member is a production host, the card says the group includes
 production devices, and **Cancel** has the focus. A group paste is sent to
