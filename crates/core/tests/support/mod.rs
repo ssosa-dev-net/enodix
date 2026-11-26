@@ -141,11 +141,11 @@ pub const PASSWORD: &str = "correct horse";
 pub const OTP_USERNAME: &str = "engineer-otp";
 /// A user whose login the server never answers, like a device whose
 /// authentication backend hangs.
+pub const STALLING_USERNAME: &str = "engineer-stalled";
 /// A user who logs in with the client key and then [`PASSWORD`], as with
 /// OpenSSH's `AuthenticationMethods publickey,password`: the key is
 /// accepted as a first step, and only the password method is offered next.
 pub const KEY_THEN_PASSWORD_USERNAME: &str = "engineer-key-pw";
-pub const STALLING_USERNAME: &str = "engineer-stalled";
 /// A user whose keyboard-interactive login asks [`THREE_QUESTIONS`], one
 /// round each, in a row; the answers are [`THREE_ANSWERS`].
 pub const THREE_QUESTIONS_USERNAME: &str = "engineer-3q";
