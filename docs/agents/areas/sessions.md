@@ -724,6 +724,21 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   character, `*`, `?`, `!`, a leading `#`, `@` or `|`): trusting a key for
   `core1,x` would have trusted it for `core1`. Test in `host_keys.rs`.
 
+- Legacy hosts through the system ssh (#27): the project does not fork
+  `russh` or add MD5, RC4, Blowfish or SSH-1. `session/system_ssh.rs`
+  (`system_ssh_target`, `SystemSshHost`, `SYSTEM_SSH_WARNING`) builds the
+  `LocalTarget` that runs the system's OpenSSH client with the outdated
+  algorithms allowed (`-o KexAlgorithms=+...` and so on, `-p`, `-l`, then
+  `-- host`), on the local transport of #22 (`local.rs`). It is not an SSH
+  session of enodix: no host key check against the app's, no workspace
+  credentials, no logging. A newer client refuses options for algorithms it
+  dropped (Blowfish, RC4), and OpenSSH has no SSH-1. The negotiation card
+  names the fallback when the device offers only unsupported algorithms.
+  Tests: `system_ssh.rs` (a stand-in script prints its arguments, Unix
+  only). Not done: the interface to start it from a host and the header
+  marker showing `SYSTEM_SSH_WARNING` (needs the local shell interface of
+  #22).
+
 ## Local shell (#22)
 
 - `src/session/local.rs` — the fourth transport, `Transport::Local` /

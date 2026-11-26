@@ -26,7 +26,7 @@
           failure.jumpHost ? `the jump host ${failure.jumpHost}` : "this host"
         } (or of its folder) and connect again.`
       : failure.unsupported
-        ? `${failure.legacyCrypto ? "Even with legacy crypto on, none" : "Legacy crypto would not help: none"} of the ${nameOf(failure.unsupported)} algorithms it offers is supported.`
+        ? `${failure.legacyCrypto ? "Even with legacy crypto on, none" : "Legacy crypto would not help: none"} of the ${nameOf(failure.unsupported)} algorithms it offers is supported. To reach it anyway, use telnet or serial, or the system's ssh client in a local shell (insecure: it is not checked or logged by the app).`
         : "",
   );
 </script>

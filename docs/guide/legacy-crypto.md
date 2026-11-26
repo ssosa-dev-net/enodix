@@ -61,3 +61,26 @@ of a kind cannot be reached:
 - Key exchange: GSS-API (`gss-*`) and RSA key exchange (`rsa1024-sha1`).
 - Host keys: X.509 certificates (`x509v3-sign-rsa`, `x509v3-sign-dss`).
 - SSH protocol 1.
+
+These are not planned. MD5, RC4, Blowfish and SSH-1 are broken, not merely
+old, and supporting them would mean carrying a patched copy of the SSH
+library. A device that offers nothing else of a kind has to be reached
+another way.
+
+## Reaching a device the switch cannot
+
+In order of preference:
+
+1. **Update the device**, or turn on a stronger algorithm in its SSH
+   settings. Most firmware that can run a newer image also offers
+   `aes128-ctr` and `hmac-sha1`.
+2. **Telnet or serial**, which need no algorithms. Telnet sends everything,
+   including the password, in the clear; use it only on a management
+   network you trust, or the console port.
+3. **The system's own SSH client** (`ssh`, or `plink` from PuTTY) in a
+   local shell. This is not an enodix session: enodix does not check the
+   host key, log the session or apply the host's settings. It is as
+   insecure as the algorithms the device forces on it.
+
+If you need a device that none of these reach, please report what the
+negotiation message lists as offered.
