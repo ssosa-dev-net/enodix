@@ -26,7 +26,7 @@ use super::tcp;
 use super::{
     agent, AgentError, CloseReason, Command, ConnectStage, HostKeyAsker, HostKeyDecision,
     HostKeyQuestion, JumpHost, Link, LoginPrompt, LoginQuestion, NegotiatedAlgorithms, OpenError,
-    Prompter, SessionEvent, SessionState, SshAuth, SshTarget, TerminalSize, TERM,
+    Prompter, SessionEvent, SessionState, SshAuth, SshTarget, TerminalSize, TerminalType,
 };
 use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
 
@@ -410,7 +410,15 @@ pub(super) async fn run(
         channel,
         early_output,
     };
-    match pump(link, opened, requested_size, Some(&connection)).await {
+    match pump(
+        link,
+        opened,
+        requested_size,
+        Some(&connection),
+        target.terminal_type,
+    )
+    .await
+    {
         Ended::Here => close(&connection, &jumps).await,
         Ended::Exited(exit_status) => {
             close(&connection, &jumps).await;
@@ -467,7 +475,7 @@ pub(super) async fn run_channel(
             ))
         }
     };
-    match pump(link, opened, requested_size, None).await {
+    match pump(link, opened, requested_size, None, TerminalType::default()).await {
         Ended::Here => CloseReason::ClosedLocally,
         Ended::Exited(exit_status) => CloseReason::RemoteExited { exit_status },
         Ended::There(reason) => reason,
@@ -509,6 +517,7 @@ async fn pump(
     opened: OpenedChannel,
     requested_size: TerminalSize,
     connection: Option<&Handle<Client>>,
+    terminal_type: TerminalType,
 ) -> Ended {
     let OpenedChannel {
         channel,
@@ -546,7 +555,7 @@ async fn pump(
         if opening.is_none() {
             if let (Some(connection), Some((size, reply))) = (connection, asked.pop_front()) {
                 opening = Some(Box::pin(async move {
-                    let _ = reply.send(start_second_shell(connection, size).await);
+                    let _ = reply.send(start_second_shell(connection, size, terminal_type).await);
                 }));
             }
         }
@@ -1037,7 +1046,7 @@ async fn open_shell(
         target.connect_timeout,
         prompter.user_wait(),
         &progress,
-        start_shell(&connection, size, &progress),
+        start_shell(&connection, size, target.terminal_type, &progress),
     )
     .await;
     let (channel, early_output) = match started {
@@ -1170,6 +1179,7 @@ impl JumpConnections {
 async fn start_shell(
     connection: &Handle<Client>,
     size: TerminalSize,
+    terminal_type: TerminalType,
     progress: &Progress,
 ) -> Result<(Channel<client::Msg>, Vec<u8>), OpenError> {
     let channel = connection
@@ -1181,7 +1191,7 @@ async fn start_shell(
             error => protocol(error),
         })?;
     progress.set(Step::At(ConnectStage::Shell));
-    shell_on(channel, size)
+    shell_on(channel, size, terminal_type)
         .await
         .map_err(|refusal| match refusal {
             ShellRefusal::Refused(reason) => OpenError::Protocol(reason),
@@ -1195,6 +1205,7 @@ async fn start_shell(
 async fn start_second_shell(
     connection: &Handle<Client>,
     size: TerminalSize,
+    terminal_type: TerminalType,
 ) -> Result<OpenedChannel, OpenError> {
     let channel = match connection.channel_open_session().await {
         Ok(channel) => channel,
@@ -1205,7 +1216,7 @@ async fn start_second_shell(
         }
         Err(error) => return Err(protocol(error)),
     };
-    match shell_on(channel, size).await {
+    match shell_on(channel, size, terminal_type).await {
         Ok((channel, early_output)) => Ok(OpenedChannel {
             channel,
             early_output,
@@ -1230,10 +1241,19 @@ enum ShellRefusal {
 async fn shell_on(
     mut channel: Channel<client::Msg>,
     size: TerminalSize,
+    terminal_type: TerminalType,
 ) -> Result<(Channel<client::Msg>, Vec<u8>), ShellRefusal> {
     let failed = |error| ShellRefusal::Failed(protocol(error));
     channel
-        .request_pty(false, TERM, size.cols, size.rows, 0, 0, &[])
+        .request_pty(
+            false,
+            terminal_type.as_str(),
+            size.cols,
+            size.rows,
+            0,
+            0,
+            &[],
+        )
         .await
         .map_err(failed)?;
     channel.request_shell(true).await.map_err(failed)?;

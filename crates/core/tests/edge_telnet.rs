@@ -276,6 +276,7 @@ fn through(link: &LinkProxy) -> TelnetTarget {
         host: "127.0.0.1".into(),
         port: link.port(),
         connect_timeout: SHORT,
+        terminal_type: Default::default(),
     }
 }
 

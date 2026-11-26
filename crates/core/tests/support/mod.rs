@@ -12,6 +12,7 @@
 //! | line         | effect                                            |
 //! |--------------|---------------------------------------------------|
 //! | `size`       | prints the pty size as `<cols>x<rows>`            |
+//! | `term`       | prints the terminal type the pty request named    |
 //! | `colors`     | prints [`COLOR_OUTPUT`]                           |
 //! | `fullscreen` | prints [`FULLSCREEN_OUTPUT`]                      |
 //! | `lines <n>`  | prints `line 1` to `line <n>`, one per row          |
@@ -121,7 +122,7 @@ use std::sync::OnceLock;
 use enodix_core::known_hosts::KnownHosts;
 use enodix_core::session::{
     HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, OutputOptions, SessionEvent, SessionEvents,
-    SessionManager, SessionState, SshAuth, SshTarget, DEFAULT_CONNECT_TIMEOUT,
+    SessionManager, SessionState, SshAuth, SshTarget, TerminalType, DEFAULT_CONNECT_TIMEOUT,
 };
 use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use russh::server::{
@@ -1082,6 +1083,7 @@ pub fn target_at(host: &str, port: u16) -> SshTarget {
         jump_hosts: Vec::new(),
         legacy_crypto: false,
         connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+        terminal_type: TerminalType::default(),
     }
 }
 
@@ -1251,6 +1253,8 @@ fn ask_code() -> Auth {
 }
 
 struct ShellState {
+    /// The terminal type of the pty request.
+    term: String,
     cols: u32,
     rows: u32,
     line: Vec<u8>,
@@ -1272,6 +1276,7 @@ struct ShellState {
 impl Default for ShellState {
     fn default() -> Self {
         Self {
+            term: String::new(),
             cols: 0,
             rows: 0,
             line: Vec::new(),
@@ -1368,6 +1373,9 @@ impl ScriptedShell {
             Some("size") => {
                 let size = format!("{}x{}\r\n", state.cols, state.rows);
                 session.data(channel, size.into_bytes())?;
+            }
+            Some("term") if !device => {
+                session.data(channel, format!("{}\r\n", state.term).into_bytes())?;
             }
             Some("colors") => session.data(channel, COLOR_OUTPUT)?,
             Some("fullscreen") => session.data(channel, FULLSCREEN_OUTPUT)?,
@@ -2006,7 +2014,7 @@ impl Handler for ScriptedShell {
     async fn pty_request(
         &mut self,
         channel: ChannelId,
-        _term: &str,
+        term: &str,
         col_width: u32,
         row_height: u32,
         _pix_width: u32,
@@ -2016,6 +2024,7 @@ impl Handler for ScriptedShell {
     ) -> Result<(), Self::Error> {
         self.unclaimed.remove(&channel);
         let state = self.channels.entry(channel).or_default();
+        state.term = term.to_string();
         state.cols = col_width;
         state.rows = row_height;
         session.channel_success(channel)

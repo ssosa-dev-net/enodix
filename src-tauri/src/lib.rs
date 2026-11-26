@@ -44,7 +44,7 @@ use enodix_core::session::{
     HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms, OpenOptions,
     Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent, SessionId,
     SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState, SessionTarget,
-    SshAuth, SshTarget, TerminalSize, Transport, TypedLogin, WhenConnected,
+    SshAuth, SshTarget, TerminalSize, TerminalType, Transport, TypedLogin, WhenConnected,
     DEFAULT_CONNECT_TIMEOUT,
 };
 use enodix_core::template::Variables;
@@ -2129,6 +2129,7 @@ async fn session_open(
                 // Quick connections have no settings to switch it on.
                 legacy_crypto: false,
                 connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+                terminal_type: TerminalType::default(),
             });
             (
                 Made::Quick(target),
