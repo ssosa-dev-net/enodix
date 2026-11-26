@@ -1,13 +1,15 @@
 //! The user's preferences: the app's theme, the terminal's font and
 //! scrollback, how copy and paste behave (multi-line paste confirmation
 //! included), whether keywords are highlighted and whether the app checks for
-//! updates. They live per user in the application data folder
+//! updates, and which colour scheme (and own colours) the terminal uses. They
+//! live per user in the application data folder
 //! (`preferences.yaml`), never in a workspace; the caller chooses that folder.
 //!
 //! Reading is forgiving: a value that is missing, of the wrong kind or out of
 //! range falls back to (or is brought into) its allowed range on its own,
 //! so a slip in a hand-edited file costs only that one value.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -43,6 +45,47 @@ pub enum Theme {
     Light,
     Dark,
 }
+
+/// The terminal's colour scheme (#24). The interface owns the palettes;
+/// the core keeps which one the user chose.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ColorScheme {
+    /// The app's own light or dark terminal colours, as the theme says.
+    #[default]
+    Default,
+    SolarizedDark,
+    SolarizedLight,
+    Dracula,
+    Nord,
+    GruvboxDark,
+}
+
+/// The colours the user can set on their own, over the scheme's: the
+/// terminal's `background`, `foreground`, `cursor` and `selection`, and the
+/// 16 ANSI colours by the names highlight rules use (`red`, `bright-cyan`).
+pub const COLOR_NAMES: [&str; 20] = [
+    "background",
+    "foreground",
+    "cursor",
+    "selection",
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "bright-black",
+    "bright-red",
+    "bright-green",
+    "bright-yellow",
+    "bright-blue",
+    "bright-magenta",
+    "bright-cyan",
+    "bright-white",
+];
 
 /// The side view the activity rail selected (the window's left side).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +149,11 @@ pub struct Preferences {
     /// [`crate::session::local_shells`]. Empty: the first one (on Windows
     /// PowerShell, elsewhere the login shell).
     pub local_shell: String,
+    /// The terminal's colour scheme (#24).
+    pub color_scheme: ColorScheme,
+    /// Colours set one by one over the scheme's, by [`COLOR_NAMES`], each
+    /// `#rrggbb`. Highlight rules naming a palette colour follow them.
+    pub custom_colors: BTreeMap<String, String>,
 }
 
 impl Default for Preferences {
@@ -124,6 +172,8 @@ impl Default for Preferences {
             left_panel_width: DEFAULT_LEFT_PANEL_WIDTH,
             left_panel_hidden: false,
             local_shell: String::new(),
+            color_scheme: ColorScheme::Default,
+            custom_colors: BTreeMap::new(),
         }
     }
 }
@@ -157,6 +207,15 @@ impl Preferences {
             left_panel_hidden: read(&mapping, "left_panel_hidden")
                 .unwrap_or(defaults.left_panel_hidden),
             local_shell: read(&mapping, "local_shell").unwrap_or(defaults.local_shell),
+            color_scheme: read(&mapping, "color_scheme").unwrap_or(defaults.color_scheme),
+            custom_colors: read::<BTreeMap<String, Value>>(&mapping, "custom_colors")
+                .map(|colors| {
+                    colors
+                        .into_iter()
+                        .filter_map(|(name, value)| Some((name, value.as_str()?.to_string())))
+                        .collect()
+                })
+                .unwrap_or(defaults.custom_colors),
         }
         .normalized()
     }
@@ -191,6 +250,16 @@ impl Preferences {
         put("left_panel_width", preferences.left_panel_width.into());
         put("left_panel_hidden", preferences.left_panel_hidden.into());
         put("local_shell", Value::String(preferences.local_shell));
+        put(
+            "color_scheme",
+            serde_norway::to_value(preferences.color_scheme).map_err(io::Error::other)?,
+        );
+        if !preferences.custom_colors.is_empty() {
+            put(
+                "custom_colors",
+                serde_norway::to_value(preferences.custom_colors).map_err(io::Error::other)?,
+            );
+        }
         let text = serde_norway::to_string(&mapping).map_err(io::Error::other)?;
         fs::create_dir_all(data_folder)?;
         let temporary = data_folder.join(format!("{FILE_NAME}.tmp"));
@@ -214,6 +283,12 @@ impl Preferences {
             family.into()
         };
         self.local_shell = self.local_shell.trim().to_string();
+        self.custom_colors = self
+            .custom_colors
+            .into_iter()
+            .filter(|(name, _)| COLOR_NAMES.contains(&name.as_str()))
+            .filter_map(|(name, color)| Some((name, normalized_color(&color)?)))
+            .collect();
         self
     }
 
@@ -226,6 +301,26 @@ impl Preferences {
             FontZoom::Reset => DEFAULT_FONT_SIZE,
         }
         .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+    }
+}
+
+/// `#rrggbb` in lower case for `#rgb` or `#rrggbb`, else nothing.
+fn normalized_color(color: &str) -> Option<String> {
+    let digits = color.trim().strip_prefix('#')?;
+    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    match digits.len() {
+        6 => Some(format!("#{}", digits.to_ascii_lowercase())),
+        3 => Some(format!(
+            "#{}",
+            digits
+                .chars()
+                .flat_map(|c| [c, c])
+                .collect::<String>()
+                .to_ascii_lowercase()
+        )),
+        _ => None,
     }
 }
 

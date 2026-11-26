@@ -4,9 +4,18 @@
     FONT_SIZES,
     MAX_SCROLLBACK,
     preferences,
+    isDark,
     SUGGESTED_FONTS,
+    terminalTheme,
+    type ColorScheme,
     type Theme,
   } from "./preferences.svelte";
+  import {
+    COLOR_NAMES,
+    COLOR_SCHEMES,
+    themeKey,
+    type ColorName,
+  } from "./colorSchemes";
   import { localShells, type LocalShell } from "./session";
   import { openView } from "./views";
   import { checkNow, describeStatus, updates } from "./updates.svelte";
@@ -26,6 +35,23 @@
   function wholeNumber(input: HTMLInputElement): number | null {
     const value = Math.round(input.valueAsNumber);
     return Number.isFinite(value) ? value : null;
+  }
+
+  /** The colour a name has now: the user's own, else the scheme's. */
+  function colorNow(name: ColorName): string {
+    const value = terminalTheme(isDark())[themeKey(name)];
+    return typeof value === "string" ? value : "#000000";
+  }
+
+  function setColor(name: ColorName, color: string) {
+    void changePreferences({
+      customColors: { ...current.customColors, [name]: color },
+    });
+  }
+
+  function resetColor(name: ColorName) {
+    const { [name]: _gone, ...rest } = current.customColors;
+    void changePreferences({ customColors: rest });
   }
 
   const SHORTCUTS: [string, string][] = [
@@ -54,6 +80,55 @@
         <option value="light">Light</option>
         <option value="dark">Dark</option>
       </select>
+
+      <label for="preference-color-scheme">Colour scheme</label>
+      <select
+        id="preference-color-scheme"
+        name="preference-color-scheme"
+        value={current.colorScheme}
+        title="The terminal's colours; highlight rules that name a colour follow them"
+        onchange={(event) =>
+          changePreferences({
+            colorScheme: event.currentTarget.value as ColorScheme,
+          })}
+      >
+        {#each COLOR_SCHEMES as scheme (scheme.id)}
+          <option value={scheme.id}>{scheme.name}</option>
+        {/each}
+      </select>
+
+      <span></span>
+      <details class="colors" data-own-colors>
+        <summary>
+          Own colours{Object.keys(current.customColors).length > 0
+            ? ` (${Object.keys(current.customColors).length} changed)`
+            : ""}
+        </summary>
+        <div class="swatches">
+          {#each COLOR_NAMES as name (name)}
+            <label class="swatch">
+              <input
+                type="color"
+                name="preference-color-{name}"
+                value={colorNow(name)}
+                onchange={(event) => setColor(name, event.currentTarget.value)}
+              />
+              {name}
+              {#if current.customColors[name]}
+                <button
+                  type="button"
+                  class="reset"
+                  title="Back to the scheme's colour"
+                  onclick={(event) => {
+                    event.preventDefault();
+                    resetColor(name);
+                  }}>Reset</button
+                >
+              {/if}
+            </label>
+          {/each}
+        </div>
+      </details>
 
       <label for="preference-font-family">Terminal font</label>
       <input
@@ -234,6 +309,29 @@
 </div>
 
 <style>
+  .colors summary {
+    cursor: pointer;
+    color: var(--muted);
+  }
+
+  .swatches {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    gap: var(--space-2);
+    padding-top: var(--space-2);
+  }
+
+  .swatch {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+  }
+
+  .swatch .reset {
+    margin-left: auto;
+  }
+
   .view {
     height: 100%;
     overflow: auto;
