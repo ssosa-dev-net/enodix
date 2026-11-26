@@ -20,6 +20,8 @@
   import { PROTOCOL_NAMES } from "./ways";
   import NegotiationFailure from "./NegotiationFailure.svelte";
   import PasteConfirm from "./PasteConfirm.svelte";
+  import StepsConfirm from "./StepsConfirm.svelte";
+  import { startSteps, stepsPreview, stopSteps } from "./steps";
   import { ENVIRONMENT_NAMES, planPaste } from "./paste";
   import {
     fontStack,
@@ -169,8 +171,10 @@
     if (!session) return "Not until the session has opened";
     if (status.state === "connecting")
       return "Not while the session is connecting";
-    if (prompt || hostKey || pasteQuestion)
+    if (prompt || hostKey || pasteQuestion || stepsQuestion)
       return "Not while a question about the session is open";
+    // Its events come to this window only.
+    if (stepsRun) return "Not while a snippet's steps run on it";
     if (windowQuestion) return windowQuestion;
     if (pastes > 0) return "Not while a paste is still being sent";
     return null;
@@ -237,6 +241,106 @@
   function answerPaste(send: boolean) {
     pasteQuestion?.answer(send);
     pasteQuestion = null;
+    xterm?.focus();
+  }
+
+  /** A snippet's steps waiting for the user's yes (#23). */
+  let stepsQuestion = $state<{
+    snippet: string;
+    preview: string[];
+    count: number;
+    environment: Environment | null;
+    answer: (run: boolean) => void;
+  } | null>(null);
+  /** The snippet's steps running on the session: which, and where. */
+  let stepsRun = $state<{
+    snippet: string;
+    index: number;
+    count: number;
+    doing: string;
+    /** The question last answered, if any. */
+    answered: string | null;
+  } | null>(null);
+  /** How the steps last run here ended, until dismissed. */
+  let stepsEnded = $state<{
+    snippet: string;
+    kind: string;
+    message: string;
+  } | null>(null);
+
+  function answerSteps(run: boolean) {
+    stepsQuestion?.answer(run);
+    stepsQuestion = null;
+    xterm?.focus();
+  }
+
+  /**
+   * Runs the steps of the snippet `snippet` on this session (#23), its
+   * variables given by `answers` (the window asked for those its host
+   * lacks): shown first and confirmed where the paste rule says (always on
+   * production), then run by the core, which waits for the device between
+   * lines. Shown in a bar with Stop while it runs; typing in the terminal
+   * stops it too. Returns why it could not start, or null.
+   */
+  export async function runSteps(
+    snippet: string,
+    answers: Record<string, string>,
+  ): Promise<string | null> {
+    const id = session?.id;
+    if (id === undefined || status.state !== "connected")
+      return "the session is no longer connected";
+    if (stepsRun) return "steps already run on this session; stop them first";
+    let preview;
+    try {
+      preview = await stepsPreview(id, snippet, answers);
+    } catch (reason) {
+      return String(reason);
+    }
+    if (preview.kind === "missing")
+      return `it has no value for ${preview.names.join(", ")}`;
+    const { count, environment } = preview;
+    if (preview.confirm) {
+      const lines = preview.preview;
+      const run = await new Promise<boolean>((answer) => {
+        stepsQuestion = { snippet, preview: lines, count, environment, answer };
+      });
+      if (!run) return null;
+      if (status.state !== "connected")
+        return "the session is no longer connected";
+    }
+    stepsEnded = null;
+    stepsRun = { snippet, index: 0, count, doing: "Starting", answered: null };
+    try {
+      await startSteps(id, snippet, answers, preview.confirm, (event) => {
+        if (event.kind === "ended") {
+          stepsRun = null;
+          stepsEnded = {
+            snippet,
+            kind: event.end.kind,
+            message: event.message,
+          };
+        } else if (event.kind === "step" && stepsRun) {
+          stepsRun = {
+            ...stepsRun,
+            index: event.index,
+            count: event.count,
+            doing: event.doing,
+          };
+        } else if (event.kind === "answered" && stepsRun) {
+          stepsRun = { ...stepsRun, answered: event.question };
+        }
+      });
+    } catch (reason) {
+      stepsRun = null;
+      return String(reason);
+    }
+    xterm?.focus();
+    return null;
+  }
+
+  function stopRun() {
+    const id = session?.id;
+    if (id !== undefined) void stopSteps(id).catch(() => {});
     xterm?.focus();
   }
 
@@ -1024,6 +1128,11 @@
             pasteQuestion.answer(false);
             pasteQuestion = null;
           }
+          // Nor are a snippet's steps run on it.
+          if (state.state === "closed" && stepsQuestion) {
+            stepsQuestion.answer(false);
+            stepsQuestion = null;
+          }
         },
         onPrompt: (asked) => (prompt = { prompt: asked, key: ++prompts }),
         onHostKey: (question) => (hostKey = { question, key: ++prompts }),
@@ -1337,6 +1446,44 @@
         >
       </form>
     {/if}
+    {#if stepsRun}
+      <div
+        class="steps-run"
+        role="status"
+        data-steps-run={stepsRun.snippet}
+        data-steps-step={stepsRun.index + 1}
+      >
+        <span class="reason"
+          ><strong>{stepsRun.snippet}</strong>, step {stepsRun.index + 1} of
+          {stepsRun.count}: {stepsRun.doing}{#if stepsRun.answered}<span
+              class="answered"
+              data-steps-answered>; answered {stepsRun.answered}</span
+            >{/if}</span
+        >
+        <span class="hint">Typing stops it</span>
+        <button data-steps-stop onclick={stopRun}>Stop</button>
+      </div>
+    {:else if stepsEnded}
+      <div
+        class="steps-run"
+        class:failed={stepsEnded.kind !== "finished"}
+        role="status"
+        data-steps-ended={stepsEnded.kind}
+      >
+        <span class="reason"
+          ><strong>{stepsEnded.snippet}</strong>: {stepsEnded.message}</span
+        >
+        <button
+          data-steps-dismiss
+          onclick={() => {
+            stepsEnded = null;
+            xterm?.focus();
+          }}
+        >
+          Dismiss
+        </button>
+      </div>
+    {/if}
     {#if logFailure}
       <div class="log-failed" role="alert" data-log-failed>
         <span class="reason">{logFailure}.</span>
@@ -1420,6 +1567,17 @@
         lineDelayMs={pasteQuestion.lineDelayMs}
         onsend={() => answerPaste(true)}
         oncancel={() => answerPaste(false)}
+      />
+    {/if}
+    {#if stepsQuestion}
+      <StepsConfirm
+        snippet={stepsQuestion.snippet}
+        preview={stepsQuestion.preview}
+        count={stepsQuestion.count}
+        target={name}
+        environment={stepsQuestion.environment}
+        onrun={() => answerSteps(true)}
+        oncancel={() => answerSteps(false)}
       />
     {/if}
     {#if status.state === "closed" && status.negotiation}
@@ -1734,6 +1892,35 @@
     background: var(--surface);
     border-top: 1px solid var(--danger-fill);
     font-size: var(--text-sm);
+  }
+
+  .steps-run {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-0-5) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    background: var(--surface);
+    border-top: 1px solid var(--accent);
+    font-size: var(--text-sm);
+  }
+
+  .steps-run.failed {
+    border-top-color: var(--warning);
+  }
+
+  .steps-run .reason {
+    flex: 1 1 14rem;
+    overflow-wrap: anywhere;
+  }
+
+  .steps-run .answered,
+  .steps-run .hint {
+    color: var(--muted);
+  }
+
+  .steps-run .hint {
+    font-size: var(--text-xs);
   }
 
   .log-failed {

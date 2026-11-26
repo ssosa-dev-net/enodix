@@ -16,6 +16,12 @@ The core's session manager and its transports (`crates/core/src/session/`), SSH 
   stops after `OutputOptions::window` (256 KiB). A transport only reads from
   the device inside `flow.room_to_read()` and keeps taking commands meanwhile
   (see `ssh.rs`); telnet/serial do the same.
+- `src/session/output_watch.rs` (#23) — `SessionManager::watch_output(id)`
+  gives an `OutputWatch`: a copy of a connected session's output from then
+  on (fed in `Link::forward_counted`, beside the log), ended when that
+  connection closes. It never acknowledges and never holds reading back
+  (at most `WATCH_LIMIT`, 1 MiB, waits in it; the oldest is dropped). Used
+  by snippet steps (`terminal.md`); the consumer still acknowledges.
 - russh quirk: it adjusts the SSH window by itself; when we stop reading its
   channel, its 100-message buffer fills and its whole connection loop blocks,
   including outgoing data and keepalives. So while the interface is stalled,

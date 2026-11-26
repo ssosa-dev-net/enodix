@@ -81,6 +81,14 @@ pub fn plan_paste(text: &str, safety: &PasteSafety, confirm_multi_line: bool) ->
     }
 }
 
+/// Whether a snippet's steps (#23) wait for the user's yes, shown what they
+/// will do, before they run on a session with `safety`: as a paste of
+/// several lines does (unless the user turned that off), and always on a
+/// production host.
+pub fn confirms_steps(safety: &PasteSafety, confirm_multi_line: bool) -> bool {
+    confirm_multi_line || safety.always_confirms()
+}
+
 /// `text` split after each line break (`\r\n`, `\n` or a lone `\r`),
 /// keeping the breaks; text after the last break is a line of its own.
 pub fn paste_lines(text: &str) -> Vec<String> {

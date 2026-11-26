@@ -236,6 +236,76 @@ cancel]`; hiding or closing its tab drops it, and shortcuts stay on
   snippets from the main window go to the terminal used last, whichever
   window it is in, and a session window fills and asks for them itself
   (`window.md`).
+- Snippet steps (#23, `src/steps.rs`, `src/session/output_watch.rs`,
+  `src-tauri/src/steps.rs`, `src/lib/steps.ts`, `StepsConfirm.svelte`).
+  Decided for the ticket: snippets gain steps (no interpreter, no Python
+  API); steps never run on the multi-send group (refused, one session at a
+  time); the user's input during a run stops it and that input is not sent.
+  Format: a `_snippets.yaml` entry with `steps` (a list: a line = send
+  then wait for the prompt; or `{send, wait, timeout}`, `wait` = `prompt`
+  | `none` (or `false`/null) | a pattern; a step needs `send` or `wait`),
+  optional `answer` (map question pattern → line, null = empty), `stop`
+  (a pattern or a list), `timeout` (seconds, 1–86,400, default 30); `text`
+  and `steps` are exclusive, `answer|stop|timeout` only with `steps`.
+  Patterns: literal text, `/…/` a regex; a literal `prompt`/`none` is
+  written back as `/prompt/`. `Snippet.steps: Option<Steps>` (text empty
+  then; `Snippet::with_steps`); `Steps::problem()` (checked on load and in
+  `clean`), `variables()` (sends then answers), `fill(&Variables,
+  Option<prompt>) -> StepsPlan` (`FillError::Missing|Invalid`; a filled
+  line is cut at its first line break). `Workspace::plan_snippet_steps(name,
+  host, answers)` fills from the host and uses `host_platform(id).prompt`,
+  else `DEFAULT_PROMPT` (`\S*[>#$%]`); `expand_snippet(_for_each)` on a
+  stepped snippet is `ExpandError::HasSteps` (so the group path and jobs,
+  `PlanError::SnippetHasSteps`, refuse it); `NoSteps`, `BadSteps`.
+  `StepsPlan::{len, lines, prompt, preview}` (preview: answers, stops,
+  then numbered steps, the core's words). Running: `StepRuns` (one run per
+  session; `start(manager, session, plan, line_delay, report)` needs a
+  Tokio runtime, takes an `OutputWatch` before the first line;
+  `StartError::AlreadyRunning|NotConnected`), `stop`, `running`,
+  `user_input(targets, origin)` (every origin but `Reply` stops a run on a
+  target and drops that target). Events `RunEvent::Step{index,count,doing}
+  |Answered{index,question}` (never the reply) `|Ended{end,message}`;
+  `RunEnd::Finished|Stopped{step,line,pattern,shown}|TimedOut{step,line,
+  waiting_for}|CalledOff{step,line,by: User|Input}|SessionEnded`, serde
+  `kind` camelCase. Engine: output as `PlainText`, looked in from the last
+  send (the echo of the step's own line skipped), stops checked first, then
+  the step's own pattern, then answers (the earliest match; consumed so it
+  never fires twice; the step keeps waiting); the prompt = the current line
+  matching `(?:prompt)[ \t]*\z`, only after output came since the last
+  send, quiet for `PROMPT_SETTLE` (300 ms). A wait's timeout counts from
+  its start, not from the last output. Line ending sent: `\r`. `wait: none`
+  keeps the host's paste line delay. Output watch: `SessionManager::
+  watch_output(id)` (connected only) → `OutputWatch::next()`, fed in
+  `Link::forward_counted` beside the log, no part in flow control, keeps at
+  most `WATCH_LIMIT` (1 MiB, oldest dropped), ends on `Closed` (a reconnect
+  is a new connection); `SessionManager::is_connected`. Safety:
+  `paste::confirms_steps(safety, pref)` = pref or production. Shell:
+  `StepRuns` managed; `snippet_expand` returns `{kind: steps}` for a
+  stepped snippet with nothing missing; `steps_preview {id, name,
+  answers}` (`ready {preview, count, confirm, environment}` | `missing`),
+  `steps_start {id, name, answers, confirmed, onEvent: Channel}` (refused
+  unconfirmed where it confirms, and for a session `member_showing` in the
+  group), `steps_stop {id}`; `session_input` filters its targets through
+  `user_input`. Interface: both windows' `sendSnippet` call
+  `TerminalSession.runSteps(name, answers)` on `kind: steps`
+  (variables asked first as for any snippet); it shows `StepsConfirm`
+  (`[data-steps-confirm=env|none][data-steps-count]`,
+  `[data-steps-preview]`, `[data-steps=cancel|run]`, Cancel focused on
+  production), then the bar `[data-steps-run=<snippet>][data-steps-step]`
+  with `[data-steps-answered]`, `[data-steps-stop]`, and when ended
+  `[data-steps-ended=<end kind>]` + `[data-steps-dismiss]`. Moving the
+  session is refused while it runs (its Channel is this window's). Snippets
+  view: `[data-snippet-steps]` mark, preview = first line sent; the editor
+  shows the steps read-only (`[data-snippet-steps-text]`) and saves name and
+  group with the steps kept. Tests: `tests/snippet_steps.rs` (file format,
+  round trip, problems, filling and platform prompt, never as lines,
+  confirmation rule; runs over SSH device-mode, telnet login as steps,
+  serial with the test as the device: prompt waits, answers, stops, the
+  echo, own pattern, timeout, user stop, input stop, session end). Not
+  covered: the smoke test (no step for it yet), the shell commands and the
+  interface (svelte-check only). Known limits: no paging handling (a
+  `--More--` waits to the timeout), no editing of steps in the app, no
+  loops or conditions.
 - Input origins (#34, `src/lib/terminalInput.ts`; for multi-send, #33).
   `terminalInput(terminal, onInput)` replaces `onData`/`onBinary` in
   `TerminalSession`: each `Input { data, binary, origin }` has origin

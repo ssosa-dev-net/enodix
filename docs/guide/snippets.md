@@ -60,6 +60,70 @@ quick connection has no host fields, so every variable is asked.
 Sent to a multi-send group, each member fills the snippet from its own host,
 and the values some member lacks are asked once for all of them.
 
+## Snippets with steps: wait for the device
+
+A plain snippet is typed in one go. Some work has to wait for the device: a
+`copy` that asks for a file name and `[confirm]`, a command that must end
+before the next one starts, a change that should stop at the first
+`% Invalid input`. A snippet with **steps** does that, on the session in
+front of you, over SSH, telnet or a serial console alike.
+
+Steps are written in `_snippets.yaml` (the editor shows them but does not
+edit them):
+
+```yaml
+Save the configuration:
+  group: Changes
+  timeout: 60                    # seconds each wait may take (default 30)
+  answer:                        # whenever this shows, send that line
+    "Destination filename": ""   # empty: just Enter
+    "[confirm]": ""
+  stop:                          # whenever one of these shows, stop
+    - "% Invalid input"
+    - "% Incomplete command"
+  steps:
+    - copy running-config startup-config      # send, then wait for the prompt
+    - send: reload in {{minutes}}
+      wait: /Proceed with reload\?/           # wait for this instead
+      timeout: 10
+    - send: "y"
+      wait: none                               # do not wait
+    - wait: prompt                             # only wait
+```
+
+- **A step** is a line to send. By default it then waits for the device's
+  prompt: the **Prompt pattern** of the host's platform, or for a host
+  without one (and quick connections) any word ending in `>`, `#`, `$` or
+  `%` at the end of the line. The prompt counts once the device has
+  answered and stays quiet at it for a moment. `wait:` can name a pattern
+  of its own instead, or `none`; a step with only `wait:` sends nothing
+  and waits for output that comes after the last line sent.
+- **answer** maps a question to the line that answers it. Whenever one shows
+  while a step waits, its line is sent, and the step goes on waiting.
+- **stop** lists patterns that end the run as soon as one shows, before
+  anything more is sent. The run says at which step it stopped, after which
+  line, and the line of output that matched.
+- **timeout** is how long each wait may take, in seconds; a step can have
+  its own. A wait that runs out stops the run.
+- **Patterns** are plain text, matched as written (case counts). Write one
+  between slashes for a regular expression: `/Proceed.*\?/`. They are
+  looked for in what the device showed since the line was sent, not in the
+  echo of the line itself.
+- **Variables** in the lines sent and the answers are filled as in any
+  snippet; what the host does not have is asked first.
+
+Click the snippet as any other. You first see what it will do, step by step,
+and **Run** it (the same rule as a paste: asked unless you turned **Ask
+before pasting more than one line** off, and always on a production host).
+While it runs, a bar under the terminal shows the step and what it waits
+for, with **Stop**. **Typing in the terminal also stops it**, and the key you
+typed is not sent, so you can always take over. When it ends, the bar says
+how: done, or where and why it stopped. Nothing is ever retried.
+
+Steps run on one session at a time. They are not sent to a
+[multi-send](multi-send.md) group (take the tab out of the group to run
+them), and not run in a job.
+
 ## Run a snippet as a job
 
 Sending to a terminal is interactive: you see the output, and a prompt can
@@ -106,9 +170,15 @@ A snippet written badly is left out and reported as a problem on the file.
 
 - A snippet goes to a connected session. With no open session the view says
   so and the snippets cannot be clicked.
-- Snippets are sent line by line and the app does not wait for the device's
-  prompt between lines. For a device that drops fast input, set a **Paste
-  line delay (ms)** on the host.
-- Variables are plain text substitution; there is no conditional or loop.
+- Plain snippets are sent line by line and the app does not wait for the
+  device's prompt between lines. For a device that drops fast input, set a
+  **Paste line delay (ms)** on the host, or give the snippet steps.
+- Variables are plain text substitution; there is no conditional or loop,
+  in steps either. Steps are written in `_snippets.yaml`, not in the editor.
+- Steps wait for the prompt, so a device that pages long output
+  (`--More--`) waits there: start with `terminal length 0` (or your
+  platform's command) as a step.
+- A run's events go to the window showing the session, so the session
+  cannot move to another window while steps run on it.
 - Names of variables in jobs that look like secrets (password, token,
   community) are asked at each run and not saved with a saved job.

@@ -1643,6 +1643,14 @@
       asking = { tab, name, names: expansion.names, group: false };
       return;
     }
+    if (expansion.kind === "steps") {
+      // Run on this session alone, the device waited for (#23).
+      const refused =
+        (await terminals[tab]?.runSteps(name, answers)) ??
+        "the session is no longer connected";
+      if (refused) inventory.editError = `Cannot run ${name}: ${refused}.`;
+      return;
+    }
     const text = expansion.lines.map((line) => `${line}\n`).join("");
     if (!terminals[tab]?.sendText(text)) {
       inventory.editError = `Cannot send ${name}: the session is no longer connected.`;
