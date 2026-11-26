@@ -277,6 +277,7 @@ fn through(link: &LinkProxy) -> TelnetTarget {
         port: link.port(),
         connect_timeout: SHORT,
         jump_hosts: Vec::new(),
+        terminal_type: Default::default(),
     }
 }
 

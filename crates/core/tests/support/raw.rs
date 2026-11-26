@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use enodix_core::session::{TelnetTarget, DEFAULT_CONNECT_TIMEOUT};
+use enodix_core::session::{TelnetTarget, TerminalType, DEFAULT_CONNECT_TIMEOUT};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -127,6 +127,7 @@ impl RawDevice {
             port: self.port,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             jump_hosts: Vec::new(),
+            terminal_type: TerminalType::default(),
         }
     }
 

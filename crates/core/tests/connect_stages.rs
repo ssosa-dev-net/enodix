@@ -233,6 +233,7 @@ async fn a_telnet_device_that_gets_no_tcp_connection_says_so() {
         port: port.port(),
         connect_timeout: SHORT,
         jump_hosts: Vec::new(),
+        terminal_type: Default::default(),
     });
 
     let error = failure(&support::manager(), target).await;

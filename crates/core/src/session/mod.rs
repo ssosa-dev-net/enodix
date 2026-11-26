@@ -34,6 +34,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::known_hosts::{HostKey, KnownHosts};
 use crate::logging::{LogFailure, Logger, SessionLog};
+pub use crate::workspace::TerminalType;
 pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
@@ -116,10 +117,6 @@ pub const DEFAULT_SSH_PORT: u16 = 22;
 /// The port telnet uses when nothing sets one.
 pub const DEFAULT_TELNET_PORT: u16 = 23;
 
-/// The terminal type sessions announce (the SSH pty, telnet's terminal
-/// type); xterm.js emulates xterm.
-const TERM: &str = "xterm-256color";
-
 /// How long a connection may wait on the network while it is being opened
 /// when nothing sets it: see [`SshTarget::connect_timeout`].
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -145,6 +142,8 @@ pub struct SshTarget {
     /// key, password, one-time code) does not count, and the clock starts
     /// again after each answer. Jump hosts have their own.
     pub connect_timeout: Duration,
+    /// The terminal type announced in the pty request.
+    pub terminal_type: TerminalType,
 }
 
 /// A telnet server. Telnet has no login of its own: the device asks for
@@ -160,6 +159,8 @@ pub struct TelnetTarget {
     /// (`direct-tcpip`), so only the leg from it to the device is in the
     /// clear.
     pub jump_hosts: Vec<JumpHost>,
+    /// The terminal type answered to the device's request (RFC 1091).
+    pub terminal_type: TerminalType,
 }
 
 /// An SSH host a session tunnels through, with its own login. Its host

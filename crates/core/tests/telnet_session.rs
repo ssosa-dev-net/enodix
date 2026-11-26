@@ -509,6 +509,7 @@ async fn a_port_nothing_listens_on_is_reported() {
         port,
         connect_timeout: Duration::from_secs(5),
         jump_hosts: Vec::new(),
+        terminal_type: Default::default(),
     };
     let (_id, mut events) = manager.open(SessionTarget::Telnet(target), SIZE);
     assert_eq!(next_state(&mut events).await, SessionState::Connecting);
@@ -576,6 +577,7 @@ fn a_host_whose_resolved_protocol_is_telnet_logs_in_in_the_terminal() {
             port: DEFAULT_TELNET_PORT,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             jump_hosts: Vec::new(),
+            terminal_type: Default::default(),
         }
     );
     // Reached over SSH instead (from the side panel), it logs in as SSH does.
