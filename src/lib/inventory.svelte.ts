@@ -89,6 +89,8 @@ export const inventory = $state({
   csvImport: null as string | null,
   /** The same for the Nornir import tab. */
   nornirImport: null as string | null,
+  /** The same for the SSH config import tab. */
+  sshConfigImport: null as string | null,
   /**
    * What the last rename or move could not bring along (#99): history
    * left where it was and references not rewritten; null when it brought
@@ -276,6 +278,24 @@ export function openNornirImport(folder: string) {
   openView("nornir-import");
 }
 
+/** Opens the SSH config import tab (or brings it forward) with `folder`
+ * as its target. */
+export function openSshConfigImport(folder: string) {
+  inventory.sshConfigImport = folder;
+  openView("ssh-config-import");
+}
+
+/**
+ * Runs the SSH config import the last preview showed (see
+ * `api.importSshConfig`) and shows the reloaded workspace; returns the
+ * report. Errors propagate.
+ */
+export async function runSshConfigImport(
+  replace: string[],
+): Promise<api.ImportReport> {
+  return apply(await api.importSshConfig(replace));
+}
+
 /**
  * Runs the Nornir import the last preview showed (see
  * `api.importNornir`) and shows the reloaded workspace; returns the report.
@@ -298,6 +318,7 @@ export function setWorkspace(workspace: WorkspaceView | null) {
   inventory.filterView = null;
   inventory.csvImport = null;
   inventory.nornirImport = null;
+  inventory.sshConfigImport = null;
 }
 
 // Under a filter, the selected item (one just created, say, or edited out

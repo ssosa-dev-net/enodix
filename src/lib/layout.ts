@@ -42,6 +42,7 @@ export type ViewName =
   | "configs"
   | "csv-import"
   | "nornir-import"
+  | "ssh-config-import"
   | "platforms"
   | "highlights"
   | "enrich"

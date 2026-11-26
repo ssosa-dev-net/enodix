@@ -23,6 +23,7 @@ use enodix_core::import::csv::{
     suggest_mapping, ColumnTarget, CsvImport, CsvTable, ImportPreview, Separator,
 };
 use enodix_core::import::nornir::{NornirImport, NornirInventory, NornirPreview};
+use enodix_core::import::ssh_config::{SshConfig, SshConfigImport, SshConfigPreview};
 use enodix_core::import::ImportReport;
 use enodix_core::job::results::{OutputRef, RunList, RunStore, SearchHit, StoredRun};
 use enodix_core::job::{
@@ -1405,6 +1406,68 @@ fn csv_import_run(
     replace: Vec<HostId>,
 ) -> Result<Edited<ImportReport>, String> {
     let import = csv_import(&file, mapping, target)?;
+    let mut guard = shell.workspace();
+    let workspace = guard.as_mut().ok_or("no workspace is open")?;
+    let report = import
+        .run(workspace, &replace)
+        .map_err(|error| error.to_string())?;
+    Ok(Edited {
+        workspace: WorkspaceView::from(&*workspace),
+        result: report,
+    })
+}
+
+/// The SSH config import last previewed (the file as read, and its target):
+/// the import does what the preview showed, even if the file changes
+/// meanwhile.
+struct SshConfigFiles(Mutex<Option<SshConfigImport>>);
+
+impl SshConfigFiles {
+    fn lock(&self) -> MutexGuard<'_, Option<SshConfigImport>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The user's own OpenSSH config file (`.ssh/config` in their home
+/// folder), if it is there.
+#[tauri::command]
+fn ssh_config_default_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE"))?;
+    let path = PathBuf::from(home).join(".ssh").join("config");
+    path.is_file().then_some(path)
+}
+
+/// Reads an OpenSSH config file and shows what importing its hosts into
+/// `target` would do; writes nothing.
+#[tauri::command]
+fn ssh_config_import_preview(
+    shell: State<'_, Shell>,
+    files: State<'_, SshConfigFiles>,
+    path: PathBuf,
+    target: String,
+) -> Result<SshConfigPreview, String> {
+    let config = SshConfig::read(&path).map_err(|error| error.to_string())?;
+    let import = SshConfigImport { config, target };
+    let preview =
+        read(&shell, |workspace| import.preview(workspace))?.map_err(|error| error.to_string())?;
+    *files.lock() = Some(import);
+    Ok(preview)
+}
+
+/// Runs the import the last preview showed. Existing hosts are only written
+/// if listed in `replace` (the user confirmed them).
+#[tauri::command]
+fn ssh_config_import_run(
+    shell: State<'_, Shell>,
+    files: State<'_, SshConfigFiles>,
+    replace: Vec<HostId>,
+) -> Result<Edited<ImportReport>, String> {
+    let import = files
+        .lock()
+        .clone()
+        .ok_or("no SSH config file has been previewed")?;
     let mut guard = shell.workspace();
     let workspace = guard.as_mut().ok_or("no workspace is open")?;
     let report = import
@@ -3548,6 +3611,7 @@ pub fn run() {
             app.manage(StepRuns::new());
             app.manage(CsvFile(Mutex::new(None)));
             app.manage(NornirFiles(Mutex::new(None)));
+            app.manage(SshConfigFiles(Mutex::new(None)));
             app.manage(JobPlans::default());
             app.manage(EnrichPreviews(Mutex::new(None)));
             // Job runs are per user, in the local data folder, keyed by
@@ -3753,6 +3817,9 @@ pub fn run() {
             csv_import_run,
             nornir_import_preview,
             nornir_import_run,
+            ssh_config_default_path,
+            ssh_config_import_preview,
+            ssh_config_import_run,
             profiles_list,
             profile_save,
             profile_delete,

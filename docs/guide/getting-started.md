@@ -105,7 +105,7 @@ covers results, saved jobs and the rest.
 ## Where next
 
 - [inventory.md](inventory.md): the host file format, folders, settings that
-  inherit, filters, imports from CSV and Nornir.
+  inherit, filters, imports from CSV, Nornir and SSH config files.
 - [sessions.md](sessions.md): tabs, jump hosts, session logs, highlighting
   and reconnecting.
 - [snippets.md](snippets.md): variables, groups and prompts.

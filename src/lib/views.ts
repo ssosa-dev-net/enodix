@@ -55,6 +55,8 @@ export const VIEWS: Record<ViewName, ViewInfo> = {
   "csv-import": { title: () => "Import CSV", icon: FileSpreadsheet },
   /** The Nornir import: files, preview, report (#71; one tab). */
   "nornir-import": { title: () => "Import Nornir", icon: FileInput },
+  /** The OpenSSH config import: file, preview, report (#26; one tab). */
+  "ssh-config-import": { title: () => "Import SSH config", icon: FileInput },
   /** The open workspace's platform definitions (#72; one tab). */
   platforms: { title: () => "Platforms", icon: Cpu },
   /** The highlight rules and the switch (#72; one tab). */

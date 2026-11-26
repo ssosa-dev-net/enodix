@@ -704,6 +704,8 @@ export interface ImportedHost {
   fields: { field: HostField; value: string }[];
   /** The port setting, if the import gives one. */
   port: number | null;
+  /** The jump host setting (a host id), if the import gives one. */
+  jumpHost: string | null;
   tags: string[];
   custom: CustomField[];
 }
@@ -787,6 +789,53 @@ export function previewNornir(
  */
 export function importNornir(replace: string[]) {
   return invoke<Edited<ImportReport>>("nornir_import_run", { replace });
+}
+
+/** What importing an OpenSSH config file would do. */
+export interface SshConfigPreview {
+  /** One per name of a Host line, in file order. */
+  hosts: SshConfigPreviewHost[];
+  /** Never imported: users, key files, Match blocks, other keywords, ... */
+  skipped: ReportEntry[];
+}
+
+export interface SshConfigPreviewHost {
+  /** The line of the Host that gives the name. */
+  line: number | null;
+  name: string;
+  outcome: PreviewOutcome;
+  host: ImportedHost | null;
+}
+
+/** The user's own OpenSSH config file (`~/.ssh/config`) if it is there. */
+export function defaultSshConfigPath() {
+  return invoke<string | null>("ssh_config_default_path");
+}
+
+/** Asks for an OpenSSH config file; null if none was picked. */
+export async function pickSshConfigFile(): Promise<string | null> {
+  const file = await open({ title: "SSH config file to import" });
+  return typeof file === "string" ? file : null;
+}
+
+/**
+ * Reads an OpenSSH config file and shows what importing its hosts into
+ * `target` would do; writes nothing. The import then uses what this read.
+ */
+export function previewSshConfig(path: string, target: string) {
+  return invoke<SshConfigPreview>("ssh_config_import_preview", {
+    path,
+    target,
+  });
+}
+
+/**
+ * Runs the SSH config import the last preview showed (the file as read
+ * then, into its target). Existing hosts are only written if their id is
+ * in `replace`.
+ */
+export function importSshConfig(replace: string[]) {
+  return invoke<Edited<ImportReport>>("ssh_config_import_run", { replace });
 }
 
 /** Asks for a CSV file to import; null if none was picked. */
