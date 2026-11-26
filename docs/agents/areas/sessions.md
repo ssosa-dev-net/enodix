@@ -156,7 +156,14 @@ TrustOnce | Cancel)` (or closing). Cancel → `OpenError::HostKeyNotTrusted`
   (`[data-host-certificate]` in `HostKeyCheck.svelte`). Job pre-flight
   (`job.rs` `host_key_warning`) counts a host with an authority as
   trusted; tunnels and the cli export only plain keys (known limit).
-  `@revoked` is still ignored. Tests: `tests/host_certificates.rs`
+  Revoked keys: `KnownHosts::revoked(host, port)` reads `@revoked` lines
+  the same way (`marked` in `known_hosts.rs`); `Client.revoked` is
+  checked first in `check_server_key`: a plain key, a certificate's key or
+  its signer that is revoked is `OpenError::KnownHosts("... revoked ...")`,
+  no question. Marker-line patterns may be hashed (`|1|salt|hash`,
+  HMAC-SHA1 of the lower-cased name: `matches_hashed`); plain entries under
+  hashed names are still ignored by `check`/`trusted`. Pre-flight does not
+  read `@revoked` (the run fails on that host instead). Tests: `tests/host_certificates.rs`
   (servers get `config.certificates` through `start_tuned`; `host_ca()`,
   `certificate()` in support), `preflight_host_keys.rs`. Known limit:
   writes are serialised per process only.

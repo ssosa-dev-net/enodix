@@ -15,6 +15,10 @@ argon2 = { version = "0.6", default-features = false, features = ["alloc", "zero
 chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 sha2 = "0.11"
 zeroize = "1"
+# Hashed host names of the known hosts (HMAC-SHA1, as OpenSSH writes them).
+base64ct = { version = "1", features = ["alloc"] }
+hmac = "0.13"
+sha1 = "0.11"
 # The hashes of an uploaded file (MD5 beside the vault's SHA-256).
 md5 = "0.8"
 # Local time, for naming session logs after when they started.
