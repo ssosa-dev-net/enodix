@@ -19,6 +19,7 @@ use serde_norway::{Mapping, Value};
 
 use super::{detail_text, normalize, optional_text, EditError};
 use crate::paste::MAX_PASTE_LINE_DELAY_MS;
+use crate::session::PortForward;
 
 /// File keys of the settings.
 pub(super) const PROTOCOL: &str = "protocol";
@@ -34,6 +35,7 @@ pub(super) const PASTE_LINE_DELAY: &str = "paste_line_delay";
 pub(super) const PLATFORM: &str = "platform";
 pub(super) const SERIAL: &str = "serial";
 pub(super) const WEB_LINKS: &str = "web_links";
+pub(super) const FORWARDS: &str = "forwards";
 
 /// Serial parameter keys, inside `serial`.
 const SERIAL_PORT: &str = "port";
@@ -83,6 +85,8 @@ pub struct Settings {
     pub platform: Option<String>,
     /// Links set here, in file order; names are unique.
     pub web_links: Vec<WebLink>,
+    /// Port forwards set here, in file order; names are unique (#21).
+    pub forwards: Vec<ForwardSetting>,
     pub serial: SerialSettings,
 }
 
@@ -125,6 +129,38 @@ impl WebLink {
         values: &crate::template::Variables,
     ) -> Result<String, crate::template::MissingVariables> {
         crate::template::Template::parse(&self.url).fill(values)
+    }
+}
+
+/// A named port forward, as written in a settings file (see
+/// [`PortForward::parse`]): `L [address:]port:host:port` or
+/// `D [address:]port`, or [`FORWARD_OFF`] to drop a forward of that name
+/// set further up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForwardSetting {
+    pub name: String,
+    pub forward: String,
+}
+
+/// What a forward set to it means: none of that name here.
+pub const FORWARD_OFF: &str = "off";
+
+impl ForwardSetting {
+    pub fn new(name: impl Into<String>, forward: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            forward: forward.into(),
+        }
+    }
+
+    /// Whether it drops the forward of its name rather than setting one.
+    pub fn is_off(&self) -> bool {
+        self.forward.trim().eq_ignore_ascii_case(FORWARD_OFF)
+    }
+
+    /// The forward it sets; `None` when it is off.
+    pub fn port_forward(&self) -> Option<Result<PortForward, String>> {
+        (!self.is_off()).then(|| PortForward::parse(&self.name, &self.forward))
     }
 }
 
@@ -237,6 +273,8 @@ pub struct EffectiveSettings {
     pub platform: Option<Effective<String>>,
     /// Merged by name: the order a name first appears, from the root down.
     pub web_links: Vec<Effective<WebLink>>,
+    /// Merged by name as web links are; a nearer `off` drops one.
+    pub forwards: Vec<Effective<ForwardSetting>>,
     pub serial: EffectiveSerial,
     /// Every tag from the root down, once each, from its nearest origin.
     pub tags: Vec<Effective<String>>,
@@ -284,7 +322,17 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
 
     let mut web_links: Vec<Effective<WebLink>> = Vec::new();
     let mut tags: Vec<Effective<String>> = Vec::new();
+    let mut forwards: Vec<Effective<ForwardSetting>> = Vec::new();
     for level in levels {
+        for forward in &level.settings.forwards {
+            forwards.retain(|f| f.value.name != forward.name);
+            if !forward.is_off() {
+                forwards.push(Effective {
+                    value: forward.clone(),
+                    origin: level.origin.clone(),
+                });
+            }
+        }
         for link in &level.settings.web_links {
             let effective = Effective {
                 value: link.clone(),
@@ -322,6 +370,7 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
         paste_line_delay: or_default(nearest(levels, |s| s.paste_line_delay), 0),
         platform: nearest(levels, |s| s.platform.clone()),
         web_links,
+        forwards,
         serial: EffectiveSerial {
             port: nearest(levels, |s| s.serial.port.clone()),
             baud_rate: or_default(nearest(levels, |s| s.serial.baud_rate), DEFAULT_BAUD_RATE),
@@ -365,6 +414,7 @@ pub(super) fn settings_from_document(document: &Mapping) -> Result<Settings, Str
         // Read as host files always did: a number is its text, blank unset.
         platform: detail_text(document, PLATFORM)?,
         web_links: read_web_links(document)?,
+        forwards: read_forwards(document)?,
         serial,
     })
 }
@@ -509,6 +559,32 @@ fn read_web_links(document: &Mapping) -> Result<Vec<WebLink>, String> {
     }
 }
 
+fn read_forwards(document: &Mapping) -> Result<Vec<ForwardSetting>, String> {
+    let error = || {
+        format!(
+            "`{FORWARDS}` must map forward names to forwards, such as `gui: L 8443:10.0.0.1:443` \
+             or `proxy: D 1080`"
+        )
+    };
+    match document.get(FORWARDS) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Mapping(forwards)) => forwards
+            .iter()
+            .map(|(name, forward)| match (name, forward) {
+                (Value::String(name), Value::String(forward)) if !name.trim().is_empty() => {
+                    let setting = ForwardSetting::new(name.trim(), forward.trim());
+                    match setting.port_forward() {
+                        Some(Err(problem)) => Err(format!("forward `{}`: {problem}", setting.name)),
+                        _ => Ok(setting),
+                    }
+                }
+                _ => Err(error()),
+            })
+            .collect(),
+        Some(_) => Err(error()),
+    }
+}
+
 // Writing.
 
 /// `edit`'s settings, cleaned up (text trimmed, blank text unset) and
@@ -572,11 +648,40 @@ fn checked(edit: &Settings) -> Result<Settings, EditError> {
         }
         web_links.push(link);
     }
+    let mut forwards: Vec<ForwardSetting> = Vec::new();
+    for forward in &edit.forwards {
+        let forward = ForwardSetting::new(forward.name.trim(), forward.forward.trim());
+        match (forward.name.is_empty(), forward.forward.is_empty()) {
+            (true, true) => continue,
+            (true, false) => return invalid("a forward has no name"),
+            (false, true) => {
+                return Err(EditError::Invalid(format!(
+                    "forward `{}` says nothing to forward",
+                    forward.name
+                )))
+            }
+            (false, false) => {}
+        }
+        if let Some(Err(problem)) = forward.port_forward() {
+            return Err(EditError::Invalid(format!(
+                "forward `{}`: {problem}",
+                forward.name
+            )));
+        }
+        if forwards.iter().any(|seen| seen.name == forward.name) {
+            return Err(EditError::Invalid(format!(
+                "forward `{}` appears twice",
+                forward.name
+            )));
+        }
+        forwards.push(forward);
+    }
     Ok(Settings {
         credential_profile: normalize(edit.credential_profile.as_deref()),
         jump_host: normalize(edit.jump_host.as_deref()),
         platform: normalize(edit.platform.as_deref()),
         web_links,
+        forwards,
         serial: SerialSettings {
             port: normalize(edit.serial.port.as_deref()),
             ..edit.serial.clone()
@@ -705,6 +810,19 @@ pub(super) fn apply_settings(
                 .map(|link| (link.name.into(), link.url.into()))
                 .collect();
             set(document, WEB_LINKS, Value::Mapping(links));
+        }
+    }
+
+    if edit.forwards != current.forwards {
+        if edit.forwards.is_empty() {
+            document.shift_remove(FORWARDS);
+        } else {
+            let forwards = edit
+                .forwards
+                .into_iter()
+                .map(|forward| (forward.name.into(), forward.forward.into()))
+                .collect();
+            set(document, FORWARDS, Value::Mapping(forwards));
         }
     }
     Ok(())

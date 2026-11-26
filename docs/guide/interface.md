@@ -63,7 +63,9 @@ it, and the terminals in tabs and split panes.
 - **Terminal area**: tabs and split panes. A tab holds a session or a view.
   Each session has one header line (role, name, address, jump host,
   protocol, markers, status) and a menu with its actions; the same menu is
-  the tab's context menu. An empty pane offers the palette and quick
+  the tab's context menu. While an SSH session forwards ports, its header
+  shows **Forwarding n**; clicking it lists every open forward of every
+  session, each with **Stop** (see [Port forwards](sessions.md#port-forwards)). An empty pane offers the palette and quick
   connect. In a narrow pane at the window's top-right, the pane's
   buttons (new connection, multi-send, split right and down, close pane)
   fold into a "…" button that lists them.

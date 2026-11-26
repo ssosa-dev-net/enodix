@@ -82,13 +82,13 @@ use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
     apply_settings, settings_from_document, Level, BACKUP_ON_LOGIN, CONNECT_TIMEOUT,
-    CREDENTIAL_PROFILE, ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PASTE_LINE_DELAY, PLATFORM,
-    PORT, PROTOCOL, SERIAL, WEB_LINKS,
+    CREDENTIAL_PROFILE, ENVIRONMENT, FORWARDS, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PASTE_LINE_DELAY,
+    PLATFORM, PORT, PROTOCOL, SERIAL, WEB_LINKS,
 };
 pub use settings::{
-    Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, Origin, Parity,
-    Protocol, SerialSettings, Settings, WebLink, DEFAULT_BAUD_RATE,
-    DEFAULT_CONNECT_TIMEOUT_SECONDS, DEFAULT_DATA_BITS, DEFAULT_STOP_BITS,
+    Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, ForwardSetting,
+    Origin, Parity, Protocol, SerialSettings, Settings, WebLink, DEFAULT_BAUD_RATE,
+    DEFAULT_CONNECT_TIMEOUT_SECONDS, DEFAULT_DATA_BITS, DEFAULT_STOP_BITS, FORWARD_OFF,
     MAX_CONNECT_TIMEOUT_SECONDS,
 };
 pub use snippets::{ExpandError, Snippet, SNIPPETS_FILE};
@@ -118,7 +118,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 27] = [
+pub const HOST_KEY_ORDER: [&str; 28] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -145,11 +145,12 @@ pub const HOST_KEY_ORDER: [&str; 27] = [
     DESCRIPTION,
     TAGS,
     WEB_LINKS,
+    FORWARDS,
     CUSTOM,
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 15] = [
+pub const FOLDER_KEY_ORDER: [&str; 16] = [
     DESCRIPTION,
     TAGS,
     PLATFORM,
@@ -165,6 +166,7 @@ pub const FOLDER_KEY_ORDER: [&str; 15] = [
     PASTE_LINE_DELAY,
     SERIAL,
     WEB_LINKS,
+    FORWARDS,
 ];
 
 /// The extension of host files the app creates.
@@ -439,6 +441,17 @@ impl ResolvedHost {
             legacy_crypto: self.settings.legacy_crypto.value,
             connect_timeout: self.connect_timeout(),
         }
+    }
+
+    /// The port forwards its SSH sessions open (#21), as its settings
+    /// resolve them (merged by name, nearest first; `off` ones dropped).
+    /// Settings were checked when the workspace was read, so none fail.
+    pub fn port_forwards(&self) -> Vec<crate::session::PortForward> {
+        self.settings
+            .forwards
+            .iter()
+            .filter_map(|forward| forward.value.port_forward()?.ok())
+            .collect()
     }
 
     /// The telnet target for this host: on the resolved port, or telnet's

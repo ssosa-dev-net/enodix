@@ -2245,6 +2245,9 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
                 // Announced just before `Connected`; tests about it read it
                 // with `next_algorithms`.
                 Some(SessionEvent::Algorithms(_)) => {}
+                // Reported as they change; `port_forwards.rs` reads them
+                // from the manager.
+                Some(SessionEvent::Forwards(_)) => {}
                 Some(SessionEvent::LogFailed(failure)) => {
                     panic!("expected a state change, got the log failure {failure:?}")
                 }

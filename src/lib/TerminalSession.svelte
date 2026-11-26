@@ -5,6 +5,7 @@
   import { Terminal } from "@xterm/xterm";
   import { onMount, tick, untrack } from "svelte";
   import { webglRenderer } from "./renderer";
+  import ForwardsMarker from "./ForwardsMarker.svelte";
   import { terminalInput, type TerminalInput } from "./terminalInput";
   import { unserializedModes } from "./handover";
   import { giveKeys } from "./keys";
@@ -1231,6 +1232,7 @@
         {backup.kind === "failed" ? "Not backed up" : "Backed up"}
       </span>
     {/if}
+    <ForwardsMarker sessionId={session?.id ?? null} />
     {#if logFailure}
       <span
         class="marker log-off"

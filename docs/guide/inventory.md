@@ -131,13 +131,33 @@ Without a `serial.port` anywhere, a serial connection asks which port to open. T
 
 Only `http` and `https` links open, and a URL that carries a password is refused.
 
+### Port forwards
+
+`forwards` maps a name to a port forward, written as OpenSSH writes its
+options, which the host's SSH sessions open (see
+[Port forwards](sessions.md#port-forwards)):
+
+```yaml
+forwards:
+  gui: L 8443:10.0.0.1:443 # this computer's port 8443 to 10.0.0.1:443, from the device
+  proxy: D 1080 # a SOCKS5 proxy on port 1080, through the device
+  shared: L *:8830:localhost:830 # listening on every address, not only 127.0.0.1
+```
+
+`L [address:]port:host:port` is a local forward and `D [address:]port` a
+dynamic one (SOCKS5). Without an address a forward listens on `127.0.0.1`;
+`*` listens on every address, and an IPv6 address goes in brackets. Port `0`
+takes any free port. Forwards merge by name down the folders, as web links do;
+`name: "off"` drops one set further up. The settings panel lists the ones that
+apply and where each comes from; they are edited in the files.
+
 ### Keys the app does not know
 
 Keys that enodix does not know are kept as they are when the app saves a host, so you can add your own annotations or comments. Saving a host with nothing changed leaves the file untouched, and changes touch only the lines that changed, so git diffs stay small.
 
 ## Folders and inheritance
 
-A folder can hold a `_folder.yaml` file. It can set a `description`, `tags`, and any of the connection settings above (`platform`, `protocol`, `port`, `credential_profile`, `jump_host`, `legacy_crypto`, `connect_timeout`, `logging`, `backup_on_login`, `environment`, `paste_line_delay`, `serial` and `web_links`). Everything below the folder inherits them.
+A folder can hold a `_folder.yaml` file. It can set a `description`, `tags`, and any of the connection settings above (`platform`, `protocol`, `port`, `credential_profile`, `jump_host`, `legacy_crypto`, `connect_timeout`, `logging`, `backup_on_login`, `environment`, `paste_line_delay`, `serial`, `web_links` and `forwards`). Everything below the folder inherits them.
 
 ```yaml
 # Europe/_folder.yaml

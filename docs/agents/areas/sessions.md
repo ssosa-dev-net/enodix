@@ -723,3 +723,46 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   name the file would read as other hosts (a comma, whitespace, a control
   character, `*`, `?`, `!`, a leading `#`, `@` or `|`): trusting a key for
   `core1,x` would have trusted it for `core1`. Test in `host_keys.rs`.
+
+- Port forwards (#21, `src/session/forward.rs`). `PortForward { name,
+  bind (default 127.0.0.1; `*` = 0.0.0.0, `localhost`), port (0 = any),
+  kind: Local { host, port } | Dynamic }`, `PortForward::parse(name,
+  "L [b:]p:h:hp" | "D [b:]p")` (`-L`/`-D`, any case, IPv6 in brackets),
+  `spec()` the short form. Given in `OpenOptions::forwards` (the shell's
+  `host_options`, SSH only, from `ResolvedHost::port_forwards`); a second
+  channel and a `duplicate` get none (it would only fail to bind). In
+  `ssh::run`, once the shell has started and before `pump`, the device's
+  `Handle` goes in an `Arc` and `Link::start_forwards(DeviceConnection)`
+  binds each listener (a failure, e.g. `AddrInUse` → `Failed { reason:
+  "cannot listen on 127.0.0.1:p: the port is already in use" }`, that one
+  alone); each accepted connection → `channel_open_direct_tcpip` on the
+  session's own connection (originator = the client's address), within
+  the device's connect timeout, then `tunnel::pump` (now `pub(crate)`:
+  the drain + 8 MiB limit). Dynamic: SOCKS5 no-auth, CONNECT, IPv4 /
+  name / IPv6 (names resolved by the device); replies 0 ok, 2
+  prohibited, 5 refused, 4 timed out, 1 other, 7 not CONNECT, 8 address
+  type; no SOCKS4. A refused channel → `ForwardStatus.last_failure` "the
+  device could not reach H port P (it does not allow forwarding | the
+  connection failed | …)" (`ssh::forwarding_failure`). Status: `Forwards`
+  (shared `Arc` in `SessionHandle` and `Link`): `ForwardStatus { name,
+  spec, state: listening { address, port } | failed { reason } | stopped,
+  lastFailure }` (camelCase); every change → `SessionEvent::Forwards(all)`
+  (the first one before `Connected`; empty once the connection ends,
+  `Link::end_forwards` after `pump`). `SessionManager::forwards(id)`,
+  `all_forwards()` (sessions with any, by id), `stop_forward(id, name)`
+  → `Ok(false)` if none listening (it reopens on reconnect). Relays keep
+  nothing of it; the shell maps the event to the app event
+  `forwards-changed`, and the interface reads `session_forwards`,
+  `forwards_list` (with the record's name/title) and calls
+  `forward_stop`. Limits: forwards share the terminal's connection, so a
+  paused terminal (flow control, the russh quirk above) pauses them; no
+  `ssh -R`; no forward without a terminal; no question before opening one
+  on a production host (they are set in the workspace on purpose; the
+  trust page warns that any local program can use them). Tests:
+  `tests/port_forwards.rs` (local, SOCKS by address and name, a SOCKS
+  refusal, BIND and no-acceptable-method, a device refusing forwarding
+  in words + SOCKS 2, stop, close + reconnect, port in use, duplicate and
+  second channel, through a jump host from the workspace, inheritance /
+  `off`, a bad forward as a file problem, folder edits) and the parse
+  unit tests in `forward.rs`. Not tried on a real device or by the smoke
+  test.

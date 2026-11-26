@@ -68,7 +68,16 @@ export interface Settings {
   /** The kind of device (`eos`, `srlinux`, ...); any text. */
   platform: string | null;
   web_links: WebLink[];
+  /** Port forwards set here (#21): `L [address:]port:host:port`,
+   * `D [address:]port`, or `off` to drop one set further up. */
+  forwards: ForwardSetting[];
   serial: SerialSettings;
+}
+
+/** A named port forward, as written in a settings file. */
+export interface ForwardSetting {
+  name: string;
+  forward: string;
 }
 
 /** Where an effective setting comes from. */
@@ -98,6 +107,7 @@ export interface EffectiveSettings {
   paste_line_delay: Effective<number>;
   platform: Effective<string> | null;
   web_links: Effective<WebLink>[];
+  forwards: Effective<ForwardSetting>[];
   serial: {
     /** Null when nothing sets a port. */
     port: Effective<string> | null;
