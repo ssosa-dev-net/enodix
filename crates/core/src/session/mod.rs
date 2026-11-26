@@ -10,6 +10,7 @@ mod agent;
 mod algorithms;
 mod auto_reconnect;
 pub(crate) mod connection;
+mod encoding;
 mod forward;
 mod local;
 mod origin;
@@ -37,7 +38,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::known_hosts::{HostKey, KnownHosts};
 use crate::logging::{LogFailure, Logger, SessionLog};
-pub use crate::workspace::TerminalType;
+pub use crate::workspace::{Encoding, TerminalType};
 pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
@@ -713,6 +714,11 @@ pub struct OpenOptions {
     /// its connection (see [`PortForward`]); others, second channels and
     /// duplicates open none.
     pub forwards: Vec<PortForward>,
+    /// How the device's bytes stand for characters: what it sends is
+    /// converted to UTF-8 (for the terminal and the log) and what is
+    /// written to the session is converted back (#24). A second channel
+    /// and local shells use UTF-8.
+    pub encoding: Encoding,
 }
 
 /// Something done each time a session connects, beside it.
@@ -1153,6 +1159,11 @@ impl SessionManager {
         let log = entry.options.log.clone();
         let channel = entry.channel_of.is_some();
         let login_banner = entry.options.login_banner && !channel;
+        let encoding = if channel || entry.target.transport() == Transport::Local {
+            Encoding::Utf8
+        } else {
+            entry.options.encoding
+        };
         let forward_options = if channel {
             Vec::new()
         } else {
@@ -1182,6 +1193,7 @@ impl SessionManager {
                 watchers,
                 when_connected,
                 login_banner,
+                encoding,
                 forward_options,
                 forwards,
             };
@@ -1446,6 +1458,8 @@ struct Link {
     /// Whether an SSH session shows its login banners
     /// ([`OpenOptions::login_banner`]).
     login_banner: bool,
+    /// [`OpenOptions::encoding`].
+    encoding: Encoding,
     /// The forwards to open once connected ([`OpenOptions::forwards`]).
     forward_options: Vec<PortForward>,
     /// Those forwards, as they run (shared with the manager's handle).
@@ -1457,9 +1471,16 @@ impl Link {
     /// so does losing its events' reader: a session whose output is paused
     /// (flow control) sends nothing that would tell it otherwise (#118).
     async fn command(&mut self) -> Command {
-        tokio::select! {
+        let command = tokio::select! {
             command = self.commands.recv() => command.unwrap_or(Command::Close),
             () = self.events.closed() => Command::Close,
+        };
+        match command {
+            // What the user types, in the device's encoding.
+            Command::Write(bytes) if self.encoding != Encoding::Utf8 => {
+                Command::Write(self.encoding.encode(&bytes))
+            }
+            command => command,
         }
     }
 
@@ -1535,6 +1556,15 @@ impl Link {
     /// already counted in [`Link::flow`]. Returns `false` if nobody is
     /// listening any more.
     fn forward_counted(&mut self, bytes: Vec<u8>) -> bool {
+        // In UTF-8 for the terminal and the log; the extra bytes count as
+        // read, so that acknowledging what was delivered balances.
+        let bytes = if self.encoding == Encoding::Utf8 {
+            bytes
+        } else {
+            let converted = self.encoding.decode(&bytes);
+            self.flow.read(converted.len() - bytes.len());
+            converted
+        };
         self.start_log();
         if let Some(logger) = &mut self.logger {
             if let Err(failure) = logger.write(&bytes) {
