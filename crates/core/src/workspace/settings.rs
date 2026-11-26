@@ -27,6 +27,7 @@ pub(super) const PORT: &str = "port";
 pub(super) const CREDENTIAL_PROFILE: &str = "credential_profile";
 pub(super) const JUMP_HOST: &str = "jump_host";
 pub(super) const LEGACY_CRYPTO: &str = "legacy_crypto";
+pub(super) const AGENT_FORWARDING: &str = "agent_forwarding";
 pub(super) const CONNECT_TIMEOUT: &str = "connect_timeout";
 pub(super) const LOGGING: &str = "logging";
 pub(super) const AUTO_RECONNECT: &str = "auto_reconnect";
@@ -74,6 +75,9 @@ pub struct Settings {
     /// The id of another host of the workspace to connect through.
     pub jump_host: Option<String>,
     pub legacy_crypto: Option<bool>,
+    /// Forward the SSH agent to the host (off unless set): see
+    /// [`crate::session::SshTarget::agent_forwarding`].
+    pub agent_forwarding: Option<bool>,
     /// How long, in seconds, opening a session may wait on the device (1
     /// to [`MAX_CONNECT_TIMEOUT_SECONDS`]).
     pub connect_timeout: Option<u32>,
@@ -336,6 +340,7 @@ pub struct EffectiveSettings {
     pub credential_profile: Option<Effective<String>>,
     pub jump_host: Option<Effective<String>>,
     pub legacy_crypto: Effective<bool>,
+    pub agent_forwarding: Effective<bool>,
     /// In seconds.
     pub connect_timeout: Effective<u32>,
     pub logging: Effective<bool>,
@@ -442,6 +447,7 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
         credential_profile: nearest(levels, |s| s.credential_profile.clone()),
         jump_host: nearest(levels, |s| s.jump_host.clone()),
         legacy_crypto: or_default(nearest(levels, |s| s.legacy_crypto), false),
+        agent_forwarding: or_default(nearest(levels, |s| s.agent_forwarding), false),
         connect_timeout: or_default(
             nearest(levels, |s| s.connect_timeout),
             DEFAULT_CONNECT_TIMEOUT_SECONDS,
@@ -490,6 +496,7 @@ pub(super) fn settings_from_document(document: &Mapping) -> Result<Settings, Str
         credential_profile: optional_text(document, CREDENTIAL_PROFILE)?,
         jump_host: optional_text(document, JUMP_HOST)?,
         legacy_crypto: read_flag(document, LEGACY_CRYPTO)?,
+        agent_forwarding: read_flag(document, AGENT_FORWARDING)?,
         connect_timeout: read_connect_timeout(document)?,
         logging: read_flag(document, LOGGING)?,
         auto_reconnect: read_flag(document, AUTO_RECONNECT)?,
@@ -841,6 +848,11 @@ pub(super) fn apply_settings(
     }
     for (key, old, new) in [
         (LEGACY_CRYPTO, current.legacy_crypto, edit.legacy_crypto),
+        (
+            AGENT_FORWARDING,
+            current.agent_forwarding,
+            edit.agent_forwarding,
+        ),
         (LOGGING, current.logging, edit.logging),
         (AUTO_RECONNECT, current.auto_reconnect, edit.auto_reconnect),
         (LOG_TIMESTAMPS, current.log_timestamps, edit.log_timestamps),

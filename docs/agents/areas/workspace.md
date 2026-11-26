@@ -40,7 +40,7 @@ The workspace folder format and everything read from it (`crates/core/src/worksp
   which YAML 1.1 readers (PyYAML/Nornir) take as a boolean.
 - `src/workspace/settings.rs` — inherited settings. Keys, the same in
   host files and `_folder.yaml`: `protocol` (ssh/telnet/serial), `port`,
-  `platform` (any text; #40), `credential_profile` (a name), `jump_host` (a host id; see `jumps.rs`), `legacy_crypto`, `logging`, `backup_on_login` (#46, off by default) (bools),
+  `platform` (any text; #40), `credential_profile` (a name), `jump_host` (a host id; see `jumps.rs`), `legacy_crypto`, `agent_forwarding` (#26, off by default), `logging`, `backup_on_login` (#46, off by default) (bools),
   `connect_timeout` (seconds, 1–3600, default 15 = `session::DEFAULT_CONNECT_TIMEOUT`),
   `terminal_type` (#24: `xterm-256color` default, `xterm`, `vt100`, `ansi`, `linux`;
   `TerminalType`, carried by `SshTarget` and `TelnetTarget` and used for the pty

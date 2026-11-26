@@ -1377,6 +1377,15 @@
         Insecure
       </span>
     {/if}
+    {#if session?.agentForwarded}
+      <span
+        class="marker forwarded"
+        data-agent-forwarded
+        title="Your SSH agent is forwarded to this device: whoever is root on it can log in with your keys while this session lasts"
+      >
+        Agent forwarded
+      </span>
+    {/if}
     {#if session && !session.encrypted}
       <span
         class="marker unencrypted"
@@ -1890,6 +1899,7 @@
     font-weight: var(--weight-bold);
   }
 
+  .forwarded,
   .unencrypted {
     color: var(--danger);
   }

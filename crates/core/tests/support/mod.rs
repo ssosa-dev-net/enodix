@@ -163,6 +163,9 @@ pub const CODE_QUESTION: &str = "Verification code: ";
 pub const CODE_NAME: &str = "Two-factor login";
 pub const CODE_INSTRUCTIONS: &str = "Enter the code from your authenticator app.";
 pub const PROMPT: &[u8] = b"test-ssh$ ";
+/// What the scripted shell's `agent` prints before the number of keys the
+/// forwarded agent holds.
+pub const AGENT_KEYS: &str = "agent keys: ";
 
 /// The byte a terminal sends for Ctrl+C.
 pub const CTRL_C: u8 = 0x03;
@@ -1090,6 +1093,7 @@ pub fn target_at(host: &str, port: u16) -> SshTarget {
         auth: SshAuth::Password(PASSWORD.into()),
         jump_hosts: Vec::new(),
         legacy_crypto: false,
+        agent_forwarding: false,
         connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         terminal_type: TerminalType::default(),
     }
@@ -1128,6 +1132,7 @@ impl Server for ScriptedServer {
             channels: HashMap::new(),
             interactive: Interactive::Start,
             key_accepted: false,
+            agent_forwarded: false,
             device: self.device.clone(),
             open: self.open.clone(),
             counted: false,
@@ -1200,6 +1205,8 @@ struct ScriptedShell {
     interactive: Interactive,
     /// [`KEY_THEN_PASSWORD_USERNAME`]'s key was accepted (the first step).
     key_accepted: bool,
+    /// The client asked for its SSH agent to be forwarded.
+    agent_forwarded: bool,
     /// How the shell starts, in device mode.
     device: Option<Device>,
     /// The server's count of open connections.
@@ -1434,6 +1441,30 @@ impl ScriptedShell {
             }
             Some("term") if !device => {
                 session.data(channel, format!("{}\r\n", state.term).into_bytes())?;
+            }
+            // What the forwarded agent holds, if the client forwards one:
+            // `agent keys: N` (or `agent: not forwarded`), after the prompt.
+            Some("agent") => {
+                if self.agent_forwarded {
+                    let handle = session.handle();
+                    tokio::spawn(async move {
+                        let answer = match handle.channel_open_agent().await {
+                            Ok(opened) => {
+                                let mut agent = russh::keys::agent::client::AgentClient::connect(
+                                    opened.into_stream(),
+                                );
+                                match agent.request_identities().await {
+                                    Ok(keys) => format!("{AGENT_KEYS}{}\r\n", keys.len()),
+                                    Err(_) => "agent: failed\r\n".into(),
+                                }
+                            }
+                            Err(_) => "agent: refused\r\n".into(),
+                        };
+                        let _ = handle.data(channel, answer.into_bytes()).await;
+                    });
+                } else {
+                    session.data(channel, &b"agent: not forwarded\r\n"[..])?;
+                }
             }
             Some("colors") => session.data(channel, COLOR_OUTPUT)?,
             Some("fullscreen") => session.data(channel, FULLSCREEN_OUTPUT)?,
@@ -2104,6 +2135,16 @@ impl Handler for ScriptedShell {
             }
         });
         Ok(())
+    }
+
+    async fn agent_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        self.agent_forwarded = true;
+        session.channel_success(channel)?;
+        Ok(true)
     }
 
     async fn pty_request(
