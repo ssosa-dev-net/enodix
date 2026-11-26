@@ -728,6 +728,7 @@ pub(super) async fn session_attach(
             session,
             window,
             Channels {
+                session,
                 output: on_output,
                 state: on_state,
                 prompt: on_prompt,

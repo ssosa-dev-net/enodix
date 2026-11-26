@@ -221,6 +221,18 @@
         "configurations a device prints. Turn logging off for sensitive devices.",
     },
     {
+      key: "auto_reconnect",
+      label: "Reconnect automatically",
+      input: { kind: "choice", options: ON_OFF },
+      own: (s) => flag(s.auto_reconnect),
+      set: (s, v) => ({ ...s, auto_reconnect: toFlag(v) }),
+      effective: (e) => e.auto_reconnect,
+      note:
+        "A session that drops tries again by itself, waiting longer each time, with " +
+        "the count shown; any key stops it. It never repeats a refused login " +
+        "(accounts lock) and never answers a host-key question.",
+    },
+    {
       key: "log_timestamps",
       label: "Log timestamps",
       input: { kind: "choice", options: ON_OFF },

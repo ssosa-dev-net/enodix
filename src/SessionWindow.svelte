@@ -60,6 +60,7 @@
   import {
     hostRole,
     hostSafety,
+    reconnectsByItself,
     inventory,
     setWorkspace,
   } from "./lib/inventory.svelte";
@@ -1048,6 +1049,8 @@
             jumpHost={record.jumpHost}
             role={record.role}
             safety={record.safety ?? NO_SAFETY}
+            autoReconnect={record.host !== null &&
+              reconnectsByItself(record.host)}
             name={record.name}
             {shown}
             {focused}

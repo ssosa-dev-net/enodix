@@ -8,6 +8,7 @@
 
 mod agent;
 mod algorithms;
+mod auto_reconnect;
 pub(crate) mod connection;
 mod forward;
 mod local;
@@ -41,6 +42,7 @@ pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
 };
+pub use auto_reconnect::{AutoReconnect, AutoReconnects, Retry, AUTO_RECONNECT_DELAYS};
 pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward, SOCKS_HANDSHAKE_TIMEOUT};
 pub use local::{
     local_environment, local_shells, local_start_folder, pick_local_shell, LocalShell, LocalTarget,
@@ -600,7 +602,44 @@ impl ConnectStage {
     }
 }
 
+impl OpenError {
+    /// Whether trying the same login again by itself is safe: the device
+    /// was not reached, or hung up before a login began. Never a refused
+    /// login (accounts lock), a host-key question, or a failure that
+    /// trying again cannot change (a key, the agent, the algorithms).
+    pub fn allows_auto_reconnect(&self) -> bool {
+        match self {
+            Self::NameNotResolved { .. }
+            | Self::Unreachable { .. }
+            | Self::ConnectionRefused { .. }
+            | Self::Connect(_)
+            | Self::ClosedBeforeLogin => true,
+            // Only before anything of the login was sent: from the login
+            // on, the credentials may have reached an AAA server (RADIUS,
+            // TACACS+) that counts each try against the account.
+            Self::TimedOut { stage, .. } => matches!(
+                stage,
+                ConnectStage::Tcp { .. } | ConnectStage::Identification | ConnectStage::KeyExchange
+            ),
+            Self::JumpHost { error, .. } => error.allows_auto_reconnect(),
+            _ => false,
+        }
+    }
+}
+
 impl CloseReason {
+    /// Whether a session that closed for this reason may try again by
+    /// itself (the `auto_reconnect` setting): its connection was lost, or
+    /// a try failed before anyone could refuse a login ([`OpenError::
+    /// allows_auto_reconnect`]). Never one the user ended (closed, `exit`).
+    pub fn allows_auto_reconnect(&self) -> bool {
+        match self {
+            Self::ConnectionLost => true,
+            Self::Failed(error) => error.allows_auto_reconnect(),
+            _ => false,
+        }
+    }
+
     /// What the user can do about it: [`OpenError::advice`] for a session
     /// that could not be opened, else `None`.
     pub fn advice(&self) -> Option<String> {

@@ -163,6 +163,7 @@ pub struct ExportedSettings {
     /// Seconds.
     pub connect_timeout: u32,
     pub logging: bool,
+    pub auto_reconnect: bool,
     pub log_timestamps: bool,
     pub backup_on_login: bool,
     pub environment: Option<Environment>,
@@ -440,6 +441,7 @@ fn exported_settings(resolved: &ResolvedHost) -> ExportedSettings {
         legacy_crypto: settings.legacy_crypto.value,
         connect_timeout: settings.connect_timeout.value,
         logging: settings.logging.value,
+        auto_reconnect: settings.auto_reconnect.value,
         log_timestamps: settings.log_timestamps.value,
         backup_on_login: settings.backup_on_login.value,
         environment: settings.environment.as_ref().map(|e| e.value),
