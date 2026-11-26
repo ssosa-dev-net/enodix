@@ -24,7 +24,7 @@ use crate::names;
 use crate::session::{DEFAULT_SSH_PORT, DEFAULT_TELNET_PORT};
 use crate::workspace::{
     CustomField, Environment, FlowControl, Folder, HostId, Parity, Problem, Protocol, ResolvedHost,
-    Workspace,
+    TerminalType, Workspace,
 };
 
 /// The version of the export's format. It goes up when a field changes
@@ -167,6 +167,7 @@ pub struct ExportedSettings {
     pub environment: Option<Environment>,
     /// Milliseconds.
     pub paste_line_delay: u32,
+    pub terminal_type: TerminalType,
     pub platform: Option<String>,
     pub serial: ExportedSerial,
 }
@@ -441,6 +442,7 @@ fn exported_settings(resolved: &ResolvedHost) -> ExportedSettings {
         backup_on_login: settings.backup_on_login.value,
         environment: settings.environment.as_ref().map(|e| e.value),
         paste_line_delay: settings.paste_line_delay.value,
+        terminal_type: settings.terminal_type.value,
         platform: settings.platform.as_ref().map(|p| p.value.clone()),
         serial: ExportedSerial {
             port: serial.port.as_ref().map(|port| port.value.clone()),

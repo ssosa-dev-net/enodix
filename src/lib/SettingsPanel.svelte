@@ -267,6 +267,30 @@
       effective: (e) => e.paste_line_delay,
       note: "A wait between pasted lines, for devices that drop fast input.",
     },
+    {
+      key: "terminal_type",
+      label: "Terminal type",
+      input: {
+        kind: "choice",
+        options: [
+          ["xterm-256color", "xterm-256color"],
+          ["xterm", "xterm"],
+          ["vt100", "vt100"],
+          ["ansi", "ansi"],
+          ["linux", "linux"],
+        ],
+      },
+      own: (s) => s.terminal_type ?? "",
+      set: (s, v) => ({
+        ...s,
+        terminal_type: (v || null) as Settings["terminal_type"],
+      }),
+      effective: (e) => e.terminal_type,
+      note:
+        "What the session announces to the device (TERM). Some older devices " +
+        "and console servers draw their menus wrongly with xterm-256color. " +
+        "Applies to the next connection.",
+    },
   ];
 
   type Serial = Settings["serial"];
