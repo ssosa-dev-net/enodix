@@ -79,7 +79,11 @@ export type ConnectTarget =
   | { kind: "quickSerial"; port: string; parameters: SerialParameters }
   /** A shell on this computer: `shell` is one of `localShells`' ids, null
    * the one the preference names. */
-  | { kind: "local"; shell: string | null };
+  | { kind: "local"; shell: string | null }
+  /** A host of the open workspace through the system's ssh client in a
+   * local shell: for a device the app's own SSH cannot negotiate with.
+   * Marked insecure in the header. */
+  | { kind: "systemSsh"; id: string };
 
 export interface TerminalSize {
   cols: number;
@@ -253,6 +257,10 @@ export interface SessionRecord {
   workspace: string | null;
   safety: PasteSafety;
   role: Role | null;
+  /** Why the session is not safe, when it is the system's ssh client with
+   * outdated algorithms rather than an SSH session of the app; null
+   * otherwise. */
+  insecure: string | null;
 }
 
 /** Why a reconnect did not start (`Session.reconnect` rejects with it):
@@ -558,4 +566,5 @@ const NO_RECORD: SessionRecord = {
   workspace: null,
   safety: { environment: null, lineDelayMs: 0 },
   role: null,
+  insecure: null,
 };

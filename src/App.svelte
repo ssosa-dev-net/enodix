@@ -1571,6 +1571,27 @@
   }
 
   /**
+   * Opens the session's host through the system's ssh client when the
+   * app's own SSH could not negotiate with it (#27): this tab goes, a
+   * local shell running `ssh` replaces it, marked insecure. Only for a
+   * host of the open workspace.
+   */
+  function systemSsh(tab: TabId, session: OpenSession) {
+    const id = liveHost(session);
+    const tree = inventory.workspace?.tree;
+    const host = id !== null && tree ? findHost(tree, id) : null;
+    if (!host) return undefined;
+    return async () => {
+      await dismiss(tab);
+      connect(
+        { kind: "systemSsh", id: host.id },
+        host.name,
+        `${host.name} (system ssh)`,
+      );
+    };
+  }
+
+  /**
    * Sends the snippet `name` from the Snippets view or the palette to the
    * terminal used last (#86): one in a session window fills it in there,
    * through that terminal's own paste path; else as `sendSnippet`.
@@ -1935,6 +1956,7 @@
               ondismiss={() => dismiss(tab)}
               onduplicate={(id) => duplicate(tab, id)}
               onpasswordlogin={passwordLogin(tab, session)}
+              onsystemssh={systemSsh(tab, session)}
               ondetails={detailsOf(session)}
               onfiles={filesOf(session)}
               moves={windowMoves(

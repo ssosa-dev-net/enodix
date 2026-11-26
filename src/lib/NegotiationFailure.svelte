@@ -4,9 +4,12 @@
   interface Props {
     failure: NegotiationFailure;
     ondismiss: () => void;
+    /** Opens the host through the system's ssh client; without it, the
+     * card does not offer that. */
+    onsystemssh?: () => void;
   }
 
-  let { failure, ondismiss }: Props = $props();
+  let { failure, ondismiss, onsystemssh }: Props = $props();
 
   const kinds: { kind: AlgorithmKind; label: string; name: string }[] = [
     { kind: "keyExchange", label: "Key exchange", name: "key-exchange" },
@@ -26,7 +29,7 @@
           failure.jumpHost ? `the jump host ${failure.jumpHost}` : "this host"
         } (or of its folder) and connect again.`
       : failure.unsupported
-        ? `${failure.legacyCrypto ? "Even with legacy crypto on, none" : "Legacy crypto would not help: none"} of the ${nameOf(failure.unsupported)} algorithms it offers is supported.`
+        ? `${failure.legacyCrypto ? "Even with legacy crypto on, none" : "Legacy crypto would not help: none"} of the ${nameOf(failure.unsupported)} algorithms it offers is supported. To reach it anyway, use telnet or serial, or the system's ssh client in a local shell (insecure: it is not checked or logged by the app).`
         : "",
   );
 </script>
@@ -60,6 +63,13 @@
       {/each}
     </dl>
     <div class="actions">
+      {#if onsystemssh && failure.unsupported}
+        <button
+          data-system-ssh
+          title="Opens a local shell running the system's ssh with the outdated algorithms allowed. Not checked or logged by the app."
+          onclick={onsystemssh}>Open with the system ssh (insecure)</button
+        >
+      {/if}
       <button onclick={ondismiss}>New connection</button>
     </div>
   </section>
@@ -133,5 +143,7 @@
   .actions {
     display: flex;
     justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
 </style>

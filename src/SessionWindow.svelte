@@ -210,6 +210,7 @@
       workspace: null,
       safety: NO_SAFETY,
       role: null,
+      insecure: null,
     };
     sessions[taken.tab] = {
       source: { kind: "adopt", id: taken.session, snapshot: taken.snapshot },
@@ -819,6 +820,7 @@
       workspace: inventory.workspace?.root ?? null,
       safety: hostSafety(host.id) ?? NO_SAFETY,
       role: hostRole(host.id),
+      insecure: null,
     };
     askForKeys(mark);
     await edit(

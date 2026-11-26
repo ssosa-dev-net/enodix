@@ -119,6 +119,7 @@ fn a_quick_connection_has_only_its_name_and_title() {
             "workspace": null,
             "safety": { "environment": null, "lineDelayMs": 0 },
             "role": null,
+            "insecure": null,
         })
     );
 }

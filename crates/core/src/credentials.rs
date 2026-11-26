@@ -28,7 +28,10 @@ use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::{JumpHost, SerialTarget, SshAgent, SshAuth, SshTarget, TelnetTarget};
+use crate::session::{
+    JumpHost, SerialTarget, SshAgent, SshAuth, SshTarget, SystemSshHost, TelnetTarget,
+    DEFAULT_SSH_PORT,
+};
 use crate::workspace::{Folder, HostId, JumpChainError, Protocol, ResolvedHost, Workspace};
 
 mod agent;
@@ -736,6 +739,30 @@ impl<'a> Profiles<'a> {
         let mut target = self.resolve(id)?.telnet_target();
         target.jump_hosts = self.jump_hosts(id)?;
         Ok(target)
+    }
+
+    /// The host `id` for the system's ssh client (#27): its address, its
+    /// port (SSH's default when nothing sets one) and the username of its
+    /// credential profile, if it has a usable one. Never a secret: the
+    /// client asks for the password itself. Jump hosts are not followed,
+    /// so a host that has one is refused rather than reached around it.
+    pub fn system_ssh_host(&self, id: &HostId) -> Result<SystemSshHost, ProfileError> {
+        let host = self.resolve(id)?;
+        if let Some(jump) = self.workspace.jump_chain(&host)?.last() {
+            return Err(ProfileError::Invalid(format!(
+                "{id} is reached through the jump host {}: the system's ssh client would skip it",
+                jump.host.id
+            )));
+        }
+        let username = match host.settings.credential_profile.as_ref() {
+            Some(named) => self.profile(&named.value)?.map(|profile| profile.username),
+            None => None,
+        };
+        Ok(SystemSshHost {
+            host: host.host.address.clone(),
+            port: host.port_or(DEFAULT_SSH_PORT),
+            username: username.filter(|name| !name.is_empty()),
+        })
     }
 
     /// The target for opening the host `id`'s serial console, whatever

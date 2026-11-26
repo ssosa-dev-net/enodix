@@ -752,6 +752,83 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   character, `*`, `?`, `!`, a leading `#`, `@` or `|`): trusting a key for
   `core1,x` would have trusted it for `core1`. Test in `host_keys.rs`.
 
+- Legacy hosts through the system ssh (#27): the project does not fork
+  `russh` or add MD5, RC4, Blowfish or SSH-1. `session/system_ssh.rs`
+  (`system_ssh_target`, `SystemSshHost`, `SYSTEM_SSH_WARNING`) builds the
+  `LocalTarget` that runs the system's OpenSSH client with the outdated
+  algorithms allowed (`-o KexAlgorithms=+...` and so on, `-p`, `-l`, then
+  `-- host`), on the local transport of #22 (`local.rs`). It is not an SSH
+  session of enodix: no host key check against the app's, no workspace
+  credentials, no logging. A newer client refuses options for algorithms it
+  dropped (Blowfish, RC4), and OpenSSH has no SSH-1. The negotiation card
+  names the fallback when the device offers only unsupported algorithms.
+  Tests: `system_ssh.rs` (a stand-in script prints its arguments, Unix
+  only), `system_ssh_host.rs` (`Profiles::system_ssh_host`: address, port
+  and the profile's username only, never a secret; a host behind a jump
+  host is refused; the record carries the warning).
+  From the interface: `ConnectTarget::SystemSsh { id }` (`src-tauri/src/lib.rs`,
+  `session_open`) opens it as an unlogged local session whose
+  `SessionRecord::insecure` is `SYSTEM_SSH_WARNING`; the header shows an
+  **Insecure** marker (`[data-insecure]`) and the negotiation card's
+  **Open with the system ssh (insecure)** button (`[data-system-ssh]`,
+  shown when the device offers only unsupported algorithms, in the main
+  window only: `TerminalSession`'s `onsystemssh`, wired by `App.svelte`
+  `systemSsh`) replaces the tab with it. Not done: a way in from the tree
+  or the details sheet (the card is the one entry), session windows, the
+  smoke test (the button was not driven in the real app).
+
+- Port forwards (#21, `src/session/forward.rs`). `PortForward { name,
+  bind (default 127.0.0.1; `*` = 0.0.0.0, `localhost`; from the workspace
+  loopback only, see `workspace.md`), port (0 = any),
+  kind: Local { host, port } | Dynamic }`, `PortForward::parse(name,
+  "L [b:]p:h:hp" | "D [b:]p")` (`-L`/`-D`, any case, IPv6 in brackets),
+  `spec()` the short form. Given in `OpenOptions::forwards` (the shell's
+  `host_options`, SSH only, from `ResolvedHost::port_forwards`); a second
+  channel and a `duplicate` get none (it would only fail to bind). In
+  `ssh::run`, once the shell has started and before `pump`, the device's
+  `Handle` goes in an `Arc` and `Link::start_forwards(DeviceConnection)`
+  binds each listener (a failure, e.g. `AddrInUse` → `Failed { reason:
+  "cannot listen on 127.0.0.1:p: the port is already in use" }`, that one
+  alone); each accepted connection → `channel_open_direct_tcpip` on the
+  session's own connection (originator = the client's address), within
+  the device's connect timeout, then `tunnel::pump` (now `pub(crate)`:
+  the drain + 8 MiB limit). Dynamic: SOCKS5 no-auth, CONNECT, IPv4 /
+  name / IPv6 (names resolved by the device); replies 0 ok, 2
+  prohibited, 5 refused, 4 timed out, 1 other, 7 not CONNECT, 8 address
+  type; no SOCKS4. The handshake has `SOCKS_HANDSHAKE_TIMEOUT` (10 s;
+  a silent or half-greeting client is closed, review of #34). 50 failed
+  accepts in a row (100 ms apart) → the forward `Failed { "it stopped
+  accepting connections: …" }`. A refused channel → `ForwardStatus.last_failure` "the
+  device could not reach H port P (it does not allow forwarding | the
+  connection failed | …)" (`ssh::forwarding_failure`). Status: `Forwards`
+  (shared `Arc` in `SessionHandle` and `Link`): `ForwardStatus { name,
+  spec, state: listening { address, port } | failed { reason } | stopped,
+  lastFailure }` (camelCase); every change → `SessionEvent::Forwards(all)`
+  (the first one before `Connected`; empty once the connection ends,
+  `Link::end_forwards` after `pump`). `SessionManager::forwards(id)`,
+  `all_forwards()` (sessions with any, by id), `stop_forward(id, name).await`
+  (async: aborts the forward's task and awaits its `JoinHandle`, so the
+  listener is dropped before `Stopped` is reported; `Link::end_forwards`
+  likewise, before `Closed`. A bare `abort()` left the port accepting
+  for a moment: seen on Windows CI)
+  → `Ok(false)` if none listening (it reopens on reconnect). Relays keep
+  nothing of it; the shell maps the event to the app event
+  `forwards-changed`, and the interface reads `session_forwards`,
+  `forwards_list` (with the record's name/title) and calls
+  `forward_stop`. Limits: forwards share the terminal's connection, so a
+  paused terminal (flow control, the russh quirk above) pauses them; no
+  `ssh -R`; no forward without a terminal; no question before opening one
+  on a production host (they are set in the workspace on purpose; the
+  trust page warns that any local program can use them). Tests:
+  `tests/port_forwards.rs` (local, SOCKS by address and name, a SOCKS
+  refusal, BIND and no-acceptable-method, a device refusing forwarding
+  in words + SOCKS 2, stop, close + reconnect, port in use, duplicate and
+  second channel, a silent SOCKS client closed after the timeout (~10 s),
+  through a jump host from the workspace, inheritance /
+  `off`, a bad forward as a file problem, folder edits) and the parse
+  unit tests in `forward.rs`. Not tried on a real device or by the smoke
+  test.
+
 ## Local shell (#22)
 
 - `src/session/local.rs` — the fourth transport, `Transport::Local` /
