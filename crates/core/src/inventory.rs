@@ -23,8 +23,8 @@ use crate::import::is_secret_name;
 use crate::names;
 use crate::session::{DEFAULT_SSH_PORT, DEFAULT_TELNET_PORT};
 use crate::workspace::{
-    CustomField, Environment, FlowControl, Folder, HostId, Parity, Problem, Protocol, ResolvedHost,
-    TerminalType, Workspace,
+    CustomField, Encoding, Environment, FlowControl, Folder, HostId, Parity, Problem, Protocol,
+    ResolvedHost, TerminalType, Workspace,
 };
 
 /// The version of the export's format. It goes up when a field changes
@@ -170,6 +170,7 @@ pub struct ExportedSettings {
     /// Milliseconds.
     pub paste_line_delay: u32,
     pub terminal_type: TerminalType,
+    pub encoding: Encoding,
     pub platform: Option<String>,
     pub serial: ExportedSerial,
 }
@@ -447,6 +448,7 @@ fn exported_settings(resolved: &ResolvedHost) -> ExportedSettings {
         environment: settings.environment.as_ref().map(|e| e.value),
         paste_line_delay: settings.paste_line_delay.value,
         terminal_type: settings.terminal_type.value,
+        encoding: settings.encoding.value,
         platform: settings.platform.as_ref().map(|p| p.value.clone()),
         serial: ExportedSerial {
             port: serial.port.as_ref().map(|port| port.value.clone()),

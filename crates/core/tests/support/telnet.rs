@@ -13,6 +13,9 @@
 //! | `echo off`  | stops echoing (`WONT ECHO`), as a line-mode device       |
 //! | `echo on`   | echoes again (`WILL ECHO`)                               |
 //! | `breaks`    | prints how many `IAC BRK` it received                    |
+//! | `latin1`    | prints `caf` and the byte `0xE9` (é in ISO 8859-1)       |
+//! | `box`       | prints the CP437 bytes `0xC9 0xCD 0xBB` (╔═╗)            |
+//! | `hex <x>`   | prints the bytes of `x` as received, in hex              |
 //! | `binary`    | prints the bytes `A`, `0xFF`, `B` and a new line         |
 //! | `flood`     | prints [`FLOOD_LINE`] without end until Ctrl+C           |
 //! | `exit`      | closes the connection                                    |
@@ -449,6 +452,13 @@ impl Device {
         let mut reply = match line {
             b"size" => format!("{}x{}\r\n", self.cols, self.rows).into_bytes(),
             b"term" => format!("{}\r\n", self.terminal_type).into_bytes(),
+            b"latin1" => b"caf\xe9\r\n".to_vec(),
+            b"box" => b"\xc9\xcd\xbb\r\n".to_vec(),
+            hex if hex.starts_with(b"hex ") => {
+                let mut text: String = hex[4..].iter().map(|byte| format!("{byte:02x} ")).collect();
+                text.push_str("\r\n");
+                text.into_bytes()
+            }
             b"breaks" => format!("{}\r\n", self.breaks).into_bytes(),
             b"echo off" => {
                 self.echoing = false;

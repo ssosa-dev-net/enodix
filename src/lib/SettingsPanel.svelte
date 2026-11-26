@@ -221,6 +221,30 @@
         "configurations a device prints. Turn logging off for sensitive devices.",
     },
     {
+      key: "encoding",
+      label: "Character encoding",
+      input: {
+        kind: "choice",
+        options: [
+          ["utf-8", "UTF-8"],
+          ["iso-8859-1", "ISO 8859-1 (Latin-1)"],
+          ["windows-1252", "Windows-1252"],
+          ["cp437", "CP437 (DOS line drawing)"],
+        ],
+      },
+      own: (s) => s.encoding ?? "",
+      set: (s, v) => ({
+        ...s,
+        encoding: (v || null) as Settings["encoding"],
+      }),
+      effective: (e) => e.encoding,
+      note:
+        "How the device's bytes stand for characters. The terminal and the session " +
+        "log always show UTF-8; what the device sends is converted, and what you " +
+        "type is converted to the device's encoding (a character it lacks becomes " +
+        "?). Applies to the next connection; jobs and backups still read UTF-8.",
+    },
+    {
       key: "auto_reconnect",
       label: "Reconnect automatically",
       input: { kind: "choice", options: ON_OFF },

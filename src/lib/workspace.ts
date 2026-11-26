@@ -16,6 +16,9 @@ export interface CustomField {
 export type Protocol = "ssh" | "telnet" | "serial";
 export type Environment = "production" | "staging" | "lab";
 
+/** How a device's bytes stand for characters. */
+export type Encoding = "utf-8" | "iso-8859-1" | "windows-1252" | "cp437";
+
 /** The terminal type a session announces (`TERM`). */
 export type TerminalType =
   "xterm-256color" | "xterm" | "vt100" | "ansi" | "linux";
@@ -74,6 +77,7 @@ export interface Settings {
   /** Milliseconds between pasted lines (0 to `MAX_PASTE_LINE_DELAY_MS`). */
   paste_line_delay: number | null;
   terminal_type: TerminalType | null;
+  encoding: Encoding | null;
   /** The kind of device (`eos`, `srlinux`, ...); any text. */
   platform: string | null;
   web_links: WebLink[];
@@ -120,6 +124,8 @@ export interface EffectiveSettings {
   paste_line_delay: Effective<number>;
   /** `xterm-256color` by default. */
   terminal_type: Effective<TerminalType>;
+  /** `utf-8` by default. */
+  encoding: Effective<Encoding>;
   platform: Effective<string> | null;
   web_links: Effective<WebLink>[];
   forwards: Effective<ForwardSetting>[];

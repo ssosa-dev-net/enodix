@@ -82,14 +82,15 @@ use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
     apply_settings, settings_from_document, Level, AUTO_RECONNECT, BACKUP_ON_LOGIN,
-    CONNECT_TIMEOUT, CREDENTIAL_PROFILE, ENVIRONMENT, FORWARDS, JUMP_HOST, LEGACY_CRYPTO, LOGGING,
-    LOG_TIMESTAMPS, PASTE_LINE_DELAY, PLATFORM, PORT, PROTOCOL, SERIAL, TERMINAL_TYPE, WEB_LINKS,
+    CONNECT_TIMEOUT, CREDENTIAL_PROFILE, ENCODING, ENVIRONMENT, FORWARDS, JUMP_HOST, LEGACY_CRYPTO,
+    LOGGING, LOG_TIMESTAMPS, PASTE_LINE_DELAY, PLATFORM, PORT, PROTOCOL, SERIAL, TERMINAL_TYPE,
+    WEB_LINKS,
 };
 pub use settings::{
-    Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, ForwardSetting,
-    Origin, Parity, Protocol, SerialSettings, Settings, TerminalType, WebLink, DEFAULT_BAUD_RATE,
-    DEFAULT_CONNECT_TIMEOUT_SECONDS, DEFAULT_DATA_BITS, DEFAULT_STOP_BITS, FORWARD_OFF,
-    MAX_CONNECT_TIMEOUT_SECONDS,
+    Effective, EffectiveSerial, EffectiveSettings, Encoding, Environment, FlowControl,
+    ForwardSetting, Origin, Parity, Protocol, SerialSettings, Settings, TerminalType, WebLink,
+    DEFAULT_BAUD_RATE, DEFAULT_CONNECT_TIMEOUT_SECONDS, DEFAULT_DATA_BITS, DEFAULT_STOP_BITS,
+    FORWARD_OFF, MAX_CONNECT_TIMEOUT_SECONDS,
 };
 pub use snippets::{ExpandError, Snippet, SNIPPETS_FILE};
 pub use watch::{Changes, WatchError, WatchOptions, WorkspaceWatcher};
@@ -118,7 +119,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 31] = [
+pub const HOST_KEY_ORDER: [&str; 32] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -134,6 +135,7 @@ pub const HOST_KEY_ORDER: [&str; 31] = [
     ENVIRONMENT,
     PASTE_LINE_DELAY,
     TERMINAL_TYPE,
+    ENCODING,
     SERIAL,
     VENDOR,
     PLATFORM,
@@ -153,7 +155,7 @@ pub const HOST_KEY_ORDER: [&str; 31] = [
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 19] = [
+pub const FOLDER_KEY_ORDER: [&str; 20] = [
     DESCRIPTION,
     TAGS,
     PLATFORM,
@@ -170,6 +172,7 @@ pub const FOLDER_KEY_ORDER: [&str; 19] = [
     ENVIRONMENT,
     PASTE_LINE_DELAY,
     TERMINAL_TYPE,
+    ENCODING,
     SERIAL,
     WEB_LINKS,
     FORWARDS,

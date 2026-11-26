@@ -35,6 +35,7 @@ pub(super) const BACKUP_ON_LOGIN: &str = "backup_on_login";
 pub(super) const ENVIRONMENT: &str = "environment";
 pub(super) const PASTE_LINE_DELAY: &str = "paste_line_delay";
 pub(super) const TERMINAL_TYPE: &str = "terminal_type";
+pub(super) const ENCODING: &str = "encoding";
 pub(super) const PLATFORM: &str = "platform";
 pub(super) const SERIAL: &str = "serial";
 pub(super) const WEB_LINKS: &str = "web_links";
@@ -91,6 +92,8 @@ pub struct Settings {
     pub paste_line_delay: Option<u32>,
     /// The terminal type sessions to the host announce (`TERM`).
     pub terminal_type: Option<TerminalType>,
+    /// The character encoding of what the device sends and takes.
+    pub encoding: Option<Encoding>,
     /// The kind of device (`eos`, `srlinux`, ...), as written; any text.
     pub platform: Option<String>,
     /// Links set here, in file order; names are unique.
@@ -262,6 +265,26 @@ choice!(
     }
 );
 
+choice!(
+    /// How the bytes a device sends and takes stand for characters. The
+    /// terminal and the session log use UTF-8; the other encodings (single
+    /// byte, for older equipment) are converted by the session.
+    Encoding {
+        Utf8 = "utf-8",
+        Iso8859_1 = "iso-8859-1",
+        Windows1252 = "windows-1252",
+        Cp437 = "cp437",
+    }
+);
+
+// The `choice!` macro defines the enum, so the default is written out.
+#[allow(clippy::derivable_impls)]
+impl Default for Encoding {
+    fn default() -> Self {
+        Self::Utf8
+    }
+}
+
 // The `choice!` macro defines the enum, so the default is written out.
 #[allow(clippy::derivable_impls)]
 impl Default for TerminalType {
@@ -327,6 +350,8 @@ pub struct EffectiveSettings {
     pub paste_line_delay: Effective<u32>,
     /// `xterm-256color` by default.
     pub terminal_type: Effective<TerminalType>,
+    /// UTF-8 by default.
+    pub encoding: Effective<Encoding>,
     pub platform: Option<Effective<String>>,
     /// Merged by name: the order a name first appears, from the root down.
     pub web_links: Vec<Effective<WebLink>>,
@@ -431,6 +456,7 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
             nearest(levels, |s| s.terminal_type),
             TerminalType::default(),
         ),
+        encoding: or_default(nearest(levels, |s| s.encoding), Encoding::default()),
         platform: nearest(levels, |s| s.platform.clone()),
         web_links,
         forwards,
@@ -482,6 +508,7 @@ pub(super) fn settings_from_document(document: &Mapping) -> Result<Settings, Str
             TerminalType::parse,
             TerminalType::expected,
         )?,
+        encoding: read_choice(document, ENCODING, Encoding::parse, Encoding::expected)?,
         // Read as host files always did: a number is its text, blank unset.
         platform: detail_text(document, PLATFORM)?,
         web_links: read_web_links(document)?,
@@ -829,6 +856,11 @@ pub(super) fn apply_settings(
         ENVIRONMENT,
         text(current.environment.map(Environment::as_str)),
         text(edit.environment.map(Environment::as_str)),
+    );
+    update(
+        ENCODING,
+        text(current.encoding.map(Encoding::as_str)),
+        text(edit.encoding.map(Encoding::as_str)),
     );
     update(
         TERMINAL_TYPE,

@@ -2450,6 +2450,10 @@ fn host_options(
         // or connection does not.
         login_banner: true,
         forwards,
+        encoding: workspace
+            .resolve_host(host)
+            .map(|host| host.settings.encoding.value)
+            .unwrap_or_default(),
     }
 }
 
