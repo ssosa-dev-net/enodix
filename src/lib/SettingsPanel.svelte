@@ -221,6 +221,17 @@
         "configurations a device prints. Turn logging off for sensitive devices.",
     },
     {
+      key: "log_timestamps",
+      label: "Log timestamps",
+      input: { kind: "choice", options: ON_OFF },
+      own: (s) => flag(s.log_timestamps),
+      set: (s, v) => ({ ...s, log_timestamps: toFlag(v) }),
+      effective: (e) => e.log_timestamps,
+      note:
+        "Writes the local time before each line of the session log, for change " +
+        "records and incident timelines. Has no effect while logging is off.",
+    },
+    {
       key: "backup_on_login",
       label: "Back up on login",
       input: { kind: "choice", options: ON_OFF },
