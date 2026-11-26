@@ -1363,8 +1363,8 @@
           role: hostId ? hostRole(hostId) : null,
           profileLogin,
         };
-        // Telnet and serial never go through one.
-        if (hostId && target.kind === "host") {
+        // Serial never goes through one; SSH and telnet do.
+        if (hostId && (target.kind === "host" || target.kind === "telnet")) {
           resolveSettings({ kind: "host", id: hostId }).then(
             (settings) => {
               const jump = jumpHostOf(hostId, settings);

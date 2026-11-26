@@ -462,12 +462,13 @@ impl ResolvedHost {
     /// The telnet target for this host: on the resolved port, or telnet's
     /// default when nothing sets one, with its connect timeout. Its jump
     /// hosts are not looked at (connect through
-    /// [`crate::credentials::Profiles::telnet_target`], which refuses them).
+    /// [`crate::credentials::Profiles::telnet_target`], which adds them).
     pub fn telnet_target(&self) -> TelnetTarget {
         TelnetTarget {
             host: self.host.address.clone(),
             port: self.port_or(DEFAULT_TELNET_PORT),
             connect_timeout: self.connect_timeout(),
+            jump_hosts: Vec::new(),
             terminal_type: self.settings.terminal_type.value,
         }
     }

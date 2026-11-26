@@ -126,6 +126,7 @@ impl RawDevice {
             host: "127.0.0.1".into(),
             port: self.port,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            jump_hosts: Vec::new(),
             terminal_type: TerminalType::default(),
         }
     }

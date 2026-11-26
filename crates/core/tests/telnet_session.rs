@@ -508,6 +508,7 @@ async fn a_port_nothing_listens_on_is_reported() {
         host: "127.0.0.1".into(),
         port,
         connect_timeout: Duration::from_secs(5),
+        jump_hosts: Vec::new(),
         terminal_type: Default::default(),
     };
     let (_id, mut events) = manager.open(SessionTarget::Telnet(target), SIZE);
@@ -575,6 +576,7 @@ fn a_host_whose_resolved_protocol_is_telnet_logs_in_in_the_terminal() {
             host: "10.0.0.9".into(),
             port: DEFAULT_TELNET_PORT,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            jump_hosts: Vec::new(),
             terminal_type: Default::default(),
         }
     );
@@ -619,10 +621,10 @@ fn any_host_can_be_reached_by_telnet_on_its_port_with_its_connect_timeout() {
     );
 }
 
-/// Telnet is not tunnelled through jump hosts (yet): rather than reaching
-/// the device directly, around the bastion, it is refused.
+/// A telnet host behind a jump host goes through it (#26), never around it
+/// to the device directly. Sessions through it: `jump_hosts.rs`.
 #[test]
-fn a_telnet_host_behind_a_jump_host_is_refused() {
+fn a_telnet_host_behind_a_jump_host_goes_through_it() {
     let (_temp, workspace) = workspace(&[
         ("bastion.yaml", "address: 10.0.0.1\n".into()),
         (
@@ -632,15 +634,18 @@ fn a_telnet_host_behind_a_jump_host_is_refused() {
         ("Site/switch.yaml", "address: 10.1.0.9\n".into()),
     ]);
     let store = MemoryStore::new();
-    let error = Profiles::new(&store, &workspace)
+    let target = Profiles::new(&store, &workspace)
         .telnet_target(&HostId::new("Site/switch.yaml"))
-        .unwrap_err();
+        .unwrap();
 
-    assert_eq!(
-        error.to_string(),
-        "Site/switch.yaml is reached through the jump host bastion.yaml, \
-         and telnet sessions cannot go through jump hosts"
-    );
+    assert_eq!(target.host, "10.1.0.9");
+    assert_eq!(target.port, DEFAULT_TELNET_PORT);
+    let jumps: Vec<(&str, &str)> = target
+        .jump_hosts
+        .iter()
+        .map(|jump| (jump.name.as_str(), jump.host.as_str()))
+        .collect();
+    assert_eq!(jumps, [("bastion.yaml", "10.0.0.1")]);
 }
 
 #[tokio::test]

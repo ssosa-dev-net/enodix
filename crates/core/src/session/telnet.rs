@@ -46,13 +46,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Notify};
 
+use super::ssh::{self, JumpConnections};
 use super::{
-    tcp, CloseReason, Command, Link, SessionState, TelnetTarget, TerminalSize, TerminalType,
+    tcp, CloseReason, Command, Link, OpenError, SessionState, TelnetTarget, TerminalSize,
+    TerminalType,
 };
+use crate::known_hosts::KnownHosts;
+
+/// The device's side of the connection: a TCP socket, or a channel the
+/// last jump host forwards.
+type Reader = Box<dyn AsyncRead + Unpin + Send>;
+type Writer = Box<dyn AsyncWrite + Unpin + Send>;
 
 /// Interpret as command.
 const IAC: u8 = 255;
@@ -107,21 +114,20 @@ const PROBES_UNANSWERED: u32 = 2;
 const PROBES_BEFORE_ANSWER: u32 = 3;
 
 /// Runs one telnet session over `link` until it ends.
-pub(super) async fn run(target: TelnetTarget, link: &mut Link) -> CloseReason {
-    let (_prompter, _asker, replies) = link.askers();
+pub(super) async fn run(
+    target: TelnetTarget,
+    known_hosts: KnownHosts,
+    link: &mut Link,
+) -> CloseReason {
+    let (prompter, asker, replies) = link.askers();
     let connected = tokio::select! {
-        connected = tcp::connect(&target.host, target.port, target.connect_timeout) => connected,
+        connected = connect(&target, &known_hosts, prompter, asker) => connected,
         () = link.close_requested(&replies) => return CloseReason::ClosedLocally,
     };
-    let socket = match connected {
-        Ok(socket) => socket,
+    let (mut reader, writer, jumps) = match connected {
+        Ok(connected) => connected,
         Err(error) => return CloseReason::Failed(error),
     };
-    // Keystrokes go out at once, not gathered (Nagle).
-    let _ = socket.set_nodelay(true);
-    // For a link that drops packets, if the probe cannot be used.
-    let _ = tcp::keep_alive(&socket, target.connect_timeout);
-    let (mut reader, writer) = socket.into_split();
 
     // Input is written by its own task, so reading goes on while the
     // device is slow to take input, and the other way round.
@@ -211,7 +217,35 @@ pub(super) async fn run(target: TelnetTarget, link: &mut Link) -> CloseReason {
         let _ = tokio::time::timeout(CLOSE_FLUSH, &mut writing).await;
     }
     writing.abort();
+    // Disconnects the jump hosts, after the device.
+    drop(jumps);
     reason
+}
+
+/// Opens the connection to the device: directly, or through the jump hosts
+/// (whose host keys and logins are checked and asked as for SSH), the last
+/// of which opens it. The jump connections are kept while it is in use.
+async fn connect(
+    target: &TelnetTarget,
+    known_hosts: &KnownHosts,
+    prompter: super::Prompter,
+    asker: super::HostKeyAsker,
+) -> Result<(Reader, Writer, Option<JumpConnections>), OpenError> {
+    if target.jump_hosts.is_empty() {
+        let socket = tcp::connect(&target.host, target.port, target.connect_timeout).await?;
+        // Keystrokes go out at once, not gathered (Nagle).
+        let _ = socket.set_nodelay(true);
+        // For a link that drops packets, if the probe cannot be used.
+        let _ = tcp::keep_alive(&socket, target.connect_timeout);
+        let (reader, writer) = socket.into_split();
+        return Ok((Box::new(reader), Box::new(writer), None));
+    }
+    let jumps = ssh::open_jump_chain(&target.jump_hosts, known_hosts, asker, prompter).await?;
+    let channel = jumps
+        .forward(&target.host, target.port, target.connect_timeout)
+        .await?;
+    let (reader, writer) = tokio::io::split(channel.into_stream());
+    Ok((Box::new(reader), Box::new(writer), Some(jumps)))
 }
 
 /// The shortest wait between probes, whatever the connect timeout (a zero
@@ -318,7 +352,7 @@ impl PendingReplies {
 /// Writes what is queued to the device, in order, then ends the connection
 /// once the queue closes. Returns early only if writing failed.
 async fn write_out(
-    mut writer: OwnedWriteHalf,
+    mut writer: Writer,
     mut queued: mpsc::UnboundedReceiver<Out>,
     replies: Arc<PendingReplies>,
 ) -> std::io::Result<()> {

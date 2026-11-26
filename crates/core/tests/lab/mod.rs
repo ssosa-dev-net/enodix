@@ -1892,6 +1892,7 @@ async fn telnet(
             .unwrap_or_else(|| device.address.clone()),
         port,
         connect_timeout: run.timeout(),
+        jump_hosts: Vec::new(),
         terminal_type: Default::default(),
     });
     let mut session = Conversation::connect(&manager, target, None, run.timeout(), password)
@@ -1929,6 +1930,7 @@ async fn telnet(
             .unwrap_or_else(|| device.address.clone()),
         port,
         connect_timeout: PROBE_EVERY,
+        jump_hosts: Vec::new(),
         terminal_type: Default::default(),
     });
     let mut session = Conversation::connect(&manager, target, None, run.timeout(), password)
