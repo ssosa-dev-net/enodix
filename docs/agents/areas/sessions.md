@@ -735,11 +735,15 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   and a writer thread; output goes through `Link::forward_counted`, so
   batching and acknowledgement are the usual ones. Resize resizes the pty.
   `TERM` is `xterm-256color`.
-- Ending: the pty's read ending is `CloseReason::LocalExited { exit_status }`
-  (the status is `None` if the shell did not report one within a second);
-  failing to start is `OpenError::LocalShell { program, reason }`; closing
-  kills the child and waits for it (2 s), never for the reader (a ConPTY
-  read can outlive its child; dropping the master ends it). Reconnect
+- Ending: the shell's process is watched on its own thread (`wait()`),
+  because ConPTY's output does not end when the child exits, only when the
+  pseudo console closes (dropping `master`): its exit ends the session,
+  `CloseReason::LocalExited { exit_status }`, after output already queued
+  is let through (300 ms). On Unix the read ending (EIO) comes first and
+  the status is then waited for (1 s; `None` if there is none).
+  Failing to start is `OpenError::LocalShell { program, reason }`; closing
+  kills the child (`clone_killer`) and waits for it (2 s), never for the
+  reader (dropping the master ends it). Reconnect
   starts the program again (a quick target is kept by the manager).
 - `local_shells()` lists what the computer has: Windows `pwsh` if on the
   `PATH` (`pwsh`, plus `powershell`), else `powershell`; `cmd`; each WSL
@@ -749,9 +753,13 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   id ignoring case, else the first. `Preferences.local_shell` holds the id
   (empty = first).
 - Decisions on the ticket: not logged (the shell passes no `SessionLog`);
-  never joins multi-send (`src-tauri` `without_local_joins` refuses a join
-  naming a local tab and joins a pane's other tabs one by one; the
-  interface also hides the menu entry and skips them); the multi-line paste
+  never joins multi-send (in the core: `Windows::attach_transport` marks the
+  session solo when its transport is `Local`; `join_group` then refuses its
+  tab with `LayoutError::NeverJoins`, `join_pane` leaves it out, and a tab
+  that had joined before its session was known leaves; by session id, so a
+  moved tab stays out; the shell attaches through `Tabs::attach` with the
+  transport, in `session_open` and `session_duplicate`; the interface also
+  hides the menu entry and skips them); the multi-line paste
   question is the usual one (a quick session has the default
   `PasteSafety`); starts in the workspace folder else the home folder
   (`local_start_folder`); environment `ENODIX_WORKSPACE`, `ENODIX_CLI`
@@ -763,10 +771,14 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   mode (`[data-quick-mode=local]`, `[data-quick-local]`,
   `[data-open-local-shell]`), the palette's `local-shell` action, the
   Preferences select `preference-local-shell`; header protocol `Local`.
-- Tests: `tests/local_session.rs` (Unix only; runs `/bin/sh`), unit tests in
-  `local.rs`, `preferences.rs`. Not verified: ConPTY and the Windows shells
-  and WSL (no Windows here), the interface in a built app and the smoke
-  test (the Linux build needs WebKitGTK; no run). Known limits: the shell
-  refusal of multi-send joins has no test (it lives in `src-tauri`); a
+- Tests: `tests/local_session.rs` (Unix only; runs `/bin/sh`),
+  `tests/local_session_windows.rs` (`cmd.exe`, exit statuses; written
+  without a Windows machine, first run is the CI's), the solo tests in
+  `tests/windows.rs`, unit tests in `local.rs`, `preferences.rs`. Not
+  verified: ConPTY, the Windows shells and WSL (no Windows here), the
+  interface in a built app and the smoke test (no run). Known limits: a
   Windows shell's program must be on the `PATH`; a shell the user closed
-  while it printed may keep a ConPTY reader thread until the pty drops.
+  while it printed may keep a ConPTY reader thread until the pty drops;
+  `open_failure`'s hint matches English error text (portable-pty wraps its
+  errors as `anyhow`, so `ErrorKind::NotFound` is not reliable), so on a
+  non-English Windows the "is the shell installed" hint may not show.

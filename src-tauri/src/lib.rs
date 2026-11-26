@@ -2199,7 +2199,7 @@ async fn session_open(
         Made::Host(session) => manager.open_host(session, size.into(), options),
     };
     records.record(id, record.clone());
-    tabs.attach(window, tab, id);
+    tabs.attach(window, tab, id, transport);
     let consumer = relays.start(
         id,
         window,
@@ -2571,7 +2571,8 @@ async fn session_duplicate(
         .duplicate(SessionId(id), size.into())
         .map_err(|error| error.to_string())?;
     records.copy(SessionId(id), copy);
-    tabs.attach(window, tab, copy);
+    let transport = manager.transport(copy).map_err(|error| error.to_string())?;
+    tabs.attach(window, tab, copy, transport);
     let consumer = relays.start(
         copy,
         window,
@@ -2622,8 +2623,10 @@ impl Tabs {
 
     /// Records the session `window`'s `tab` shows. A tab closed while its
     /// session was opening is gone; the interface discards that session.
-    fn attach(&self, window: WindowId, tab: TabId, session: SessionId) {
-        let _ = self.lock().attach_session(window, tab, session);
+    fn attach(&self, window: WindowId, tab: TabId, session: SessionId, transport: Transport) {
+        let _ = self
+            .lock()
+            .attach_transport(window, tab, session, transport);
     }
 }
 
@@ -2750,7 +2753,6 @@ fn layout_edit(
     shell: State<'_, Shell>,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
-    manager: State<'_, SessionManager>,
     edit: LayoutEdit,
 ) -> Result<LayoutChanged, String> {
     let window = calling_window(&window)?;
@@ -2759,11 +2761,8 @@ fn layout_edit(
         let workspace = shell.workspace();
         let safety = |session| records.paste_safety(session, workspace.as_ref());
         let mut windows = tabs.lock();
-        let mut created = None;
-        for edit in without_local_joins(&windows, &manager, window, edit)? {
-            created = apply_layout_edit(&mut windows, window, edit, safety)
-                .map_err(|error| error.to_string())?;
-        }
+        let created = apply_layout_edit(&mut windows, window, edit, safety)
+            .map_err(|error| error.to_string())?;
         LayoutChanged {
             layout: window_view(&windows, window)?,
             created,
@@ -2774,46 +2773,6 @@ fn layout_edit(
     }
     group::tell_windows(&app, &tabs, &records);
     Ok(changed)
-}
-
-/// A local shell shows the user's own computer, so it never joins the
-/// multi-send group (#22). A join naming one is refused; a pane's join
-/// leaves out the local shells it holds and joins the others, tab by tab
-/// (the interface has asked its question about production sessions
-/// first, as for any join).
-fn without_local_joins(
-    windows: &Windows,
-    manager: &SessionManager,
-    window: WindowId,
-    edit: LayoutEdit,
-) -> Result<Vec<LayoutEdit>, String> {
-    let local = |tab: TabId| {
-        windows
-            .session_of(window, tab)
-            .is_some_and(|session| manager.transport(session) == Ok(Transport::Local))
-    };
-    match edit {
-        LayoutEdit::JoinGroup { tab, .. } if local(tab) => {
-            Err("a local shell never joins the multi-send group".into())
-        }
-        LayoutEdit::JoinPane { pane, confirmed } => {
-            let tabs = windows
-                .layout(window)
-                .and_then(|layout| layout.pane(pane))
-                .map(|pane| pane.tabs.clone())
-                .unwrap_or_default();
-            if tabs.iter().any(|&tab| local(tab)) {
-                Ok(tabs
-                    .into_iter()
-                    .filter(|&tab| !local(tab))
-                    .map(|tab| LayoutEdit::JoinGroup { tab, confirmed })
-                    .collect())
-            } else {
-                Ok(vec![LayoutEdit::JoinPane { pane, confirmed }])
-            }
-        }
-        edit => Ok(vec![edit]),
-    }
 }
 
 /// What `window`'s interface is sent of its layout.

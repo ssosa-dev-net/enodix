@@ -34,6 +34,12 @@ const READ_SIZE: usize = 4096;
 /// whether the session still listens.
 const READ_POLL: Duration = Duration::from_millis(100);
 
+/// How long a shell that ended may still be printing what it wrote last.
+const DRAIN: Duration = Duration::from_millis(300);
+
+/// How long the end of the pty's output waits for the shell's exit status.
+const EXIT_WAIT: Duration = Duration::from_secs(1);
+
 /// How long closing waits for the shell to end after it was killed.
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
@@ -327,7 +333,23 @@ pub(super) async fn run(target: LocalTarget, link: &mut Link) -> CloseReason {
         child,
     } = opened;
     let master = Arc::new(Mutex::new(master));
-    let child = Arc::new(Mutex::new(child));
+    let mut killer = child.clone_killer();
+
+    // The shell ending is watched on its own, not through the pty: on
+    // Windows ConPTY's output does not end when the child exits, only when
+    // the pseudo console is closed (which happens when `master` drops).
+    let (exit_tx, mut exit) = mpsc::unbounded_channel();
+    let spawned = thread::Builder::new()
+        .name("local waiter".into())
+        .spawn(move || {
+            let mut child = child;
+            let status = child.wait().ok().map(|status| status.exit_code());
+            let _ = exit_tx.send(status);
+        });
+    if let Err(error) = spawned {
+        let _ = killer.kill();
+        return failed(format!("cannot watch it: {error}"));
+    }
 
     let (output_tx, mut output) = mpsc::unbounded_channel();
     let flow = link.flow();
@@ -335,7 +357,7 @@ pub(super) async fn run(target: LocalTarget, link: &mut Link) -> CloseReason {
         .name("local reader".into())
         .spawn(move || read_pty(reader, &flow, &output_tx));
     if let Err(error) = spawned {
-        kill(&child);
+        let _ = killer.kill();
         return failed(format!("cannot start reading it: {error}"));
     }
     let (jobs, queued) = std_mpsc::channel();
@@ -344,11 +366,14 @@ pub(super) async fn run(target: LocalTarget, link: &mut Link) -> CloseReason {
         .name("local writer".into())
         .spawn(move || write_pty(writer, &queued, &write_failed_tx));
     if let Err(error) = spawned {
-        kill(&child);
+        let _ = killer.kill();
         return failed(format!("cannot start writing to it: {error}"));
     }
 
     link.state(SessionState::Connected);
+    // The shell's exit status once it has ended (`Some(None)`: it ended
+    // without one).
+    let mut ended: Option<Option<u32>> = None;
     let reason = loop {
         tokio::select! {
             command = link.command() => match command {
@@ -373,8 +398,31 @@ pub(super) async fn run(target: LocalTarget, link: &mut Link) -> CloseReason {
                     }
                 }
                 // The read ended: the shell did, or the pty broke.
-                None => break exited(&child).await,
+                None => {
+                    let status = match ended {
+                        Some(status) => status,
+                        None => tokio::time::timeout(EXIT_WAIT, exit.recv())
+                            .await
+                            .ok()
+                            .flatten()
+                            .flatten(),
+                    };
+                    break CloseReason::LocalExited { exit_status: status };
+                }
             },
+            status = exit.recv(), if ended.is_none() => {
+                ended = Some(status.flatten());
+                // What it printed last may still be on its way.
+                let deadline = tokio::time::Instant::now() + DRAIN;
+                let mut listening = true;
+                while listening {
+                    match tokio::time::timeout_at(deadline, output.recv()).await {
+                        Ok(Some(bytes)) => listening = link.forward_counted(bytes),
+                        _ => break,
+                    }
+                }
+                break CloseReason::LocalExited { exit_status: ended.flatten() };
+            }
             Some(error) = write_failed.recv() => {
                 break CloseReason::Failed(OpenError::LocalShell {
                     program: program.clone(),
@@ -386,52 +434,15 @@ pub(super) async fn run(target: LocalTarget, link: &mut Link) -> CloseReason {
 
     drop(jobs);
     drop(output);
-    kill(&child);
     // Wait for the shell to be gone (so a folder it held can be removed),
     // but never for the reader: a ConPTY read can outlive its child.
-    let waiting = child.clone();
-    let _ = tokio::time::timeout(
-        CLOSE_WAIT,
-        tokio::task::spawn_blocking(move || {
-            let _ = waiting
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .wait();
-        }),
-    )
-    .await;
+    if ended.is_none() {
+        let _ = killer.kill();
+        let _ = tokio::time::timeout(CLOSE_WAIT, exit.recv()).await;
+    }
     // Dropping the master closes the pty and ends the reader's read.
     drop(master);
     reason
-}
-
-/// Why the read ended: the shell's exit status, once it has one.
-async fn exited(child: &Arc<Mutex<Box<dyn Child + Send + Sync>>>) -> CloseReason {
-    let child = child.clone();
-    let status = tokio::task::spawn_blocking(move || {
-        // The output ended, so the shell is ending: give it a moment.
-        for _ in 0..50 {
-            if let Ok(Some(status)) = child
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .try_wait()
-            {
-                return Some(status.exit_code());
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        None
-    })
-    .await
-    .ok()
-    .flatten();
-    CloseReason::LocalExited {
-        exit_status: status,
-    }
-}
-
-fn kill(child: &Arc<Mutex<Box<dyn Child + Send + Sync>>>) {
-    let _ = child.lock().unwrap_or_else(PoisonError::into_inner).kill();
 }
 
 struct Opened {

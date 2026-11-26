@@ -8,7 +8,7 @@ use enodix_core::layout::{
     WindowId, Windows,
 };
 use enodix_core::paste::PasteSafety;
-use enodix_core::session::SessionId;
+use enodix_core::session::{SessionId, Transport};
 use enodix_core::workspace::Environment;
 use serde_json::json;
 
@@ -1652,4 +1652,82 @@ fn the_group_is_gone_when_the_app_starts_again() {
     let view = restarted.view(MAIN).unwrap();
     assert!(view.group.is_empty());
     assert_eq!(view.group_size, 0);
+}
+
+/// Opens a tab showing session `session` over `transport`.
+fn showing(windows: &mut Windows, session: u64, transport: Transport) -> TabId {
+    let tab = open(windows, MAIN, 1)[0];
+    windows
+        .attach_transport(MAIN, tab, SessionId(session), transport)
+        .unwrap();
+    tab
+}
+
+#[test]
+fn a_local_shell_never_joins_the_group() {
+    let mut windows = Windows::new();
+    let shell = showing(&mut windows, 1, Transport::Local);
+    let ssh = showing(&mut windows, 2, Transport::Ssh);
+    let before = revision(&windows, MAIN);
+
+    assert_eq!(
+        windows.join_group(MAIN, shell),
+        Err(LayoutError::NeverJoins(shell))
+    );
+    assert_eq!(
+        windows.join_group_confirmed(MAIN, shell, true, |_| PasteSafety::default()),
+        Err(LayoutError::NeverJoins(shell))
+    );
+    assert!(main_group(&windows).is_empty());
+    assert_eq!(revision(&windows, MAIN), before);
+
+    // Another session still joins.
+    windows.join_group(MAIN, ssh).unwrap();
+    assert_eq!(main_group(&windows), vec![ssh]);
+}
+
+#[test]
+fn joining_a_pane_leaves_its_local_shells_out_and_joins_the_rest_at_once() {
+    let mut windows = Windows::new();
+    let pane = windows.layout(MAIN).unwrap().active_pane();
+    let a = showing(&mut windows, 1, Transport::Ssh);
+    let shell = showing(&mut windows, 2, Transport::Local);
+    let b = showing(&mut windows, 3, Transport::Serial);
+
+    let joined = windows
+        .join_pane_confirmed(MAIN, pane, true, |_| PasteSafety::default())
+        .unwrap();
+
+    assert_eq!(joined, vec![a, b]);
+    assert_eq!(main_group(&windows), vec![a, b]);
+    assert!(!main_group(&windows).contains(&shell));
+    assert_eq!(windows.join_pane(MAIN, pane).unwrap(), vec![]);
+}
+
+#[test]
+fn a_tab_that_joined_before_its_session_was_known_leaves_when_it_shows_a_local_shell() {
+    let mut windows = Windows::new();
+    let tab = open(&mut windows, MAIN, 1)[0];
+    windows.join_group(MAIN, tab).unwrap();
+    assert_eq!(main_group(&windows), vec![tab]);
+
+    windows
+        .attach_transport(MAIN, tab, SessionId(7), Transport::Local)
+        .unwrap();
+
+    assert!(main_group(&windows).is_empty());
+}
+
+#[test]
+fn a_local_shell_stays_out_of_the_group_in_another_window() {
+    let mut windows = Windows::new();
+    let shell = showing(&mut windows, 1, Transport::Local);
+    let other = windows.open_session_window();
+
+    let moved = windows.move_session(MAIN, shell, other).unwrap();
+
+    assert_eq!(
+        windows.join_group(other, moved),
+        Err(LayoutError::NeverJoins(moved))
+    );
 }
