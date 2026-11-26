@@ -742,6 +742,31 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   character, `*`, `?`, `!`, a leading `#`, `@` or `|`): trusting a key for
   `core1,x` would have trusted it for `core1`. Test in `host_keys.rs`.
 
+- Legacy hosts through the system ssh (#27): the project does not fork
+  `russh` or add MD5, RC4, Blowfish or SSH-1. `session/system_ssh.rs`
+  (`system_ssh_target`, `SystemSshHost`, `SYSTEM_SSH_WARNING`) builds the
+  `LocalTarget` that runs the system's OpenSSH client with the outdated
+  algorithms allowed (`-o KexAlgorithms=+...` and so on, `-p`, `-l`, then
+  `-- host`), on the local transport of #22 (`local.rs`). It is not an SSH
+  session of enodix: no host key check against the app's, no workspace
+  credentials, no logging. A newer client refuses options for algorithms it
+  dropped (Blowfish, RC4), and OpenSSH has no SSH-1. The negotiation card
+  names the fallback when the device offers only unsupported algorithms.
+  Tests: `system_ssh.rs` (a stand-in script prints its arguments, Unix
+  only), `system_ssh_host.rs` (`Profiles::system_ssh_host`: address, port
+  and the profile's username only, never a secret; a host behind a jump
+  host is refused; the record carries the warning).
+  From the interface: `ConnectTarget::SystemSsh { id }` (`src-tauri/src/lib.rs`,
+  `session_open`) opens it as an unlogged local session whose
+  `SessionRecord::insecure` is `SYSTEM_SSH_WARNING`; the header shows an
+  **Insecure** marker (`[data-insecure]`) and the negotiation card's
+  **Open with the system ssh (insecure)** button (`[data-system-ssh]`,
+  shown when the device offers only unsupported algorithms, in the main
+  window only: `TerminalSession`'s `onsystemssh`, wired by `App.svelte`
+  `systemSsh`) replaces the tab with it. Not done: a way in from the tree
+  or the details sheet (the card is the one entry), session windows, the
+  smoke test (the button was not driven in the real app).
+
 - Port forwards (#21, `src/session/forward.rs`). `PortForward { name,
   bind (default 127.0.0.1; `*` = 0.0.0.0, `localhost`; from the workspace
   loopback only, see `workspace.md`), port (0 = any),

@@ -40,13 +40,13 @@ use enodix_core::paste::{
 use enodix_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use enodix_core::preferences::{FontZoom, Preferences, Theme};
 use enodix_core::session::{
-    local_environment, local_shells, local_start_folder, pick_local_shell, AlgorithmKind,
-    AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, ForwardStatus, HostKeyDecision,
-    HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms, OpenOptions,
-    Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent, SessionId,
-    SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState, SessionTarget,
-    SshAuth, SshTarget, TerminalSize, TerminalType, Transport, TypedLogin, WhenConnected,
-    DEFAULT_CONNECT_TIMEOUT,
+    local_environment, local_shells, local_start_folder, pick_local_shell, system_ssh_target,
+    AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, ForwardStatus,
+    HostKeyDecision, HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms,
+    OpenOptions, Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent,
+    SessionId, SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState,
+    SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType, Transport, TypedLogin,
+    WhenConnected, DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
 };
 use enodix_core::steps::StepRuns;
 use enodix_core::template::Variables;
@@ -369,6 +369,10 @@ enum ConnectTarget {
     /// A shell on this computer (#22): the one the preference names, or
     /// `shell` (an id from `local_shells`) when the interface says which.
     Local { shell: Option<String> },
+    /// A host of the open workspace through the system's ssh client in a
+    /// local shell (#27): for a device the app's own SSH cannot negotiate
+    /// with. Marked insecure; not logged.
+    SystemSsh { id: HostId },
 }
 
 /// A username and password the user typed.
@@ -2171,27 +2175,29 @@ async fn session_open(
             let shells = local_shells();
             let picked = pick_local_shell(&shells, Some(&chosen))
                 .ok_or("this computer has no shell to open")?;
-            let root = shell
-                .workspace()
-                .as_ref()
-                .map(|workspace| workspace.root().to_path_buf());
-            let target = SessionTarget::Local(picked.target(
-                local_start_folder(root.as_deref()),
-                local_environment(
-                    root.as_deref(),
-                    python.cli().as_deref(),
-                    vec![(
-                        DATA_DIR_VARIABLE.into(),
-                        python.data_folder().display().to_string(),
-                    )],
-                ),
-            ));
+            let (folder, environment) = local_start(&shell, &python);
+            let target = SessionTarget::Local(picked.target(folder, environment));
             // Not logged: it shows the user's own computer, not a device.
             (
                 Made::Quick(target),
                 OpenOptions::default(),
                 SessionRecord::new(&name, &title),
             )
+        }
+        ConnectTarget::SystemSsh { id } => {
+            let guard = shell.workspace();
+            let workspace = guard.as_ref().ok_or("no workspace is open")?;
+            let profiles = Profiles::new(&*shell.credentials, workspace);
+            let host = profiles
+                .system_ssh_host(&id)
+                .map_err(|error| error.to_string())?;
+            let (folder, environment) = local_start(&shell, &python);
+            let target = SessionTarget::Local(system_ssh_target(None, &host, folder, environment));
+            let record = SessionRecord::for_host(workspace, &id, Transport::Local, &name, &title)
+                .unwrap_or_else(|| SessionRecord::new(&name, &title))
+                .insecure(SYSTEM_SSH_WARNING);
+            // Not logged: it is not an enodix session to a device.
+            (Made::Quick(target), OpenOptions::default(), record)
         }
         ConnectTarget::Host { id, credentials } => {
             let typed = credentials
@@ -2257,6 +2263,30 @@ fn quick_options(log: Option<SessionLog>) -> OpenOptions {
         login_banner: true,
         ..OpenOptions::default()
     }
+}
+
+/// Where a program the app starts on this computer begins and what it is
+/// told: the workspace folder (else the home folder), the workspace and the
+/// headless binary in its environment, so that the Python bridge works in it.
+fn local_start(
+    shell: &Shell,
+    python: &python::PythonSetup,
+) -> (Option<std::path::PathBuf>, Vec<(String, String)>) {
+    let root = shell
+        .workspace()
+        .as_ref()
+        .map(|workspace| workspace.root().to_path_buf());
+    (
+        local_start_folder(root.as_deref()),
+        local_environment(
+            root.as_deref(),
+            python.cli().as_deref(),
+            vec![(
+                DATA_DIR_VARIABLE.into(),
+                python.data_folder().display().to_string(),
+            )],
+        ),
+    )
 }
 
 /// A session to the open workspace's host `id`, reached `way`, with its
