@@ -17,10 +17,15 @@ A profile has a name, a username and one way to log in:
 - **Password**: a username and password.
 - **Private key**: the path to a key file, and its passphrase if it has
   one. The key stays in its file where you keep it; the profile only
-  remembers where it is.
+  remembers where it is. An OpenSSH certificate beside it, named as
+  `ssh-keygen -s` names it (`id_ed25519-cert.pub` for `id_ed25519`), is
+  offered first, as `ssh` does: a server that trusts the authority that
+  signed it lets you in without knowing the key. If the server refuses the
+  certificate, the key is tried on its own.
 - **SSH agent**: use the keys of the SSH agent running on this computer
   (the one `SSH_AUTH_SOCK` names, or on Windows the OpenSSH agent or
-  Pageant). Nothing is stored and the private keys never leave the agent.
+  Pageant), and the certificates it holds. Nothing is stored and the
+  private keys never leave the agent.
 
 Any profile can also have an **Enable secret**, for devices that ask for a
 second password when you go into privileged mode. Jobs use it to answer that
@@ -158,4 +163,8 @@ is open.
   saying so.
 - The key file itself is never copied into a profile: if you move it,
   update the profile's path.
+- A certificate beside a key file that cannot be read, or that is for
+  another key, is passed over without a word (as by `ssh`); the key then
+  logs in on its own. An expired certificate is offered, and the server
+  refuses it.
 - On Linux the vault is the only store.

@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use russh::keys::agent::client::AgentClient;
-use russh::keys::PrivateKey;
+use russh::keys::{Certificate, PrivateKey};
 
 pub struct TestAgent {
     path: PathBuf,
@@ -108,6 +108,128 @@ impl TestAgent {
         let mut client = AgentClient::connect_uds(&self.path).await.unwrap();
         for key in keys {
             client.add_identity(key, &[]).await.unwrap();
+        }
+    }
+}
+
+/// Agent protocol messages (draft-miller-ssh-agent) the certificate agent
+/// answers.
+const REQUEST_IDENTITIES: u8 = 11;
+const IDENTITIES_ANSWER: u8 = 12;
+const SIGN_REQUEST: u8 = 13;
+const SIGN_RESPONSE: u8 = 14;
+const FAILURE: u8 = 5;
+
+impl TestAgent {
+    /// Starts an agent holding one OpenSSH certificate (of `key`, which
+    /// signs for it), at a fresh address. russh's agent server holds no
+    /// certificates, so this one answers the two requests a login makes
+    /// (list, sign) itself. Ed25519 keys only.
+    #[cfg(unix)]
+    pub async fn start_with_certificate(key: PrivateKey, certificate: Certificate) -> Self {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("agent.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(serve_certificate(stream, key.clone(), certificate.clone()));
+            }
+        });
+        Self {
+            path,
+            task,
+            folder: Some(folder),
+        }
+    }
+
+    #[cfg(windows)]
+    pub async fn start_with_certificate(key: PrivateKey, certificate: Certificate) -> Self {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        let name = format!(r"\\.\pipe\enodix-test-agent-{:016x}", rand::random::<u64>());
+        let path = PathBuf::from(name);
+        let mut server = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&path)
+            .unwrap();
+        let pipe = path.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                if server.connect().await.is_err() {
+                    return;
+                }
+                let Ok(next) = ServerOptions::new().create(&pipe) else {
+                    return;
+                };
+                let connected = std::mem::replace(&mut server, next);
+                tokio::spawn(serve_certificate(
+                    connected,
+                    key.clone(),
+                    certificate.clone(),
+                ));
+            }
+        });
+        Self { path, task }
+    }
+}
+
+/// Answers one client of the certificate agent until it hangs up.
+async fn serve_certificate<S>(mut stream: S, key: PrivateKey, certificate: Certificate)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use russh::keys::signature::Signer;
+    use russh::keys::ssh_encoding::Encode;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let blob = certificate.encode_vec().unwrap();
+    loop {
+        let Ok(length) = stream.read_u32().await else {
+            return;
+        };
+        let mut message = vec![0; length as usize];
+        if stream.read_exact(&mut message).await.is_err() {
+            return;
+        }
+        let mut reply = Vec::new();
+        match message.first() {
+            Some(&REQUEST_IDENTITIES) => {
+                reply.push(IDENTITIES_ANSWER);
+                1u32.encode(&mut reply).unwrap();
+                blob.as_slice().encode(&mut reply).unwrap();
+                "test certificate".encode(&mut reply).unwrap();
+            }
+            Some(&SIGN_REQUEST) => {
+                // string key blob, string data, uint32 flags.
+                let mut rest = &message[1..];
+                let read = |rest: &mut &[u8]| -> Option<Vec<u8>> {
+                    let (length, tail) = rest.split_at_checked(4)?;
+                    let length = u32::from_be_bytes(length.try_into().ok()?) as usize;
+                    let (value, tail) = tail.split_at_checked(length)?;
+                    *rest = tail;
+                    Some(value.to_vec())
+                };
+                match (read(&mut rest), read(&mut rest)) {
+                    (Some(asked), Some(data)) if asked == blob => {
+                        let signature: russh::keys::ssh_key::Signature =
+                            key.try_sign(&data).unwrap();
+                        reply.push(SIGN_RESPONSE);
+                        signature
+                            .encode_vec()
+                            .unwrap()
+                            .as_slice()
+                            .encode(&mut reply)
+                            .unwrap();
+                    }
+                    _ => reply.push(FAILURE),
+                }
+            }
+            _ => reply.push(FAILURE),
+        }
+        let mut framed = (reply.len() as u32).to_be_bytes().to_vec();
+        framed.extend(reply);
+        if stream.write_all(&framed).await.is_err() {
+            return;
         }
     }
 }

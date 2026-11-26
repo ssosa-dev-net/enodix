@@ -12,7 +12,8 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 use russh::client::{self, AuthResult, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::{
-    load_secret_key, Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate,
+    load_secret_key, Algorithm, Certificate, HashAlg, PrivateKey, PrivateKeyWithHashAlg,
+    PublicKeyOrCertificate,
 };
 use russh::{
     AgentAuthError, Channel, ChannelId, ChannelMsg, ChannelOpenFailure, ChannelWriteHalf,
@@ -700,7 +701,8 @@ async fn finish<T>(sending: &mut Option<Pin<Box<dyn Future<Output = T> + Send + 
 /// The secret to log in with, ready to use.
 enum Login<'a> {
     Password(&'a str),
-    Key(Arc<PrivateKey>),
+    /// A key file, with the OpenSSH certificate beside it if there is one.
+    Key(Arc<PrivateKey>, Option<Box<Certificate>>),
     Agent(Vec<agent::Agent>),
     /// Ask the user, once connected.
     Ask,
@@ -725,7 +727,10 @@ async fn login(auth: &SshAuth) -> Result<Login<'_>, OpenError> {
             };
             let passphrase = passphrase.as_deref().filter(|p| !p.is_empty());
             match load_secret_key(key_file, passphrase) {
-                Ok(key) => Ok(Login::Key(Arc::new(key))),
+                Ok(key) => {
+                    let certificate = certificate_beside(key_file, &key).map(Box::new);
+                    Ok(Login::Key(Arc::new(key), certificate))
+                }
                 Err(russh::keys::Error::KeyIsEncrypted) => {
                     Err(unusable("it is encrypted and no passphrase is set".into()))
                 }
@@ -737,6 +742,18 @@ async fn login(auth: &SshAuth) -> Result<Login<'_>, OpenError> {
             }
         }
     }
+}
+
+/// The OpenSSH certificate of the key file `key_file`: the file beside it
+/// named as `ssh-keygen -s` names it (`id_ed25519-cert.pub`), if it is
+/// there, reads as a certificate and is for this key. Otherwise none, as
+/// with OpenSSH: the key logs in on its own.
+fn certificate_beside(key_file: &std::path::Path, key: &PrivateKey) -> Option<Certificate> {
+    let mut name = key_file.as_os_str().to_owned();
+    name.push("-cert.pub");
+    let text = std::fs::read_to_string(std::path::PathBuf::from(name)).ok()?;
+    let certificate = Certificate::from_openssh(text.trim()).ok()?;
+    (certificate.public_key() == key.public_key().key_data()).then_some(certificate)
 }
 
 /// Logs in with `login`, then with keyboard-interactive if the server offers
@@ -776,7 +793,7 @@ async fn authenticate(
     };
 
     // A key or agent the server may accept as the first of two steps.
-    let key_first = matches!(login, Login::Key(_) | Login::Agent(_));
+    let key_first = matches!(login, Login::Key(..) | Login::Agent(_));
     let mut password_for_prompt = None;
     let mut agent_error = None;
     // Whether a refusal leads on to keyboard-interactive.
@@ -803,13 +820,30 @@ async fn authenticate(
                 partial_success: false,
             }
         }
-        Login::Key(key) => {
+        Login::Key(key, certificate) => {
             ask_after_refusal = true;
-            let hash = rsa_hash(connection, key.algorithm()).await?;
-            connection
-                .authenticate_publickey(username, PrivateKeyWithHashAlg::new(key, hash))
-                .await
-                .map_err(protocol)?
+            let mut result = None;
+            // The certificate first: a server that trusts its authority
+            // may not know the key itself.
+            if let Some(certificate) = certificate {
+                let tried = connection
+                    .authenticate_openssh_cert(username, key.clone(), *certificate)
+                    .await
+                    .map_err(protocol)?;
+                if !refused_outright(&tried) {
+                    result = Some(tried);
+                }
+            }
+            match result {
+                Some(result) => result,
+                None => {
+                    let hash = rsa_hash(connection, key.algorithm()).await?;
+                    connection
+                        .authenticate_publickey(username, PrivateKeyWithHashAlg::new(key, hash))
+                        .await
+                        .map_err(protocol)?
+                }
+            }
         }
         Login::Agent(agents) => {
             let (result, error) = with_agents(connection, username, agents).await?;
@@ -884,6 +918,17 @@ async fn ask_password(prompter: &mut Prompter) -> Result<String, OpenError> {
     Ok(answers.pop().unwrap_or_default())
 }
 
+/// Whether the server refused outright (no partial success).
+fn refused_outright(result: &AuthResult) -> bool {
+    matches!(
+        result,
+        AuthResult::Failure {
+            partial_success: false,
+            ..
+        }
+    )
+}
+
 /// The hash an RSA key signs with: the best SHA-2 one the server accepts,
 /// else SHA-1 (`ssh-rsa`). Other key types have one algorithm.
 async fn rsa_hash(
@@ -915,21 +960,37 @@ async fn with_agents(
     // The server is asked once, for the first RSA key.
     let mut rsa = None;
     for mut agent in agents {
-        for key in agent.keys {
+        for identity in agent.keys {
+            let algorithm = identity.algorithm();
+            let is_rsa = algorithm.clone().is_rsa();
             let hash = match rsa {
-                Some(hash) if key.algorithm().is_rsa() => hash,
+                Some(hash) if is_rsa => hash,
                 _ => {
-                    let hash = rsa_hash(connection, key.algorithm()).await?;
-                    if key.algorithm().is_rsa() {
+                    let hash = rsa_hash(connection, algorithm).await?;
+                    if is_rsa {
                         rsa = Some(hash);
                     }
                     hash
                 }
             };
-            match connection
-                .authenticate_publickey_with(username, key, hash, &mut agent.client)
-                .await
-            {
+            let tried = match identity {
+                agent::Identity::Key(key) => {
+                    connection
+                        .authenticate_publickey_with(username, key, hash, &mut agent.client)
+                        .await
+                }
+                agent::Identity::Certificate(certificate) => {
+                    connection
+                        .authenticate_certificate_with(
+                            username,
+                            *certificate,
+                            hash,
+                            &mut agent.client,
+                        )
+                        .await
+                }
+            };
+            match tried {
                 Ok(AuthResult::Success) => return Ok((AuthResult::Success, None)),
                 // Accepted, but the server wants more (a code, say).
                 Ok(
