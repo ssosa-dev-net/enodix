@@ -87,6 +87,85 @@ pub const COLOR_NAMES: [&str; 20] = [
     "bright-white",
 ];
 
+/// The window's shortcuts that can be changed (#24): the action's id and its
+/// default key. Order matters: when two actions end up on one key, the
+/// first listed keeps it.
+pub const SHORTCUT_ACTIONS: [(&str, &str); 9] = [
+    ("quick-open", "Ctrl+K"),
+    ("switch-tab", "Ctrl+Shift+O"),
+    ("close-tab", "Ctrl+Shift+W"),
+    ("toggle-group", "Ctrl+Shift+M"),
+    ("open-in-window", "Ctrl+Shift+N"),
+    ("toggle-side-view", "Ctrl+Shift+B"),
+    ("preferences", "Ctrl+,"),
+    ("edit-host", "Ctrl+Shift+E"),
+    ("details", "Ctrl+Shift+D"),
+];
+
+/// A key combination in its one written form: `Ctrl+Alt+Shift+` and then the
+/// key (`K`, `7`, `,`, `F5`, `Tab`, `PageUp`). Case and the order of the
+/// modifiers do not matter when it is read. Nothing but a function key may
+/// stand without Ctrl or Alt, so no chord can take over plain typing.
+pub fn normalize_chord(chord: &str) -> Option<String> {
+    let (mut ctrl, mut alt, mut shift) = (false, false, false);
+    let mut key: Option<String> = None;
+    // `+` itself is a key (`Ctrl++`): split off a trailing `+` first.
+    let (head, plus) = match chord.trim().strip_suffix('+') {
+        Some(rest) if rest.is_empty() || rest.ends_with('+') => (rest.trim_end_matches('+'), true),
+        _ => (chord.trim(), false),
+    };
+    if plus {
+        key = Some("+".into());
+    }
+    for part in head.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => ctrl = true,
+            "alt" => alt = true,
+            "shift" => shift = true,
+            other => {
+                if key.is_some() {
+                    return None;
+                }
+                key = Some(normalized_key(other)?);
+            }
+        }
+    }
+    let key = key?;
+    let function_key = key.len() > 1 && key.starts_with('F') && key[1..].parse::<u8>().is_ok();
+    if !(ctrl || alt || function_key) {
+        return None;
+    }
+    let mut out = String::new();
+    for (on, name) in [(ctrl, "Ctrl"), (alt, "Alt"), (shift, "Shift")] {
+        if on {
+            out.push_str(name);
+            out.push('+');
+        }
+    }
+    out.push_str(&key);
+    Some(out)
+}
+
+/// The key part of a chord, in its written form, from lower case text.
+fn normalized_key(key: &str) -> Option<String> {
+    const NAMED: [&str; 8] = [
+        "Tab", "PageUp", "PageDown", "Home", "End", "Insert", "Delete", "Space",
+    ];
+    if let Some(name) = NAMED.iter().find(|n| n.eq_ignore_ascii_case(key)) {
+        return Some((*name).into());
+    }
+    if let Some(number) = key.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
+        return (1..=24).contains(&number).then(|| format!("F{number}"));
+    }
+    let mut chars = key.chars();
+    let first = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    (first.is_ascii_alphanumeric() || ",./;'[]\\-=`+".contains(first))
+        .then(|| first.to_ascii_uppercase().to_string())
+}
+
 /// The side view the activity rail selected (the window's left side).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -154,6 +233,12 @@ pub struct Preferences {
     /// Colours set one by one over the scheme's, by [`COLOR_NAMES`], each
     /// `#rrggbb`. Highlight rules naming a palette colour follow them.
     pub custom_colors: BTreeMap<String, String>,
+    /// Shortcuts moved off their default key (#24): action id
+    /// ([`SHORTCUT_ACTIONS`]) to chord. Only changed ones are kept.
+    pub shortcuts: BTreeMap<String, String>,
+    /// A key that sends a snippet to the active session (#24): chord to
+    /// snippet name. A chord an app shortcut uses is not kept.
+    pub snippet_keys: BTreeMap<String, String>,
 }
 
 impl Default for Preferences {
@@ -174,6 +259,8 @@ impl Default for Preferences {
             local_shell: String::new(),
             color_scheme: ColorScheme::Default,
             custom_colors: BTreeMap::new(),
+            shortcuts: BTreeMap::new(),
+            snippet_keys: BTreeMap::new(),
         }
     }
 }
@@ -216,6 +303,8 @@ impl Preferences {
                         .collect()
                 })
                 .unwrap_or(defaults.custom_colors),
+            shortcuts: read_strings(&mapping, "shortcuts"),
+            snippet_keys: read_strings(&mapping, "snippet_keys"),
         }
         .normalized()
     }
@@ -260,6 +349,14 @@ impl Preferences {
                 serde_norway::to_value(preferences.custom_colors).map_err(io::Error::other)?,
             );
         }
+        for (key, map) in [
+            ("shortcuts", preferences.shortcuts),
+            ("snippet_keys", preferences.snippet_keys),
+        ] {
+            if !map.is_empty() {
+                put(key, serde_norway::to_value(map).map_err(io::Error::other)?);
+            }
+        }
         let text = serde_norway::to_string(&mapping).map_err(io::Error::other)?;
         fs::create_dir_all(data_folder)?;
         let temporary = data_folder.join(format!("{FILE_NAME}.tmp"));
@@ -289,7 +386,41 @@ impl Preferences {
             .filter(|(name, _)| COLOR_NAMES.contains(&name.as_str()))
             .filter_map(|(name, color)| Some((name, normalized_color(&color)?)))
             .collect();
+        // Shortcuts: known actions, readable chords, one action per chord.
+        let mut taken = Vec::new();
+        let mut shortcuts = BTreeMap::new();
+        for (id, _) in SHORTCUT_ACTIONS {
+            if let Some(chord) = self.shortcuts.get(id).and_then(|c| normalize_chord(c)) {
+                if !taken.contains(&chord) {
+                    taken.push(chord.clone());
+                    shortcuts.insert(id.to_string(), chord);
+                }
+            }
+        }
+        self.shortcuts = shortcuts;
+        let in_use = self.effective_shortcuts();
+        self.snippet_keys = self
+            .snippet_keys
+            .into_iter()
+            .filter_map(|(chord, snippet)| {
+                let chord = normalize_chord(&chord)?;
+                let snippet = snippet.trim().to_string();
+                (!snippet.is_empty() && !in_use.values().any(|used| *used == chord))
+                    .then_some((chord, snippet))
+            })
+            .collect();
         self
+    }
+
+    /// Every action's key now: its own if the user moved it, else its default.
+    pub fn effective_shortcuts(&self) -> BTreeMap<String, String> {
+        SHORTCUT_ACTIONS
+            .iter()
+            .map(|(id, default)| {
+                let chord = self.shortcuts.get(*id).map_or(*default, String::as_str);
+                (id.to_string(), chord.to_string())
+            })
+            .collect()
     }
 
     /// Steps the font size one pixel up or down (within range), or back to
@@ -302,6 +433,15 @@ impl Preferences {
         }
         .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
     }
+}
+
+/// The text-to-text map under `key`; entries of another kind are left out.
+fn read_strings(mapping: &Mapping, key: &str) -> BTreeMap<String, String> {
+    read::<BTreeMap<String, Value>>(mapping, key)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(name, value)| Some((name, value.as_str()?.to_string())))
+        .collect()
 }
 
 /// `#rrggbb` in lower case for `#rgb` or `#rrggbb`, else nothing.

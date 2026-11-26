@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use enodix_core::preferences::{
-    ColorScheme, FontZoom, Preferences, SideView, Theme, DEFAULT_FONT_SIZE,
+    normalize_chord, ColorScheme, FontZoom, Preferences, SideView, Theme, DEFAULT_FONT_SIZE,
     DEFAULT_LEFT_PANEL_WIDTH, MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK, MIN_FONT_SIZE,
     MIN_PANEL_WIDTH,
 };
@@ -417,6 +417,8 @@ right_panel_hidden: true
             local_shell: String::new(),
             color_scheme: ColorScheme::Default,
             custom_colors: BTreeMap::new(),
+            shortcuts: BTreeMap::new(),
+            snippet_keys: BTreeMap::new(),
         }
     );
 }
@@ -471,5 +473,81 @@ fn own_colours_are_checked_one_by_one() {
             ("red".into(), "#aabbcc".into()),
             ("bright-cyan".into(), "#00ffaa".into()),
         ])
+    );
+}
+
+fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+#[test]
+fn chords_are_read_in_one_written_form() {
+    assert_eq!(
+        normalize_chord("ctrl+shift+k").as_deref(),
+        Some("Ctrl+Shift+K")
+    );
+    assert_eq!(
+        normalize_chord("Shift + Alt + 7").as_deref(),
+        Some("Alt+Shift+7")
+    );
+    assert_eq!(normalize_chord("Ctrl+,").as_deref(), Some("Ctrl+,"));
+    assert_eq!(normalize_chord("Ctrl++").as_deref(), Some("Ctrl++"));
+    assert_eq!(
+        normalize_chord("ctrl+pagedown").as_deref(),
+        Some("Ctrl+PageDown")
+    );
+    assert_eq!(normalize_chord("f5").as_deref(), Some("F5"));
+    // Plain typing, shift alone, two keys, nothing, unknown names.
+    for bad in [
+        "K",
+        "Shift+K",
+        "Ctrl+K+L",
+        "Ctrl",
+        "",
+        "Ctrl+Enter",
+        "Ctrl+F99",
+    ] {
+        assert_eq!(normalize_chord(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn moved_shortcuts_and_snippet_keys_are_remembered() {
+    let data = TempDir::new().unwrap();
+    let chosen = Preferences {
+        shortcuts: map(&[("quick-open", "Ctrl+P")]),
+        snippet_keys: map(&[("Ctrl+Shift+U", "show version"), ("F5", "save")]),
+        ..Preferences::default()
+    };
+    chosen.save(data.path()).unwrap();
+
+    let loaded = Preferences::load(data.path());
+
+    assert_eq!(loaded, chosen);
+    let now = loaded.effective_shortcuts();
+    assert_eq!(now["quick-open"], "Ctrl+P");
+    assert_eq!(now["close-tab"], "Ctrl+Shift+W");
+}
+
+#[test]
+fn bad_or_clashing_keys_are_dropped_one_by_one() {
+    let data = TempDir::new().unwrap();
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "shortcuts:\n  quick-open: ctrl+p\n  close-tab: Ctrl+P\n  no-such-action: Ctrl+J\n  details: J\n  preferences: 5\n\
+         snippet_keys:\n  ctrl+shift+w: clashes with close tab\n  ctrl+k: free, quick open moved\n  Ctrl+Q: ''\n  Q: plain\n",
+    )
+    .unwrap();
+
+    let loaded = Preferences::load(data.path());
+
+    // Close tab asked for the key quick open already has.
+    assert_eq!(loaded.shortcuts, map(&[("quick-open", "Ctrl+P")]));
+    assert_eq!(
+        loaded.snippet_keys,
+        map(&[("Ctrl+K", "free, quick open moved")])
     );
 }
