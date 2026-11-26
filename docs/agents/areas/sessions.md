@@ -160,6 +160,18 @@ ConnectionRefused | TimedOut { after, stage } | AuthenticationFailed`
   busy machine while doing #121). Duplicate opens a new tab
   beside the original; "New connection" on a closed session dismisses
   its tab (connect view in that pane).
+- Character encoding (#24). `encoding` setting (inherited; `utf-8` default,
+  `iso-8859-1`, `windows-1252`, `cp437`; `workspace::Encoding`, conversions
+  in `session/encoding.rs`: `decode` device bytes → UTF-8, `encode` typed
+  UTF-8 → device bytes, `?` for a character it lacks, non-UTF-8 input passes
+  as it is). `OpenOptions.encoding` (set by the shell's `host_options` from
+  the resolved host; quick connections, second channels and local shells use
+  UTF-8) goes to `Link.encoding`: `forward_counted` converts all output
+  before the log, the watchers and the terminal (the extra bytes are counted
+  as read, so acknowledgements balance) and `Link::command` converts every
+  `Command::Write`. Single-byte encodings only (no state across chunks).
+  Jobs, backups and scripts open with `OpenOptions::default()` and still read
+  UTF-8: a known limit. Tests: `tests/encoding.rs`.
 - Automatic reconnect (#24). `auto_reconnect` setting (inherited, off).
   All of it is the core's (`session/auto_reconnect.rs`):
   `CloseReason::allows_auto_reconnect` (connection lost, name not resolved,
