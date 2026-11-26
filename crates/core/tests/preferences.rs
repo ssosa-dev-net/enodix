@@ -1,11 +1,13 @@
 //! The user's preferences (theme, terminal font, scrollback, copy and
 //! paste): kept per user in the data folder, across restarts.
 
+use std::collections::BTreeMap;
 use std::fs;
 
 use enodix_core::preferences::{
-    FontZoom, Preferences, SideView, Theme, DEFAULT_FONT_SIZE, DEFAULT_LEFT_PANEL_WIDTH,
-    MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK, MIN_FONT_SIZE, MIN_PANEL_WIDTH,
+    ColorScheme, FontZoom, Preferences, SideView, Theme, DEFAULT_FONT_SIZE,
+    DEFAULT_LEFT_PANEL_WIDTH, MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK, MIN_FONT_SIZE,
+    MIN_PANEL_WIDTH,
 };
 use tempfile::TempDir;
 
@@ -413,6 +415,8 @@ right_panel_hidden: true
             left_panel_hidden: true,
             side_view: SideView::Hosts,
             local_shell: String::new(),
+            color_scheme: ColorScheme::Default,
+            custom_colors: BTreeMap::new(),
         }
     );
 }
@@ -429,4 +433,43 @@ fn the_local_shell_is_remembered_and_defaults_to_the_computers_first() {
     chosen.save(data.path()).unwrap();
 
     assert_eq!(Preferences::load(data.path()).local_shell, "wsl:Ubuntu");
+}
+
+#[test]
+fn the_colour_scheme_and_own_colours_are_remembered() {
+    let data = TempDir::new().unwrap();
+    assert_eq!(Preferences::default().color_scheme, ColorScheme::Default);
+    assert!(Preferences::default().custom_colors.is_empty());
+
+    let chosen = Preferences {
+        color_scheme: ColorScheme::SolarizedDark,
+        custom_colors: BTreeMap::from([("background".into(), "#102030".into())]),
+        ..Preferences::default()
+    };
+    chosen.save(data.path()).unwrap();
+
+    assert_eq!(Preferences::load(data.path()), chosen);
+    let text = fs::read_to_string(data.path().join("preferences.yaml")).unwrap();
+    assert!(text.contains("color_scheme: solarized-dark"), "{text}");
+}
+
+#[test]
+fn own_colours_are_checked_one_by_one() {
+    let data = TempDir::new().unwrap();
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "color_scheme: wyse60\ncustom_colors:\n  red: '#ABC'\n  bright-cyan: '#00FFAA'\n  green: lime\n  blue: 12\n  plaid: '#112233'\n",
+    )
+    .unwrap();
+
+    let loaded = Preferences::load(data.path());
+
+    assert_eq!(loaded.color_scheme, ColorScheme::Default);
+    assert_eq!(
+        loaded.custom_colors,
+        BTreeMap::from([
+            ("red".into(), "#aabbcc".into()),
+            ("bright-cyan".into(), "#00ffaa".into()),
+        ])
+    );
 }

@@ -8,7 +8,7 @@
 
 import type { IBufferLine, IDecoration, IMarker, Terminal } from "@xterm/xterm";
 import { inventory } from "./inventory.svelte";
-import { highlightColor } from "./preferences.svelte";
+import { highlightColor, paletteKey } from "./preferences.svelte";
 import {
   builtInHighlightRules,
   highlightLines,
@@ -86,6 +86,7 @@ export interface TerminalHighlighter {
 export function highlightTerminal(terminal: Terminal): TerminalHighlighter {
   let enabled = false;
   let dark = false;
+  let palette = paletteKey();
   let version = -1;
   let drawn: Drawn[] = [];
   let scheduled = false;
@@ -199,7 +200,7 @@ export function highlightTerminal(terminal: Terminal): TerminalHighlighter {
       for (let i = 0; i < line.rows; i += 1) {
         const row = line.start + i;
         if (row < top || row >= bottom) continue;
-        const key = `${version}|${dark}|${i}|${line.text}`;
+        const key = `${version}|${dark}|${palette}|${i}|${line.text}`;
         const old = previous.get(row);
         if (old && old.key === key) {
           next.push(old);
@@ -266,10 +267,15 @@ export function highlightTerminal(terminal: Terminal): TerminalHighlighter {
 
   return {
     update(on, isDark) {
+      const colours = paletteKey();
       const changed =
-        on !== enabled || isDark !== dark || version !== highlighting.version;
+        on !== enabled ||
+        isDark !== dark ||
+        colours !== palette ||
+        version !== highlighting.version;
       enabled = on;
       dark = isDark;
+      palette = colours;
       version = highlighting.version;
       if (!changed) return;
       if (!enabled) clear();

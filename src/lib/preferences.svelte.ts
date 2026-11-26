@@ -5,6 +5,14 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { ITheme } from "@xterm/xterm";
+import {
+  COLOR_NAMES,
+  SCHEME_THEMES,
+  themeKey,
+  type ColorScheme,
+} from "./colorSchemes";
+
+export type { ColorScheme };
 
 export type Theme = "system" | "light" | "dark";
 export type FontZoom = "in" | "out" | "reset";
@@ -35,6 +43,10 @@ export interface Preferences {
   /** The local shell a new local session opens (`LocalShell.id`); empty:
    * the first one the computer lists. */
   localShell: string;
+  /** The terminal's colour scheme (#24). */
+  colorScheme: ColorScheme;
+  /** Colours set over the scheme's, by `COLOR_NAMES`, each `#rrggbb`. */
+  customColors: Record<string, string>;
 }
 
 /** The core's limits (`enodix_core::preferences`), for the form. */
@@ -77,6 +89,8 @@ export const preferences = $state({
     leftPanelWidth: PANEL_WIDTHS.left,
     leftPanelHidden: false,
     localShell: "",
+    colorScheme: "default",
+    customColors: {},
   } as Preferences,
   /** Whether the operating system is set to dark. */
   systemDark: systemDark.matches,
@@ -162,9 +176,29 @@ export function fontStack(family: string): string {
   return `${named}, "Cascadia Mono", Consolas, "Courier New", monospace`;
 }
 
-/** The terminal's colours for the app's theme. */
+/** The terminal's colours: the chosen scheme (the app's own, light or dark
+ * as `dark` says, unless one is chosen), with the user's own colours over it. */
 export function terminalTheme(dark: boolean): ITheme {
-  return dark ? DARK_TERMINAL : LIGHT_TERMINAL;
+  const { colorScheme, customColors } = preferences.current;
+  const base =
+    colorScheme !== "default" && SCHEME_THEMES[colorScheme]
+      ? SCHEME_THEMES[colorScheme]
+      : dark
+        ? DARK_TERMINAL
+        : LIGHT_TERMINAL;
+  const theme: ITheme = { ...base };
+  for (const name of COLOR_NAMES) {
+    const color = customColors[name];
+    if (color) (theme as Record<string, string>)[themeKey(name)] = color;
+  }
+  return theme;
+}
+
+/** Changes whenever the colours highlight rules resolve to change (so a
+ * highlighter redraws when the scheme or an own colour does). */
+export function paletteKey(): string {
+  const { colorScheme, customColors } = preferences.current;
+  return `${colorScheme}|${JSON.stringify(customColors)}`;
 }
 
 // xterm.js's own ANSI colours (Tango), written out so that highlight
