@@ -21,7 +21,7 @@
 //! [`crate::import`]).
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -95,9 +95,23 @@ impl SshConfig {
         Ok(Self::parse(&text))
     }
 
+    /// The user's own config file (`.ssh/config` in their home folder:
+    /// `HOME`, else `USERPROFILE` on Windows), if it is there.
+    pub fn default_path() -> Option<PathBuf> {
+        let home = ["HOME", "USERPROFILE"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .find(|home| !home.is_empty())?;
+        let path = PathBuf::from(home).join(".ssh").join("config");
+        path.is_file().then_some(path)
+    }
+
     /// Reads the text of a config file. A line it cannot make sense of is
     /// kept as a keyword without values (and reported as not imported).
     pub fn parse(text: &str) -> Self {
+        // Notepad and other Windows editors may start the file with a
+        // byte-order mark, which would hide the first keyword.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut blocks = vec![Block {
             line: 0,
             applies: Applies::All,
@@ -392,9 +406,17 @@ impl SshConfigImport {
         for (index, proxy) in jumps {
             let host = &mut hosts[index];
             match jump_host(proxy, &ids, &host.name) {
-                Ok(jump) => {
+                Ok((jump, dropped)) => {
                     if let Some(values) = &mut host.host {
                         values.jump_host = jump.map(|id| id.to_string());
+                    }
+                    if let Some(reason) = dropped {
+                        skipped.push(ReportEntry {
+                            line: Some(proxy.line),
+                            name: format!("{}: ProxyJump {}", host.name, proxy.args.join(" ")),
+                            host: None,
+                            reason: Some(reason),
+                        });
                     }
                 }
                 Err(reason) => skipped.push(ReportEntry {
@@ -509,16 +531,17 @@ fn expand_hostname(written: &str, name: &str) -> Result<String, String> {
     Ok(address)
 }
 
-/// The jump host a `ProxyJump` line gives `name`: `None` for `none`; an
-/// error says why it cannot be imported.
+/// The jump host a `ProxyJump` line gives `name`: `None` for `none`, and
+/// what of the hop was left out (a user or port, which the jump host's own
+/// settings give instead); an error says why it cannot be imported.
 fn jump_host(
     proxy: &Line,
     ids: &HashMap<String, HostId>,
     name: &str,
-) -> Result<Option<HostId>, String> {
+) -> Result<(Option<HostId>, Option<String>), String> {
     let value = proxy.args.join(" ");
     if value.eq_ignore_ascii_case("none") {
-        return Ok(None);
+        return Ok((None, None));
     }
     if value.contains(',') {
         return Err(
@@ -529,18 +552,32 @@ fn jump_host(
     if value.contains("://") {
         return Err("not a name of this file: set the host's Jump host by hand".into());
     }
-    let hop = value
-        .rsplit_once('@')
-        .map_or(value.as_str(), |(_, hop)| hop);
-    let hop = match hop.rsplit_once(':') {
-        Some((hop, port)) if port.chars().all(|c| c.is_ascii_digit()) => hop,
-        _ => hop,
+    let (user, hop) = match value.rsplit_once('@') {
+        Some((user, hop)) => (Some(user), hop),
+        None => (None, value.as_str()),
+    };
+    let (hop, port) = match hop.rsplit_once(':') {
+        Some((hop, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            (hop, Some(port))
+        }
+        _ => (hop, None),
     };
     if hop.eq_ignore_ascii_case(name) {
         return Err("it names the host itself".into());
     }
+    let dropped = match (user, port) {
+        (None, None) => None,
+        (Some(user), None) => Some(format!("user {user}")),
+        (None, Some(port)) => Some(format!("port {port}")),
+        (Some(user), Some(port)) => Some(format!("user {user} and port {port}")),
+    }
+    .map(|what| {
+        format!(
+            "{what} not kept: the jump host {hop} logs in with its own credential profile and port"
+        )
+    });
     match ids.get(&names::folded(hop)) {
-        Some(id) => Ok(Some(id.clone())),
+        Some(id) => Ok((Some(id.clone()), dropped)),
         None => Err(format!(
             "{hop} is not a Host of this file that is imported: set the host's Jump host by hand"
         )),

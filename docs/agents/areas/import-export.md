@@ -92,11 +92,14 @@ value`, `Keyword=value`, double quotes, `#` comments; blocks: global
   `*`/`?` ignoring case), `Match` (never applied). Names = every `Host`
   pattern without a wildcard or `!`, once each (ignoring case), line of
   the first `Host` giving it. Values as `ssh`: global then matching
-  blocks in file order, first value per keyword. `HostName` → address
+  blocks in file order, first value per keyword. A leading UTF-8
+  byte-order mark is ignored (`parse`). `HostName` → address
   (default the name; `%h`, `%%` expanded, another token fails the host),
   checked by `bad_address` (a port after it fails: "write … as the
   HostName and Port …"); `Port` → `settings.port` (1..65535 else fail);
-  a one-hop `ProxyJump` (`user@` and `:port` dropped) naming another
+  a one-hop `ProxyJump` (a `user@` or `:port` is dropped and reported as a
+  skipped entry, "… not kept: the jump host … logs in with its own
+  credential profile and port") naming another
   imported name → `ImportedHost.jump_host` = that name's id (planned or
   existing), written by `ImportedValues.jump_host` (new: CSV and Nornir
   give `None`); `none` → none; several hops, `://`, a name not in the
@@ -107,8 +110,8 @@ value`, `Keyword=value`, double quotes, `#` comments; blocks: global
 { config, target }`: `preview(&ws)` → `SshConfigPreview { hosts:
 [SshConfigPreviewHost { line, name, outcome, host }], skipped }`,
   `run(&mut ws, replace)` (via `write_planned`). Shell:
-  `ssh_config_default_path` (`HOME`, else `USERPROFILE`, `/.ssh/config`
-  if it is a file), `ssh_config_import_preview { path, target }` (keeps
+  `ssh_config_default_path` (= core `SshConfig::default_path()`: `HOME`,
+  else `USERPROFILE`, `/.ssh/config` if it is a file), `ssh_config_import_preview { path, target }` (keeps
   the import in `SshConfigFiles`), `ssh_config_import_run { replace }`.
   Interface: `SshConfigImport.svelte`, view tab `ssh-config-import` (one
   tab, as the others; `[data-view=ssh-config-import][data-step=file|
