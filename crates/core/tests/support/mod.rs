@@ -146,6 +146,11 @@ pub const OTP_USERNAME: &str = "engineer-otp";
 /// OpenSSH certificate that [`user_ca`] signed for this name.
 pub const CERT_USERNAME: &str = "engineer-cert";
 pub const STALLING_USERNAME: &str = "engineer-stalled";
+/// A user whose authorized key is a FIDO security key: the
+/// `sk-ssh-ed25519@openssh.com` form of the client key (see
+/// [`agent::security_key`]), which only a security-key signature proves.
+#[allow(dead_code)]
+pub const SECURITY_KEY_USERNAME: &str = "engineer-sk";
 /// A user who logs in with the client key and then [`PASSWORD`], as with
 /// OpenSSH's `AuthenticationMethods publickey,password`: the key is
 /// accepted as a first step, and only the password method is offered next.
@@ -343,6 +348,9 @@ pub struct TestSshServer {
     scp_running: scp::Running,
     /// How many shells its clients started.
     shells: Arc<AtomicUsize>,
+    /// How many agent forwards (`auth-agent-req@openssh.com`) its clients
+    /// asked for.
+    agent_requests: Arc<AtomicUsize>,
     /// How many connections it has now, logged in or not.
     alive: Arc<AtomicUsize>,
     /// How it misbehaves on purpose.
@@ -585,6 +593,12 @@ impl TestSshServer {
         &self.host_key
     }
 
+    /// How many agent forwards its clients asked for, on any connection.
+    #[allow(dead_code)]
+    pub fn agent_requests(&self) -> usize {
+        self.agent_requests.load(Ordering::SeqCst)
+    }
+
     /// Stops this server and starts another on the same port, with a new
     /// host key (and new client keys), as when a device is replaced. The
     /// shell keeps its mode.
@@ -680,6 +694,7 @@ impl TestSshServer {
         let scp = Arc::<Mutex<scp::ScpMode>>::default();
         let scp_running = scp::Running::default();
         let shells = Arc::<AtomicUsize>::default();
+        let agent_requests = Arc::<AtomicUsize>::default();
         let alive = Arc::<AtomicUsize>::default();
         let mut server = ScriptedServer {
             authorized_keys,
@@ -694,6 +709,7 @@ impl TestSshServer {
             scp: scp.clone(),
             scp_running: scp_running.clone(),
             shells: shells.clone(),
+            agent_requests: agent_requests.clone(),
             alive: alive.clone(),
             quirks: quirks.clone(),
         };
@@ -750,6 +766,7 @@ impl TestSshServer {
             scp,
             scp_running,
             shells,
+            agent_requests,
             alive,
             quirks,
         }
@@ -1112,6 +1129,7 @@ struct ScriptedServer {
     scp: Arc<Mutex<scp::ScpMode>>,
     scp_running: scp::Running,
     shells: Arc<AtomicUsize>,
+    agent_requests: Arc<AtomicUsize>,
     alive: Arc<AtomicUsize>,
     quirks: Arc<ServerQuirks>,
 }
@@ -1150,6 +1168,7 @@ impl Server for ScriptedServer {
                 NEXT.fetch_add(1, Ordering::SeqCst)
             },
             shells: self.shells.clone(),
+            agent_requests: self.agent_requests.clone(),
             alive: self.alive.clone(),
             quirks: self.quirks.clone(),
             three_asked: 0,
@@ -1232,6 +1251,7 @@ struct ScriptedShell {
     scp: Arc<Mutex<scp::ScpMode>>,
     scp_running: scp::Running,
     shells: Arc<AtomicUsize>,
+    agent_requests: Arc<AtomicUsize>,
     alive: Arc<AtomicUsize>,
     quirks: Arc<ServerQuirks>,
     /// How many of [`THREE_QUESTIONS`] this login has asked.
@@ -1478,7 +1498,9 @@ impl ScriptedShell {
             // What the forwarded agent holds, if the client forwards one:
             // `agent keys: N` (or `agent: not forwarded`), after the prompt.
             Some("agent") => {
-                if self.agent_forwarded {
+                // `agent unasked` reaches for the agent whether or not the
+                // client forwards one, as a hostile server would.
+                if self.agent_forwarded || words.next() == Some("unasked") {
                     let handle = session.handle();
                     tokio::spawn(async move {
                         let answer = match handle.channel_open_agent().await {
@@ -2061,7 +2083,14 @@ impl Handler for ScriptedShell {
             .authorized_keys
             .iter()
             .any(|authorized| authorized.key_data() == key.public_key.key_data());
-        if user == USERNAME && known {
+        // russh has checked the signature before asking, so a security key
+        // here has signed as one.
+        let security_key = key.public_key.key_data().sk_ed25519().is_some_and(|sk| {
+            self.authorized_keys
+                .iter()
+                .any(|authorized| authorized.key_data().ed25519() == Some(sk.public_key()))
+        });
+        if (user == USERNAME && known) || (user == SECURITY_KEY_USERNAME && security_key) {
             Ok(Auth::Accept)
         } else if user == KEY_THEN_PASSWORD_USERNAME && known {
             self.key_accepted = true;
@@ -2176,6 +2205,7 @@ impl Handler for ScriptedShell {
         session: &mut Session,
     ) -> Result<bool, Self::Error> {
         self.agent_forwarded = true;
+        self.agent_requests.fetch_add(1, Ordering::SeqCst);
         session.channel_success(channel)?;
         Ok(true)
     }

@@ -5,11 +5,14 @@
 //!
 //! The file is read again on every check, so keys trusted by another window
 //! (or edited by hand) count at once. Lines this module does not understand
-//! (comments, hashed host names, markers such as `@revoked`) are ignored and
-//! kept as they are when it writes the file. `@cert-authority` lines are
-//! read by [`KnownHosts::certificate_authorities`]: the authorities whose
-//! host certificates are trusted, never written by the app. An entry for the host whose key
-//! cannot be read fails the check rather than counting as no key.
+//! (comments, plain entries under hashed host names) are ignored and kept
+//! as they are when it writes the file. The marker lines are read but never
+//! written by the app: `@cert-authority` lines by
+//! [`KnownHosts::certificate_authorities`] (the authorities whose host
+//! certificates are trusted) and `@revoked` lines by [`KnownHosts::revoked`]
+//! (keys never to accept). Their host patterns may be hashed, as
+//! `ssh-keygen -H` writes them. An entry for the host whose key cannot be
+//! read fails the check rather than counting as no key.
 //!
 //! Any stored key differing from the presented one counts as a change, even
 //! of another key type (OpenSSH compares within a type): russh's host-key
@@ -165,25 +168,44 @@ impl KnownHosts {
         host: &str,
         port: u16,
     ) -> Result<Vec<PublicKey>, KnownHostsError> {
+        self.marked(CERT_AUTHORITY, "certificate authority", host, port)
+    }
+
+    /// The keys revoked for `host` at `port`: the keys of the `@revoked`
+    /// lines whose patterns match it, read as in
+    /// [`Self::certificate_authorities`]. A revoked key is refused whether
+    /// it is the host's key, the key inside its host certificate, or the
+    /// authority that signed the certificate, as OpenSSH refuses it.
+    pub fn revoked(&self, host: &str, port: u16) -> Result<Vec<PublicKey>, KnownHostsError> {
+        self.marked(REVOKED, "revoked", host, port)
+    }
+
+    /// The keys of the lines with `marker` whose patterns match `host` at
+    /// `port`, in file order; `what` names them in an error.
+    fn marked(
+        &self,
+        marker: &str,
+        what: &str,
+        host: &str,
+        port: u16,
+    ) -> Result<Vec<PublicKey>, KnownHostsError> {
         let store = self.lock();
         let lines = store.load()?;
         let name = pattern(host, port);
-        let mut authorities = Vec::new();
+        let mut keys = Vec::new();
         for line in &lines {
             let Line::Other(text) = line else { continue };
-            let Some((patterns, key)) = authority_line(text) else {
+            let Some((patterns, key)) = marker_line(text, marker) else {
                 continue;
             };
             if matches_patterns(patterns, &name) {
                 let key = key.parse::<PublicKey>().map_err(|_| {
-                    store.read_error(format!(
-                        "the certificate authority key for {name} cannot be read"
-                    ))
+                    store.read_error(format!("the {what} key for {name} cannot be read"))
                 })?;
-                authorities.push(key);
+                keys.push(key);
             }
         }
-        Ok(authorities)
+        Ok(keys)
     }
 
     /// Trusts `key` for `host` at `port` from now on, replacing any key
@@ -351,10 +373,14 @@ fn matches_exactly(patterns: &[String], pattern: &str) -> bool {
     patterns.iter().any(|p| p.eq_ignore_ascii_case(pattern))
 }
 
-/// The patterns and key of a `@cert-authority` line, `None` for any other
-/// line.
-fn authority_line(text: &str) -> Option<(&str, &str)> {
-    let rest = text.trim().strip_prefix("@cert-authority")?;
+/// The marker of the lines naming certificate authorities.
+const CERT_AUTHORITY: &str = "@cert-authority";
+/// The marker of the lines naming revoked keys.
+const REVOKED: &str = "@revoked";
+
+/// The patterns and key of a line with `marker`, `None` for any other line.
+fn marker_line<'a>(text: &'a str, marker: &str) -> Option<(&'a str, &'a str)> {
+    let rest = text.trim().strip_prefix(marker)?;
     if !rest.starts_with(char::is_whitespace) {
         return None;
     }
@@ -363,17 +389,46 @@ fn authority_line(text: &str) -> Option<(&str, &str)> {
 }
 
 /// Whether comma-separated OpenSSH host `patterns` match `name`: one
-/// pattern matches and no `!` pattern does.
+/// pattern matches and no `!` pattern does. A hashed pattern
+/// (`|1|salt|hash`) stands for one name, compared without regard to case.
 fn matches_patterns(patterns: &str, name: &str) -> bool {
     let mut matched = false;
     for pattern in patterns.split(',') {
         match pattern.strip_prefix('!') {
-            Some(negated) if wildcard(negated, name) => return false,
+            Some(negated) if matches_one(negated, name) => return false,
             Some(_) => {}
-            None => matched |= wildcard(pattern, name),
+            None => matched |= matches_one(pattern, name),
         }
     }
     matched
+}
+
+/// Whether one pattern, plain or hashed, matches `name`.
+fn matches_one(pattern: &str, name: &str) -> bool {
+    match pattern.strip_prefix("|1|") {
+        Some(hashed) => matches_hashed(hashed, name),
+        None => wildcard(pattern, name),
+    }
+}
+
+/// Whether `salt|hash` (both base64) is the HMAC-SHA1 of `name` under
+/// `salt`, as OpenSSH hashes the names of its known hosts. A hash that
+/// cannot be read matches nothing.
+fn matches_hashed(hashed: &str, name: &str) -> bool {
+    use base64ct::{Base64, Encoding};
+    use hmac::{KeyInit, Mac};
+    let Some((salt, hash)) = hashed.split_once('|') else {
+        return false;
+    };
+    let (Ok(salt), Ok(hash)) = (Base64::decode_vec(salt), Base64::decode_vec(hash)) else {
+        return false;
+    };
+    let Ok(mut mac) = hmac::Hmac::<sha1::Sha1>::new_from_slice(&salt) else {
+        return false;
+    };
+    // OpenSSH hashes the name as it was given, lower-cased.
+    mac.update(name.to_ascii_lowercase().as_bytes());
+    mac.verify_slice(&hash).is_ok()
 }
 
 /// `*` and `?` wildcard matching, ignoring ASCII case.
@@ -419,16 +474,33 @@ mod tests {
     }
 
     #[test]
-    fn only_cert_authority_lines_are_authority_lines() {
+    fn only_lines_with_the_marker_are_read() {
+        let authority = |text| marker_line(text, CERT_AUTHORITY);
         assert_eq!(
-            authority_line("@cert-authority *.lab ssh-ed25519 AAAA ca"),
+            authority("@cert-authority *.lab ssh-ed25519 AAAA ca"),
             Some(("*.lab", "ssh-ed25519 AAAA ca"))
         );
-        assert_eq!(authority_line("@revoked r1 ssh-ed25519 AAAA"), None);
-        assert_eq!(authority_line("@cert-authorityx r1 ssh-ed25519 AAAA"), None);
+        assert_eq!(authority("@revoked r1 ssh-ed25519 AAAA"), None);
+        assert_eq!(authority("@cert-authorityx r1 ssh-ed25519 AAAA"), None);
+        assert_eq!(authority("# @cert-authority r1 ssh-ed25519 AAAA"), None);
         assert_eq!(
-            authority_line("# @cert-authority r1 ssh-ed25519 AAAA"),
-            None
+            marker_line("@revoked * ssh-ed25519 AAAA", REVOKED),
+            Some(("*", "ssh-ed25519 AAAA"))
         );
+    }
+
+    /// `r1.lab` hashed as `ssh-keygen -H` hashes it, with the salt 1 to 20
+    /// (HMAC-SHA1, both base64).
+    const HASHED_R1: &str = "|1|AQIDBAUGBwgJCgsMDQ4PEBESExQ=|wej/4NCvhF38Eq06V2Ja/+XAtxQ=";
+
+    #[test]
+    fn hashed_patterns_match_the_one_name_they_hash() {
+        assert!(matches_patterns(HASHED_R1, "r1.lab"));
+        assert!(matches_patterns(HASHED_R1, "R1.LAB"));
+        assert!(!matches_patterns(HASHED_R1, "r2.lab"));
+        assert!(!matches_patterns(&format!("*.lab,!{HASHED_R1}"), "r1.lab"));
+        assert!(matches_patterns(&format!("*.lab,!{HASHED_R1}"), "r2.lab"));
+        assert!(!matches_patterns("|1|not base64|x", "r1.lab"));
+        assert!(!matches_patterns("|1|nohash", "r1.lab"));
     }
 }
