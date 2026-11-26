@@ -36,6 +36,7 @@
     discardSession,
     openSession,
     reconnectFailure,
+    autoReconnectDelays,
     type HostKeyDecision,
     type HostKeyQuestion,
     type LoginPrompt,
@@ -82,6 +83,11 @@
     role: Role | null;
     /** Its host's environment (the border colour) and paste line delay. */
     safety: PasteSafety;
+    /**
+     * Whether the session's host tries again by itself when the connection
+     * drops (its `auto_reconnect` setting, #24).
+     */
+    autoReconnect?: boolean;
     /** The session's name, as its tab shows it (for the paste question). */
     name: string;
     /** Whether this session is on screen (the tab its pane shows). */
@@ -147,6 +153,7 @@
     onsize,
     role,
     safety,
+    autoReconnect = false,
     name,
     shown,
     focused,
@@ -405,6 +412,77 @@
       (status.negotiation !== null ||
         (status.offersPasswordLogin && onpasswordlogin !== undefined)),
   );
+
+  /** The waits before each automatic try, in seconds, from the core. */
+  let retryDelays = $state<number[]>([]);
+  autoReconnectDelays().then(
+    (delays) => (retryDelays = delays),
+    () => {},
+  );
+  /** Tries made by themselves since the session last connected. */
+  let retries = 0;
+  /** The user pressed a key: no more tries until it connects again. */
+  let retryStopped = false;
+  /** The wait before the next try; null: none planned. */
+  let retry = $state<{ attempt: number; of: number; seconds: number } | null>(
+    null,
+  );
+  let retryTimer: ReturnType<typeof setInterval> | undefined;
+  /** Set once the tries ran out. */
+  let retryGaveUp = $state(false);
+
+  function stopRetry() {
+    clearInterval(retryTimer);
+    retryTimer = undefined;
+    retry = null;
+  }
+
+  /** After a close the core allows retrying (never a refused login or a
+   * host-key question): waits, spaced further apart each time, then
+   * reconnects; any key stops it. */
+  function planRetry(closed: SessionState) {
+    stopRetry();
+    if (
+      closed.state !== "closed" ||
+      !closed.autoReconnect ||
+      !autoReconnect ||
+      !session ||
+      retryStopped
+    )
+      return;
+    if (retries >= retryDelays.length) {
+      retryGaveUp = retryDelays.length > 0;
+      return;
+    }
+    const attempt = retries + 1;
+    retries = attempt;
+    retry = {
+      attempt,
+      of: retryDelays.length,
+      seconds: retryDelays[attempt - 1],
+    };
+    retryTimer = setInterval(() => {
+      if (!retry) return;
+      if (retry.seconds > 1) {
+        retry = { ...retry, seconds: retry.seconds - 1 };
+      } else {
+        stopRetry();
+        reconnect();
+      }
+    }, 1000);
+  }
+
+  $effect(() => {
+    const now = status;
+    if (now.state === "connected") {
+      retries = 0;
+      retryStopped = false;
+      retryGaveUp = false;
+      stopRetry();
+    } else if (now.state === "closed") {
+      untrack(() => planRetry(now));
+    }
+  });
 
   /** For reconnecting at the terminal's current size. */
   let currentSize: () => { cols: number; rows: number } = () => ({
@@ -1070,7 +1148,14 @@
     input = terminalInput(terminal, ({ data, binary, origin }) => {
       // A closed session keeps its scrollback; Enter reconnects it.
       if (status.state === "closed") {
-        if (data === "\r") reconnect();
+        // Any key stops the automatic tries; Enter reconnects at once.
+        retryStopped = true;
+        stopRetry();
+        if (data === "\r") {
+          retries = 0;
+          retryStopped = false;
+          reconnect();
+        }
         return;
       }
       const bytes = binary
@@ -1218,6 +1303,7 @@
         if (session) session.discard();
         else if (adopted.kind === "adopt") discardSession(adopted.id);
       }
+      stopRetry();
       highlights.dispose();
       input?.dispose();
       webgl.dispose();
@@ -1546,6 +1632,16 @@
         {#if status.advice}
           <!-- What to change (#116); Enter then uses it (#130). -->
           <span data-session-advice>{status.advice}</span>
+        {/if}
+        {#if retry}
+          <span data-auto-reconnect>
+            Reconnecting in {retry.seconds} s (try {retry.attempt} of {retry.of}).
+            Press any key to stop.
+          </span>
+        {:else if retryGaveUp}
+          <span data-auto-reconnect-gave-up
+            >Gave up reconnecting after {retryDelays.length} tries.</span
+          >
         {/if}
         <span>Press <kbd>Enter</kbd> to reconnect.</span>
         <button data-session-new-connection onclick={ondismiss}

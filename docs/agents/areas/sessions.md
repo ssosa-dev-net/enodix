@@ -160,6 +160,21 @@ ConnectionRefused | TimedOut { after, stage } | AuthenticationFailed`
   busy machine while doing #121). Duplicate opens a new tab
   beside the original; "New connection" on a closed session dismisses
   its tab (connect view in that pane).
+- Automatic reconnect (#24). `auto_reconnect` setting (inherited, off).
+  The policy is the core's: `CloseReason::allows_auto_reconnect` /
+  `OpenError::allows_auto_reconnect` (connection lost, name not resolved,
+  unreachable, refused, timed out, `Connect`, closed before login, a jump
+  host's such error; never a refused login, key or agent failure, host key,
+  or a close the user made) and `AUTO_RECONNECT_DELAYS` (2, 4, 8, 16, 30,
+  60, 60, 60 s). The shell sends `autoReconnect` in `StateMessage::Closed`,
+  `reconnecting_hosts` in the workspace view and the delays through
+  `auto_reconnect_delays`. `TerminalSession` (prop `autoReconnect`, from
+  `reconnectsByItself(host)`) counts down in the closed bar
+  (`[data-auto-reconnect]`, then `[data-auto-reconnect-gave-up]`), then calls
+  its own `reconnect()`; any key stops it, Enter reconnects at once, and a
+  connected session resets the count. Tests: `tests/auto_reconnect.rs` (the
+  setting and the policy). Not verified: the countdown in the real window
+  (no smoke step; smoke needs Windows).
 - What to check next (#116). `OpenError::advice()` / `CloseReason::advice()`
   → `Option<String>`, a sentence for the user: `NameNotResolved`,
   `Unreachable`, `ConnectionRefused { port }` (the Port setting, SSH or

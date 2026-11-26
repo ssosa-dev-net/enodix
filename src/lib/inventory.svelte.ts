@@ -445,6 +445,11 @@ export function hostRole(id: string): Role | null {
   return inventory.workspace?.host_roles[id] ?? null;
 }
 
+/** Whether the host `id` tries again by itself when a session drops. */
+export function reconnectsByItself(id: string): boolean {
+  return inventory.workspace?.reconnecting_hosts.includes(id) ?? false;
+}
+
 /** The environment and paste line delay of the host `id`; null if the
  * open workspace has no such host. */
 export function hostSafety(id: string): PasteSafety | null {

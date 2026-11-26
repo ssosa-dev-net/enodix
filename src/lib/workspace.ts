@@ -64,6 +64,8 @@ export interface Settings {
   /** Seconds opening a session may wait on the device. */
   connect_timeout: number | null;
   logging: boolean | null;
+  /** Whether a session that drops tries again by itself. */
+  auto_reconnect: boolean | null;
   /** Whether session logs write the time before each line. */
   log_timestamps: boolean | null;
   /** Whether SSH sessions save the configuration once connected. */
@@ -107,6 +109,8 @@ export interface EffectiveSettings {
   /** In seconds. */
   connect_timeout: Effective<number>;
   logging: Effective<boolean>;
+  /** Off by default. */
+  auto_reconnect: Effective<boolean>;
   /** Off by default. */
   log_timestamps: Effective<boolean>;
   /** Off by default. */
@@ -384,6 +388,8 @@ export interface WorkspaceView {
   roles: Role[];
   /** The role each host that has one shows (neutral if undefined), by id. */
   host_roles: Record<string, Role>;
+  /** The ids of the hosts that reconnect by themselves. */
+  reconnecting_hosts: string[];
   /** Every host's environment and paste line delay, by id. */
   host_safety: Record<string, PasteSafety>;
   /** The saved filters, in file order. */

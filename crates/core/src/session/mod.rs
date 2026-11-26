@@ -595,7 +595,51 @@ impl ConnectStage {
     }
 }
 
+/// How long an automatic reconnect waits before each try, one entry per
+/// try: spaced further apart each time. After the last, it gives up.
+pub const AUTO_RECONNECT_DELAYS: [Duration; 8] = [
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(16),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+];
+
+impl OpenError {
+    /// Whether trying the same login again by itself is safe: the device
+    /// was not reached, or hung up before a login began. Never a refused
+    /// login (accounts lock), a host-key question, or a failure that
+    /// trying again cannot change (a key, the agent, the algorithms).
+    pub fn allows_auto_reconnect(&self) -> bool {
+        match self {
+            Self::NameNotResolved { .. }
+            | Self::Unreachable { .. }
+            | Self::ConnectionRefused { .. }
+            | Self::TimedOut { .. }
+            | Self::Connect(_)
+            | Self::ClosedBeforeLogin => true,
+            Self::JumpHost { error, .. } => error.allows_auto_reconnect(),
+            _ => false,
+        }
+    }
+}
+
 impl CloseReason {
+    /// Whether a session that closed for this reason may try again by
+    /// itself (the `auto_reconnect` setting): its connection was lost, or
+    /// a try failed before anyone could refuse a login ([`OpenError::
+    /// allows_auto_reconnect`]). Never one the user ended (closed, `exit`).
+    pub fn allows_auto_reconnect(&self) -> bool {
+        match self {
+            Self::ConnectionLost => true,
+            Self::Failed(error) => error.allows_auto_reconnect(),
+            _ => false,
+        }
+    }
+
     /// What the user can do about it: [`OpenError::advice`] for a session
     /// that could not be opened, else `None`.
     pub fn advice(&self) -> Option<String> {

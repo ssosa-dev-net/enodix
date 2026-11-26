@@ -103,6 +103,8 @@ export type SessionState =
       /** What to check next, from the core (#116); null when the reason
        * says it, or for a session that ended rather than failed. */
       advice?: string | null;
+      /** Trying again by itself is safe for this reason (#24). */
+      autoReconnect?: boolean;
     };
 
 export type AlgorithmKind = "keyExchange" | "hostKey" | "cipher" | "mac";
@@ -337,6 +339,11 @@ export type SessionSource =
    * its output from then on; null when that window died and it is lost.
    */
   | { kind: "adopt"; id: number; snapshot: string | null };
+
+/** The wait before each automatic reconnect try, in seconds. */
+export function autoReconnectDelays(): Promise<number[]> {
+  return invoke<number[]>("auto_reconnect_delays");
+}
 
 export function appName(): Promise<string> {
   return invoke<string>("app_name");

@@ -2,7 +2,7 @@
 //! interface. No behaviour lives here; it only translates between the
 //! interface's messages and the core's workspace and session interfaces.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -46,7 +46,7 @@ use enodix_core::session::{
     OpenOptions, Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent,
     SessionId, SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState,
     SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType, Transport, TypedLogin,
-    WhenConnected, DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
+    WhenConnected, AUTO_RECONNECT_DELAYS, DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
 };
 use enodix_core::steps::StepRuns;
 use enodix_core::template::Variables;
@@ -394,6 +394,8 @@ struct WorkspaceView {
     roles: Vec<Role>,
     /// The role each host that has one shows, by host id.
     host_roles: BTreeMap<HostId, Role>,
+    /// The hosts that reconnect by themselves when a session drops.
+    reconnecting_hosts: BTreeSet<HostId>,
     /// Every host's environment and paste line delay, by host id.
     host_safety: BTreeMap<HostId, PasteSafety>,
     /// The saved filters, in file order.
@@ -445,6 +447,7 @@ impl From<&Workspace> for WorkspaceView {
             tree: workspace.tree().clone(),
             roles: workspace.roles().to_vec(),
             host_roles: workspace.host_roles(),
+            reconnecting_hosts: workspace.hosts_reconnecting_by_themselves(),
             host_safety: workspace.host_paste_safety(),
             filters: workspace.filters().to_vec(),
             highlight_rules: workspace.highlight_rules().to_vec(),
@@ -500,6 +503,10 @@ enum StateMessage {
         negotiation: Option<NegotiationMessage>,
         /// What to check next (`CloseReason::advice`, #116).
         advice: Option<String>,
+        /// Trying again by itself is safe for this reason
+        /// (`CloseReason::allows_auto_reconnect`, #24); whether it does is
+        /// the host's `auto_reconnect` setting.
+        auto_reconnect: bool,
     },
 }
 
@@ -539,6 +546,7 @@ impl From<SessionState> for StateMessage {
                     }
                 }),
                 advice: reason.advice(),
+                auto_reconnect: reason.allows_auto_reconnect(),
                 reason: reason.to_string(),
             },
         }
@@ -552,6 +560,15 @@ fn product_name(app: &AppHandle) -> String {
         .product_name
         .clone()
         .unwrap_or_else(|| app.package_info().name.clone())
+}
+
+/// The wait before each automatic reconnect try, in seconds.
+#[tauri::command]
+fn auto_reconnect_delays() -> Vec<u64> {
+    AUTO_RECONNECT_DELAYS
+        .iter()
+        .map(std::time::Duration::as_secs)
+        .collect()
 }
 
 #[tauri::command]
@@ -3689,6 +3706,7 @@ pub fn run() {
             jobs_forget_finished,
             enrich_apply,
             app_name,
+            auto_reconnect_delays,
             app_quit,
             vault_status,
             vault_keychain,
