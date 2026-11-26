@@ -32,6 +32,7 @@ pub(super) const LOGGING: &str = "logging";
 pub(super) const BACKUP_ON_LOGIN: &str = "backup_on_login";
 pub(super) const ENVIRONMENT: &str = "environment";
 pub(super) const PASTE_LINE_DELAY: &str = "paste_line_delay";
+pub(super) const TERMINAL_TYPE: &str = "terminal_type";
 pub(super) const PLATFORM: &str = "platform";
 pub(super) const SERIAL: &str = "serial";
 pub(super) const WEB_LINKS: &str = "web_links";
@@ -81,6 +82,8 @@ pub struct Settings {
     /// Milliseconds to wait between pasted lines (0 to
     /// [`MAX_PASTE_LINE_DELAY_MS`]), for slow devices.
     pub paste_line_delay: Option<u32>,
+    /// The terminal type sessions to the host announce (`TERM`).
+    pub terminal_type: Option<TerminalType>,
     /// The kind of device (`eos`, `srlinux`, ...), as written; any text.
     pub platform: Option<String>,
     /// Links set here, in file order; names are unique.
@@ -239,6 +242,27 @@ choice!(
     }
 );
 
+choice!(
+    /// The terminal type a session announces to the device (SSH's pty
+    /// request, telnet's terminal type). Some equipment draws its menus
+    /// wrongly with the default.
+    TerminalType {
+        Xterm256Color = "xterm-256color",
+        Xterm = "xterm",
+        Vt100 = "vt100",
+        Ansi = "ansi",
+        Linux = "linux",
+    }
+);
+
+// The `choice!` macro defines the enum, so the default is written out.
+#[allow(clippy::derivable_impls)]
+impl Default for TerminalType {
+    fn default() -> Self {
+        Self::Xterm256Color
+    }
+}
+
 choice!(Parity {
     None = "none",
     Odd = "odd",
@@ -290,6 +314,8 @@ pub struct EffectiveSettings {
     pub environment: Option<Effective<Environment>>,
     /// In milliseconds; 0 (no delay) by default.
     pub paste_line_delay: Effective<u32>,
+    /// `xterm-256color` by default.
+    pub terminal_type: Effective<TerminalType>,
     pub platform: Option<Effective<String>>,
     /// Merged by name: the order a name first appears, from the root down.
     pub web_links: Vec<Effective<WebLink>>,
@@ -388,6 +414,10 @@ pub(super) fn resolve(levels: &[Level<'_>]) -> EffectiveSettings {
         backup_on_login: or_default(nearest(levels, |s| s.backup_on_login), false),
         environment: nearest(levels, |s| s.environment),
         paste_line_delay: or_default(nearest(levels, |s| s.paste_line_delay), 0),
+        terminal_type: or_default(
+            nearest(levels, |s| s.terminal_type),
+            TerminalType::default(),
+        ),
         platform: nearest(levels, |s| s.platform.clone()),
         web_links,
         forwards,
@@ -431,6 +461,12 @@ pub(super) fn settings_from_document(document: &Mapping) -> Result<Settings, Str
             Environment::expected,
         )?,
         paste_line_delay: read_paste_line_delay(document)?,
+        terminal_type: read_choice(
+            document,
+            TERMINAL_TYPE,
+            TerminalType::parse,
+            TerminalType::expected,
+        )?,
         // Read as host files always did: a number is its text, blank unset.
         platform: detail_text(document, PLATFORM)?,
         web_links: read_web_links(document)?,
@@ -776,6 +812,11 @@ pub(super) fn apply_settings(
         ENVIRONMENT,
         text(current.environment.map(Environment::as_str)),
         text(edit.environment.map(Environment::as_str)),
+    );
+    update(
+        TERMINAL_TYPE,
+        text(current.terminal_type.map(TerminalType::as_str)),
+        text(edit.terminal_type.map(TerminalType::as_str)),
     );
     update(
         PASTE_LINE_DELAY,

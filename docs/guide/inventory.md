@@ -109,6 +109,7 @@ These keys can be written in a host file or in a `_folder.yaml`, and the nearest
 | `backup_on_login` | `true` or `false`: save the configuration to the config history when an SSH session connects | `false` |
 | `environment` | `production`, `staging` or `lab` | none |
 | `paste_line_delay` | Milliseconds to wait between pasted lines, 0 to 10000, for devices that drop fast input | 0 |
+| `terminal_type` | The terminal type the session announces to the device: `xterm-256color`, `xterm`, `vt100`, `ansi` or `linux` | `xterm-256color` |
 
 Serial lines are described by a `serial` mapping. Each key inherits on its own:
 
@@ -160,7 +161,7 @@ Keys that enodix does not know are kept as they are when the app saves a host, s
 
 ## Folders and inheritance
 
-A folder can hold a `_folder.yaml` file. It can set a `description`, `tags`, and any of the connection settings above (`platform`, `protocol`, `port`, `credential_profile`, `jump_host`, `legacy_crypto`, `connect_timeout`, `logging`, `backup_on_login`, `environment`, `paste_line_delay`, `serial`, `web_links` and `forwards`). Everything below the folder inherits them.
+A folder can hold a `_folder.yaml` file. It can set a `description`, `tags`, and any of the connection settings above (`platform`, `protocol`, `port`, `credential_profile`, `jump_host`, `legacy_crypto`, `connect_timeout`, `logging`, `backup_on_login`, `environment`, `paste_line_delay`, `terminal_type`, `serial`, `web_links` and `forwards`). Everything below the folder inherits them.
 
 ```yaml
 # Europe/_folder.yaml

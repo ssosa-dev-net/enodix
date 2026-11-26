@@ -7,7 +7,8 @@
 //!
 //! - window size (NAWS, RFC 1073): sends the terminal size once agreed and
 //!   after every resize;
-//! - terminal type (RFC 1091): `xterm-256color`, as for SSH;
+//! - terminal type (RFC 1091): the host's terminal type setting
+//!   (`xterm-256color` by default), as for SSH;
 //! - echo (RFC 857): the device echoes if it offers to; while it does not,
 //!   the session echoes typed input itself (printable characters, Enter
 //!   and backspace; not control characters or escape sequences), as a
@@ -49,7 +50,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::{mpsc, Notify};
 
-use super::{tcp, CloseReason, Command, Link, SessionState, TelnetTarget, TerminalSize, TERM};
+use super::{
+    tcp, CloseReason, Command, Link, SessionState, TelnetTarget, TerminalSize, TerminalType,
+};
 
 /// Interpret as command.
 const IAC: u8 = 255;
@@ -129,7 +132,7 @@ pub(super) async fn run(target: TelnetTarget, link: &mut Link) -> CloseReason {
         let _ = to_device.send(Out { bytes, reply: 0 });
     };
 
-    let mut telnet = Telnet::new(link.size);
+    let mut telnet = Telnet::new(link.size, target.terminal_type);
     send(telnet.opening());
     link.state(SessionState::Connected);
 
@@ -374,6 +377,8 @@ struct Telnet {
     /// Whether the session tells the terminal type.
     terminal_type: Agreement,
     size: TerminalSize,
+    /// The terminal type told when the device asks.
+    term: TerminalType,
     /// Inside an escape sequence typed while the session echoes: none of
     /// it is echoed.
     in_escape: Escape,
@@ -390,7 +395,7 @@ struct Telnet {
 }
 
 impl Telnet {
-    fn new(size: TerminalSize) -> Self {
+    fn new(size: TerminalSize, term: TerminalType) -> Self {
         Self {
             parse: Parse::Data,
             sub: Vec::new(),
@@ -400,6 +405,7 @@ impl Telnet {
             window_size: Agreement::Off,
             terminal_type: Agreement::Off,
             size,
+            term,
             in_escape: Escape::None,
             after_carriage_return: false,
             refused: [[0; 256]; 2],
@@ -572,7 +578,7 @@ impl Telnet {
     fn subnegotiation(&mut self, replies: &mut Vec<u8>) {
         if self.terminal_type == Agreement::On && self.sub == [TERMINAL_TYPE, TERMINAL_TYPE_SEND] {
             replies.extend_from_slice(&[IAC, SB, TERMINAL_TYPE, TERMINAL_TYPE_IS]);
-            replies.extend_from_slice(&escape(TERM.as_bytes()));
+            replies.extend_from_slice(&escape(self.term.as_str().as_bytes()));
             replies.extend_from_slice(&[IAC, SE]);
         }
     }

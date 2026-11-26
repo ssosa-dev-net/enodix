@@ -27,7 +27,7 @@
 //! Login takes [`USERNAME`] and [`PASSWORD`]; anything else prints
 //! [`LOGIN_INCORRECT`] and asks again. The password is never echoed.
 
-use enodix_core::session::{TelnetTarget, DEFAULT_CONNECT_TIMEOUT};
+use enodix_core::session::{TelnetTarget, TerminalType, DEFAULT_CONNECT_TIMEOUT};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -132,6 +132,7 @@ impl TestTelnetServer {
             host: "127.0.0.1".into(),
             port: self.port,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            terminal_type: TerminalType::default(),
         }
     }
 }
