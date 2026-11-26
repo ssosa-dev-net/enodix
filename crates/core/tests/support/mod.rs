@@ -143,6 +143,10 @@ pub const OTP_USERNAME: &str = "engineer-otp";
 /// A user whose login the server never answers, like a device whose
 /// authentication backend hangs.
 pub const STALLING_USERNAME: &str = "engineer-stalled";
+/// A user who logs in with the client key and then [`PASSWORD`], as with
+/// OpenSSH's `AuthenticationMethods publickey,password`: the key is
+/// accepted as a first step, and only the password method is offered next.
+pub const KEY_THEN_PASSWORD_USERNAME: &str = "engineer-key-pw";
 /// A user whose keyboard-interactive login asks [`THREE_QUESTIONS`], one
 /// round each, in a row; the answers are [`THREE_ANSWERS`].
 pub const THREE_QUESTIONS_USERNAME: &str = "engineer-3q";
@@ -1119,6 +1123,7 @@ impl Server for ScriptedServer {
             forwarded: self.forwarded.clone(),
             channels: HashMap::new(),
             interactive: Interactive::Start,
+            key_accepted: false,
             device: self.device.clone(),
             open: self.open.clone(),
             counted: false,
@@ -1189,6 +1194,8 @@ struct ScriptedShell {
     channels: HashMap<ChannelId, ShellState>,
     /// Where [`OTP_USERNAME`]'s login has got to.
     interactive: Interactive,
+    /// [`KEY_THEN_PASSWORD_USERNAME`]'s key was accepted (the first step).
+    key_accepted: bool,
     /// How the shell starts, in device mode.
     device: Option<Device>,
     /// The server's count of open connections.
@@ -1881,6 +1888,13 @@ impl Handler for ScriptedShell {
         }
         if user == USERNAME && password == PASSWORD {
             Ok(Auth::Accept)
+        } else if user == KEY_THEN_PASSWORD_USERNAME && password == PASSWORD {
+            // Only after the key: a password alone is not enough.
+            if std::mem::take(&mut self.key_accepted) {
+                Ok(Auth::Accept)
+            } else {
+                Ok(Auth::reject())
+            }
         } else if user == OTP_USERNAME && password == PASSWORD {
             self.interactive = Interactive::PasswordAccepted;
             Ok(Auth::Reject {
@@ -1934,6 +1948,12 @@ impl Handler for ScriptedShell {
             .any(|authorized| authorized.key_data() == key.public_key.key_data());
         if user == USERNAME && known {
             Ok(Auth::Accept)
+        } else if user == KEY_THEN_PASSWORD_USERNAME && known {
+            self.key_accepted = true;
+            Ok(Auth::Reject {
+                proceed_with_methods: Some(MethodSet::from(&[MethodKind::Password][..])),
+                partial_success: true,
+            })
         } else {
             Ok(Auth::reject())
         }

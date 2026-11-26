@@ -710,6 +710,8 @@ async fn authenticate(
         login => login,
     };
 
+    // A key or agent the server may accept as the first of two steps.
+    let key_first = matches!(login, Login::Key(_) | Login::Agent(_));
     let mut password_for_prompt = None;
     let mut agent_error = None;
     // Whether a refusal leads on to keyboard-interactive.
@@ -775,7 +777,46 @@ async fn authenticate(
             Interactive::Refused { asked_user: false } => {}
         }
     }
+    // The key was accepted and the server wants a password too
+    // (`AuthenticationMethods publickey,password`): the user is asked.
+    if key_first && partial_success && remaining.contains(&MethodKind::Password) {
+        let password = ask_password(prompter).await?;
+        return match connection
+            .authenticate_password(username, &password)
+            .await
+            .map_err(protocol)?
+        {
+            AuthResult::Success => Ok(()),
+            AuthResult::Failure {
+                remaining_methods,
+                partial_success: true,
+            } if remaining_methods.contains(&MethodKind::KeyboardInteractive) => {
+                // A third step (a code, say).
+                match keyboard_interactive(connection, username, None, prompter).await? {
+                    Interactive::LoggedIn => Ok(()),
+                    Interactive::Refused { .. } => Err(OpenError::AuthenticationFailed),
+                }
+            }
+            AuthResult::Failure { .. } => Err(OpenError::AuthenticationFailed),
+        };
+    }
     Err(agent_error.map_or(OpenError::AuthenticationFailed, OpenError::Agent))
+}
+
+/// Asks the user for the password a server wants after a key.
+async fn ask_password(prompter: &mut Prompter) -> Result<String, OpenError> {
+    let mut answers = prompter
+        .ask(LoginPrompt {
+            name: String::new(),
+            instructions: String::new(),
+            questions: vec![LoginQuestion {
+                text: "Password: ".into(),
+                echo: false,
+            }],
+        })
+        .await
+        .ok_or(OpenError::AuthenticationFailed)?;
+    Ok(answers.pop().unwrap_or_default())
 }
 
 /// The hash an RSA key signs with: the best SHA-2 one the server accepts,
