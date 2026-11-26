@@ -146,7 +146,8 @@ it, and the terminals in tabs and split panes.
   window's active terminal. Switching workspace asks about the sessions
   in session windows as about those of the main window, and keeps or
   closes them alike. A move is not offered while the session is connecting,
-  while a question is open on it, or while a paste is still being sent.
+  while a question is open on it, while a paste is still being sent, or
+  while a snippet's steps run on it.
   The multi-send group spans windows: a member stays in it when it
   moves; every member, in every window, shows the marker and the group's
   size; typing in one reaches the connected members in every window; you
@@ -191,8 +192,8 @@ it, and the terminals in tabs and split panes.
   host or folder, both imports, switch workspace, Preferences, platform
   definitions, highlight rules, Python setup.
 - **Questions**: those about one terminal (host key, login questions,
-  paste confirmation, a snippet's variables, closing a live tab, joining
-  multi-send) cover only that terminal's pane; the other panes stay usable.
+  paste confirmation, a snippet's variables, a snippet's steps, closing a
+  live tab, joining multi-send) cover only that terminal's pane; the other panes stay usable.
   So do a Files tab's (its login, host key, names, production, upload
   and download questions, and closing it while transfers run).
   Those about the whole app stay window-modal: delete, rename, new host or
@@ -230,6 +231,11 @@ it, and the terminals in tabs and split panes.
   sits at the bottom of the terminal, so the banner stays readable (and
   scrollable) above it. Jobs, config backups, the backup on login and the
   Files tab never show or keep it.
+- **Snippet steps**: while a snippet's steps run on a session, a bar under
+  its terminal names the snippet, the step and what it waits for, with
+  **Stop** (typing in the terminal stops it too, without sending the key).
+  When they end, the bar says how (done, or where and why they stopped)
+  until you dismiss it. See [Snippets](snippets.md).
 - **A connection that fails** says what happened and what to
   check next, in the bar under the terminal (or the SSH agent's card):
   the address for a name that does not resolve, the Port setting for a

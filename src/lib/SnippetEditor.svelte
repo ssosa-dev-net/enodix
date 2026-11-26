@@ -14,6 +14,7 @@
     unregisterSnippet,
   } from "./snippetDrafts.svelte";
   import { variablesOf } from "./snippets.svelte";
+  import { stepsText } from "./steps";
   import { openView } from "./views";
 
   interface Props {
@@ -40,6 +41,9 @@
     group: original?.group ?? "",
     text: original?.text ?? "",
   });
+  /** A snippet's steps (#23) are written in the snippets file: shown here,
+   * and kept as they are when its name or group is saved. */
+  const steps = untrack(() => original?.steps ?? null);
   /** What was last saved, to tell whether there is anything to save. */
   let savedAs = $state({ ...draft });
   let previous = $state<string | null>(untrack(() => original?.name ?? null));
@@ -56,7 +60,16 @@
       draft.text !== savedAs.text,
   );
   const lines = $derived(draft.text.split(/\r\n|\n|\r/).length);
-  const variables = $derived(variablesOf(draft.text));
+  const variables = $derived(
+    steps
+      ? variablesOf(
+          [
+            ...steps.steps.map((step) => step.send ?? ""),
+            ...steps.answers.map((answer) => answer.send),
+          ].join("\n"),
+        )
+      : variablesOf(draft.text),
+  );
 
   const groups = $derived([
     ...new Set(
@@ -90,7 +103,7 @@
       await saveSnippet(previous, {
         name: sent.name,
         group: sent.group.trim() === "" ? null : sent.group,
-        text: sent.text,
+        ...(steps ? { text: "", steps } : { text: sent.text }),
       });
       error = null;
       const renamed = sent.name !== previous;
@@ -206,26 +219,40 @@
           </datalist>
         </div>
         <div class="split">
-          <div class="text">
-            <label for="snippet-text">Text</label>
-            <div class="editor">
-              <div class="gutter" aria-hidden="true" bind:this={gutter}>
-                {#each { length: lines }, index (index)}
-                  <div>{index + 1}</div>
-                {/each}
-              </div>
-              <textarea
-                id="snippet-text"
-                name="snippet-text"
-                wrap="off"
-                spellcheck="false"
-                autocomplete="off"
-                placeholder={"show interface {{interface}}"}
-                bind:this={area}
-                bind:value={draft.text}
-                onscroll={syncGutter}></textarea>
+          {#if steps}
+            <div class="text" data-snippet-steps-text>
+              <span class="label">Steps</span>
+              <p class="note">
+                This snippet runs step by step on the open session, waiting for
+                the device. Its steps are written in the workspace's <code
+                  >_snippets.yaml</code
+                >: change them there. Here you can rename it or change its
+                group.
+              </p>
+              <pre class="steps">{stepsText(steps)}</pre>
             </div>
-          </div>
+          {:else}
+            <div class="text">
+              <label for="snippet-text">Text</label>
+              <div class="editor">
+                <div class="gutter" aria-hidden="true" bind:this={gutter}>
+                  {#each { length: lines }, index (index)}
+                    <div>{index + 1}</div>
+                  {/each}
+                </div>
+                <textarea
+                  id="snippet-text"
+                  name="snippet-text"
+                  wrap="off"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder={"show interface {{interface}}"}
+                  bind:this={area}
+                  bind:value={draft.text}
+                  onscroll={syncGutter}></textarea>
+              </div>
+            </div>
+          {/if}
           <aside class="found" data-snippet-found>
             <h3>
               Variables
@@ -341,6 +368,33 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+  }
+
+  .text .label {
+    color: var(--muted);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+
+  .note {
+    margin: 0;
+    max-width: 60ch;
+    font-size: var(--text-sm);
+  }
+
+  .steps {
+    flex: 1;
+    margin: 0;
+    min-height: 12rem;
+    padding: var(--space-2);
+    overflow: auto;
+    background: var(--input);
+    border: 1px solid var(--control-border);
+    border-radius: var(--radius-md);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    white-space: pre;
   }
 
   .editor {

@@ -5,6 +5,16 @@ in the project's tracker.
 
 ## Unreleased
 
+### New
+
+- Snippets with steps: lines sent one at a time to the session in front of
+  you, over SSH, telnet or serial, each waiting for the device's prompt (or
+  a pattern of its own) with a timeout; questions such as `[confirm]`
+  answered when they show; the run stopped at the first error pattern,
+  naming the step and line. Shown before it runs (always on production),
+  followed in a bar with Stop while it runs, and stopped by typing in the
+  terminal. Written beside the other snippets in `_snippets.yaml` [23].
+
 ## 0.7.1
 
 A distribution release: the app is the same as 0.7.0. The Python bridge is

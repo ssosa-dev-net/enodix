@@ -247,6 +247,7 @@ fn edit(workspace: &mut Workspace, kind: &Kind) -> Option<Result<(), EditError>>
                 name: "Clock".into(),
                 group: None,
                 text: "show clock".into(),
+                steps: None,
             },
         ),
         "_highlights.yaml" => workspace.save_highlight_rule(
