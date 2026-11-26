@@ -76,6 +76,12 @@
         </dd>
       </dl>
     {/if}
+    {#if question.certificate}
+      <p class="certificate" data-host-certificate>
+        The device also presented a host certificate, which was not accepted:
+        {question.certificate}.
+      </p>
+    {/if}
     <div class="actions">
       <button
         data-decision="cancel"
@@ -142,6 +148,10 @@
   p {
     margin: 0;
     font-size: var(--text-sm);
+  }
+
+  .certificate {
+    color: var(--muted);
   }
 
   dl {

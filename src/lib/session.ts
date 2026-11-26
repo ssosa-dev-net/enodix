@@ -172,6 +172,9 @@ export interface HostKeyQuestion {
   /** The keys trusted until now; empty on the first connection, otherwise
    * the key has changed. */
   stored: HostKey[];
+  /** Why the host certificate the server presented was not accepted, if
+   * it presented one: the question is then about the key inside it. */
+  certificate: string | null;
 }
 
 export type HostKeyDecision = "trustAndRemember" | "trustOnce" | "cancel";
