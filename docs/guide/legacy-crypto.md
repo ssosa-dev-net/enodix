@@ -61,3 +61,36 @@ of a kind cannot be reached:
 - Key exchange: GSS-API (`gss-*`) and RSA key exchange (`rsa1024-sha1`).
 - Host keys: X.509 certificates (`x509v3-sign-rsa`, `x509v3-sign-dss`).
 - SSH protocol 1.
+
+These are not planned. MD5, RC4, Blowfish and SSH-1 are broken, not merely
+old, and supporting them would mean carrying a patched copy of the SSH
+library. A device that offers nothing else of a kind has to be reached
+another way.
+
+## Reaching a device the switch cannot
+
+In order of preference:
+
+1. **Update the device**, or turn on a stronger algorithm in its SSH
+   settings. Most firmware that can run a newer image also offers
+   `aes128-ctr` and `hmac-sha1`.
+2. **Telnet or serial**, which need no algorithms. Telnet sends everything,
+   including the password, in the clear; use it only on a management
+   network you trust, or the console port.
+3. **The system's own SSH client** (`ssh`) in a local shell. When a
+   session of a workspace host fails because the device offers only
+   unsupported algorithms, its message has an **Open with the system ssh
+   (insecure)** button. It opens a tab running the computer's own `ssh`
+   with the outdated algorithms allowed, and the header shows an
+   **Insecure** marker. This is not an enodix SSH session: enodix does
+   not check the host key against its own list, log the session, use the
+   credential profile's password (you type it in the terminal; only the
+   profile's username is passed) or go through jump hosts (a host behind
+   one is refused). It is as insecure as the algorithms the device
+   forces on it. Newer OpenSSH builds no longer know Blowfish, RC4 and
+   CAST, and none speaks SSH-1: for those, use telnet or serial, or an
+   old client. The button is in the main window's tabs, not in a session
+   window.
+
+If you need a device that none of these reach, please report what the
+negotiation message lists as offered.

@@ -39,7 +39,8 @@ protocol** setting: SSH, telnet or serial) and opens in a new tab.
 The tab shows the host's name with a dot for its state. The header line above
 the terminal shows the host's role, name, address, protocol and its markers:
 **Production** (or Staging, Lab), **Unencrypted** for telnet, **Legacy
-crypto**, **Multi-send**, and **Not logging**. A **Session actions** button at
+crypto**, **Insecure** (the system's ssh client, see
+[Legacy crypto](legacy-crypto.md)), **Multi-send**, and **Not logging**. A **Session actions** button at
 its right end opens the session menu, which is also the tab's right-click
 menu.
 

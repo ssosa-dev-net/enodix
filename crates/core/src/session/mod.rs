@@ -19,6 +19,7 @@ mod relay;
 mod relays;
 mod serial;
 mod ssh;
+mod system_ssh;
 mod tcp;
 mod telnet;
 
@@ -55,6 +56,7 @@ pub use serial::{
     SystemSerialPorts, BREAK_DURATION, SERIAL_POLL,
 };
 pub(crate) use ssh::JumpConnections;
+pub use system_ssh::{system_ssh_target, SystemSshHost, SYSTEM_SSH_PROGRAM, SYSTEM_SSH_WARNING};
 
 /// Identifies one session within its [`SessionManager`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
