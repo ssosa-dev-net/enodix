@@ -178,6 +178,12 @@ A snippet written badly is left out and reported as a problem on the file.
 - Steps wait for the prompt, so a device that pages long output
   (`--More--`) waits there: start with `terminal length 0` (or your
   platform's command) as a step.
+- With no platform on the host, the prompt is any word ending in `>`, `#`,
+  `$` or `%`, so a progress line such as `Copying... 50%` that pauses is
+  taken for the prompt. Set the host's platform for a precise prompt, or
+  give the step a pattern of its own to wait for.
+- If the snippet, its answers or the host change between the confirmation
+  and the run, nothing is sent: look at the steps again.
 - A run's events go to the window showing the session, so the session
   cannot move to another window while steps run on it.
 - Names of variables in jobs that look like secrets (password, token,

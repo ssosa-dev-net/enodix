@@ -39,6 +39,7 @@ use tokio::time::Instant;
 
 use crate::layout::InputOrigin;
 use crate::logging::PlainText;
+use crate::paste::{confirms_steps, PasteSafety};
 use crate::session::{OutputWatch, SessionId, SessionManager};
 use crate::template::{MissingVariables, Template, Variables};
 
@@ -453,6 +454,42 @@ impl StepsPlan {
         &self.prompt
     }
 
+    /// What identifies these steps exactly as filled: every line sent,
+    /// every answer, pattern, wait and timeout, and the prompt. The user
+    /// confirms a plan by its digest ([`Permission::previewed`]); a plan
+    /// filled again from a snippet that changed meanwhile has another.
+    pub fn digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        let mut field = |text: &str| {
+            hash.update((text.len() as u64).to_le_bytes());
+            hash.update(text.as_bytes());
+        };
+        field(&self.prompt);
+        for step in &self.steps {
+            field(step.send.as_deref().unwrap_or("\0none"));
+            match &step.wait {
+                PlannedWait::Prompt => field("\0prompt"),
+                PlannedWait::For(pattern) => field(pattern.source()),
+                PlannedWait::Nothing => field("\0nothing"),
+            }
+            field(&step.timeout.as_millis().to_string());
+        }
+        field("\0answers");
+        for answer in &self.answers {
+            field(answer.when.source());
+            field(&answer.send);
+        }
+        field("\0stops");
+        for stop in &self.stops {
+            field(stop.source());
+        }
+        hash.finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
     /// The lines sent by the steps, in order (answers aside).
     pub fn lines(&self) -> Vec<&str> {
         self.steps
@@ -630,9 +667,39 @@ impl RunEnd {
     }
 }
 
+/// What a run may start on: what the user was shown and said, and where
+/// the session stands. [`StepRuns::start`] refuses what these do not allow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Permission {
+    /// The session's host's paste safety (its environment, its line delay).
+    pub safety: PasteSafety,
+    /// The user's preference for confirming pastes of several lines.
+    pub confirm_multi_line: bool,
+    /// The digest ([`StepsPlan::digest`]) of the plan the user was shown.
+    pub previewed: String,
+    /// Whether the user said yes to it.
+    pub confirmed: bool,
+    /// Whether the session is shown by a tab of the multi-send group.
+    pub in_group: bool,
+}
+
 /// Why a run could not start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StartError {
+    /// Its steps must be confirmed first (always on production), and were
+    /// not: nothing was sent.
+    #[error("the steps run only once they are confirmed, so nothing was sent")]
+    NotConfirmed,
+    /// The steps differ from those shown (the snippet, the host or its
+    /// platform changed since): nothing was sent.
+    #[error("the snippet changed since you checked it, so nothing was sent; look again")]
+    Changed,
+    /// The session is in the multi-send group: steps run on one session at
+    /// a time.
+    #[error(
+        "steps run on one session at a time: take the tab out of the multi-send group to run them"
+    )]
+    InGroup,
     #[error("steps are already running on this session; stop them first")]
     AlreadyRunning,
     #[error("the session is not connected")]
@@ -667,9 +734,13 @@ impl StepRuns {
     }
 
     /// Runs `plan` on the connected session `session`, telling `report`
-    /// each step, each answer and how it ended (always last). Refused while
-    /// steps run on that session already. `line_delay`: the host's paste
-    /// line delay, kept after a line no wait follows.
+    /// each step, each answer and how it ended (always last), as
+    /// `permission` allows: refused unless it is the plan the user was
+    /// shown, unconfirmed where steps are confirmed
+    /// ([`crate::paste::confirms_steps`]: always on production), on a
+    /// session of the multi-send group, and while steps run on that session
+    /// already. The host's paste line delay is kept after a line no wait
+    /// follows.
     ///
     /// Must be called within a Tokio runtime.
     pub fn start(
@@ -677,9 +748,26 @@ impl StepRuns {
         manager: &SessionManager,
         session: SessionId,
         plan: StepsPlan,
-        line_delay: Duration,
+        permission: &Permission,
         mut report: impl FnMut(RunEvent) + Send + 'static,
     ) -> Result<(), StartError> {
+        if permission.in_group {
+            return Err(StartError::InGroup);
+        }
+        if permission.previewed != plan.digest() {
+            return Err(StartError::Changed);
+        }
+        if !permission.confirmed
+            && confirms_steps(&permission.safety, permission.confirm_multi_line)
+        {
+            return Err(StartError::NotConfirmed);
+        }
+        let line_delay = Duration::from_millis(u64::from(
+            permission
+                .safety
+                .line_delay_ms
+                .min(crate::paste::MAX_PASTE_LINE_DELAY_MS),
+        ));
         let mut runs = self.lock();
         if runs.running.contains_key(&session) {
             return Err(StartError::AlreadyRunning);

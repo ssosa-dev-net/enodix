@@ -10,6 +10,8 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use enodix_core::credentials::Profiles;
+use enodix_core::job::{self, JobStep, JobTarget, PlanError};
 use enodix_core::layout::InputOrigin;
 use enodix_core::paste::{confirms_steps, PasteSafety};
 use enodix_core::session::{
@@ -17,7 +19,8 @@ use enodix_core::session::{
     SessionManager, SessionState, SessionTarget, TerminalSize,
 };
 use enodix_core::steps::{
-    CalledOff, RunEnd, RunEvent, StartError, Step, StepRuns, Steps, StepsPlan, Wait, DEFAULT_PROMPT,
+    CalledOff, Permission, RunEnd, RunEvent, StartError, Step, StepRuns, Steps, StepsPlan, Wait,
+    DEFAULT_PROMPT,
 };
 use enodix_core::template::Variables;
 use enodix_core::workspace::{Environment, ExpandError, HostId, Snippet, Workspace, SNIPPETS_FILE};
@@ -313,6 +316,89 @@ fn steps_are_confirmed_as_a_paste_and_always_on_production() {
     assert!(confirms_steps(&PasteSafety::default(), true));
 }
 
+#[test]
+fn a_job_never_runs_a_snippet_with_steps() {
+    let lab = support::jobs::Lab::new(&[
+        (SNIPPETS_FILE, SAVE_CONFIG.to_string()),
+        ("r1.yaml", support::jobs::host_at(22, "cisco_ios", "")),
+    ]);
+    let profiles = Profiles::new(&lab.store, &lab.workspace);
+    let step = JobStep::Snippet {
+        name: "Save the configuration".into(),
+        answers: Default::default(),
+    };
+    let refused = job::plan(
+        &lab.workspace,
+        &profiles,
+        &JobTarget::Folder { path: "".into() },
+        &step,
+    );
+    assert!(
+        matches!(&refused, Err(PlanError::SnippetHasSteps(name)) if name == "Save the configuration"),
+        "{refused:?}"
+    );
+    // A snippet of lines still plans.
+    let lines = JobStep::Snippet {
+        name: "Show version".into(),
+        answers: Default::default(),
+    };
+    assert!(job::plan(
+        &lab.workspace,
+        &profiles,
+        &JobTarget::Folder { path: "".into() },
+        &lines
+    )
+    .is_ok());
+}
+
+#[test]
+fn the_steps_run_are_those_shown() {
+    let answers: Variables = [("minutes", "5"), ("confirm", "")].into_iter().collect();
+    let shown = |snippets: &str, platform: Option<&str>, answers: &Variables| {
+        let (_temp, workspace) = workspace_with(snippets, platform);
+        workspace
+            .plan_snippet_steps("Save the configuration", Some(&r1()), answers)
+            .unwrap()
+    };
+    let checked = shown(SAVE_CONFIG, None, &answers);
+    // The same snippet for the same host is the same run.
+    assert_eq!(
+        shown(SAVE_CONFIG, None, &answers).digest(),
+        checked.digest()
+    );
+    let manager = SessionManager::new(known_hosts());
+    let runs = StepRuns::new();
+    let refused =
+        |now: StepsPlan| runs.start(&manager, SessionId(1), now, &allowed(&checked), |_| {});
+    // The file changed since: another line.
+    let edited = SAVE_CONFIG.replace("reload in", "reload at");
+    assert_eq!(
+        refused(shown(&edited, None, &answers)).unwrap_err(),
+        StartError::Changed
+    );
+    // Another answer.
+    let other: Variables = [("minutes", "50"), ("confirm", "")].into_iter().collect();
+    assert_eq!(
+        refused(shown(SAVE_CONFIG, None, &other)).unwrap_err(),
+        StartError::Changed
+    );
+    // The host's platform, and so its prompt.
+    assert_eq!(
+        refused(shown(SAVE_CONFIG, Some("cisco_ios"), &answers)).unwrap_err(),
+        StartError::Changed
+    );
+    // Another stop pattern.
+    let stops = SAVE_CONFIG.replace("% Invalid input", "% Bad input");
+    assert_eq!(
+        refused(shown(&stops, None, &answers)).unwrap_err(),
+        StartError::Changed
+    );
+    assert_eq!(
+        StartError::Changed.to_string(),
+        "the snippet changed since you checked it, so nothing was sent; look again"
+    );
+}
+
 // --- Running on a session ---
 
 /// Everything the session showed, as its consumer keeps acknowledging it.
@@ -383,12 +469,36 @@ fn start(
     session: SessionId,
     plan: StepsPlan,
 ) -> mpsc::UnboundedReceiver<RunEvent> {
+    let permission = allowed(&plan);
     let (report, events) = mpsc::unbounded_channel();
-    runs.start(manager, session, plan, Duration::ZERO, move |event| {
+    runs.start(manager, session, plan, &permission, move |event| {
         let _ = report.send(event);
     })
     .unwrap();
     events
+}
+
+/// What lets `plan` run: shown to the user as it is, and confirmed.
+fn allowed(plan: &StepsPlan) -> Permission {
+    Permission {
+        safety: PasteSafety::default(),
+        confirm_multi_line: true,
+        previewed: plan.digest(),
+        confirmed: true,
+        in_group: false,
+    }
+}
+
+/// Starting `plan` on `session` though it would be allowed: what the start
+/// says.
+fn start_refused(
+    runs: &StepRuns,
+    manager: &SessionManager,
+    session: SessionId,
+    plan: StepsPlan,
+) -> Result<(), StartError> {
+    let permission = allowed(&plan);
+    runs.start(manager, session, plan, &permission, |_| {})
 }
 
 /// Every event up to the end, and the end.
@@ -604,13 +714,7 @@ async fn the_user_s_input_stops_the_run_and_is_not_sent() {
     assert_eq!(runs.user_input(vec![id], InputOrigin::Reply), [id]);
     assert!(runs.running(id));
     // A second run on the same session is refused meanwhile.
-    let refused = runs.start(
-        &manager,
-        id,
-        plan(Steps::new(vec![Step::send("x")])),
-        Duration::ZERO,
-        |_| {},
-    );
+    let refused = start_refused(&runs, &manager, id, plan(Steps::new(vec![Step::send("x")])));
     assert_eq!(refused.unwrap_err(), StartError::AlreadyRunning);
     // A key typed stops it, and goes nowhere; another session it was
     // typed to (multi-send) still gets it.
@@ -691,13 +795,7 @@ async fn the_session_ending_ends_the_run() {
     );
     assert!(!runs.running(id));
     // A session that is not connected takes none.
-    let refused = runs.start(
-        &manager,
-        id,
-        plan(Steps::new(vec![Step::send("x")])),
-        Duration::ZERO,
-        |_| {},
-    );
+    let refused = start_refused(&runs, &manager, id, plan(Steps::new(vec![Step::send("x")])));
     assert_eq!(refused.unwrap_err(), StartError::NotConnected);
 }
 
@@ -782,4 +880,73 @@ async fn steps_run_on_a_serial_session() {
         }),
         "{told:?}"
     );
+}
+
+#[tokio::test]
+async fn a_run_starts_only_as_its_safety_allows() {
+    let (_server, manager, id, shown) = device(false).await;
+    let runs = StepRuns::new();
+    let lab = PasteSafety {
+        environment: Some(Environment::Lab),
+        line_delay_ms: 0,
+    };
+    let production = PasteSafety {
+        environment: Some(Environment::Production),
+        line_delay_ms: 0,
+    };
+    let refused = Steps::new(vec![Step::send("echo refused")]);
+    let try_start = |safety: &PasteSafety, confirm_multi_line, confirmed, in_group| {
+        let plan = plan(refused.clone());
+        let permission = Permission {
+            safety: *safety,
+            confirm_multi_line,
+            previewed: plan.digest(),
+            confirmed,
+            in_group,
+        };
+        runs.start(&manager, id, plan, &permission, |_| {})
+    };
+    // Production asks, the preference off or not.
+    assert_eq!(
+        try_start(&production, false, false, false).unwrap_err(),
+        StartError::NotConfirmed
+    );
+    // Elsewhere it asks as a paste of several lines does.
+    assert_eq!(
+        try_start(&lab, true, false, false).unwrap_err(),
+        StartError::NotConfirmed
+    );
+    // A member of the multi-send group takes none, even confirmed.
+    assert_eq!(
+        try_start(&lab, true, true, true).unwrap_err(),
+        StartError::InGroup
+    );
+    assert_eq!(
+        try_start(&production, false, true, true).unwrap_err(),
+        StartError::InGroup
+    );
+    assert!(!runs.running(id));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!shown.text().contains("refused"), "{:?}", shown.text());
+
+    // Confirmed on production, it runs; so does an unconfirmed run where
+    // the user turned the question off.
+    for (safety, confirmed) in [(&production, true), (&lab, false)] {
+        let plan = plan(Steps::new(vec![Step::send("echo allowed")]));
+        let permission = Permission {
+            safety: *safety,
+            confirm_multi_line: false,
+            previewed: plan.digest(),
+            confirmed,
+            in_group: false,
+        };
+        let (report, mut events) = mpsc::unbounded_channel();
+        runs.start(&manager, id, plan, &permission, move |event| {
+            let _ = report.send(event);
+        })
+        .unwrap();
+        let (_, end) = ended(&mut events).await;
+        assert_eq!(end, RunEnd::Finished);
+    }
+    assert!(shown.text().contains("echo allowed"), "{:?}", shown.text());
 }

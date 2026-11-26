@@ -15,6 +15,8 @@ export type StepsPreview =
       /** Whether the user confirms them first (always on production). */
       confirm: boolean;
       environment: Environment | null;
+      /** What identifies the steps shown: given back to run them. */
+      digest: string;
     }
   | { kind: "missing"; names: string[] };
 
@@ -55,14 +57,16 @@ export function stepsPreview(
 }
 
 /**
- * Runs the steps of the snippet `name` on the session `id`; `confirmed`:
- * the user said yes to the preview (the shell refuses them otherwise where
- * the preview asks).
+ * Runs the steps of the snippet `name` on the session `id`, as previewed
+ * (`previewed`: the preview's digest; steps that changed since are
+ * refused); `confirmed`: the user said yes to the preview (refused
+ * otherwise where the preview asks).
  */
 export function startSteps(
   id: number,
   name: string,
   answers: Record<string, string>,
+  previewed: string,
   confirmed: boolean,
   onevent: (event: RunEvent) => void,
 ) {
@@ -72,6 +76,7 @@ export function startSteps(
     id,
     name,
     answers,
+    previewed,
     confirmed,
     onEvent,
   });

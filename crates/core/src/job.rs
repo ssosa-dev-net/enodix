@@ -691,6 +691,10 @@ pub fn plan(
     let JobStep::Snippet { name, answers } = step else {
         return Ok(plan);
     };
+    // Whatever hosts it runs on, none at all included.
+    if let Some(snippet) = workspace.snippet(name).filter(|s| s.steps.is_some()) {
+        return Err(PlanError::SnippetHasSteps(snippet.name.clone()));
+    }
     let answers: Variables = answers.iter().collect();
     let ids: Vec<Option<HostId>> = plan.hosts.iter().map(|h| Some(h.id.clone())).collect();
     match workspace.expand_snippet_for_each(name, &ids, &answers) {

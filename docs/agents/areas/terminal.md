@@ -257,11 +257,17 @@ cancel]`; hiding or closing its tab drops it, and shortcuts stay on
   else `DEFAULT_PROMPT` (`\S*[>#$%]`); `expand_snippet(_for_each)` on a
   stepped snippet is `ExpandError::HasSteps` (so the group path and jobs,
   `PlanError::SnippetHasSteps`, refuse it); `NoSteps`, `BadSteps`.
-  `StepsPlan::{len, lines, prompt, preview}` (preview: answers, stops,
-  then numbered steps, the core's words). Running: `StepRuns` (one run per
-  session; `start(manager, session, plan, line_delay, report)` needs a
-  Tokio runtime, takes an `OutputWatch` before the first line;
-  `StartError::AlreadyRunning|NotConnected`), `stop`, `running`,
+  `StepsPlan::{len, lines, prompt, preview, digest}` (preview: answers,
+  stops, then numbered steps, the core's words; digest: SHA-256 over the
+  prompt, steps, waits, timeouts, answers and stops). A job refuses a
+  stepped snippet before expanding it, whatever its hosts. Running: `StepRuns` (one run per
+  session; `start(manager, session, plan, &Permission, report)` needs a
+  Tokio runtime, takes an `OutputWatch` before the first line). The gates
+  are in the core: `Permission {safety, confirm_multi_line, previewed,
+  confirmed, in_group}`, checked in order: `in_group` → `InGroup`,
+  `previewed != plan.digest()` → `Changed` (the snippet, answers or host
+  changed since the preview), unconfirmed where `confirms_steps` asks →
+  `NotConfirmed`; then `AlreadyRunning|NotConnected`, `stop`, `running`,
   `user_input(targets, origin)` (every origin but `Reply` stops a run on a
   target and drops that target). Events `RunEvent::Step{index,count,doing}
   |Answered{index,question}` (never the reply) `|Ended{end,message}`;
@@ -282,10 +288,10 @@ cancel]`; hiding or closing its tab drops it, and shortcuts stay on
   `paste::confirms_steps(safety, pref)` = pref or production. Shell:
   `StepRuns` managed; `snippet_expand` returns `{kind: steps}` for a
   stepped snippet with nothing missing; `steps_preview {id, name,
-  answers}` (`ready {preview, count, confirm, environment}` | `missing`),
-  `steps_start {id, name, answers, confirmed, onEvent: Channel}` (refused
-  unconfirmed where it confirms, and for a session `member_showing` in the
-  group), `steps_stop {id}`; `session_input` filters its targets through
+  answers}` (`ready {preview, count, confirm, environment, digest}` |
+  `missing`), `steps_start {id, name, answers, previewed, confirmed,
+  onEvent: Channel}` (plans again, builds the `Permission`, `in_group` from
+  `member_showing`; the core refuses), `steps_stop {id}`; `session_input` filters its targets through
   `user_input`. Interface: both windows' `sendSnippet` call
   `TerminalSession.runSteps(name, answers)` on `kind: steps`
   (variables asked first as for any snippet); it shows `StepsConfirm`

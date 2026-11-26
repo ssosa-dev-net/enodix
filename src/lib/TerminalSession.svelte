@@ -311,25 +311,32 @@
     stepsEnded = null;
     stepsRun = { snippet, index: 0, count, doing: "Starting", answered: null };
     try {
-      await startSteps(id, snippet, answers, preview.confirm, (event) => {
-        if (event.kind === "ended") {
-          stepsRun = null;
-          stepsEnded = {
-            snippet,
-            kind: event.end.kind,
-            message: event.message,
-          };
-        } else if (event.kind === "step" && stepsRun) {
-          stepsRun = {
-            ...stepsRun,
-            index: event.index,
-            count: event.count,
-            doing: event.doing,
-          };
-        } else if (event.kind === "answered" && stepsRun) {
-          stepsRun = { ...stepsRun, answered: event.question };
-        }
-      });
+      await startSteps(
+        id,
+        snippet,
+        answers,
+        preview.digest,
+        preview.confirm,
+        (event) => {
+          if (event.kind === "ended") {
+            stepsRun = null;
+            stepsEnded = {
+              snippet,
+              kind: event.end.kind,
+              message: event.message,
+            };
+          } else if (event.kind === "step" && stepsRun) {
+            stepsRun = {
+              ...stepsRun,
+              index: event.index,
+              count: event.count,
+              doing: event.doing,
+            };
+          } else if (event.kind === "answered" && stepsRun) {
+            stepsRun = { ...stepsRun, answered: event.question };
+          }
+        },
+      );
     } catch (reason) {
       stepsRun = null;
       return String(reason);

@@ -3,11 +3,10 @@
 //! (`enodix_core::steps`); its events go to the window over a `Channel`.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use enodix_core::paste::confirms_steps;
 use enodix_core::session::{SessionId, SessionManager, SessionRecords};
-use enodix_core::steps::{RunEvent, StepRuns, StepsPlan};
+use enodix_core::steps::{Permission, RunEvent, StepRuns, StepsPlan};
 use enodix_core::template::Variables;
 use enodix_core::workspace::{Environment, ExpandError};
 use serde::Serialize;
@@ -30,6 +29,9 @@ pub(super) enum StepsPreview {
         /// production).
         confirm: bool,
         environment: Option<Environment>,
+        /// What identifies these steps as shown: `steps_start` takes it
+        /// back, and refuses steps that differ.
+        digest: String,
     },
     /// Ask the user for these variables first.
     Missing { names: Vec<String> },
@@ -80,6 +82,7 @@ pub(super) fn steps_preview(
             count: plan.len(),
             confirm: confirms_steps(&safety, preferred.lock().confirm_multi_line_paste),
             environment: safety.environment,
+            digest: plan.digest(),
         }),
         Err(ExpandError::Missing(missing)) => Ok(StepsPreview::Missing {
             names: missing.names,
@@ -89,10 +92,11 @@ pub(super) fn steps_preview(
 }
 
 /// Runs the steps of the snippet `name` on the session `id`; their events
-/// go to `on_event`, the last saying how the run ended. `confirmed`: the
-/// user said yes to the preview. Refused unconfirmed where the preview
-/// asks, on a session of the multi-send group (steps run on one session at
-/// a time), and while steps already run on the session.
+/// go to `on_event`, the last saying how the run ended. `previewed`: the
+/// digest of the steps the user was shown; `confirmed`: the user said yes
+/// to them. The core refuses steps that differ from those shown, unconfirmed
+/// ones where they are confirmed, a session of the multi-send group, and a
+/// session that runs steps already.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn steps_start(
@@ -105,23 +109,20 @@ pub(super) async fn steps_start(
     id: u64,
     name: String,
     answers: BTreeMap<String, String>,
+    previewed: String,
     confirmed: bool,
     on_event: Channel<RunEvent>,
 ) -> Result<(), String> {
     let (planned, safety) = plan(&shell, &records, id, &name, answers)?;
     let plan = planned.map_err(|error| error.to_string())?;
-    if !confirmed && confirms_steps(&safety, preferred.lock().confirm_multi_line_paste) {
-        return Err(format!(
-            "the steps of {name} run only once they are confirmed, so nothing was sent"
-        ));
-    }
-    if tabs.lock().member_showing(SessionId(id)).is_some() {
-        return Err(format!(
-            "{name} has steps, which run on one session at a time: take the tab out of the multi-send group to run them"
-        ));
-    }
-    let line_delay = Duration::from_millis(u64::from(safety.line_delay_ms));
-    runs.start(&manager, SessionId(id), plan, line_delay, move |event| {
+    let permission = Permission {
+        safety,
+        confirm_multi_line: preferred.lock().confirm_multi_line_paste,
+        previewed,
+        confirmed,
+        in_group: tabs.lock().member_showing(SessionId(id)).is_some(),
+    };
+    runs.start(&manager, SessionId(id), plan, &permission, move |event| {
         let _ = on_event.send(event);
     })
     .map_err(|error| error.to_string())
