@@ -1472,11 +1472,7 @@ impl SshConfigFiles {
 /// folder), if it is there.
 #[tauri::command]
 fn ssh_config_default_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .or_else(|| std::env::var_os("USERPROFILE"))?;
-    let path = PathBuf::from(home).join(".ssh").join("config");
-    path.is_file().then_some(path)
+    SshConfig::default_path()
 }
 
 /// Reads an OpenSSH config file and shows what importing its hosts into

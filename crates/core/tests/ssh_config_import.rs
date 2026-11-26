@@ -374,3 +374,62 @@ fn a_target_folder_that_is_not_there_and_a_missing_file_are_reported() {
     .unwrap();
     assert_eq!(preview.hosts[0].name, "from-file");
 }
+
+#[test]
+fn the_user_and_port_of_a_proxyjump_hop_are_reported_as_not_kept() {
+    let (_temp, _root, ws) = workspace();
+    let config = "\
+Host bastion
+    HostName 192.0.2.10
+
+Host r1
+    ProxyJump admin@bastion:2222
+
+Host r2
+    ProxyJump bastion:2200
+
+Host r3
+    ProxyJump admin@bastion
+";
+    let preview = import(config, "Empty").preview(&ws).unwrap();
+    for name in ["r1", "r2", "r3"] {
+        let host = preview.hosts.iter().find(|host| host.name == name).unwrap();
+        let jump = host.host.as_ref().and_then(|host| host.jump_host.clone());
+        assert_eq!(jump.as_deref(), Some("Empty/bastion.yaml"), "{name}");
+    }
+    let reason = |what: &str| {
+        Some(format!(
+            "{what} not kept: the jump host bastion logs in with its own credential profile and port"
+        ))
+    };
+    assert_eq!(
+        entries(&preview.skipped),
+        [
+            (
+                Some(5),
+                "r1: ProxyJump admin@bastion:2222".to_string(),
+                reason("user admin and port 2222")
+            ),
+            (
+                Some(8),
+                "r2: ProxyJump bastion:2200".to_string(),
+                reason("port 2200")
+            ),
+            (
+                Some(11),
+                "r3: ProxyJump admin@bastion".to_string(),
+                reason("user admin")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_byte_order_mark_at_the_start_of_the_file_is_ignored() {
+    let (_temp, root, mut ws) = workspace();
+    let config = "\u{feff}Host r1\n    HostName 10.0.0.1\n";
+    let report = import(config, "Empty").run(&mut ws, &[]).unwrap();
+    assert_eq!(created(&report), ["Empty/r1.yaml"]);
+    assert!(read(&root, "Empty/r1.yaml").contains("address: 10.0.0.1"));
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+}
