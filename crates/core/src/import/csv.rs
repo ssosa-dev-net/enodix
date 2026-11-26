@@ -728,6 +728,7 @@ impl<'a> Planner<'a> {
             folder: folder.clone(),
             fields,
             port: None,
+            jump_host: None,
             tags,
             custom,
         };

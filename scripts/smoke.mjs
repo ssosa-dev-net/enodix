@@ -12566,7 +12566,7 @@ async function paletteActions({
       !(await exists("[data-rail-folded]")) && (await railActive("hosts")),
   );
 
-  // The view tabs that need no subject, and both imports.
+  // The view tabs that need no subject, and the three imports.
   for (const [view, query] of [
     ["preferences", "preferences"],
     ["platforms", "platform definitions"],
@@ -12574,6 +12574,7 @@ async function paletteActions({
     ["python-setup", "python setup"],
     ["csv-import", "import csv"],
     ["nornir-import", "import nornir"],
+    ["ssh-config-import", "import ssh config"],
   ]) {
     const tab = `[data-tab-view=${JSON.stringify(view)}]`;
     const before = await exists(tab);

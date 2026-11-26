@@ -84,6 +84,46 @@ ws, replace)`. Resolution as Nornir: host, then its groups depth first
   the open tab (`.slot.view [data-view=…]`) and one tab when opened
   twice; the smoke's `centreOf` now scrolls the element
   into view (the imports made the tree taller than the window).
+- SSH config import (#26 item 6, `src/import/ssh_config.rs`; Sosa chose
+  an import over quick connect reading it). `SshConfig::parse(text)` /
+  `read(path)` (`SshConfigError::Io`, `read_reason` words): `Keyword
+value`, `Keyword=value`, double quotes, `#` comments; blocks: global
+  (before the first `Host`/`Match`), `Host` (patterns, `!` negating,
+  `*`/`?` ignoring case), `Match` (never applied). Names = every `Host`
+  pattern without a wildcard or `!`, once each (ignoring case), line of
+  the first `Host` giving it. Values as `ssh`: global then matching
+  blocks in file order, first value per keyword. `HostName` → address
+  (default the name; `%h`, `%%` expanded, another token fails the host),
+  checked by `bad_address` (a port after it fails: "write … as the
+  HostName and Port …"); `Port` → `settings.port` (1..65535 else fail);
+  a one-hop `ProxyJump` (`user@` and `:port` dropped) naming another
+  imported name → `ImportedHost.jump_host` = that name's id (planned or
+  existing), written by `ImportedValues.jump_host` (new: CSV and Nornir
+  give `None`); `none` → none; several hops, `://`, a name not in the
+  file, the host itself → a skipped entry `"<name>: ProxyJump <value>"`,
+  host still imported. Every other keyword (User, IdentityFile,
+  ProxyCommand, Include, unknown) → one skipped entry per keyword at its
+  first line, `Match` once per block (`skipped_reason`). `SshConfigImport
+{ config, target }`: `preview(&ws)` → `SshConfigPreview { hosts:
+[SshConfigPreviewHost { line, name, outcome, host }], skipped }`,
+  `run(&mut ws, replace)` (via `write_planned`). Shell:
+  `ssh_config_default_path` (`HOME`, else `USERPROFILE`, `/.ssh/config`
+  if it is a file), `ssh_config_import_preview { path, target }` (keeps
+  the import in `SshConfigFiles`), `ssh_config_import_run { replace }`.
+  Interface: `SshConfigImport.svelte`, view tab `ssh-config-import` (one
+  tab, as the others; `[data-view=ssh-config-import][data-step=file|
+preview|report]`, input `ssh-config-file` filled with the default path,
+  select `ssh-config-target`, `[data-ssh-config=preview|import|close|
+cancel]`, rows `[data-preview-host][data-outcome]`, `[data-replace]`,
+  `[data-report=…][data-count]`), opened by `openSshConfigImport(folder)`
+  (`inventory.sshConfigImport`) from the add menu
+  (`[data-add=ssh-config][data-open-ssh-config-import]`), the folder
+  context menu (`import-ssh-config`), FolderDetails'
+  `[data-folder-ssh-config-import]` and the palette (`ssh-config-import`).
+  Tests: `ssh_config_import.rs` (10), unit tests of patterns and lines.
+  Smoke: only the palette loop opening the tab (not run when written: no
+  Windows). Not verified: the shell commands and the view by hand.
+  Limits: `Include` not followed; quick connect does not read the file.
 - First-run words (#116). `import::read_reason(&io::Error)`: a CSV or
   Nornir file that is not there is "there is no such file; check the
   path" (`CsvError::Io`, `NornirError::Io`), not "os error 2".
