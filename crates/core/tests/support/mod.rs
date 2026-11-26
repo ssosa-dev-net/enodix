@@ -149,6 +149,7 @@ pub const STALLING_USERNAME: &str = "engineer-stalled";
 /// A user who logs in with the client key and then [`PASSWORD`], as with
 /// OpenSSH's `AuthenticationMethods publickey,password`: the key is
 /// accepted as a first step, and only the password method is offered next.
+/// A certificate [`user_ca`] signed for this name is a first step too.
 pub const KEY_THEN_PASSWORD_USERNAME: &str = "engineer-key-pw";
 /// A user whose keyboard-interactive login asks [`THREE_QUESTIONS`], one
 /// round each, in a row; the answers are [`THREE_ANSWERS`].
@@ -2021,6 +2022,13 @@ impl Handler for ScriptedShell {
             && certificate.valid_principals().iter().any(|p| p == user);
         if user == CERT_USERNAME && trusted {
             Ok(Auth::Accept)
+        } else if user == KEY_THEN_PASSWORD_USERNAME && trusted {
+            // A first step, as for a key: the password follows.
+            self.key_accepted = true;
+            Ok(Auth::Reject {
+                proceed_with_methods: Some(MethodSet::from(&[MethodKind::Password][..])),
+                partial_success: true,
+            })
         } else {
             Ok(Auth::reject())
         }
