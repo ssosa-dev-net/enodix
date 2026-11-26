@@ -13,8 +13,8 @@ use russh::keys::{Algorithm, PrivateKey};
 use russh::MethodKind;
 use support::agent::TestAgent;
 use support::{
-    next_prompt, next_state, output_ending_with, TestSshServer, CODE_INSTRUCTIONS, CODE_NAME,
-    CODE_QUESTION, KEY_THEN_PASSWORD_USERNAME, ONE_TIME_CODE, OTP_USERNAME, PASSWORD,
+    next_prompt, next_state, output_ending_with, TestSshServer, CERT_USERNAME, CODE_INSTRUCTIONS,
+    CODE_NAME, CODE_QUESTION, KEY_THEN_PASSWORD_USERNAME, ONE_TIME_CODE, OTP_USERNAME, PASSWORD,
     PASSWORD_QUESTION, PROMPT, RSA_CLIENT_KEY, USERNAME,
 };
 
@@ -431,4 +431,98 @@ async fn a_refused_key_is_not_followed_by_a_password_question() {
         state,
         SessionState::Closed(CloseReason::Failed(OpenError::AuthenticationFailed))
     );
+}
+
+/// A key file of the server's client key in `temp`, with `certificate`
+/// beside it if given.
+fn key_with_certificate(
+    server: &TestSshServer,
+    temp: &tempfile::TempDir,
+    certificate: Option<&russh::keys::Certificate>,
+) -> SshAuth {
+    let key_file = temp.path().join("id_ed25519");
+    server.write_client_key(&key_file, None);
+    if let Some(certificate) = certificate {
+        support::write_certificate_beside(&key_file, certificate);
+    }
+    SshAuth::PrivateKey {
+        key_file,
+        passphrase: None,
+    }
+}
+
+#[tokio::test]
+async fn a_key_file_with_its_certificate_beside_it_logs_in_by_the_certificate() {
+    let server = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+    let certificate = support::user_certificate(
+        server.client_key().public_key(),
+        CERT_USERNAME,
+        support::user_ca(),
+    );
+    let auth = key_with_certificate(&server, &temp, Some(&certificate));
+
+    let state = state_after_connecting(&server, CERT_USERNAME, auth).await;
+
+    assert_eq!(state, SessionState::Connected);
+}
+
+#[tokio::test]
+async fn without_its_certificate_the_key_alone_is_refused_where_only_certificates_count() {
+    let server = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+    let auth = key_with_certificate(&server, &temp, None);
+
+    let state = state_after_connecting(&server, CERT_USERNAME, auth).await;
+
+    assert_eq!(
+        state,
+        SessionState::Closed(CloseReason::Failed(OpenError::AuthenticationFailed))
+    );
+}
+
+#[tokio::test]
+async fn a_certificate_the_server_does_not_trust_falls_back_to_the_key() {
+    let server = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+    // Signed by an authority the server does not know.
+    let stranger = random_key();
+    let certificate =
+        support::user_certificate(server.client_key().public_key(), USERNAME, &stranger);
+    let auth = key_with_certificate(&server, &temp, Some(&certificate));
+
+    let state = state_after_connecting(&server, USERNAME, auth).await;
+
+    // USERNAME knows the key itself.
+    assert_eq!(state, SessionState::Connected);
+}
+
+#[tokio::test]
+async fn a_certificate_beside_the_key_file_that_is_for_another_key_is_not_used() {
+    let server = TestSshServer::start().await;
+    let temp = tempfile::TempDir::new().unwrap();
+    let other = random_key();
+    let certificate =
+        support::user_certificate(other.public_key(), CERT_USERNAME, support::user_ca());
+    let auth = key_with_certificate(&server, &temp, Some(&certificate));
+
+    let state = state_after_connecting(&server, CERT_USERNAME, auth).await;
+
+    assert_eq!(
+        state,
+        SessionState::Closed(CloseReason::Failed(OpenError::AuthenticationFailed))
+    );
+}
+
+#[tokio::test]
+async fn a_certificate_held_by_the_agent_logs_in() {
+    let server = TestSshServer::start().await;
+    let key = random_key();
+    let certificate =
+        support::user_certificate(key.public_key(), CERT_USERNAME, support::user_ca());
+    let agent = TestAgent::start_with_certificate(key, certificate).await;
+
+    let state = state_after_connecting(&server, CERT_USERNAME, agent_at(&agent)).await;
+
+    assert_eq!(state, SessionState::Connected);
 }
