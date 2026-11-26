@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 
 use super::output::Flow;
 use super::serial::wait_on_thread;
-use super::{CloseReason, Command, Link, OpenError, SessionState, TerminalSize, TERM};
+use super::{CloseReason, Command, Link, OpenError, SessionState, TerminalSize, TerminalType};
 
 /// How much is read from the pty at a time.
 const READ_SIZE: usize = 4096;
@@ -458,7 +458,7 @@ fn open(program: &str, target: &LocalTarget, size: PtySize) -> io::Result<Opened
         .map_err(|error| io::Error::other(error.to_string()))?;
     let mut command = CommandBuilder::new(program);
     command.args(&target.args);
-    command.env("TERM", TERM);
+    command.env("TERM", TerminalType::default().as_str());
     for (name, value) in &target.environment {
         command.env(name, value);
     }
