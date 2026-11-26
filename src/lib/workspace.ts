@@ -64,6 +64,8 @@ export interface Settings {
   /** Seconds opening a session may wait on the device. */
   connect_timeout: number | null;
   logging: boolean | null;
+  /** Whether session logs write the time before each line. */
+  log_timestamps: boolean | null;
   /** Whether SSH sessions save the configuration once connected. */
   backup_on_login: boolean | null;
   environment: Environment | null;
@@ -96,6 +98,8 @@ export interface EffectiveSettings {
   /** In seconds. */
   connect_timeout: Effective<number>;
   logging: Effective<boolean>;
+  /** Off by default. */
+  log_timestamps: Effective<boolean>;
   /** Off by default. */
   backup_on_login: Effective<boolean>;
   environment: Effective<Environment> | null;

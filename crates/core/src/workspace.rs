@@ -82,8 +82,8 @@ use search::SearchIndex;
 pub use search::{FieldMatch, FilterView, SearchHit, SearchResults};
 use settings::{
     apply_settings, settings_from_document, Level, BACKUP_ON_LOGIN, CONNECT_TIMEOUT,
-    CREDENTIAL_PROFILE, ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, PASTE_LINE_DELAY, PLATFORM,
-    PORT, PROTOCOL, SERIAL, TERMINAL_TYPE, WEB_LINKS,
+    CREDENTIAL_PROFILE, ENVIRONMENT, JUMP_HOST, LEGACY_CRYPTO, LOGGING, LOG_TIMESTAMPS,
+    PASTE_LINE_DELAY, PLATFORM, PORT, PROTOCOL, SERIAL, TERMINAL_TYPE, WEB_LINKS,
 };
 pub use settings::{
     Effective, EffectiveSerial, EffectiveSettings, Environment, FlowControl, Origin, Parity,
@@ -118,7 +118,7 @@ const CUSTOM: &str = "custom";
 /// Where the app puts a built-in key that a host file does not have yet:
 /// right after the nearest key before it in this list that the file has.
 /// Keys the app does not know stay where they are.
-pub const HOST_KEY_ORDER: [&str; 28] = [
+pub const HOST_KEY_ORDER: [&str; 29] = [
     NAME,
     ADDRESS,
     PROTOCOL,
@@ -128,6 +128,7 @@ pub const HOST_KEY_ORDER: [&str; 28] = [
     LEGACY_CRYPTO,
     CONNECT_TIMEOUT,
     LOGGING,
+    LOG_TIMESTAMPS,
     BACKUP_ON_LOGIN,
     ENVIRONMENT,
     PASTE_LINE_DELAY,
@@ -150,7 +151,7 @@ pub const HOST_KEY_ORDER: [&str; 28] = [
 ];
 
 /// The same for a folder's settings file.
-pub const FOLDER_KEY_ORDER: [&str; 16] = [
+pub const FOLDER_KEY_ORDER: [&str; 17] = [
     DESCRIPTION,
     TAGS,
     PLATFORM,
@@ -161,6 +162,7 @@ pub const FOLDER_KEY_ORDER: [&str; 16] = [
     LEGACY_CRYPTO,
     CONNECT_TIMEOUT,
     LOGGING,
+    LOG_TIMESTAMPS,
     BACKUP_ON_LOGIN,
     ENVIRONMENT,
     PASTE_LINE_DELAY,

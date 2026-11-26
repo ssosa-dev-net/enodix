@@ -106,6 +106,7 @@ These keys can be written in a host file or in a `_folder.yaml`, and the nearest
 | `legacy_crypto` | `true` or `false`: allow the old algorithms an old device may need (see [legacy-crypto.md](legacy-crypto.md)) | `false` |
 | `connect_timeout` | Seconds to wait for the device, 1 to 3600 | 15 |
 | `logging` | `true` or `false`: save a text log of each session on this computer | `true` |
+| `log_timestamps` | `true` or `false`: write the local time before each line of the session log | `false` |
 | `backup_on_login` | `true` or `false`: save the configuration to the config history when an SSH session connects | `false` |
 | `environment` | `production`, `staging` or `lab` | none |
 | `paste_line_delay` | Milliseconds to wait between pasted lines, 0 to 10000, for devices that drop fast input | 0 |
@@ -138,7 +139,7 @@ Keys that enodix does not know are kept as they are when the app saves a host, s
 
 ## Folders and inheritance
 
-A folder can hold a `_folder.yaml` file. It can set a `description`, `tags`, and any of the connection settings above (`platform`, `protocol`, `port`, `credential_profile`, `jump_host`, `legacy_crypto`, `connect_timeout`, `logging`, `backup_on_login`, `environment`, `paste_line_delay`, `terminal_type`, `serial` and `web_links`). Everything below the folder inherits them.
+A folder can hold a `_folder.yaml` file. It can set a `description`, `tags`, and any of the connection settings above (`platform`, `protocol`, `port`, `credential_profile`, `jump_host`, `legacy_crypto`, `connect_timeout`, `logging`, `log_timestamps`, `backup_on_login`, `environment`, `paste_line_delay`, `terminal_type`, `serial` and `web_links`). Everything below the folder inherits them.
 
 ```yaml
 # Europe/_folder.yaml

@@ -163,6 +163,7 @@ pub struct ExportedSettings {
     /// Seconds.
     pub connect_timeout: u32,
     pub logging: bool,
+    pub log_timestamps: bool,
     pub backup_on_login: bool,
     pub environment: Option<Environment>,
     /// Milliseconds.
@@ -439,6 +440,7 @@ fn exported_settings(resolved: &ResolvedHost) -> ExportedSettings {
         legacy_crypto: settings.legacy_crypto.value,
         connect_timeout: settings.connect_timeout.value,
         logging: settings.logging.value,
+        log_timestamps: settings.log_timestamps.value,
         backup_on_login: settings.backup_on_login.value,
         environment: settings.environment.as_ref().map(|e| e.value),
         paste_line_delay: settings.paste_line_delay.value,
