@@ -41,12 +41,12 @@ use enodix_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use enodix_core::preferences::{FontZoom, Preferences, Theme};
 use enodix_core::session::{
     local_environment, local_shells, local_start_folder, pick_local_shell, system_ssh_target,
-    AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, HostKeyDecision,
-    HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms, OpenOptions,
-    Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent, SessionId,
-    SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState, SessionTarget,
-    SshAuth, SshTarget, TerminalSize, TerminalType, Transport, TypedLogin, WhenConnected,
-    DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
+    AlgorithmKind, AlgorithmLists, Consumer, ConsumerGone, ConsumerKey, ForwardStatus,
+    HostKeyDecision, HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms,
+    OpenOptions, Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent,
+    SessionId, SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState,
+    SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType, Transport, TypedLogin,
+    WhenConnected, DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
 };
 use enodix_core::steps::StepRuns;
 use enodix_core::template::Variables;
@@ -145,6 +145,9 @@ const BACK_UP_HOST_EVENT: &str = "back-up-host";
 /// The event that tells every window a backup on login kept or checked a
 /// configuration (a job's backups arrive as `job-event`s).
 const CONFIG_SAVED_EVENT: &str = "config-saved";
+/// Told to every window when a session's port forwards change (#21): its
+/// header marker and the list of open forwards ask again.
+const FORWARDS_CHANGED_EVENT: &str = "forwards-changed";
 
 /// The main window's label; a detached run window's is this prefix and
 /// the run id; a detached config history's is its prefix and the host id
@@ -2328,12 +2331,21 @@ fn host_options(
         }
         Transport::Telnet | Transport::Serial | Transport::Local => None,
     };
+    // The host's port forwards (#21), over its SSH connection.
+    let forwards = match session.target.transport() {
+        Transport::Ssh => workspace
+            .resolve_host(host)
+            .map(|host| host.port_forwards())
+            .unwrap_or_default(),
+        Transport::Telnet | Transport::Serial | Transport::Local => Vec::new(),
+    };
     OpenOptions {
         log: shell.logs.host_log(workspace, host),
         when_connected,
         // A terminal shows the login banner (#134); the backup's channel
         // or connection does not.
         login_banner: true,
+        forwards,
     }
 }
 
@@ -2453,6 +2465,11 @@ impl Consumer for Channels {
             SessionEvent::Backup(outcome) => {
                 let _ = self.app.emit(CONFIG_SAVED_EVENT, ());
                 self.backup.send(outcome)
+            }
+            // Read back with `session_forwards` / `forwards_list`.
+            SessionEvent::Forwards(_) => {
+                let _ = self.app.emit(FORWARDS_CHANGED_EVENT, ());
+                Ok(())
             }
         };
         delivered.map_err(|_| ConsumerGone)
@@ -2980,6 +2997,58 @@ fn session_resize(manager: State<'_, SessionManager>, id: u64, size: Size) -> Re
 fn session_break(manager: State<'_, SessionManager>, id: u64) -> Result<(), String> {
     manager
         .send_break(SessionId(id))
+        .map_err(|error| error.to_string())
+}
+
+/// The port forwards of the session `id` as they are now (#21); none for
+/// a session that is not open.
+#[tauri::command]
+fn session_forwards(manager: State<'_, SessionManager>, id: u64) -> Vec<ForwardStatus> {
+    manager.forwards(SessionId(id)).unwrap_or_default()
+}
+
+/// One session's forwards, in the list of every open forward.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionForwards {
+    id: u64,
+    /// The session's tab label and header title, when the app has them.
+    name: Option<String>,
+    title: Option<String>,
+    forwards: Vec<ForwardStatus>,
+}
+
+/// Every open session that has port forwards, with them (#21).
+#[tauri::command]
+fn forwards_list(
+    manager: State<'_, SessionManager>,
+    records: State<'_, SessionRecords>,
+) -> Vec<SessionForwards> {
+    manager
+        .all_forwards()
+        .into_iter()
+        .map(|(id, forwards)| {
+            let record = records.get(id);
+            SessionForwards {
+                id: id.0,
+                name: record.as_ref().map(|r| r.name.clone()),
+                title: record.map(|r| r.title),
+                forwards,
+            }
+        })
+        .collect()
+}
+
+/// Stops the forward `name` of the session `id`; the session goes on.
+#[tauri::command]
+async fn forward_stop(
+    manager: State<'_, SessionManager>,
+    id: u64,
+    name: String,
+) -> Result<bool, String> {
+    manager
+        .stop_forward(SessionId(id), &name)
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -3702,6 +3771,9 @@ pub fn run() {
             session_resize,
             session_close,
             session_break,
+            session_forwards,
+            forwards_list,
+            forward_stop,
             serial_ports,
             local_shell_list,
             session_reconnect,

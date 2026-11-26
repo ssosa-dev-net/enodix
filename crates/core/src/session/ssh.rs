@@ -21,6 +21,7 @@ use russh::{
 
 use super::algorithms::{self, AlgorithmKind, NegotiationFailure};
 use super::connection::Lost;
+use super::forward;
 use super::recording::{FirstBytes, Recording};
 use super::tcp;
 use super::{
@@ -410,21 +411,85 @@ pub(super) async fn run(
         channel,
         early_output,
     };
-    match pump(
+    // The forwards (#21) listen while the shell runs, over its connection.
+    let connection = Arc::new(connection);
+    let device = DeviceConnection {
+        connection: connection.clone(),
+        timeout: target.connect_timeout,
+    };
+    link.start_forwards(device).await;
+    let ended = pump(
         link,
         opened,
         requested_size,
-        Some(&connection),
+        Some(connection.as_ref()),
         target.terminal_type,
     )
-    .await
-    {
+    .await;
+    link.end_forwards().await;
+    match ended {
         Ended::Here => close(&connection, &jumps).await,
         Ended::Exited(exit_status) => {
             close(&connection, &jumps).await;
             CloseReason::RemoteExited { exit_status }
         }
         Ended::There(reason) => reason,
+    }
+}
+
+/// A terminal session's connection to the device, for its forwards to open
+/// channels on.
+#[derive(Clone)]
+pub(super) struct DeviceConnection {
+    connection: Arc<Handle<Client>>,
+    /// The device's connect timeout: how long it may take to reach a
+    /// destination.
+    timeout: Duration,
+}
+
+impl DeviceConnection {
+    /// A channel to `host:port` as the device reaches them, for a program
+    /// that connected from `from`.
+    pub(super) async fn direct_tcpip(
+        &self,
+        host: &str,
+        port: u16,
+        from: std::net::SocketAddr,
+    ) -> Result<Channel<client::Msg>, forward::Refusal> {
+        let opening = self.connection.channel_open_direct_tcpip(
+            host,
+            u32::from(port),
+            from.ip().to_string(),
+            u32::from(from.port()),
+        );
+        let refused = |reason: String, socks_reply| forward::Refusal {
+            reason: format!("the device could not reach {host} port {port} ({reason})"),
+            socks_reply,
+        };
+        match tokio::time::timeout(self.timeout, opening).await {
+            Ok(Ok(channel)) => Ok(channel),
+            Ok(Err(error)) => {
+                let reply = match &error {
+                    russh::Error::ChannelOpenFailure(
+                        ChannelOpenFailure::AdministrativelyProhibited,
+                    ) => forward::SOCKS_NOT_ALLOWED,
+                    russh::Error::ChannelOpenFailure(ChannelOpenFailure::ConnectFailed) => {
+                        forward::SOCKS_CONNECTION_REFUSED
+                    }
+                    _ => forward::SOCKS_GENERAL_FAILURE,
+                };
+                let reason = if self.connection.is_closed() {
+                    "the connection to it was lost".into()
+                } else {
+                    forwarding_failure(&error)
+                };
+                Err(refused(reason, reply))
+            }
+            Err(_) => Err(refused(
+                format!("no answer within {} s", self.timeout.as_secs_f64()),
+                forward::SOCKS_HOST_UNREACHABLE,
+            )),
+        }
     }
 }
 

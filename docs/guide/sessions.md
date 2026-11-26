@@ -228,6 +228,32 @@ host-key check and **Legacy crypto** setting, and then to the device.
 A failure on the way says which jump host it was. A banner a jump host sends
 comes first, under a grey line naming the host.
 
+## Port forwards
+
+A host can forward ports through its SSH session, as `ssh -L` and `ssh -D`
+do. Set them per host or per folder in the workspace files (see
+[Port forwards](inventory.md#port-forwards)); the app opens them each time
+the session connects, over the session's own connection (so through its jump
+hosts, with no second login), and closes them when it ends.
+
+- A **local forward** (`L 8443:10.0.0.1:443`) listens on a port of this
+  computer; each program connecting to it reaches the address and port as
+  the device reaches them. Point a browser at `https://127.0.0.1:8443/` for a
+  web interface behind the device.
+- A **dynamic forward** (`D 1080`) is a SOCKS5 proxy through the device: point
+  a browser or `curl --socks5-hostname 127.0.0.1:1080` at it, and names are
+  looked up by the device.
+
+While a forward is open the header shows **Forwarding n**. Clicking it lists
+every open forward of every session, where each one listens, and why the last
+connection through it failed if one did ("the device could not reach
+10.0.0.1 port 443 (it does not allow forwarding)"); **Stop** closes one, and it
+opens again when the session reconnects. A port another program holds fails
+that forward alone, and says so.
+
+Forwards listen on `127.0.0.1` (or `::1`) only, never on the network. While
+one is open, **any program on this computer can use its port**.
+
 ## Local shell
 
 A local shell is a program on your computer in a terminal tab: on Windows
@@ -272,5 +298,9 @@ the app shows when negotiation fails.
   device prints.
 - A session cannot move to another window while it is connecting, while a
   question is open on it or while a paste is still being sent.
+- Port forwards share the terminal's connection: while the terminal is
+  paused (its window too busy to draw), they pause with it. A duplicate or a
+  second channel of a session opens none. Remote forwards (`ssh -R`) are not
+  supported.
 - Session windows have been checked on Windows; on Linux they are built but
   not yet tried on a desktop.
