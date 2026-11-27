@@ -533,7 +533,8 @@ own interpreter installs nothing.
   known hosts trusts, without asking, every host certificate that authority
   signs for the hosts its patterns name: anyone holding its private key can
   stand in for those hosts. A `@revoked` line refuses its key (a host key,
-  a certificate's key or an authority) for the hosts it names.
+  a certificate's key or an authority) for the hosts it names, and the keys
+  the app gives to scripts leave it out too.
 - **TLS through a tunnel.** The app checks no TLS certificate of a device;
   a script that calls an HTTPS API through a tunnel must check it itself.
 - **A forgotten master password.** There is no recovery.

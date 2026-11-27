@@ -137,24 +137,61 @@ impl KnownHosts {
     }
 
     /// The keys trusted for `host` at `port`, in file order: none if the
-    /// host is unknown. A damaged entry for them is an error, as in
-    /// [`Self::check`].
+    /// host is unknown. A key a `@revoked` line names for the host is never
+    /// among them (see [`Self::revoked_remembered`]). A damaged entry for
+    /// them is an error, as in [`Self::check`].
     pub fn trusted(&self, host: &str, port: u16) -> Result<Vec<PublicKey>, KnownHostsError> {
+        let revoked = self.revoked(host, port)?;
+        let mut stored = self.remembered(host, port)?;
+        stored.retain(|key| !is_in(&revoked, key));
+        Ok(stored)
+    }
+
+    /// The keys remembered for `host` at `port` that a `@revoked` line
+    /// names for it: what [`Self::trusted`] leaves out. A host with some
+    /// of these and no trusted key is one whose key is revoked, not one
+    /// to connect to and trust.
+    pub fn revoked_remembered(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<Vec<PublicKey>, KnownHostsError> {
+        let revoked = self.revoked(host, port)?;
+        let mut stored = self.remembered(host, port)?;
+        stored.retain(|key| is_in(&revoked, key));
+        Ok(stored)
+    }
+
+    /// [`Self::certificate_authorities`] without the revoked ones: those
+    /// that may vouch for `host` at `port`.
+    pub fn vouching_authorities(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<Vec<PublicKey>, KnownHostsError> {
+        let revoked = self.revoked(host, port)?;
+        let mut authorities = self.certificate_authorities(host, port)?;
+        authorities.retain(|key| !is_in(&revoked, key));
+        Ok(authorities)
+    }
+
+    /// The plain keys stored for `host` at `port`, revoked or not.
+    fn remembered(&self, host: &str, port: u16) -> Result<Vec<PublicKey>, KnownHostsError> {
         let store = self.lock();
         let lines = store.load()?;
         let pattern = pattern(host, port);
-        let mut trusted = Vec::new();
+        let mut stored = Vec::new();
         for line in &lines {
             if let Line::Entry { patterns, key, .. } = line {
                 if matches_exactly(patterns, &pattern) {
                     let key = key.as_ref().ok_or_else(|| {
                         store.read_error(format!("the key stored for {pattern} cannot be read"))
                     })?;
-                    trusted.push(key.clone());
+                    stored.push(key.clone());
                 }
             }
         }
-        Ok(trusted)
+        Ok(stored)
     }
 
     /// The certificate authorities trusted for `host` at `port`: the keys of
@@ -300,7 +337,14 @@ impl Store {
         match self {
             Self::Memory(lines) => Ok(lines.clone()),
             Self::File(file) => match fs::read_to_string(file) {
-                Ok(text) => Ok(text.lines().map(Line::parse).collect()),
+                // A byte-order mark some editors put at the start of a file
+                // is no part of its first line. It is not kept on a save.
+                Ok(text) => Ok(text
+                    .strip_prefix('\u{feff}')
+                    .unwrap_or(&text)
+                    .lines()
+                    .map(Line::parse)
+                    .collect()),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
                 Err(error) => Err(self.read_error(error)),
             },
@@ -371,6 +415,11 @@ fn pattern(host: &str, port: u16) -> String {
 /// negations are not interpreted: they never match.
 fn matches_exactly(patterns: &[String], pattern: &str) -> bool {
     patterns.iter().any(|p| p.eq_ignore_ascii_case(pattern))
+}
+
+/// Whether `keys` holds `key` (the key itself, whatever its comment).
+fn is_in(keys: &[PublicKey], key: &PublicKey) -> bool {
+    keys.iter().any(|k| k.key_data() == key.key_data())
 }
 
 /// The marker of the lines naming certificate authorities.

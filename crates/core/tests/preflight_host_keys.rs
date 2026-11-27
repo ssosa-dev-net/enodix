@@ -393,3 +393,58 @@ async fn a_host_a_certificate_authority_covers_has_no_warning() {
         [(None, "10.9.6.1".to_string(), 22)]
     );
 }
+
+/// A known-hosts file in a data folder holding `text`.
+fn known_hosts_file(text: &str) -> (tempfile::TempDir, KnownHosts) {
+    let data = tempfile::TempDir::new().unwrap();
+    std::fs::write(data.path().join(enodix_core::known_hosts::FILE_NAME), text).unwrap();
+    let known_hosts = KnownHosts::in_data_folder(data.path());
+    (data, known_hosts)
+}
+
+/// A key trusted and revoked since fails the pre-flight with the revoked
+/// wording, not with the "not trusted yet" advice.
+#[tokio::test]
+async fn a_remembered_key_that_is_revoked_fails_the_preflight_as_revoked() {
+    let lab = Lab::new(&[
+        ("r1.yaml", at("10.9.0.1", "frr", "")),
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+    ]);
+    let key = some_key().await;
+    let text = key.to_openssh().unwrap();
+    let (_data, known_hosts) = known_hosts_file(&format!("10.9.0.1 {text}\n@revoked * {text}\n"));
+
+    let mut plan = lab.plan(&folder(""), &snippet("Show"));
+    plan.check_host_keys(&known_hosts);
+
+    assert_eq!(
+        message(&plan, "r1.yaml"),
+        "the host key of the device (10.9.0.1 port 22) is revoked in the known hosts, so the \
+         job will refuse this host"
+    );
+    // Nothing a connection could fix.
+    assert_eq!(untrusted(&plan, "r1.yaml"), []);
+    assert_eq!(plan.untrusted_keys(), 1);
+}
+
+/// A revoked authority does not vouch for a host with a host certificate.
+#[tokio::test]
+async fn a_revoked_authority_does_not_vouch_in_the_preflight() {
+    let lab = Lab::new(&[
+        ("r1.yaml", at("10.9.0.1", "frr", "")),
+        ("_snippets.yaml", "Show: show hostname\n".into()),
+    ]);
+    let authority = some_key().await.to_openssh().unwrap();
+
+    let (_data, known_hosts) = known_hosts_file(&format!("@cert-authority * {authority}\n"));
+    let mut plan = lab.plan(&folder(""), &snippet("Show"));
+    plan.check_host_keys(&known_hosts);
+    assert_eq!(plan.untrusted_keys(), 0, "vouched for: {plan:?}");
+
+    let (_data, known_hosts) = known_hosts_file(&format!(
+        "@cert-authority * {authority}\n@revoked * {authority}\n"
+    ));
+    plan.check_host_keys(&known_hosts);
+    assert_eq!(plan.untrusted_keys(), 1);
+    assert!(message(&plan, "r1.yaml").contains("not trusted yet"));
+}

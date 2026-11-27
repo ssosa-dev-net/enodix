@@ -114,6 +114,48 @@ fn each_host_comes_with_the_host_keys_the_app_trusts_for_it() {
     assert_eq!(host["host_keys"], serde_json::json!([key]));
 }
 
+/// A key the app trusted and a `@revoked` line names since is not given,
+/// even when a byte-order mark hides the marker's line start.
+#[test]
+fn a_revoked_key_is_not_given_as_a_host_key() {
+    let (json, _) = inventory(&[]);
+    let first = json["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|host| host["settings"]["port"].is_u64())
+        .expect("a host with a port");
+    let (id, address) = (
+        first["id"].clone(),
+        first["address"].as_str().unwrap().to_lowercase(),
+    );
+    let port = first["settings"]["port"].as_u64().unwrap();
+    let key = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/tests/fixtures/keys/rsa_client.pub"),
+    )
+    .unwrap();
+    let key = key.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+    let name = if port == 22 {
+        address
+    } else {
+        format!("[{address}]:{port}")
+    };
+    let data = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        data.path().join("known_hosts"),
+        format!("\u{feff}@revoked * {key}\n{name} {key}\n"),
+    )
+    .unwrap();
+    let root = fixture("export");
+    let output = run_with_data(&["inventory", root.to_str().unwrap()], data.path());
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        host(&json, id.as_str().unwrap())["host_keys"],
+        serde_json::json!([])
+    );
+}
+
 #[test]
 fn it_prints_every_resolved_host_as_json() {
     let (json, _) = inventory(&[]);
