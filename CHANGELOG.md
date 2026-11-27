@@ -136,10 +136,10 @@ platform.
   app's list, no session log, no jump hosts, and you type the password in
   the terminal. What it reaches depends on the client, because a current
   OpenSSH has dropped some of these. With the two clients tried (OpenSSH for
-  Windows 9.5 and 10.6), both reached CBC and 3DES ciphers, SHA-1 and MD5
-  MACs, the SHA-1 key exchanges and `ssh-rsa`, `ssh-dss` only with 9.5; none
-  reached Blowfish, CAST or RC4 ciphers or a RIPEMD MAC. The app asks the
-  client what it knows and passes only that. See `docs/guide/legacy-crypto.md`.
+  Windows 9.5, and OpenSSH 10.6 from Git for Windows), both reached CBC and
+  3DES ciphers, SHA-1 and MD5 MACs, the SHA-1 key exchanges and `ssh-rsa`,
+  `ssh-dss` only with 9.5; none reached Blowfish, CAST or RC4 ciphers or a
+  RIPEMD MAC. The app asks the client what it knows and passes only that. See `docs/guide/legacy-crypto.md`.
 - Linux is stated as a supported platform, with what that rests on and what
   is not yet checked [25]: see `docs/guide/linux.md`.
 
