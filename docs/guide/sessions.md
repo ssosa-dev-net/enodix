@@ -179,6 +179,29 @@ profile is picked up. A login you typed for the session is used again. A
 grey line under `--- reconnecting ---` tells you when the login is not the
 one the session had. A quick connection reconnects as it was made.
 
+### Automatic reconnect
+
+A host with `auto_reconnect: true` (see [the inventory](inventory.md))
+reconnects by itself when its session drops. The closed bar counts down the
+wait, which grows from 2 s to 60 s over 8 tries; then it gives up. Any key
+stops it, and Enter reconnects at once.
+
+It tries again only when the connection was lost, or the device (or a jump
+host) could not be reached or hung up before the login began. Once a login
+has started, the password or key may already have reached the device's
+RADIUS or TACACS+ server, which counts each try against the account. So a
+refused login, a device that closes or stops answering during the login,
+and a jump host lost while a login runs through it are never tried again
+by themselves: reconnect by hand once you have checked the login.
+
+The count of tries starts again only after a session has stayed connected
+for a minute. A device that accepts the connection and drops it at once
+uses up the tries, rather than being reconnected every 2 s for ever.
+Reconnecting by hand starts the count again too.
+
+A telnet session through a jump host that goes away closes as a lost
+connection, so it reconnects by itself; one the device closes does not.
+
 ## Search, copy, paste and font size
 
 - **Search the scrollback**: Ctrl+Shift+F opens a search bar over the
