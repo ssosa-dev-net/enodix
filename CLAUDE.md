@@ -69,8 +69,11 @@ Rules from those files that must hold whatever the task:
   (`sessions.md`).
 - Always connect through `Profiles::profile_target` / `prompted_target`, never
   a bare `Host` (`workspace.md`).
-- Every paste and every snippet goes through `pasteText` in `TerminalSession`
-  (`terminal.md`).
+- Every paste and every snippet with text goes through `pasteText` in
+  `TerminalSession`, key-bound ones too. A snippet with steps is never pasted:
+  the core runs it (`steps.rs`) through its own gates (refused in the
+  multi-send group, the previewed digest must match, always asks on
+  production), so never send its lines any other way (`terminal.md`).
 - Tests never use the user's real SSH agent, never open the machine's real
   serial ports, and touch the keychain only under a random `enodix-test-*`
   prefix (`testing.md`). The opt-in containerlab suite is the one exception
@@ -134,8 +137,11 @@ typing and clicking then fails it at random steps. One smoke run at a time
   `noreply@anthropic.com`, no `Claude-Session` trailer, no "Generated with
   Claude Code" line or session link in pull request descriptions or comments.
   `.claude/settings.json` turns these off; this rule covers sessions that do
-  not read it. The required `Attribution` check fails a pull request that has
-  any of them, or a commit authored or committed as Claude.
+  not read it. The required `Attribution` check only fails a Claude
+  `Co-Authored-By` line in the description or a commit message, or a commit
+  authored or committed as Claude. It ignores a "Generated with Claude Code"
+  line and never looks for a `Claude-Session` trailer, a session link, the
+  title or comments, so a pass is not proof: keep to the rule itself.
 
 ## Agent skills
 

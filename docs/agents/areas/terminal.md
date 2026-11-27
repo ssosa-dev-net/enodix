@@ -145,7 +145,8 @@ right-click-paste`, saved on `change`). Zoom: Ctrl+= / Ctrl+- / Ctrl+0
   in the field, #94);
   `@xterm/addon-search`, needs `allowProposedApi`). **Every paste goes
   through `pasteText`** (keys, right click, the browser's own paste
-  event) and every snippet (#22): hook paste safety (multi-line
+  event) and every snippet with text (#22; a snippet with steps is run by
+  the core instead, see Snippet steps): hook paste safety (multi-line
   confirmation) there. The
   clipboard is `navigator.clipboard` (WebView2 allows reading it; no
   plugin). Copy-on-select copies on the left button's release (a
@@ -236,7 +237,7 @@ cancel]`; hiding or closing its tab drops it, and shortcuts stay on
   (`[data-snippet-hit]`), Enter sends. `sendSnippet` in `App.svelte` sends
   to the active pane's connected session via `TerminalSession`'s exported
   `sendText` (`bind:this` into `terminals`), which calls **`pasteText`**:
-  snippets and clipboard pastes share it, and it sends line by line (one
+  text snippets and clipboard pastes share it, and it sends line by line (one
   `terminal.paste` per line, line break included); #23 hooked paste
   safety there (see below). Known limit: with bracketed paste on (bash 5.1+), each line arrives as
   pasted text, so the shell inserts rather than runs it (as for any
@@ -384,7 +385,7 @@ cancel]`; hiding or closing its tab drops it, and shortcuts stay on
   xterm, so they are recognised by `window.event instanceof MouseEvent`
   (wheel arrows in full-screen programs and alt-click cursor moves count
   as `mouse` too); `onBinary` is always mouse. `input.paste(text)` (used
-  by `pasteText`, so every paste and snippet) marks its data `pasted`.
+  by `pasteText`, so every paste and snippet with text) marks its data `pasted`.
   If the internal hook is missing (xterm upgrade), all but our pastes are
   `reply` (never shared) and a warning is logged. Smoke: `inputOrigins`
   calls `.terminal`'s `input.record()` (off by default: typed input holds
