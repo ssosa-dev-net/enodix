@@ -48,8 +48,17 @@ async fn connected(
     connected_to(manager, target).await
 }
 
+/// Opens by the target alone, saying in so many words that the session may
+/// forward the agent without asking: these tests exercise the mechanics.
+fn unasked() -> OpenOptions {
+    OpenOptions {
+        forward_agent_without_asking: true,
+        ..OpenOptions::default()
+    }
+}
+
 async fn connected_to(manager: &SessionManager, target: SshTarget) -> (SessionId, SessionEvents) {
-    let (id, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);
+    let (id, mut events) = manager.open_with(SessionTarget::Ssh(target), SIZE, unasked());
     assert_eq!(next_state(&mut events).await, SessionState::Connecting);
     assert_eq!(next_state(&mut events).await, SessionState::Connected);
     output_ending_with(&mut events, PROMPT).await;
@@ -168,6 +177,93 @@ async fn a_job_on_a_host_that_forwards_the_agent_does_not_forward_it() {
     let r1 = ran.result("r1.yaml");
     assert_eq!(r1.state, HostState::Done, "{}", r1.output);
     assert_eq!(device.agent_requests(), 0);
+}
+
+// --- A target alone never forwards unless the caller says so ---
+
+fn asking_target(server: &TestSshServer, agent: &TestAgent) -> SshTarget {
+    SshTarget {
+        username: USERNAME.into(),
+        auth: SshAuth::Agent(SshAgent::At(agent.path().to_path_buf())),
+        agent_forwarding: true,
+        ..server.target()
+    }
+}
+
+#[tokio::test]
+async fn a_target_asking_for_the_agent_does_not_forward_it_by_default() {
+    let server = TestSshServer::start().await;
+    let agent = TestAgent::start(&[server.client_key().clone()]).await;
+    let manager = support::manager();
+    let (id, mut events) = manager.open_with(
+        SessionTarget::Ssh(asking_target(&server, &agent)),
+        SIZE,
+        OpenOptions::default(),
+    );
+
+    logged_in_after_connecting(&mut events).await;
+
+    assert!(!manager.agent_forwarded(id).unwrap());
+    device_reaches(&manager, id, &mut events, None).await;
+    assert_eq!(server.agent_requests(), 0);
+
+    // Neither a reconnect nor a duplicate forwards it.
+    closed(&manager, id, &mut events).await;
+    let mut events = manager.reconnect(id, SIZE).unwrap();
+    logged_in_after_connecting(&mut events).await;
+    assert!(!manager.agent_forwarded(id).unwrap());
+    let (copy, mut copied) = manager.duplicate(id, SIZE).unwrap();
+    logged_in_after_connecting(&mut copied).await;
+    assert!(!manager.agent_forwarded(copy).unwrap());
+    assert_eq!(server.agent_requests(), 0);
+}
+
+#[tokio::test]
+async fn a_target_asking_for_the_agent_forwards_it_when_the_options_allow_it() {
+    let server = TestSshServer::start().await;
+    let agent = TestAgent::start(&[server.client_key().clone()]).await;
+    let manager = support::manager();
+    let (id, mut events) = manager.open_with(
+        SessionTarget::Ssh(asking_target(&server, &agent)),
+        SIZE,
+        unasked(),
+    );
+
+    logged_in_after_connecting(&mut events).await;
+
+    assert!(manager.agent_forwarded(id).unwrap());
+    device_reaches(&manager, id, &mut events, Some(1)).await;
+    assert_eq!(server.agent_requests(), 1);
+
+    // A reconnect and a duplicate keep it; a second channel follows.
+    closed(&manager, id, &mut events).await;
+    let mut events = manager.reconnect(id, SIZE).unwrap();
+    logged_in_after_connecting(&mut events).await;
+    assert_eq!(server.agent_requests(), 2);
+    let (copy, mut copied) = manager.duplicate(id, SIZE).unwrap();
+    logged_in_after_connecting(&mut copied).await;
+    assert!(manager.agent_forwarded(copy).unwrap());
+    assert_eq!(server.agent_requests(), 3);
+}
+
+#[tokio::test]
+async fn a_workspace_host_asks_even_when_the_options_allow_forwarding() {
+    let server = TestSshServer::start().await;
+    let agent = TestAgent::start(&[server.client_key().clone()]).await;
+    let lab = asking_lab(&server);
+    let data = TempDir::new().unwrap();
+    let manager = manager_in(data.path());
+
+    let (_id, mut events) = manager.open_host(session_to(&lab, "r1.yaml", &agent), SIZE, unasked());
+
+    agent_question(&mut events).await;
+    assert_eq!(server.connections(), 0);
+}
+
+async fn logged_in_after_connecting(events: &mut SessionEvents) {
+    assert_eq!(next_state(events).await, SessionState::Connecting);
+    assert_eq!(next_state(events).await, SessionState::Connected);
+    output_ending_with(events, PROMPT).await;
 }
 
 // --- The user approves forwarding to a workspace host ---
@@ -461,7 +557,7 @@ async fn the_backup_on_login_channel_does_not_ask_for_the_agent() {
         configs,
     )
     .expect("the backup applies");
-    // Opened by its target, which forwards the agent (no question).
+    // Opened by its target, which forwards the agent (allowed explicitly).
     let target = profiles.profile_target(&r1).unwrap();
     assert!(target.agent_forwarding);
     let manager = support::manager();
@@ -470,7 +566,7 @@ async fn the_backup_on_login_channel_does_not_ask_for_the_agent() {
         SIZE,
         OpenOptions {
             when_connected: Some(Arc::new(backup)),
-            ..OpenOptions::default()
+            ..unasked()
         },
     );
     assert_eq!(next_state(&mut events).await, SessionState::Connecting);

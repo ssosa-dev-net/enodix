@@ -2483,6 +2483,8 @@ fn host_options(
             .resolve_host(host)
             .map(|host| host.settings.encoding.value)
             .unwrap_or_default(),
+        // A host session asks the user first whatever this says.
+        forward_agent_without_asking: false,
     }
 }
 
