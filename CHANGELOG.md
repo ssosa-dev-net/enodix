@@ -5,6 +5,17 @@ in the project's tracker.
 
 ## Unreleased
 
+## 0.8.0
+
+This release reaches more of what a network engineer touches in a day: port
+forwards and a SOCKS proxy through a device, a shell on your own computer in
+a tab, snippets that wait for the device, files over a serial console, and a
+long list of SSH additions (certificates, hardware keys, agent forwarding,
+telnet behind a jump host, hosts from your `~/.ssh/config`). Devices that
+speak only old algorithms the app will not implement can now be opened with
+the computer's own `ssh`, marked insecure. Linux is stated as a supported
+platform.
+
 ### New
 
 - Snippets with steps: lines sent one at a time to the session in front of
@@ -14,6 +25,149 @@ in the project's tracker.
   naming the step and line. Shown before it runs (always on production),
   followed in a bar with Stop while it runs, and stopped by typing in the
   terminal. Written beside the other snippets in `_snippets.yaml` [23].
+  A paste, or a snippet without steps, also stops a run, and none of that
+  paste is sent to the session.
+- Port forwards and a SOCKS proxy on SSH sessions, as `ssh -L` and `ssh -D`
+  do [21]. Set `forwards` per host or per folder in the workspace files; the
+  app opens them when the session connects, over the session's own
+  connection (so through its jump hosts, with no second login), and closes
+  them when it ends. The header shows **Forwarding n**; clicking it lists
+  every open forward, where it listens and why its last connection failed,
+  with **Stop** for each. Remote forwards (`ssh -R`) are not supported.
+- **Local shell**: a shell on your own computer in a tab, a split pane or a
+  session window, with no workspace needed [22]. On Windows PowerShell,
+  Command Prompt and each WSL distribution; on Linux your login shell and the
+  others in `/etc/shells`. Choose it in the quick connect form or with
+  **New local shell** in the palette; the **Local shell** preference picks
+  the default. It starts in the workspace's folder and has
+  `ENODIX_WORKSPACE` and `ENODIX_CLI` set, so the Python bridge works in it.
+  It is not logged and never joins multi-send.
+- Settings per host or folder, inherited like the others [24]: **terminal
+  type** (`terminal_type`: `xterm-256color`, `xterm`, `vt100`, `ansi` or
+  `linux`), **character encoding** (`encoding`: `utf-8`, `iso-8859-1`,
+  `windows-1252` or `cp437`; the terminal and the log always show UTF-8),
+  **timestamps in session logs** (`log_timestamps`, the local time before
+  each line) and **automatic reconnect** (`auto_reconnect`). A session that
+  drops waits 2 s, growing to 60 s over 8 tries; the closed bar counts it
+  down, any key stops it and Enter reconnects at once. It tries again only
+  when the connection was lost, or the device (or a jump host) could not be
+  reached or hung up before the login began. It never repeats a refused
+  login, a device that closes or stops answering during the login, or a jump
+  host lost while a login runs through it, because each try can count against
+  the account on a RADIUS or TACACS+ server; reconnect by hand once you have
+  checked the login. It never answers a host-key question. The count starts
+  again only after a session has stayed connected for a minute, so a device
+  that accepts and drops at once uses the tries up. A telnet session behind a
+  jump host that goes away is a lost connection and reconnects; one the
+  device closes does not.
+- **Colour schemes** in Preferences: Solarized Dark and Light, Dracula, Nord
+  and Gruvbox Dark besides the app's own colours, and **Own colours** for the
+  background, text, cursor, selection and any of the 16 palette colours [24].
+  Highlight rules that name a palette colour follow them; rules with a
+  `#rrggbb` colour keep it.
+- **Key bindings** in Preferences [24]: move the window's shortcuts (search,
+  switch workspace, close tab, multi-send group, open in window, side view,
+  Preferences, edit host, details), and bind a key to a snippet with
+  **Snippet keys**, sent to the active session like a click in the Snippets
+  view; that key no longer reaches the device. A key needs Ctrl or Alt
+  (function keys stand alone). Keys the app keeps (copy and paste, search, the
+  tab keys, the font size keys, the side view keys) cannot be bound, and
+  Preferences says why. A key bound to a snippet sends it once per press.
+- **Send break** on telnet sessions, in the session menu [24]: the telnet
+  BREAK command, which a terminal server turns into a break on its console
+  line (serial sessions already had it).
+- **Send file…** and **Receive file…** on serial sessions, with XMODEM,
+  XMODEM-CRC, XMODEM-1K and YMODEM [47]: the way to load an image into a
+  router's ROMMON or a switch's boot loader before the network is up. A bar
+  shows the file, bytes, blocks and retries, and **Cancel** tells the device
+  to stop. A damaged block is sent again up to 10 times; a device silent for
+  a minute at the start, or 10 seconds later, ends the transfer with the
+  reason. YMODEM names never reach outside the chosen folder and never
+  replace a file (`config.txt` becomes `config (2).txt`); a file cut short is
+  removed. ZMODEM and Kermit are not supported, nor transfers over telnet
+  or SSH (the Files tab does SSH).
+- **OpenSSH user certificates** [26]: a profile with a private key offers the
+  certificate beside it (`id_ed25519-cert.pub`) first, as `ssh` does, and a
+  profile that uses the SSH agent uses the certificates the agent holds. If
+  the server refuses the certificate, the key is tried on its own.
+- **Host certificates** [26]: a `@cert-authority` line in `known_hosts`
+  trusts the authority that signs your devices' keys instead of each key.
+  The patterns follow OpenSSH (`*`, `?`, `!`, `[host]:port`, and hashed
+  patterns from `ssh-keygen -H`). The certificate must be a host
+  certificate, signed by that authority, valid now, without critical
+  options, and name the host as written in the workspace; otherwise the
+  app asks about the key inside it and says why the certificate was not
+  taken. Jobs count such a host as trusted; Python scripts do not use
+  authorities yet.
+- **Revoked keys** [26]: a `@revoked` line refuses a key, a host certificate's
+  key or an authority, with no question, even for a key trusted before.
+  `known_hosts` may start with a byte-order mark.
+- **Hardware security keys** (`ed25519-sk`, `ecdsa-sk`) work through the SSH
+  agent: add the key to the agent and touch it when asked [26]. The app
+  cannot read a `*_sk` key file itself.
+- **Agent forwarding** [26]: set `agent_forwarding: true` on a host or
+  folder, and a terminal session to it asks, in its pane before it logs in,
+  whether to let the device use your SSH agent: **Connect without
+  forwarding** (the default), **Forward for this session**, or **Always
+  forward to this host**. The workspace only asks; the answer is yours, on
+  this computer. "Always" is kept in `agent_forwarding.json` in the app's
+  data folder, never in the workspace, and covers that workspace, host,
+  address and port only. The header shows **Agent forwarded** while it is on.
+  The agent goes to the device only, never to a jump host, and never in
+  jobs, file connections, back up on login, script tunnels or quick
+  connections.
+- **A password after a key** [26]: a server that wants both
+  (`AuthenticationMethods publickey,password`) is logged in to with the
+  profile's key or agent key, and the pane then asks for the password.
+- **Telnet through a jump host** [26]: a telnet host with a jump host goes
+  through the jump host's SSH connection, so only the last leg is in the
+  clear (the **Unencrypted** marker stays). Jobs and scripts do not reach such
+  hosts yet.
+- **Import from SSH config…** reads an OpenSSH client config (`~/.ssh/config`
+  by default) and previews the hosts it would create [26]. `HostName`,
+  `Port` and a `ProxyJump` to another host of the same file are kept;
+  `User`, `IdentityFile`, `Match`, `Include`, several hops and
+  `ProxyCommand` are not, and the preview lists each.
+- **Devices that offer only algorithms the app will not implement** [27]:
+  when a session fails for that reason, its message has **Open with the
+  system ssh (insecure)**, which opens a tab running the computer's own
+  `ssh` with the outdated algorithms allowed and an **Insecure** marker in
+  the header. It is not an enodix SSH session: no host key check against the
+  app's list, no session log, no jump hosts, and you type the password in
+  the terminal. What it reaches depends on the client, because a current
+  OpenSSH has dropped some of these. With the two clients tried (OpenSSH for
+  Windows 9.5, and OpenSSH 10.6 from Git for Windows), both reached CBC and
+  3DES ciphers, SHA-1 and MD5 MACs, the SHA-1 key exchanges and `ssh-rsa`,
+  `ssh-dss` only with 9.5; none reached Blowfish, CAST or RC4 ciphers or a
+  RIPEMD MAC. The app asks the client what it knows and passes only that. See `docs/guide/legacy-crypto.md`.
+- Linux is stated as a supported platform, with what that rests on and what
+  is not yet checked [25]: see `docs/guide/linux.md`.
+
+### Changed
+
+- App shortcuts match the key that prints the letter on your layout (on
+  AZERTY the key labelled W for Ctrl+Shift+W, on Dvorak the key labelled K
+  for Ctrl+K), and also the key at that place on a QWERTY keyboard. In
+  0.7.1 either match ran the shortcut; now, when the two name different
+  actions, the printed letter wins and one press never runs two things [24].
+
+### Security
+
+For anyone who opens a workspace someone else wrote:
+
+- Port forwards listen on `127.0.0.1` or `::1` only. A workspace that names
+  any other address, `*` included, has a problem on the file and opens
+  nothing. While a forward is open, any program on this computer can use its
+  port.
+- A workspace can ask to forward your SSH agent but cannot do it: you
+  approve on this computer, per session or always for that host, and an
+  "always" is not stored in the workspace.
+- A revoked key is refused everywhere: sessions, jobs, tunnels, the
+  pre-flight check and scripts, which are never handed a revoked key to
+  accept. A revoked authority does not vouch for a host.
+- The system `ssh` tab accepts the weaknesses of the algorithms the device
+  forces, and the app does not check its host key. Use it only for devices
+  you cannot update.
 
 ## 0.7.1
 
