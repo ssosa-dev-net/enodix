@@ -285,3 +285,20 @@ fn the_json_has_plain_values_and_no_secrets() {
         assert!(!all_text.contains(word), "{word} in {all_text}");
     }
 }
+
+/// The JSON the headless binary prints writes each choice as the files do.
+#[test]
+fn choices_are_exported_as_written_in_the_files() {
+    let temp = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        temp.path().join("old.yaml"),
+        "address: 10.0.0.1\nencoding: iso-8859-1\nterminal_type: xterm-256color\n",
+    )
+    .unwrap();
+    let workspace = Workspace::open(temp.path()).unwrap();
+
+    let json = serde_json::to_value(export_of(&workspace, Limit::All)).unwrap();
+    let settings = &json["hosts"][0]["settings"];
+    assert_eq!(settings["encoding"], "iso-8859-1");
+    assert_eq!(settings["terminal_type"], "xterm-256color");
+}

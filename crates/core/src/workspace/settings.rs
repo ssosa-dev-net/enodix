@@ -206,10 +206,26 @@ impl ForwardSetting {
 macro_rules! choice {
     ($(#[$doc:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
         $(#[$doc])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-        #[serde(rename_all = "lowercase")]
+        // Serialized as written in files ("utf-8", "xterm-256color"), so
+        // that the interface shows and sends the same text.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum $name {
             $($variant),+
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let text = String::deserialize(deserializer)?;
+                Self::parse(&text).ok_or_else(|| {
+                    serde::de::Error::custom(format!("`{text}` is not {}", Self::expected()))
+                })
+            }
         }
 
         impl $name {

@@ -101,6 +101,27 @@ fn the_terminal_type_is_written_and_checked() {
     );
 }
 
+/// The interface gets and sends settings as JSON, with the terminal type
+/// written as in the files.
+#[test]
+fn the_interface_sees_and_sends_terminal_types_as_written_in_files() {
+    for (terminal_type, text) in [
+        (TerminalType::Xterm256Color, "xterm-256color"),
+        (TerminalType::Xterm, "xterm"),
+        (TerminalType::Vt100, "vt100"),
+        (TerminalType::Ansi, "ansi"),
+        (TerminalType::Linux, "linux"),
+    ] {
+        assert_eq!(serde_json::to_value(terminal_type).unwrap(), text);
+        assert_eq!(
+            serde_json::from_value::<TerminalType>(text.into()).unwrap(),
+            terminal_type
+        );
+    }
+    let edit: Settings = serde_json::from_str(r#"{"terminal_type": "xterm-256color"}"#).unwrap();
+    assert_eq!(edit.terminal_type, Some(TerminalType::Xterm256Color));
+}
+
 #[test]
 fn an_unknown_terminal_type_is_reported_for_that_file() {
     let temp = TempDir::new().unwrap();

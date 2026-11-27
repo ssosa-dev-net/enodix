@@ -12,7 +12,7 @@ use enodix_core::session::{
     Encoding, OpenOptions, SessionEvents, SessionId, SessionManager, SessionState, SessionTarget,
     TerminalSize,
 };
-use enodix_core::workspace::{Effective, HostId, Origin, Workspace};
+use enodix_core::workspace::{Effective, HostId, Origin, Settings, Workspace};
 use support::telnet::{TestTelnetServer, PASSWORD_PROMPT, TELNET_PROMPT, USERNAME_PROMPT};
 use support::{next_state, output_ending_with, PASSWORD, USERNAME};
 use tempfile::TempDir;
@@ -138,6 +138,33 @@ fn the_encoding_inherits_like_the_other_settings() {
             origin: Origin::Default
         }
     );
+}
+
+/// The interface gets and sends settings as JSON: an encoding is written
+/// there as in the files, so that the settings panel shows "utf-8" and its
+/// choices can be saved.
+#[test]
+fn the_interface_sees_and_sends_encodings_as_written_in_files() {
+    let (_temp, workspace) = workspace();
+    let resolved = workspace.resolve_host(&HostId::new("Old/b.yaml")).unwrap();
+    let json = serde_json::to_value(&resolved.settings).unwrap();
+    assert_eq!(json["encoding"]["value"], "iso-8859-1");
+
+    for (encoding, text) in [
+        (Encoding::Utf8, "utf-8"),
+        (Encoding::Iso8859_1, "iso-8859-1"),
+        (Encoding::Windows1252, "windows-1252"),
+        (Encoding::Cp437, "cp437"),
+    ] {
+        assert_eq!(serde_json::to_value(encoding).unwrap(), text);
+        assert_eq!(
+            serde_json::from_value::<Encoding>(text.into()).unwrap(),
+            encoding
+        );
+    }
+    let edit: Settings = serde_json::from_str(r#"{"encoding": "iso-8859-1"}"#).unwrap();
+    assert_eq!(edit.encoding, Some(Encoding::Iso8859_1));
+    assert!(serde_json::from_value::<Encoding>("iso8859_1".into()).is_err());
 }
 
 #[test]
