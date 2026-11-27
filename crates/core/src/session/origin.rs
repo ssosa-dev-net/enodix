@@ -72,6 +72,9 @@ pub struct HostOrigin {
     /// The root of the host's workspace (host ids mean something only
     /// there).
     workspace: PathBuf,
+    /// The workspace's id then (`_workspace.yaml`), if it had one: what an
+    /// approval to forward the agent is kept under.
+    workspace_id: Option<String>,
     host: HostId,
     /// The host's name then, for saying it is gone.
     name: String,
@@ -105,6 +108,20 @@ impl HostOrigin {
 
     pub fn workspace(&self) -> &Path {
         &self.workspace
+    }
+
+    /// The host's name when the session was asked for.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The workspace's identity, as an approval to forward the agent is
+    /// kept under: its id, else `path:` and its root.
+    pub(super) fn workspace_identity(&self) -> String {
+        match &self.workspace_id {
+            Some(id) => id.clone(),
+            None => format!("path:{}", self.workspace.display()),
+        }
     }
 
     /// The transport the session uses.
@@ -419,6 +436,7 @@ impl Profiles<'_> {
     fn origin(&self, host: &ResolvedHost, login: OriginLogin) -> HostOrigin {
         HostOrigin {
             workspace: self.workspace().root().to_path_buf(),
+            workspace_id: self.workspace().id().map(str::to_owned),
             host: host.host.id.clone(),
             name: host.host.name.clone(),
             protocol: host.settings.protocol.value,

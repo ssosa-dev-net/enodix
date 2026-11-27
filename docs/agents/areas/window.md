@@ -59,6 +59,10 @@ connected|disconnected`, `--env-*` (+ `-bg`, `-text`, `--on-env-production`),
 changed]`, buttons `[data-decision=…]`; Cancel has focus on a changed key)
   and sends `session_decide_host_key`. The shell's store is
   `KnownHosts::in_data_folder(data_folder)`.
+  Agent forwarding questions arrive the same way on `onAgentForwarding`:
+  `AgentForwardingCheck.svelte` over the pane (`[data-agent-question]`,
+  details in `sessions.md`), answered with
+  `session_decide_agent_forwarding`.
   Login questions arrive on `session_open`'s `onPrompt` channel;
   `TerminalSession` shows them over the terminal (`LoginQuestions.svelte`)
   and sends `session_answer`. A closed state carries

@@ -476,6 +476,7 @@ pub(super) async fn run(target: LocalTarget, link: &mut Link) -> CloseReason {
                 // No login questions, no breaks, no second channels.
                 Command::Answer(_)
                 | Command::HostKey(_)
+                | Command::AgentForwarding(_)
                 | Command::Break
                 | Command::OpenChannel { .. }
                 | Command::Transfer { .. }

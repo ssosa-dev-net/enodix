@@ -36,8 +36,8 @@ use enodix_core::layout::{
     PAGE_ASK_EVERY, SESSION_WINDOW_MIN_SIZE,
 };
 use enodix_core::session::{
-    HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, SessionId, SessionManager, SessionRecord,
-    SessionRecords, SessionRelays, SessionState, Transport,
+    AgentForwardingQuestion, HostKeyQuestion, LoginPrompt, NegotiatedAlgorithms, SessionId,
+    SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState, Transport,
 };
 use enodix_core::workspace::{HostId, Workspace};
 use serde::{Deserialize, Serialize};
@@ -709,6 +709,7 @@ pub(super) async fn session_attach(
     on_state: Channel<StateMessage>,
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
+    on_agent_forwarding: Channel<AgentForwardingQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
@@ -737,6 +738,7 @@ pub(super) async fn session_attach(
                 state: on_state,
                 prompt: on_prompt,
                 host_key: on_host_key,
+                agent_forwarding: on_agent_forwarding,
                 algorithms: on_algorithms,
                 log_failure: on_log_failure,
                 backup: on_backup,
@@ -750,7 +752,13 @@ pub(super) async fn session_attach(
         encrypted,
         agent_forwarded,
         transport,
-        state: reported.state.map(StateMessage::from),
+        state: reported
+            .state
+            .map(StateMessage::from)
+            .map(|state| match state {
+                StateMessage::Connected { .. } => StateMessage::Connected { agent_forwarded },
+                other => other,
+            }),
         algorithms: reported.algorithms,
         log_failure: reported.log_failure.map(|failure| failure.to_string()),
         backup: reported.backup,

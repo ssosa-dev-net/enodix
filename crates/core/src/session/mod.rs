@@ -7,6 +7,7 @@
 //! output pipeline: batching and flow control (see [`OutputOptions`]).
 
 mod agent;
+mod agent_approval;
 mod algorithms;
 mod auto_reconnect;
 pub(crate) mod connection;
@@ -40,6 +41,9 @@ use tokio::sync::{mpsc, watch};
 use crate::known_hosts::{HostKey, KnownHosts};
 use crate::logging::{LogFailure, Logger, SessionLog};
 pub use crate::workspace::{Encoding, TerminalType};
+pub use agent_approval::{
+    AgentApprovals, AgentForwardingDecision, AgentForwardingKey, AgentForwardingQuestion,
+};
 pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
@@ -106,7 +110,9 @@ impl SessionTarget {
         }
     }
 
-    /// Whether the session forwards the SSH agent to the device.
+    /// Whether the session asks to forward the SSH agent to the device
+    /// (for a session to a workspace host, the user approves it first:
+    /// [`SessionManager::agent_forwarded`] says whether it is).
     pub fn agent_forwarding(&self) -> bool {
         match self {
             Self::Ssh(target) => target.agent_forwarding,
@@ -163,7 +169,10 @@ pub struct SshTarget {
     pub legacy_crypto: bool,
     /// Forward the SSH agent to the target (never to its jump hosts): the
     /// agent the target logs in with, else the system's. Whoever is root
-    /// on the target can use the agent while the session lasts.
+    /// on the target can use the agent while the session lasts. For a
+    /// session to a workspace host ([`SessionManager::open_host`]) this
+    /// only asks: it forwards once the user approves it
+    /// ([`SessionEvent::AgentForwarding`]).
     pub agent_forwarding: bool,
     /// How long opening the session may wait on the device: for the TCP
     /// connection, the SSH handshake, each answer while logging in, and the
@@ -278,6 +287,12 @@ pub enum SessionEvent {
     /// trusted for it: the first connection, or a changed key. Nothing goes
     /// on until [`SessionManager::decide_host_key`] (or closing) decides.
     HostKey(HostKeyQuestion),
+    /// Before connecting, a session to a workspace host whose settings ask
+    /// to forward the SSH agent asks whether to, unless the user has
+    /// approved it for this host or answered for this session already.
+    /// Nothing is sent to the device until
+    /// [`SessionManager::decide_agent_forwarding`] (or closing) decides.
+    AgentForwarding(AgentForwardingQuestion),
     /// The algorithms each connection of the session agreed on, in connect
     /// order (jump hosts first, the device last). Sent once, just before
     /// [`SessionState::Connected`]; a session using any of the outdated
@@ -811,6 +826,8 @@ struct Inner {
     known_hosts: KnownHosts,
     /// Where serial sessions find their ports.
     serial_ports: Arc<dyn SerialPorts>,
+    /// The hosts the user always forwards the agent to.
+    agent_approvals: AgentApprovals,
     /// Every session not discarded, open or closed.
     sessions: Mutex<HashMap<SessionId, Entry>>,
 }
@@ -827,8 +844,23 @@ struct Entry {
     origin: Option<HostOrigin>,
     /// For a second channel: the session whose connection carries it.
     channel_of: Option<SessionId>,
+    /// What the tab answered about forwarding the agent, for its
+    /// reconnects.
+    agent_answer: Arc<Mutex<Option<agent_approval::TabAnswer>>>,
+    /// Whether this connection forwards the agent, once settled.
+    agent_live: Arc<AtomicBool>,
+    /// For a second channel: whether it asks the device to forward the
+    /// agent on it (as its session's connection does). A duplicated
+    /// terminal does; the channel a backup on login runs on does not.
+    channel_agent: bool,
     /// `None` once the session has closed.
     open: Option<SessionHandle>,
+}
+
+/// What a duplicate keeps of the session it copies.
+struct Copied {
+    /// That tab's answer about forwarding the agent.
+    agent_answer: Option<agent_approval::TabAnswer>,
 }
 
 /// How the manager reaches an open session.
@@ -892,9 +924,26 @@ impl SessionManager {
                 output: options,
                 known_hosts,
                 serial_ports,
+                agent_approvals: AgentApprovals::in_memory(),
                 sessions: Mutex::default(),
             }),
         }
+    }
+
+    /// This manager, keeping the hosts the user always forwards the agent
+    /// to in `approvals` (by default, in memory only). Call it on a new
+    /// manager, before cloning it.
+    pub fn with_agent_approvals(mut self, approvals: AgentApprovals) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("agent approvals are set on a new manager")
+            .agent_approvals = approvals;
+        self
+    }
+
+    /// The hosts its sessions always forward the agent to (shared: the
+    /// same store, not a copy).
+    pub fn agent_approvals(&self) -> AgentApprovals {
+        self.inner.agent_approvals.clone()
     }
 
     /// The known-hosts store its SSH sessions check host keys against
@@ -950,7 +999,7 @@ impl SessionManager {
         size: TerminalSize,
         options: OpenOptions,
     ) -> (SessionId, SessionEvents) {
-        self.add(target, options, None, None, size)
+        self.add(target, options, None, None, None, size)
     }
 
     /// Like [`Self::open_with`], for a session to a workspace host worked
@@ -966,7 +1015,14 @@ impl SessionManager {
         size: TerminalSize,
         options: OpenOptions,
     ) -> (SessionId, SessionEvents) {
-        self.add(session.target, options, Some(session.origin), None, size)
+        self.add(
+            session.target,
+            options,
+            Some(session.origin),
+            None,
+            None,
+            size,
+        )
     }
 
     /// How the session `id` (open or closed, until it is discarded) was
@@ -1009,18 +1065,23 @@ impl SessionManager {
             }
             (entry.target.clone(), of)
         };
-        Ok(self.add(target, OpenOptions::default(), None, Some(of), size))
+        // It carries jobs (the backup on login): never the agent.
+        Ok(self.add(target, OpenOptions::default(), None, Some(of), None, size))
     }
 
-    /// Adds a session and starts it.
+    /// Adds a session and starts it; `copied`: the session it duplicates,
+    /// whose answer about forwarding the agent it keeps.
     fn add(
         &self,
         target: SessionTarget,
         options: OpenOptions,
         origin: Option<HostOrigin>,
         channel_of: Option<SessionId>,
+        copied: Option<Copied>,
         size: TerminalSize,
     ) -> (SessionId, SessionEvents) {
+        let channel_agent = copied.is_some();
+        let agent_answer = copied.and_then(|copied| copied.agent_answer);
         let id = SessionId(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let mut sessions = self.inner.sessions();
         let parent = channel_of.and_then(|of| {
@@ -1035,6 +1096,9 @@ impl SessionManager {
                 options,
                 origin,
                 channel_of,
+                agent_answer: Arc::new(Mutex::new(agent_answer)),
+                agent_live: Arc::new(AtomicBool::new(false)),
+                channel_agent,
                 open: None,
             },
         );
@@ -1105,9 +1169,18 @@ impl SessionManager {
         id: SessionId,
         size: TerminalSize,
     ) -> Result<(SessionId, SessionEvents), SessionError> {
-        let (target, options, origin, channel_of) = {
+        let (target, options, origin, channel_of, copied) = {
             let sessions = self.inner.sessions();
             let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
+            // It follows the answer the tab it copies gave about forwarding
+            // the agent.
+            let copied = Copied {
+                agent_answer: entry
+                    .agent_answer
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
+            };
             // A duplicate forwards nothing: the session it copies does.
             let options = OpenOptions {
                 forwards: Vec::new(),
@@ -1118,9 +1191,10 @@ impl SessionManager {
                 options,
                 entry.origin.clone(),
                 entry.channel_of,
+                copied,
             )
         };
-        Ok(self.add(target, options, origin, channel_of, size))
+        Ok(self.add(target, options, origin, channel_of, Some(copied), size))
     }
 
     /// The hosts of `moves` in the workspace at `root` have new ids (#99):
@@ -1209,6 +1283,32 @@ impl SessionManager {
         } else {
             entry.options.forwards.clone()
         };
+        // A session to a workspace host whose settings ask to forward the
+        // agent settles it with the user before connecting; one opened by
+        // its target alone forwards as the target says.
+        let channel_agent = entry.channel_agent;
+        let agent_live = entry.agent_live.clone();
+        agent_live.store(false, Ordering::Release);
+        let agent_gate = match (&entry.target, &entry.origin) {
+            (SessionTarget::Ssh(ssh), Some(origin)) if !channel && ssh.agent_forwarding => {
+                Some(agent_approval::Gate {
+                    key: AgentForwardingKey {
+                        workspace: origin.workspace_identity(),
+                        host: origin.host().to_string(),
+                        address: ssh.host.clone(),
+                        port: ssh.port,
+                    },
+                    question: AgentForwardingQuestion {
+                        name: origin.name().to_owned(),
+                        host: ssh.host.clone(),
+                        port: ssh.port,
+                    },
+                    approvals: self.inner.agent_approvals.clone(),
+                    answer: entry.agent_answer.clone(),
+                })
+            }
+            _ => None,
+        };
         let when_connected = entry.options.when_connected.clone().map(|hook| {
             let manager = manager.clone();
             Box::new(move |events: &mpsc::UnboundedSender<SessionEvent>| {
@@ -1239,8 +1339,19 @@ impl SessionManager {
             };
             link.state(SessionState::Connecting);
             let reason = match target {
-                SessionTarget::Ssh(_) if channel => ssh::run_channel(parent, &mut link).await,
-                SessionTarget::Ssh(target) => ssh::run(target, known_hosts, &mut link).await,
+                SessionTarget::Ssh(_) if channel => {
+                    ssh::run_channel(parent, channel_agent, &mut link).await
+                }
+                SessionTarget::Ssh(mut target) => 'ssh: {
+                    if let Some(gate) = agent_gate {
+                        let Some(forward) = gate.settle(&mut link).await else {
+                            break 'ssh CloseReason::ClosedLocally;
+                        };
+                        target.agent_forwarding = forward;
+                    }
+                    agent_live.store(target.agent_forwarding, Ordering::Release);
+                    ssh::run(target, known_hosts, &mut link).await
+                }
                 SessionTarget::Telnet(target) => telnet::run(target, known_hosts, &mut link).await,
                 SessionTarget::Serial(target) => serial::run(target, serial_ports, &mut link).await,
                 SessionTarget::Local(target) => local::run(target, &mut link).await,
@@ -1263,9 +1374,23 @@ impl SessionManager {
         self.target(id, SessionTarget::encrypted)
     }
 
-    /// Whether the session `id` forwards the SSH agent to its device.
+    /// Whether the session `id` forwards the SSH agent to its device now:
+    /// settled before each connection (a session to a workspace host asks
+    /// the user, [`SessionEvent::AgentForwarding`]), so it is `false` while
+    /// that is being asked. A second channel forwards it if its session's
+    /// connection does, unless it carries a job (the backup on login).
     pub fn agent_forwarded(&self, id: SessionId) -> Result<bool, SessionError> {
-        self.target(id, SessionTarget::agent_forwarding)
+        let sessions = self.inner.sessions();
+        let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
+        Ok(match entry.channel_of {
+            None => entry.agent_live.load(Ordering::Acquire),
+            Some(of) => {
+                entry.channel_agent
+                    && sessions
+                        .get(&of)
+                        .is_some_and(|parent| parent.agent_live.load(Ordering::Acquire))
+            }
+        })
     }
 
     /// The transport of the session `id` (open or closed, until it is
@@ -1354,6 +1479,15 @@ impl SessionManager {
     /// refuse to answer, close the session.
     pub fn answer(&self, id: SessionId, answers: Vec<String>) -> Result<(), SessionError> {
         self.send(id, Command::Answer(answers))
+    }
+
+    /// Answers the last [`SessionEvent::AgentForwarding`] question.
+    pub fn decide_agent_forwarding(
+        &self,
+        id: SessionId,
+        decision: AgentForwardingDecision,
+    ) -> Result<(), SessionError> {
+        self.send(id, Command::AgentForwarding(decision))
     }
 
     /// Decides the last [`SessionEvent::HostKey`] question.
@@ -1506,12 +1640,17 @@ enum Command {
     Answer(Vec<String>),
     /// The decision on a host key.
     HostKey(HostKeyDecision),
+    /// The answer about forwarding the agent.
+    AgentForwarding(AgentForwardingDecision),
     /// A break on a serial line.
     Break,
     /// Another shell on this session's SSH connection, for a second
     /// channel; transports without channels drop the reply.
     OpenChannel {
         size: TerminalSize,
+        /// Whether to ask the device to forward the agent on it, if the
+        /// connection forwards it.
+        forward_agent: bool,
         reply: tokio::sync::oneshot::Sender<Result<ssh::OpenedChannel, OpenError>>,
     },
     /// An XMODEM or YMODEM transfer, on a serial line; other transports
@@ -1596,6 +1735,7 @@ impl Link {
                 }
                 // Not connected: a second channel cannot open yet.
                 Command::Write(_)
+                | Command::AgentForwarding(_)
                 | Command::Break
                 | Command::OpenChannel { .. }
                 | Command::Transfer { .. }
@@ -1721,6 +1861,34 @@ impl Link {
     /// Reports an event that is neither output nor a state change.
     fn report(&mut self, event: SessionEvent) {
         let _ = self.events.send(event);
+    }
+
+    /// Asks whether to forward the agent and waits for the answer, before
+    /// anything is sent to the device. Input typed meanwhile is dropped;
+    /// resizes are remembered. `None`: the session was closed.
+    async fn ask_agent_forwarding(
+        &mut self,
+        question: AgentForwardingQuestion,
+    ) -> Option<AgentForwardingDecision> {
+        // Answers sent before this question was asked were not about it.
+        while let Ok(command) = self.commands.try_recv() {
+            match command {
+                Command::Close => return None,
+                Command::Resize(size) => self.size = size,
+                _ => {}
+            }
+        }
+        self.events
+            .send(SessionEvent::AgentForwarding(question))
+            .ok()?;
+        loop {
+            match self.command().await {
+                Command::AgentForwarding(decision) => return Some(decision),
+                Command::Close => return None,
+                Command::Resize(size) => self.size = size,
+                _ => {}
+            }
+        }
     }
 
     fn algorithms(&mut self, algorithms: Vec<NegotiatedAlgorithms>) {

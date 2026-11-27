@@ -2471,6 +2471,11 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
                 Some(SessionEvent::HostKey(question)) => {
                     panic!("expected a state change, got the host-key question {question:?}")
                 }
+                Some(SessionEvent::AgentForwarding(question)) => {
+                    panic!(
+                        "expected a state change, got the agent forwarding question {question:?}"
+                    )
+                }
                 // Announced just before `Connected`; tests about it read it
                 // with `next_algorithms`.
                 Some(SessionEvent::Algorithms(_)) => {}

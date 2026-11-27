@@ -2135,8 +2135,11 @@ impl<'a> Conversation<'a> {
                 }
                 SessionEvent::Algorithms(algorithms) => session.algorithms = algorithms,
                 SessionEvent::Backup(_) => unreachable!("next_event keeps backups"),
-                // The lab opens no forwards.
-                SessionEvent::Forwards(_) | SessionEvent::Transfer(_) => {}
+                // The lab opens no forwards, and its sessions ask no
+                // agent forwarding (they are not opened from a workspace).
+                SessionEvent::Forwards(_)
+                | SessionEvent::Transfer(_)
+                | SessionEvent::AgentForwarding(_) => {}
                 SessionEvent::Output(bytes) => session.received.extend_from_slice(&bytes),
                 SessionEvent::LogFailed(failure) => {
                     return Err(Failure::Other(format!("log failed: {failure}")))

@@ -108,6 +108,7 @@ impl Reported {
             SessionEvent::Output(_)
             | SessionEvent::Prompt(_)
             | SessionEvent::HostKey(_)
+            | SessionEvent::AgentForwarding(_)
             | SessionEvent::Forwards(_)
             | SessionEvent::Transfer(_) => {}
         }

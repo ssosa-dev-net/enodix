@@ -83,7 +83,8 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   (`Channel::agent_forward(false)`) after the pty request, for the first
   shell and a duplicate; `run_channel` (exec) never asks. Jobs open
   shells too, so `job/run.rs` clears `agent_forwarding` on every target it
-  opens; a file connection (`connect_device` with `followed`) gets no
+  opens (and answers a question it would never get with
+  `WithoutForwarding`); a file connection (`connect_device` with `followed`) gets no
   `Hop.forward_agent`. The client
   handler's `server_channel_open_agent_forward` is refused unless
   `Client.forward_agent` is set (the target's own agent if its login is
@@ -91,15 +92,57 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   connection has one, which then asks in `shell_on`); each channel the device
   opens is joined to a fresh connection from `agent::connect_stream`
   (`copy_bidirectional`), so a non-running agent fails only that channel.
-  `SessionManager::agent_forwarded(id)`; the shell's `Opened` /
-  `Attached` carry `agentForwarded` and the header shows **Agent
-  forwarded** (`[data-agent-forwarded]`, danger colour). Tests:
+  The setting only asks (`session/agent_approval.rs`): a session opened
+  with `open_host` (it has a `HostOrigin`) whose target asks settles it in
+  `SessionManager::start`'s task before `ssh::run`, so nothing reaches the
+  device first (the connect timeout has not started). `Gate::settle`:
+  `AgentApprovals::approved(key)` → forward; else the tab's `TabAnswer`
+  (`Entry.agent_answer`) for the same key; else
+  `SessionEvent::AgentForwarding(AgentForwardingQuestion { name, host,
+  port })`, answered with `SessionManager::decide_agent_forwarding(id,
+  AgentForwardingDecision::WithoutForwarding | ForwardThisSession |
+  AlwaysForward)`; closing meanwhile = `ClosedLocally`, never forwarded.
+  Every answer is kept as the tab's (reconnects and `reconnect_host` of
+  the same entry reuse it; `duplicate` copies it); `AlwaysForward` also
+  writes `AgentForwardingKey { workspace, host, address, port }`
+  (`workspace` = `HostOrigin`'s workspace id, else `path:<root>`) to
+  `<data folder>/agent_forwarding.json` (`AgentApprovals::in_data_folder`,
+  read on every check; unreadable = not approved; a failed write still
+  forwards this time). A changed address or port, another host id (a
+  moved host too) or another workspace id asks again. A session opened by
+  its target alone (`open`, `open_with`) forwards as the target says:
+  quick connections set it off, jobs clear it. The manager's store is in
+  memory unless `SessionManager::with_agent_approvals` (on a new manager)
+  is given one; the shell gives it the data folder's.
+  Second channels: `Command::OpenChannel { forward_agent }` and
+  `Entry.channel_agent`: `open_channel` (the back up on login's channel)
+  asks none, a `duplicate` of a channel does; `pump` sends
+  `auth-agent-req` on a second shell only if both the channel asks and the
+  connection forwards. `SessionManager::agent_forwarded(id)` is the live
+  value (`Entry.agent_live`, false until settled; a channel: its
+  session's, if it asks). The shell's `StateMessage::Connected {
+  agentForwarded }` carries it (from the manager when delivered; patched
+  in `session_attach`), and the header shows **Agent forwarded**
+  (`[data-agent-forwarded]`, danger colour) only while connected and
+  forwarding. The question arrives on the `onAgentForwarding` channel of
+  `session_open` / `session_reconnect` / `session_duplicate` /
+  `session_attach`; `TerminalSession` shows `AgentForwardingCheck.svelte`
+  over the pane (`[data-agent-question]`, the address in
+  `[data-agent-question-where]`, buttons
+  `[data-decision=withoutForwarding|forwardThisSession|alwaysForward]`;
+  "without" has focus, Escape answers it) and sends
+  `session_decide_agent_forwarding`. A question open when the tab moves
+  to another window is not shown there (as for host keys). Not covered by
+  the smoke test yet. Tests:
   `tests/agent_forwarding.rs` (the scripted shell's `agent` command opens
   `channel_open_agent` and prints `agent keys: N`, or
   `agent: not forwarded`; `agent unasked` opens one anyway, which is
   refused; `TestSshServer::agent_requests()` counts the forwards asked for,
-  to check jump hosts and jobs get none); the inheritance test is in
-  `settings.rs`.
+  to check jump hosts and jobs get none; the question, its three answers,
+  "always" across a new manager over the same data folder and asking
+  again for a changed port or another host, a job on an approved host, and
+  the back up on login channel asking for no agent); the inheritance test
+  is in `settings.rs`.
 - Login flow (`ssh.rs` `authenticate`): `none` first to learn the
   methods; then the target's method (a key file with its certificate
   beside it, `<key file>-cert.pub` read by `certificate_beside` and kept

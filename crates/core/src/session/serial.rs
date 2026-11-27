@@ -450,6 +450,7 @@ pub(super) async fn run(
                 Command::Resize(_)
                 | Command::Answer(_)
                 | Command::HostKey(_)
+                | Command::AgentForwarding(_)
                 | Command::OpenChannel { .. } => {}
                 Command::Close => break CloseReason::ClosedLocally,
             },
