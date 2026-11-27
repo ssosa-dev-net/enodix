@@ -54,6 +54,15 @@ can move to a window of its own on a second monitor, still connected.
 
 <img alt="Connecting to a router from the Hosts view" src="docs/images/connect.gif" width="800">
 
+### Your terminal, your way
+
+A local shell in a tab beside your devices, colour schemes, your own key
+bindings, and keys that send a snippet. Per host or folder: terminal type,
+character encoding, automatic reconnect and SSH port forwards.
+[Sessions guide](docs/guide/sessions.md)
+
+<img alt="Preferences with a colour scheme and key bindings, beside a local shell" src="docs/images/preferences.png" width="800">
+
 ### Snippets with variables
 
 Save the commands you type every day. Variables like `{{interface}}` are

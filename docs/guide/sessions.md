@@ -198,6 +198,8 @@ one the session had. A quick connection reconnects as it was made.
   `bright-cyan`) follow the scheme and your own colours; rules with a
   `#rrggbb` colour keep it.
 
+![Preferences with the Nord colour scheme and the key bindings open, beside a local shell](../images/preferences.png)
+
 ## Paste safety
 
 A paste of more than one line waits for you. A card over that terminal shows
@@ -312,6 +314,8 @@ Linux your login shell (`$SHELL`) and the others `/etc/shells` lists. The
 **Local shell** preference picks the one a new tab opens; the quick connect
 form can pick another for one tab. It has the same search, copy and paste,
 font and scrollback as any session, and follows the pane's size.
+
+![The quick connect form on its Local shell choice](../images/local-shell.png)
 
 - **Where it starts.** In the open workspace's folder, else in your home
   folder.

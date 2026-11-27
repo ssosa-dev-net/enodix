@@ -68,6 +68,8 @@ before the next one starts, a change that should stop at the first
 `% Invalid input`. A snippet with **steps** does that, on the session in
 front of you, over SSH, telnet or a serial console alike.
 
+![The Snippets view, with a snippet marked Steps](../images/snippet-steps.png)
+
 Steps are written in `_snippets.yaml` (the editor shows them but does not
 edit them):
 

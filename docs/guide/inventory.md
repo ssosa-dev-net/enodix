@@ -189,6 +189,8 @@ The rules are short:
 
 On a host's or folder's details, each setting shows its effective value and where it came from: **default**, **set on this host**, **from Europe/Madrid** or **from the workspace root**. Inherited values are shown as a chip. Click **Override** to give the host its own value, and the small clear button next to a value to go back to the inherited one. Tags and web links show their origin in the same way.
 
+![A host's connection settings in its editor: reconnect inherited from its folder, and its port forwards](../images/host-settings.png)
+
 To edit the settings of a whole folder, select it and use its details, or click the **Workspace settings** button at the top of the Hosts view for the top folder (the workspace root).
 
 ## Other files at the workspace root
@@ -387,6 +389,8 @@ As with CSV, you see a preview first, and existing hosts are replaced only if yo
 ### From an SSH config file
 
 **Import from SSH config…** reads an OpenSSH client config, `~/.ssh/config` by default, so the hosts you reach with `ssh name` become hosts of the workspace.
+
+![The preview of an SSH config import: three new hosts, two of them behind a jump host, and the User line left out](../images/ssh-config-import.png)
 
 - Each name on a `Host` line becomes a host, unless it has a wildcard (`*`, `?`) or a `!`. Its values are worked out as `ssh` does: the lines before the first `Host`, then every `Host` block that matches the name, in order, with the first value of each keyword winning.
 - `HostName` becomes the address (the name itself when there is none, as for `ssh`; `%h` in it stands for the name). `Port` becomes the port.

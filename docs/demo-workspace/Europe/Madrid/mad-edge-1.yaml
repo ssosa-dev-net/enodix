@@ -5,3 +5,6 @@ vendor: FRRouting
 role: edge_router
 environment: production
 tags: [edge]
+forwards:
+  gui: L 8443:10.20.0.1:443 # the firewall web interface behind it
+  proxy: D 1080 # a SOCKS5 proxy into the Madrid DC
