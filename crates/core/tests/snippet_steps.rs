@@ -950,3 +950,101 @@ async fn a_run_starts_only_as_its_safety_allows() {
     }
     assert!(shown.text().contains("echo allowed"), "{:?}", shown.text());
 }
+
+/// What the shell does with one line of input: the core decides who gets
+/// it, then it is written.
+fn input_line(
+    runs: &StepRuns,
+    manager: &SessionManager,
+    id: SessionId,
+    line: &str,
+    origin: InputOrigin,
+    paste: Option<u64>,
+) {
+    let targets = runs.user_input_of(vec![id], origin, paste);
+    manager.write_to_each(&targets, format!("{line}\r").as_bytes());
+}
+
+#[tokio::test]
+async fn a_paste_that_stops_the_run_is_refused_whole() {
+    let (_server, manager, id, shown) = device(false).await;
+    let runs = StepRuns::new();
+    let mut events = start(
+        &runs,
+        &manager,
+        id,
+        plan(Steps::new(vec![
+            Step::send("drip 1 2000"),
+            Step::send("echo never sent"),
+        ])),
+    );
+    events.recv().await;
+    for line in ["echo paste-one", "echo paste-two", "echo paste-three"] {
+        input_line(&runs, &manager, id, line, InputOrigin::Pasted, Some(7));
+    }
+    let (_, end) = ended(&mut events).await;
+    let message = end.message();
+    assert_eq!(
+        end,
+        RunEnd::CalledOff {
+            step: 0,
+            line: Some("drip 1 2000".into()),
+            by: CalledOff::Paste,
+        }
+    );
+    assert!(message.contains("none of that paste was sent"), "{message}");
+    // Typing after the stop goes through, and so does a later paste.
+    input_line(
+        &runs,
+        &manager,
+        id,
+        "echo typed-ok",
+        InputOrigin::Typed,
+        None,
+    );
+    for line in ["echo second-one", "echo second-two"] {
+        input_line(&runs, &manager, id, line, InputOrigin::Pasted, Some(8));
+    }
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let text = shown.text();
+    for sent in ["typed-ok", "second-one", "second-two"] {
+        assert!(text.contains(sent), "{sent} missing: {text:?}");
+    }
+    for refused in ["paste-one", "paste-two", "paste-three", "never sent"] {
+        assert!(!text.contains(refused), "{refused} was sent: {text:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_group_paste_line_is_refused_on_the_member_with_a_run_only() {
+    let (_server, manager, id, shown) = device(false).await;
+    let runs = StepRuns::new();
+    let mut events = start(
+        &runs,
+        &manager,
+        id,
+        plan(Steps::new(vec![Step::send("drip 1 2000")])),
+    );
+    events.recv().await;
+    let other = SessionId(id.0 + 1000);
+    for _ in 0..3 {
+        assert_eq!(
+            runs.user_input_of(vec![id, other], InputOrigin::GroupPaste, Some(3)),
+            [other]
+        );
+    }
+    let (_, end) = ended(&mut events).await;
+    assert!(matches!(
+        end,
+        RunEnd::CalledOff {
+            by: CalledOff::Paste,
+            ..
+        }
+    ));
+    // The next paste is sent whole to both.
+    assert_eq!(
+        runs.user_input_of(vec![id, other], InputOrigin::GroupPaste, Some(4)),
+        [id, other]
+    );
+    assert!(!shown.text().contains("never"));
+}

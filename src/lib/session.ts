@@ -179,6 +179,10 @@ export interface HostKeyQuestion {
 
 export type HostKeyDecision = "trustAndRemember" | "trustOnce" | "cancel";
 
+/** A new id for one paste: every line of it carries the id, so the core can
+ * refuse the rest of a paste whose first line stopped a snippet's steps. */
+export const newPasteId = (): number => Math.floor(Math.random() * 2 ** 47) + 1;
+
 /** Where input came from, as the shell routes it (`InputOrigin` in the
  * core): a terminal's origins (`terminalInput`), and a group paste's line. */
 export type SessionInputOrigin = InputOrigin | "group-paste";
@@ -198,7 +202,7 @@ export interface Session {
    * and only while its tab is a member; anything else to this session
    * only.
    */
-  input(data: Uint8Array, origin: SessionInputOrigin): void;
+  input(data: Uint8Array, origin: SessionInputOrigin, paste?: number): void;
   /** Input for this session alone (the terminal's replies, mouse reports). */
   write(data: Uint8Array): void;
   /** Sends a break on the line (serial sessions only). */
@@ -546,8 +550,12 @@ export async function openSession(
     async reattach() {
       current = (await attach(id, handlers)).current;
     },
-    input: (data, origin) =>
-      send(id, "session_input", { data: Array.from(data), origin }),
+    input: (data, origin, paste) =>
+      send(id, "session_input", {
+        data: Array.from(data),
+        origin,
+        paste: paste ?? null,
+      }),
     write: (data) => send(id, "session_write", { data: Array.from(data) }),
     sendBreak: () => send(id, "session_break", {}),
     answer: (answers) => send(id, "session_answer", { answers }),
