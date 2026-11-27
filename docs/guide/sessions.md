@@ -80,13 +80,15 @@ wildcards, `!` to leave one out; a host on another port than 22 is matched as
 connects without the card when the certificate:
 
 - is a host certificate signed by that authority,
-- is valid now, and
+- is valid now,
+- carries no critical options (OpenSSH refuses a host certificate that has
+  one), and
 - names the host, as you wrote it in the workspace, among its principals.
 
 A certificate that fails one of these is not accepted. The app then asks
 about the key inside it, as on a first connection, and the card says why the
 certificate was not taken. Jobs count a host an authority speaks for as
-trusted. Python scripts do not use authorities yet: they get only the
+trusted, unless the authority is revoked (see below). Python scripts do not use authorities yet: they get only the
 remembered keys, so trust such a host's key once if a script needs it.
 
 ### Revoked keys
@@ -99,6 +101,14 @@ To refuse a key for good, add a `@revoked` line for it, as for OpenSSH:
 
 A host whose key, host certificate key, or certificate authority is revoked
 for it is refused with no card, even if the key was trusted before.
+Scripts and jobs follow the same rule: a revoked key is never given to a
+script as a key to accept, and a job or tunnel for a host whose only key is
+revoked says that the key is revoked, not that it is untrusted. A revoked
+authority does not vouch for a host in a job's check either.
+
+The `known_hosts` file may start with a byte-order mark (some editors add
+one); it is ignored, so the first line counts like any other. The app drops
+the mark the next time it saves the file.
 
 ## Logins
 

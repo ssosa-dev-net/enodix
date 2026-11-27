@@ -1177,3 +1177,52 @@ async fn a_reader_on_an_extra_port_that_lets_too_much_wait_loses_its_connection(
     .await;
     assert!(banner(stalled.other_port).await.starts_with("SSH-2.0-"));
 }
+
+/// A device key that was trusted and is revoked since is not handed to the
+/// script as a key to accept: the tunnel is refused, saying it is revoked.
+#[tokio::test]
+async fn a_device_key_revoked_after_it_was_trusted_is_refused_as_revoked() {
+    let bastion = TestSshServer::start().await;
+    let router = TestSshServer::start_device("r1").await;
+    let (_temp, ws) = workspace(&[
+        ("_folder.yaml", "credential_profile: lab\n".into()),
+        ("bastion.yaml", host(bastion.port(), "")),
+        ("r1.yaml", host(router.port(), "jump_host: bastion.yaml\n")),
+    ]);
+    let store = store(&ws);
+    let data = TempDir::new().unwrap();
+    let known_hosts = KnownHosts::in_data_folder(data.path());
+    known_hosts
+        .remember("127.0.0.1", bastion.port(), bastion.host_key())
+        .unwrap();
+    known_hosts
+        .remember("127.0.0.1", router.port(), router.host_key())
+        .unwrap();
+    let file = data.path().join(enodix_core::known_hosts::FILE_NAME);
+    let mut text = fs::read_to_string(&file).unwrap();
+    text.push_str(&format!(
+        "@revoked * {}\n",
+        router.host_key().to_openssh().unwrap()
+    ));
+    fs::write(&file, text).unwrap();
+    assert!(known_hosts
+        .trusted("127.0.0.1", router.port())
+        .unwrap()
+        .is_empty());
+
+    let (tunnels, _) = open(
+        &ws,
+        &store,
+        known_hosts,
+        &["r1.yaml"],
+        TunnelOptions::default(),
+    )
+    .await;
+
+    let reason = refusal(&tunnels, "r1.yaml");
+    assert!(reason.contains("is revoked"), "{reason}");
+    assert!(
+        !reason.contains("connect to it once in the app and trust"),
+        "{reason}"
+    );
+}
