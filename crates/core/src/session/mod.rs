@@ -47,8 +47,8 @@ pub use algorithms::{
 pub use auto_reconnect::{AutoReconnect, AutoReconnects, Retry, AUTO_RECONNECT_DELAYS};
 pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward, SOCKS_HANDSHAKE_TIMEOUT};
 pub use local::{
-    local_environment, local_shells, local_start_folder, pick_local_shell, LocalShell, LocalTarget,
-    CLI_VARIABLE, WORKSPACE_VARIABLE,
+    local_environment, local_shell_for, local_shells, local_start_folder, pick_local_shell,
+    LocalShell, LocalTarget, CLI_VARIABLE, WORKSPACE_VARIABLE,
 };
 pub use modem::{
     ModemProtocol, TransferAction, TransferDirection, TransferError, TransferRequest,
@@ -67,7 +67,10 @@ pub use serial::{
     SystemSerialPorts, BREAK_DURATION, SERIAL_POLL,
 };
 pub(crate) use ssh::JumpConnections;
-pub use system_ssh::{system_ssh_target, SystemSshHost, SYSTEM_SSH_PROGRAM, SYSTEM_SSH_WARNING};
+pub use system_ssh::{
+    ask_client_algorithms, filter_known_algorithms, legacy_options, system_ssh_target,
+    ClientAlgorithms, SystemSshHost, SYSTEM_SSH_PROGRAM, SYSTEM_SSH_WARNING,
+};
 
 /// Identifies one session within its [`SessionManager`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
