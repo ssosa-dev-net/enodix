@@ -2586,10 +2586,12 @@ impl Consumer for Channels {
                 let auto = self.app.state::<AutoReconnects>();
                 let mut message = StateMessage::from(state.clone());
                 match (&state, &mut message) {
-                    (SessionState::Connected, _) => auto.connected(self.session),
+                    (SessionState::Connected, _) => {
+                        auto.connected(self.session, std::time::Instant::now());
+                    }
                     (SessionState::Closed(reason), StateMessage::Closed { retry, gave_up, .. }) => {
                         *retry = auto
-                            .after_close(self.session, reason)
+                            .after_close(self.session, reason, std::time::Instant::now())
                             .map(|next| RetryMessage {
                                 seconds: next.after.as_secs(),
                                 attempt: next.attempt,

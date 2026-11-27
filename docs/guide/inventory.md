@@ -108,7 +108,7 @@ These keys can be written in a host file or in a `_folder.yaml`, and the nearest
 | `connect_timeout` | Seconds to wait for the device, 1 to 3600 | 15 |
 | `logging` | `true` or `false`: save a text log of each session on this computer | `true` |
 | `encoding` | How the device's bytes stand for characters: `utf-8`, `iso-8859-1`, `windows-1252` or `cp437`. The terminal and the session log always show UTF-8 | `utf-8` |
-| `auto_reconnect` | `true` or `false`: a session that drops tries again by itself, waiting longer each time (2 s up to 60 s, 8 tries); any key stops it. It never repeats a refused login and never answers a host-key question | `false` |
+| `auto_reconnect` | `true` or `false`: a session that drops tries again by itself, waiting longer each time (2 s up to 60 s, 8 tries); any key stops it. It never repeats a refused login or one the device hung up on, and never answers a host-key question. The count starts again once a session has stayed connected for a minute | `false` |
 | `log_timestamps` | `true` or `false`: write the local time before each line of the session log | `false` |
 | `backup_on_login` | `true` or `false`: save the configuration to the config history when an SSH session connects | `false` |
 | `environment` | `production`, `staging` or `lab` | none |
