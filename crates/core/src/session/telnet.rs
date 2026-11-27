@@ -182,7 +182,11 @@ pub(super) async fn run(
                 // After the input written before it, as on a serial line.
                 Command::Break => send(vec![IAC, BRK]),
                 // Nothing asks for these over telnet.
-                Command::Answer(_) | Command::HostKey(_) | Command::OpenChannel { .. } => {}
+                Command::Answer(_)
+                | Command::HostKey(_)
+                | Command::OpenChannel { .. }
+                | Command::Transfer { .. }
+                | Command::CancelTransfer => {}
                 Command::Close => break CloseReason::ClosedLocally,
             },
             // Output is read only while the consumer is less than a window

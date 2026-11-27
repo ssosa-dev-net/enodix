@@ -22,6 +22,19 @@
   import NegotiationFailure from "./NegotiationFailure.svelte";
   import PasteConfirm from "./PasteConfirm.svelte";
   import StepsConfirm from "./StepsConfirm.svelte";
+  import ModemTransfer from "./ModemTransfer.svelte";
+  import {
+    cancelTransfer,
+    followTransfers,
+    protocolName,
+    startTransfer,
+    transferEnded,
+    baseName,
+    type ModemProtocol,
+    type TransferAction,
+    type TransferStatus,
+  } from "./modem";
+  import { sizeText } from "./files";
   import { startSteps, stepsPreview, stopSteps } from "./steps";
   import { ENVIRONMENT_NAMES, planPaste } from "./paste";
   import {
@@ -192,6 +205,7 @@
       return "Not while a question about the session is open";
     // Its events come to this window only.
     if (stepsRun) return "Not while a snippet's steps run on it";
+    if (transferRunning) return "Not while a file transfer runs on it";
     if (windowQuestion) return windowQuestion;
     if (pastes > 0) return "Not while a paste is still being sent";
     return null;
@@ -361,6 +375,100 @@
     xterm?.focus();
     return null;
   }
+
+  /** The XMODEM or YMODEM form asked for from the menu (#47), if open. */
+  let transferAsk = $state<"send" | "receive" | null>(null);
+  /** The serial transfer running on the session, or the last one, until
+   * dismissed. */
+  let transfer = $state<TransferStatus | null>(null);
+  const transferRunning = $derived(
+    transfer !== null && !transferEnded(transfer),
+  );
+
+  // Its progress comes to every window: this one keeps this session's.
+  $effect(() => {
+    const id = session?.id;
+    if (id === undefined) return;
+    let gone = false;
+    let unlisten: (() => void) | null = null;
+    void followTransfers(id, (status) => (transfer = status)).then((stop) => {
+      if (gone) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      gone = true;
+      unlisten?.();
+    };
+  });
+
+  async function beginTransfer(
+    protocol: ModemProtocol,
+    action: TransferAction,
+  ): Promise<string | null> {
+    const id = session?.id;
+    if (id === undefined || status.state !== "connected")
+      return "The session is no longer connected.";
+    try {
+      await startTransfer(id, protocol, action);
+    } catch (reason) {
+      return String(reason);
+    }
+    transferAsk = null;
+    xterm?.focus();
+    return null;
+  }
+
+  function stopTransfer() {
+    const id = session?.id;
+    if (id !== undefined) void cancelTransfer(id).catch(() => {});
+    xterm?.focus();
+  }
+
+  /** What the progress bar says of the transfer. */
+  function transferText(status: TransferStatus): string {
+    const verb = status.direction === "send" ? "Sending" : "Receiving";
+    const how = protocolName(status.protocol);
+    const file = status.file ?? (status.filesDone > 0 ? "the next file" : "");
+    switch (status.state.kind) {
+      case "waiting":
+        return status.direction === "send"
+          ? `${how}: waiting for the device to ask for ${file || "the file"}`
+          : `${how}: waiting for the device to start sending`;
+      case "running": {
+        const of =
+          status.fileSize === null ? "" : ` of ${sizeText(status.fileSize)}`;
+        const count =
+          status.filesTotal !== null && status.filesTotal > 1
+            ? ` (file ${Math.min(status.filesDone + 1, status.filesTotal)} of ${status.filesTotal})`
+            : "";
+        return `${verb} ${file}${count} with ${how}: ${sizeText(status.fileBytes)}${of}`;
+      }
+      case "done": {
+        const files =
+          status.filesDone === 1 ? "1 file" : `${status.filesDone} files`;
+        // The folder once, then each file's name.
+        const first = status.saved[0];
+        const folder = first?.slice(0, first.length - baseName(first).length);
+        const where = first
+          ? `: ${status.saved.map(baseName).join(", ")} in ${folder}`
+          : "";
+        return `${how} ${status.direction === "send" ? "sent" : "received"} ${files} (${sizeText(status.bytes)})${where}`;
+      }
+      case "cancelled":
+        return status.state.byDevice
+          ? `${how}: the device cancelled the transfer`
+          : `${how}: transfer cancelled`;
+      case "failed":
+        return `${how}: ${status.state.reason}`;
+    }
+  }
+
+  /** How far the current file is, from 0 to 1; null: not known. */
+  const transferShare = $derived(
+    transfer && transfer.fileSize
+      ? Math.min(1, transfer.fileBytes / transfer.fileSize)
+      : null,
+  );
 
   function stopRun() {
     const id = session?.id;
@@ -779,6 +887,33 @@
           back();
         },
       });
+    }
+    // XMODEM and YMODEM, on the console port only (#47).
+    if (session?.transport === "serial" && status.state === "connected") {
+      if (transferRunning) {
+        list.push({
+          id: "cancel-transfer",
+          label: "Cancel the file transfer",
+          attributes: { "data-transfer-cancel-menu": "" },
+          run: () => {
+            stopTransfer();
+            back();
+          },
+        });
+      } else {
+        for (const direction of ["send", "receive"] as const) {
+          list.push({
+            id: `${direction}-file`,
+            label: direction === "send" ? "Send file…" : "Receive file…",
+            title: "With XMODEM or YMODEM, over the console line",
+            attributes: { [`data-${direction}-file`]: "" },
+            run: () => {
+              transferAsk = direction;
+              back();
+            },
+          });
+        }
+      }
     }
     return list;
   }
@@ -1586,6 +1721,39 @@
         </button>
       </div>
     {/if}
+    {#if transfer}
+      <div
+        class="transfer"
+        class:failed={transfer.state.kind === "failed" ||
+          transfer.state.kind === "cancelled"}
+        role="status"
+        data-transfer={transfer.state.kind}
+        data-transfer-direction={transfer.direction}
+        data-transfer-blocks={transfer.blocks}
+        data-transfer-retries={transfer.retries}
+      >
+        <span class="reason" data-transfer-text>{transferText(transfer)}</span>
+        {#if transferRunning}
+          <span class="hint"
+            >{transfer.blocks}
+            {transfer.blocks === 1 ? "block" : "blocks"}, {transfer.retries}
+            {transfer.retries === 1 ? "retry" : "retries"}; typing waits</span
+          >
+          {#if transferShare !== null}
+            <progress max="1" value={transferShare}></progress>
+          {/if}
+          <button data-transfer-cancel onclick={stopTransfer}>Cancel</button>
+        {:else}
+          <button
+            data-transfer-dismiss
+            onclick={() => {
+              transfer = null;
+              xterm?.focus();
+            }}>Dismiss</button
+          >
+        {/if}
+      </div>
+    {/if}
     {#if logFailure}
       <div class="log-failed" role="alert" data-log-failed>
         <span class="reason">{logFailure}.</span>
@@ -1679,6 +1847,17 @@
         lineDelayMs={pasteQuestion.lineDelayMs}
         onsend={() => answerPaste(true)}
         oncancel={() => answerPaste(false)}
+      />
+    {/if}
+    {#if transferAsk && status.state === "connected"}
+      <ModemTransfer
+        direction={transferAsk}
+        target={name}
+        onstart={beginTransfer}
+        oncancel={() => {
+          transferAsk = null;
+          xterm?.focus();
+        }}
       />
     {/if}
     {#if stepsQuestion}
@@ -2024,6 +2203,42 @@
 
   .steps-run.failed {
     border-top-color: var(--warning);
+  }
+
+  .transfer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-0-5) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    background: var(--surface);
+    border-top: 1px solid var(--accent);
+    font-size: var(--text-sm);
+  }
+
+  .transfer.failed {
+    border-top-color: var(--warning);
+  }
+
+  .transfer .reason {
+    flex: 1 1 14rem;
+    overflow-wrap: anywhere;
+  }
+
+  .transfer .hint {
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
+  .transfer progress {
+    flex: 0 1 8rem;
+    accent-color: var(--accent);
+  }
+
+  .transfer button {
+    min-height: var(--control-height-small);
+    padding: 0 var(--space-2);
+    font-size: var(--text-xs);
   }
 
   .steps-run .reason {

@@ -1049,7 +1049,8 @@ impl HostRunner {
                     SessionEvent::Algorithms(_)
                     | SessionEvent::LogFailed(_)
                     | SessionEvent::Backup(_)
-                    | SessionEvent::Forwards(_),
+                    | SessionEvent::Forwards(_)
+                    | SessionEvent::Transfer(_),
                 ) => {}
                 None => return Err(refused.unwrap_or_else(|| "the session went away".into())),
             }

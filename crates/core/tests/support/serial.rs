@@ -182,6 +182,12 @@ impl VirtualDevice {
         }
     }
 
+    /// The device's end of the line itself, for a device that speaks a
+    /// protocol over it (`support::modem`).
+    pub fn line(&self) -> io::Result<TcpStream> {
+        self.stream()
+    }
+
     /// Sends `bytes` to the session, as the device's console output.
     /// Blocks while the session does not read (its buffers are full).
     pub fn send(&self, bytes: &[u8]) -> io::Result<()> {
