@@ -154,6 +154,8 @@
     fontStack,
     isDark,
     loadPreferences,
+    loadReservedKeys,
+    reservedKeys,
     PANEL_WIDTHS,
     preferences,
     zoomFont,
@@ -179,7 +181,7 @@
     viewOf,
   } from "./lib/layout";
   import { askForKeys, givingKeys, keyMark, keysAsked } from "./lib/keys";
-  import { actionFor, chordOf } from "./lib/keyBindings";
+  import { bindingOf, typedLetter } from "./lib/keyBindings";
   import {
     expandSnippet,
     findHost,
@@ -1109,6 +1111,7 @@
   trackFilterView();
 
   void loadPreferences();
+  void loadReservedKeys();
   // Jobs are the shell's (#77): what already ran shows after a reload.
   void startLiveJobs();
   // A run docked back from its own window opens as a tab here.
@@ -1758,10 +1761,15 @@
    * chord; the rest have fixed keys. */
   function shortcut(event: KeyboardEvent): (() => void) | null {
     const tab = layout ? (activePane?.active ?? null) : null;
-    const chord = chordOf(event);
-    if (chord !== null) {
+    {
       const { shortcuts, snippetKeys } = preferences.current;
-      switch (actionFor(chord, shortcuts)) {
+      const bound = bindingOf(
+        event,
+        shortcuts,
+        snippetKeys,
+        reservedKeys.list.map((each) => each.chord),
+      );
+      switch (bound.action) {
         case "quick-open":
           return inventory.workspace ? () => (inventory.palette = true) : null;
         case "switch-tab":
@@ -1785,19 +1793,20 @@
           if (inventory.details) return closeDetails;
           return inventory.selected ? () => showDetails() : null;
       }
-      const snippet = snippetKeys[chord];
-      if (snippet !== undefined) {
+      const snippet = bound.snippet;
+      if (snippet !== null) {
         // A key with no session to send to is the terminal's own.
-        return tab !== null && sessions[tab] && states[tab] === "connected"
-          ? () => void sendSnippet(snippet, {}, tab)
-          : null;
+        if (tab === null || !sessions[tab] || states[tab] !== "connected")
+          return null;
+        // One press, one send: a held key sends nothing more (and does not
+        // reach the device either).
+        if (event.repeat) return () => {};
+        return () => void sendSnippet(snippet, {}, tab);
       }
     }
     if (!event.ctrlKey || event.altKey || event.metaKey) return null;
     // By position too, so that letters work on any keyboard layout.
-    const letter = (name: string) =>
-      event.code === `Key${name}` ||
-      event.key.toLowerCase() === name.toLowerCase();
+    const letter = (name: string) => typedLetter(event, name);
     if (
       event.key === "Tab" ||
       event.key === "PageDown" ||

@@ -3295,6 +3295,22 @@ fn preferences_get(preferred: State<'_, UserPreferences>) -> Preferences {
     preferred.lock().clone()
 }
 
+/// A key the app keeps for itself and what it does there (`RESERVED_KEYS`).
+#[derive(serde::Serialize)]
+struct ReservedKey {
+    chord: &'static str,
+    what: &'static str,
+}
+
+/// The keys no shortcut or snippet can be bound to, for the Preferences view.
+#[tauri::command]
+fn reserved_keys() -> Vec<ReservedKey> {
+    enodix_core::preferences::RESERVED_KEYS
+        .iter()
+        .map(|(chord, what)| ReservedKey { chord, what })
+        .collect()
+}
+
 #[tauri::command]
 fn preferences_save(
     app: AppHandle,
@@ -3981,6 +3997,7 @@ pub fn run() {
             layout_reset,
             layout_edit,
             preferences_get,
+            reserved_keys,
             preferences_save,
             preferences_zoom,
             paste_plan,

@@ -9,6 +9,7 @@
   import { terminalInput, type TerminalInput } from "./terminalInput";
   import { unserializedModes } from "./handover";
   import { giveKeys } from "./keys";
+  import { typedLetter } from "./keyBindings";
   import { highlighting, highlightTerminal } from "./highlight.svelte";
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
@@ -1165,9 +1166,9 @@
       if (event.altKey || event.metaKey) return null;
       const ctrl = event.ctrlKey;
       const shift = event.shiftKey;
-      const letter = (name: string) =>
-        event.code === `Key${name.toUpperCase()}` ||
-        event.key.toLowerCase() === name;
+      // The key that prints the letter on the user's layout, as the app's
+      // shortcuts match it, so a press is the app's or the terminal's.
+      const letter = (name: string) => typedLetter(event, name);
       if (ctrl && shift && letter("c")) return copySelection;
       // Ctrl+C copies only text that is selected; otherwise it interrupts.
       if (ctrl && !shift && letter("c") && terminal.hasSelection()) {
