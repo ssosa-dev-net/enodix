@@ -4,11 +4,12 @@
 //! The interface only runs the countdown the core hands it and calls
 //! `reconnect`. Everything that decides lives here: which closes may be
 //! retried ([`CloseReason::allows_auto_reconnect`]), the waits, the count,
-//! the reset once connected and the stop when the user presses a key.
+//! the reset once a session has stayed connected and the stop when the user
+//! presses a key. The time is passed in, so a test needs no clock.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{CloseReason, SessionId};
 
@@ -24,6 +25,12 @@ pub const AUTO_RECONNECT_DELAYS: [Duration; 8] = [
     Duration::from_secs(60),
     Duration::from_secs(60),
 ];
+
+/// How long a session must stay connected before its close counts as new
+/// trouble, starting the count again. A session that drops sooner (a peer
+/// that accepts and then resets, a device that hangs up right after the
+/// login) keeps counting, so its tries run out.
+pub const AUTO_RECONNECT_STABLE: Duration = Duration::from_secs(60);
 
 /// The next try: wait `after`, then reconnect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +48,8 @@ pub struct AutoReconnect {
     tries: usize,
     stopped: bool,
     gave_up: bool,
+    /// When the session last connected, until it closes.
+    connected_at: Option<Instant>,
 }
 
 impl AutoReconnect {
@@ -48,10 +57,17 @@ impl AutoReconnect {
         Self::default()
     }
 
-    /// The session closed for `reason`: the next try, or `None` when it
-    /// must not try again by itself (the reason does not allow it, the user
-    /// stopped it, or the tries ran out; see [`Self::gave_up`]).
-    pub fn after_close(&mut self, reason: &CloseReason) -> Option<Retry> {
+    /// The session closed for `reason` at `now`: the next try, or `None`
+    /// when it must not try again by itself (the reason does not allow it,
+    /// the user stopped it, or the tries ran out; see [`Self::gave_up`]).
+    /// If it had stayed connected for [`AUTO_RECONNECT_STABLE`], the count
+    /// starts again first.
+    pub fn after_close(&mut self, reason: &CloseReason, now: Instant) -> Option<Retry> {
+        if let Some(since) = self.connected_at.take() {
+            if now.saturating_duration_since(since) >= AUTO_RECONNECT_STABLE {
+                self.tries = 0;
+            }
+        }
         if self.stopped || !reason.allows_auto_reconnect() {
             return None;
         }
@@ -67,12 +83,16 @@ impl AutoReconnect {
         })
     }
 
-    /// The session connected: the count starts again, and a stop is over.
-    pub fn connected(&mut self) {
-        *self = Self::default();
+    /// The session connected at `now`: a stop is over. The count goes on
+    /// until it has stayed connected for [`AUTO_RECONNECT_STABLE`] (see
+    /// [`Self::after_close`]).
+    pub fn connected(&mut self, now: Instant) {
+        self.stopped = false;
+        self.gave_up = false;
+        self.connected_at = Some(now);
     }
 
-    /// The user reconnects by hand: as [`Self::connected`].
+    /// The user reconnects by hand: the count starts again.
     pub fn restart(&mut self) {
         *self = Self::default();
     }
@@ -119,11 +139,16 @@ impl AutoReconnects {
     }
 
     /// [`AutoReconnect::after_close`]; `None` too while not enabled.
-    pub fn after_close(&self, session: SessionId, reason: &CloseReason) -> Option<Retry> {
+    pub fn after_close(
+        &self,
+        session: SessionId,
+        reason: &CloseReason,
+        now: Instant,
+    ) -> Option<Retry> {
         self.with(session, |entry| {
             entry
                 .enabled
-                .then(|| entry.state.after_close(reason))
+                .then(|| entry.state.after_close(reason, now))
                 .flatten()
         })
     }
@@ -133,8 +158,8 @@ impl AutoReconnects {
         self.with(session, |entry| entry.enabled && entry.state.gave_up())
     }
 
-    pub fn connected(&self, session: SessionId) {
-        self.with(session, |entry| entry.state.connected());
+    pub fn connected(&self, session: SessionId, now: Instant) {
+        self.with(session, |entry| entry.state.connected(now));
     }
 
     pub fn restart(&self, session: SessionId) {

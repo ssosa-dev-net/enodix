@@ -17,7 +17,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -142,7 +142,7 @@ impl LocalShell {
 /// user's login shell (`$SHELL`) and the others `/etc/shells` lists.
 pub fn local_shells() -> Vec<LocalShell> {
     if cfg!(windows) {
-        windows_shells()
+        windows_shells(true)
     } else {
         unix_shells(
             std::env::var("SHELL").ok().as_deref(),
@@ -150,6 +150,39 @@ pub fn local_shells() -> Vec<LocalShell> {
             Path::exists,
         )
     }
+}
+
+/// The shell the preference `chosen` names, for opening a session. Unlike
+/// [`local_shells`] it never asks WSL what is installed: a `wsl:` id is
+/// taken as it is (an unknown distribution then shows `wsl.exe`'s own
+/// message in the tab), and any other id is looked up among the shells that
+/// need no listing. An unset or unknown id gives the first shell.
+pub fn local_shell_for(chosen: Option<&str>) -> Option<LocalShell> {
+    let chosen = chosen.map(str::trim).filter(|id| !id.is_empty());
+    if cfg!(windows) {
+        if let Some(distribution) = chosen.and_then(wsl_id) {
+            return Some(wsl_shell(distribution));
+        }
+        let shells = windows_shells(false);
+        return pick_local_shell(&shells, chosen).cloned();
+    }
+    let shells = local_shells();
+    pick_local_shell(&shells, chosen).cloned()
+}
+
+/// The distribution named by a `wsl:Name` id.
+fn wsl_id(id: &str) -> Option<&str> {
+    let (prefix, name) = id.split_at_checked(4)?;
+    (prefix.eq_ignore_ascii_case("wsl:") && !name.is_empty()).then_some(name)
+}
+
+fn wsl_shell(distribution: &str) -> LocalShell {
+    LocalShell::new(
+        &format!("wsl:{distribution}"),
+        &format!("{distribution} (WSL)"),
+        "wsl.exe",
+        &["-d", distribution],
+    )
 }
 
 /// The shell the preference `chosen` (an id, `None` or empty for none)
@@ -219,7 +252,7 @@ fn shell_name(path: &str, login: bool) -> String {
     }
 }
 
-fn windows_shells() -> Vec<LocalShell> {
+fn windows_shells(with_wsl: bool) -> Vec<LocalShell> {
     let mut shells = Vec::new();
     if on_path("pwsh.exe") {
         shells.push(LocalShell::new(
@@ -243,13 +276,10 @@ fn windows_shells() -> Vec<LocalShell> {
         ));
     }
     shells.push(LocalShell::new("cmd", "Command Prompt", "cmd.exe", &[]));
-    for distribution in wsl_distributions() {
-        shells.push(LocalShell::new(
-            &format!("wsl:{distribution}"),
-            &format!("{distribution} (WSL)"),
-            "wsl.exe",
-            &["-d", &distribution],
-        ));
+    if with_wsl {
+        for distribution in wsl_distributions() {
+            shells.push(wsl_shell(&distribution));
+        }
     }
     shells
 }
@@ -261,19 +291,77 @@ fn on_path(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The installed WSL distributions (`wsl.exe -l -q`, which writes UTF-16).
-/// None if WSL is not installed or answers badly.
+/// How long the list of WSL distributions is remembered, so that several
+/// calls in quick succession start `wsl.exe` once.
+const WSL_CACHE: Duration = Duration::from_secs(10);
+
+/// How long `wsl.exe -l -q` may take before it is given up on.
+const WSL_TIMEOUT: Duration = Duration::from_secs(5);
+
+static WSL_LISTED: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
+
+/// The installed WSL distributions, remembered for [`WSL_CACHE`]. Empty if
+/// WSL is not installed or answers badly.
 fn wsl_distributions() -> Vec<String> {
+    let mut listed = WSL_LISTED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((when, names)) = listed.as_ref() {
+        if when.elapsed() < WSL_CACHE {
+            return names.clone();
+        }
+    }
+    let names = list_wsl_distributions();
+    *listed = Some((Instant::now(), names.clone()));
+    names
+}
+
+/// `wsl.exe -l -q`, which writes UTF-16. Without WSL installed `wsl.exe` is
+/// a stub that prints a hint (and fails, or lists nothing a name could be
+/// read from); a command that hangs is killed after [`WSL_TIMEOUT`].
+fn list_wsl_distributions() -> Vec<String> {
+    use std::process::Stdio;
+
     let mut command = std::process::Command::new("wsl.exe");
-    command.args(["-l", "-q"]);
+    command
+        .args(["-l", "-q"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         // No console window flashing up.
         command.creation_flags(0x0800_0000);
     }
-    match command.output() {
-        Ok(output) if output.status.success() => parse_wsl_list(&output.stdout),
+    let Ok(mut child) = command.spawn() else {
+        return Vec::new();
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        return Vec::new();
+    };
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        bytes
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < WSL_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let bytes = reader.join().unwrap_or_default();
+    match status {
+        Some(status) if status.success() => parse_wsl_list(&bytes),
         _ => Vec::new(),
     }
 }
@@ -294,7 +382,8 @@ fn parse_wsl_list(output: &[u8]) -> Vec<String> {
     };
     text.lines()
         .map(|line| line.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}' || c == '\0'))
-        .filter(|name| !name.is_empty())
+        // The stub's hint is sentences; a distribution has no space in its name.
+        .filter(|name| !name.is_empty() && !name.contains(char::is_whitespace))
         .map(String::from)
         .collect()
 }
@@ -647,5 +736,33 @@ mod tests {
         assert_eq!(parse_wsl_list(&utf16), ["Ubuntu", "Debian"]);
         assert_eq!(parse_wsl_list(b"Ubuntu\nDebian\n"), ["Ubuntu", "Debian"]);
         assert!(parse_wsl_list(b"").is_empty());
+    }
+
+    #[test]
+    fn the_hint_of_the_wsl_stub_is_no_distribution() {
+        let hint = "Windows Subsystem for Linux has no installed distributions.
+Use 'wsl.exe --install' to install.
+";
+        assert!(parse_wsl_list(hint.as_bytes()).is_empty());
+    }
+
+    #[test]
+    fn a_wsl_id_names_its_distribution() {
+        assert_eq!(wsl_id("wsl:Ubuntu"), Some("Ubuntu"));
+        assert_eq!(wsl_id("WSL:Debian"), Some("Debian"));
+        assert_eq!(wsl_id("wsl:"), None);
+        assert_eq!(wsl_id("cmd"), None);
+        assert_eq!(wsl_id("é"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn opening_a_shell_never_asks_wsl() {
+        *WSL_LISTED.lock().unwrap() = None;
+        let wsl = local_shell_for(Some("wsl:Ubuntu")).unwrap();
+        assert_eq!(wsl.target(None, Vec::new()).args, ["-d", "Ubuntu"]);
+        assert_eq!(local_shell_for(Some("cmd")).unwrap().id, "cmd");
+        assert!(local_shell_for(None).is_some());
+        assert!(WSL_LISTED.lock().unwrap().is_none());
     }
 }

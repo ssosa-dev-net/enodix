@@ -6,6 +6,7 @@
 mod support;
 
 use std::fs;
+use std::time::Duration;
 
 use enodix_core::credentials::{
     CredentialProfile, CredentialStore, MemoryStore, ProfileAuth, ProfileError, Profiles,
@@ -16,7 +17,7 @@ use enodix_core::session::{
     SessionState, SessionTarget, SshAuth, SshTarget, TelnetTarget, TerminalSize,
 };
 use enodix_core::workspace::{HostId, JumpChainError, Workspace};
-use support::telnet::{TestTelnetServer, USERNAME_PROMPT};
+use support::telnet::{TestTelnetServer, PASSWORD_PROMPT, TELNET_PROMPT, USERNAME_PROMPT};
 use support::{
     closed_port, next_host_key_question, next_prompt, next_state, output_ending_with,
     TestSshServer, CODE_NAME, CODE_QUESTION, ONE_TIME_CODE, OTP_USERNAME, PASSWORD, PROMPT,
@@ -826,4 +827,58 @@ async fn a_telnet_jump_host_without_a_profile_asks_for_its_login() {
 
     assert_eq!(next_state(&mut events).await, SessionState::Connected);
     output_ending_with(&mut events, USERNAME_PROMPT).await;
+}
+
+/// A telnet session to the device behind the bastion, up to its username
+/// prompt.
+async fn telnet_through_bastion(
+    manager: &SessionManager,
+    bastion: &TestSshServer,
+    device: &TestTelnetServer,
+) -> (TempDir, enodix_core::session::SessionId, SessionEvents) {
+    let (temp, workspace) = telnet_behind_bastion(bastion.port(), device.port());
+    let store = store(&workspace, &[password_profile("bastion", PASSWORD)]);
+    let target = telnet_target(&store, &workspace, "Site/console.yaml");
+    let (id, mut events) = manager.open(SessionTarget::Telnet(target), SIZE);
+    assert_eq!(next_state(&mut events).await, SessionState::Connecting);
+    assert_eq!(next_state(&mut events).await, SessionState::Connected);
+    output_ending_with(&mut events, USERNAME_PROMPT).await;
+    (temp, id, events)
+}
+
+#[tokio::test]
+async fn a_telnet_session_whose_jump_host_goes_away_closes_as_a_lost_connection() {
+    let bastion = TestSshServer::start().await;
+    let device = TestTelnetServer::start().await;
+    let manager = support::manager();
+    let (_temp, _id, mut events) = telnet_through_bastion(&manager, &bastion, &device).await;
+
+    // The bastion's connection goes, the device's own is still up.
+    bastion.sever_connections();
+
+    let (_, reason) = support::output_until_closed(&mut events, Duration::from_secs(10)).await;
+    assert_eq!(reason, CloseReason::ConnectionLost);
+    // So it may reconnect by itself.
+    assert!(reason.allows_auto_reconnect());
+}
+
+#[tokio::test]
+async fn a_telnet_device_behind_a_jump_host_closing_the_connection_ends_the_session() {
+    let bastion = TestSshServer::start().await;
+    let device = TestTelnetServer::start().await;
+    let manager = support::manager();
+    let (_temp, id, mut events) = telnet_through_bastion(&manager, &bastion, &device).await;
+    manager
+        .write(id, format!("{USERNAME}\r").into_bytes())
+        .unwrap();
+    output_ending_with(&mut events, PASSWORD_PROMPT).await;
+    manager
+        .write(id, format!("{PASSWORD}\r").into_bytes())
+        .unwrap();
+    output_ending_with(&mut events, TELNET_PROMPT).await;
+
+    manager.write(id, b"exit\r".to_vec()).unwrap();
+
+    let (_, reason) = support::output_until_closed(&mut events, Duration::from_secs(10)).await;
+    assert_eq!(reason, CloseReason::RemoteExited { exit_status: None });
 }

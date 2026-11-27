@@ -259,20 +259,35 @@ fn host_key_warning(
     refuses: &str,
 ) -> Option<HostKeyWarning> {
     let mut untrusted = Vec::new();
+    let mut revoked_places = Vec::new();
     for place in places {
         // An authority of the known hosts may vouch for it with a host
-        // certificate instead (#26): the run then needs no stored key.
+        // certificate instead (#26): the run then needs no stored key. A
+        // revoked key or authority counts for nothing.
         let trusted = known_hosts
             .trusted(&place.host, place.port)
             .and_then(|keys| {
                 if keys.is_empty() {
-                    known_hosts.certificate_authorities(&place.host, place.port)
+                    known_hosts.vouching_authorities(&place.host, place.port)
                 } else {
                     Ok(keys)
                 }
             });
         match trusted {
-            Ok(keys) if keys.is_empty() => untrusted.push(place),
+            Ok(keys) if keys.is_empty() => {
+                match known_hosts.revoked_remembered(&place.host, place.port) {
+                    Ok(revoked) if !revoked.is_empty() => revoked_places.push(place),
+                    Ok(_) => untrusted.push(place),
+                    Err(error) => {
+                        return Some(HostKeyWarning {
+                            keys: Vec::new(),
+                            message: format!(
+                                "its host key cannot be checked ({error}), so {refuses}"
+                            ),
+                        })
+                    }
+                }
+            }
             Ok(_) => {}
             Err(error) => {
                 return Some(HostKeyWarning {
@@ -283,8 +298,27 @@ fn host_key_warning(
         }
     }
     let described: Vec<String> = untrusted.iter().map(|place| place.described()).collect();
+    let revoked: Vec<String> = revoked_places
+        .iter()
+        .map(|place| place.described())
+        .collect();
+    let revoked_message = match revoked.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "the host key of {one} is revoked in the known hosts, so {refuses}"
+        )),
+        [first @ .., last] => Some(format!(
+            "the host keys of {} and of {last} are revoked in the known hosts, so {refuses}",
+            first.join(", of ")
+        )),
+    };
     let message = match described.as_slice() {
-        [] => return None,
+        [] => {
+            return Some(HostKeyWarning {
+                keys: Vec::new(),
+                message: revoked_message?,
+            })
+        }
         [one] => format!(
             "the host key of {one} is not trusted yet, so {refuses}: connecting to it once in a terminal (Trust and remember) trusts the key"
         ),
@@ -292,6 +326,10 @@ fn host_key_warning(
             "the host keys of {} and of {last} are not trusted yet, so {refuses}: connecting to it once in a terminal (Trust and remember) trusts them",
             first.join(", of ")
         ),
+    };
+    let message = match revoked_message {
+        Some(revoked) => format!("{revoked}; also, {message}"),
+        None => message,
     };
     Some(HostKeyWarning {
         keys: untrusted

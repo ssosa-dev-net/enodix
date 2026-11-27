@@ -4,6 +4,7 @@
     FONT_SIZES,
     MAX_SCROLLBACK,
     preferences,
+    reservedKeys,
     isDark,
     SUGGESTED_FONTS,
     terminalTheme,
@@ -72,6 +73,22 @@
     event.preventDefault();
     event.stopPropagation();
     return chordOf(event);
+  }
+
+  /** Why a chord cannot be used: what the app does with it, or null. */
+  function reservedReason(chord: string): string | null {
+    const found = reservedKeys.list.find((each) => each.chord === chord);
+    return found ? `${chord} is kept by the app: it ${found.what}.` : null;
+  }
+
+  /** The refusal of the last key pressed, shown beside the fields. */
+  let refused = $state<string | null>(null);
+
+  /** A key to record: null (nothing changes, the reason shown) when the app
+   * keeps it. */
+  function allowed(chord: string | null): string | null {
+    refused = chord === null ? null : reservedReason(chord);
+    return refused === null ? chord : null;
   }
 
   /** What a chord is bound to now, for a warning on a clash. */
@@ -196,8 +213,14 @@
         <p class="hint">
           Click a field and press the keys. Ctrl or Alt is needed (a function
           key stands alone). A key bound to a snippet is no longer sent to the
-          device.
+          device. Keys the app keeps (copy and paste, search, the tab and font
+          size keys, the side views) cannot be used. Where the key that prints a
+          letter and the key at its place name different actions, the printed
+          letter wins.
         </p>
+        {#if refused}
+          <p class="clash" role="status" data-key-refused>{refused}</p>
+        {/if}
         <div class="bindings">
           {#each SHORTCUT_ACTIONS as action (action.id)}
             {@const chord = chordFor(action.id, current.shortcuts)}
@@ -210,7 +233,7 @@
                 readonly
                 value={chord}
                 onkeydown={(event) => {
-                  const next = captureChord(event);
+                  const next = allowed(captureChord(event));
                   if (next !== null) moveShortcut(action.id, next);
                 }}
               />
@@ -250,7 +273,7 @@
             placeholder="Press keys"
             value={newChord}
             onkeydown={(event) => {
-              const next = captureChord(event);
+              const next = allowed(captureChord(event));
               if (next !== null) newChord = next;
             }}
           />

@@ -2,16 +2,34 @@
 //! the others, which closed sessions may try again by themselves, and the
 //! waits, count, reset and stop (`AutoReconnect`). The interface only runs
 //! the countdown the core hands it.
+//!
+//! The time is passed in, so the count is driven without sleeping; the
+//! sessions against the in-process servers reconnect at once, skipping
+//! each wait, as the shell would after it.
+
+mod support;
 
 use std::fs;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use enodix_core::session::{
-    AutoReconnect, AutoReconnects, CloseReason, ConnectStage, OpenError, SessionId,
-    AUTO_RECONNECT_DELAYS,
+    AutoReconnect, AutoReconnects, CloseReason, ConnectStage, JumpHost, OpenError, SessionEvent,
+    SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshAuth, SshTarget,
+    TerminalSize, AUTO_RECONNECT_DELAYS, AUTO_RECONNECT_STABLE,
 };
 use enodix_core::workspace::{Effective, HostId, Origin, Workspace};
+use support::proxy::LinkProxy;
+use support::{HangUpServer, Misbehaviour, Stage, TestSshServer, PASSWORD, USERNAME};
 use tempfile::TempDir;
+
+const SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
+
+/// Long enough for any of these sessions to open or fail.
+const WAIT: Duration = Duration::from_secs(20);
+
+fn now() -> Instant {
+    Instant::now()
+}
 
 fn workspace() -> (TempDir, Workspace) {
     let temp = TempDir::new().unwrap();
@@ -179,7 +197,9 @@ fn each_close_gets_the_next_wait_and_the_count() {
     let mut reconnect = AutoReconnect::new();
 
     for (index, delay) in AUTO_RECONNECT_DELAYS.iter().enumerate() {
-        let retry = reconnect.after_close(&CloseReason::ConnectionLost).unwrap();
+        let retry = reconnect
+            .after_close(&CloseReason::ConnectionLost, now())
+            .unwrap();
         assert_eq!(retry.after, *delay);
         assert_eq!(retry.attempt, index + 1);
         assert_eq!(retry.of, AUTO_RECONNECT_DELAYS.len());
@@ -191,42 +211,103 @@ fn it_gives_up_after_the_last_wait() {
     let mut reconnect = AutoReconnect::new();
     for _ in AUTO_RECONNECT_DELAYS {
         assert!(reconnect
-            .after_close(&CloseReason::ConnectionLost)
+            .after_close(&CloseReason::ConnectionLost, now())
             .is_some());
     }
     assert!(!reconnect.gave_up());
 
-    assert_eq!(reconnect.after_close(&CloseReason::ConnectionLost), None);
+    assert_eq!(
+        reconnect.after_close(&CloseReason::ConnectionLost, now()),
+        None
+    );
     assert!(reconnect.gave_up());
 }
 
 #[test]
-fn connecting_starts_the_count_again() {
+fn staying_connected_starts_the_count_again() {
+    let start = now();
     let mut reconnect = AutoReconnect::new();
     for _ in 0..3 {
-        reconnect.after_close(&CloseReason::ConnectionLost);
+        reconnect.after_close(&CloseReason::ConnectionLost, start);
     }
 
-    reconnect.connected();
+    reconnect.connected(start);
 
-    let retry = reconnect.after_close(&CloseReason::ConnectionLost).unwrap();
+    let retry = reconnect
+        .after_close(&CloseReason::ConnectionLost, start + AUTO_RECONNECT_STABLE)
+        .unwrap();
     assert_eq!((retry.after, retry.attempt), (AUTO_RECONNECT_DELAYS[0], 1));
+}
+
+#[test]
+fn a_session_that_connects_and_drops_at_once_keeps_counting_and_gives_up() {
+    // A peer that accepts and then resets, a device that hangs up right
+    // after the login: each try connects, then drops a second later.
+    let mut at = now();
+    let mut reconnect = AutoReconnect::new();
+    let mut attempts = Vec::new();
+    loop {
+        reconnect.connected(at);
+        at += Duration::from_secs(1);
+        let Some(retry) = reconnect.after_close(&CloseReason::ConnectionLost, at) else {
+            break;
+        };
+        attempts.push(retry.attempt);
+        at += retry.after;
+    }
+
+    let all: Vec<usize> = (1..=AUTO_RECONNECT_DELAYS.len()).collect();
+    assert_eq!(attempts, all);
+    assert!(reconnect.gave_up());
+}
+
+#[test]
+fn a_session_that_drops_just_short_of_staying_connected_keeps_counting() {
+    let start = now();
+    let mut reconnect = AutoReconnect::new();
+    reconnect.after_close(&CloseReason::ConnectionLost, start);
+
+    reconnect.connected(start);
+    let short = start + AUTO_RECONNECT_STABLE - Duration::from_millis(1);
+    let retry = reconnect
+        .after_close(&CloseReason::ConnectionLost, short)
+        .unwrap();
+
+    assert_eq!(retry.attempt, 2);
+}
+
+#[test]
+fn reconnecting_by_hand_starts_the_count_again() {
+    let mut reconnect = AutoReconnect::new();
+    for _ in 0..3 {
+        reconnect.after_close(&CloseReason::ConnectionLost, now());
+    }
+
+    reconnect.restart();
+
+    let retry = reconnect
+        .after_close(&CloseReason::ConnectionLost, now())
+        .unwrap();
+    assert_eq!(retry.attempt, 1);
 }
 
 #[test]
 fn a_key_stops_it_until_the_session_connects_again() {
     let mut reconnect = AutoReconnect::new();
     assert!(reconnect
-        .after_close(&CloseReason::ConnectionLost)
+        .after_close(&CloseReason::ConnectionLost, now())
         .is_some());
 
     reconnect.stop();
-    assert_eq!(reconnect.after_close(&CloseReason::ConnectionLost), None);
+    assert_eq!(
+        reconnect.after_close(&CloseReason::ConnectionLost, now()),
+        None
+    );
     assert!(!reconnect.gave_up());
 
-    reconnect.connected();
+    reconnect.connected(now());
     assert!(reconnect
-        .after_close(&CloseReason::ConnectionLost)
+        .after_close(&CloseReason::ConnectionLost, now())
         .is_some());
 }
 
@@ -238,7 +319,7 @@ fn reconnecting_by_hand_starts_it_afresh() {
     reconnect.restart();
 
     assert!(reconnect
-        .after_close(&CloseReason::ConnectionLost)
+        .after_close(&CloseReason::ConnectionLost, now())
         .is_some());
 }
 
@@ -247,12 +328,17 @@ fn a_reason_that_does_not_allow_it_gets_no_wait_and_costs_no_try() {
     let mut reconnect = AutoReconnect::new();
 
     assert_eq!(
-        reconnect.after_close(&failed(OpenError::AuthenticationFailed)),
+        reconnect.after_close(&failed(OpenError::AuthenticationFailed), now()),
         None
     );
-    assert_eq!(reconnect.after_close(&timed_out(ConnectStage::Login)), None);
+    assert_eq!(
+        reconnect.after_close(&timed_out(ConnectStage::Login), now()),
+        None
+    );
 
-    let retry = reconnect.after_close(&CloseReason::ConnectionLost).unwrap();
+    let retry = reconnect
+        .after_close(&CloseReason::ConnectionLost, now())
+        .unwrap();
     assert_eq!(retry.attempt, 1);
 }
 
@@ -262,12 +348,201 @@ fn sessions_count_on_their_own_and_only_when_enabled() {
     let (a, b) = (SessionId(1), SessionId(2));
     all.enable(a, true);
 
-    assert!(all.after_close(a, &CloseReason::ConnectionLost).is_some());
-    assert_eq!(all.after_close(b, &CloseReason::ConnectionLost), None);
+    assert!(all
+        .after_close(a, &CloseReason::ConnectionLost, now())
+        .is_some());
+    assert_eq!(
+        all.after_close(b, &CloseReason::ConnectionLost, now()),
+        None
+    );
     all.stop(a);
-    assert_eq!(all.after_close(a, &CloseReason::ConnectionLost), None);
-    all.connected(a);
-    assert!(all.after_close(a, &CloseReason::ConnectionLost).is_some());
+    assert_eq!(
+        all.after_close(a, &CloseReason::ConnectionLost, now()),
+        None
+    );
+    all.connected(a, now());
+    assert!(all
+        .after_close(a, &CloseReason::ConnectionLost, now())
+        .is_some());
     all.forget(a);
-    assert_eq!(all.after_close(a, &CloseReason::ConnectionLost), None);
+    assert_eq!(
+        all.after_close(a, &CloseReason::ConnectionLost, now()),
+        None
+    );
+}
+
+async fn wait_until(done: impl Fn() -> bool, what: &str) {
+    tokio::time::timeout(WAIT, async {
+        while !done() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what} within {WAIT:?}"));
+}
+
+/// Waits for the session to close, feeding its states to `auto` as the
+/// shell does.
+async fn closed(events: &mut SessionEvents, auto: &AutoReconnects, id: SessionId) -> CloseReason {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            match events.next().await {
+                Some(SessionEvent::Output(bytes)) => {
+                    events.acknowledge(bytes.len());
+                }
+                Some(SessionEvent::State(SessionState::Connected)) => {
+                    auto.connected(id, now());
+                }
+                Some(SessionEvent::State(SessionState::Closed(reason))) => {
+                    return reason;
+                }
+                Some(_) => {}
+                None => panic!("the session's events ended before it closed"),
+            }
+        }
+    })
+    .await
+    .expect("the session closes")
+}
+
+/// Runs a session as the shell does for a host with `auto_reconnect` on:
+/// opens it and, after each close the core gives a try for, reconnects at
+/// once (the wait skipped). Every close in order, and whether it gave up.
+async fn as_the_shell(manager: &SessionManager, target: SshTarget) -> (Vec<CloseReason>, bool) {
+    let auto = AutoReconnects::new();
+    let (id, mut events) = manager.open(SessionTarget::Ssh(target), SIZE);
+    auto.enable(id, true);
+    let mut closes = Vec::new();
+    loop {
+        let reason = closed(&mut events, &auto, id).await;
+        let retry = auto.after_close(id, &reason, now());
+        closes.push(reason);
+        if retry.is_none() {
+            return (closes, auto.gave_up(id));
+        }
+        events = manager.reconnect(id, SIZE).unwrap();
+    }
+}
+
+fn jump_host(port: u16) -> JumpHost {
+    JumpHost {
+        name: "bastion".into(),
+        host: "127.0.0.1".into(),
+        port,
+        username: USERNAME.into(),
+        auth: SshAuth::Password(PASSWORD.into()),
+        legacy_crypto: false,
+        connect_timeout: Duration::from_secs(5),
+    }
+}
+
+#[test]
+fn a_connection_that_ended_once_the_login_began_is_never_tried_again() {
+    let ended = OpenError::EndedDuringLogin("the device closed the connection".into());
+    assert!(!failed(ended.clone()).allows_auto_reconnect());
+    assert!(!failed(OpenError::JumpHost {
+        name: "jump".into(),
+        error: Box::new(ended),
+    })
+    .allows_auto_reconnect());
+}
+
+#[tokio::test]
+async fn a_device_that_closes_during_the_login_is_not_tried_again() {
+    let server = TestSshServer::start().await;
+    server
+        .quirks()
+        .misbehave_at(Stage::Login, Misbehaviour::Close);
+    let manager = support::manager();
+
+    let (closes, gave_up) = as_the_shell(&manager, server.target()).await;
+
+    let [CloseReason::Failed(error)] = closes.as_slice() else {
+        panic!("expected one failure, got {closes:?}");
+    };
+    assert!(matches!(error, OpenError::EndedDuringLogin(_)), "{error:?}");
+    // What the user reads is as before.
+    assert_eq!(
+        error.to_string(),
+        "could not connect: the device closed the connection during the login"
+    );
+    assert!(!gave_up);
+    // One login only reached the device.
+    assert_eq!(server.connections(), 1);
+}
+
+#[tokio::test]
+async fn a_jump_host_that_closes_during_its_login_is_not_tried_again() {
+    let bastion = TestSshServer::start().await;
+    bastion
+        .quirks()
+        .misbehave_at(Stage::Login, Misbehaviour::Close);
+    let device = TestSshServer::start().await;
+    let target = SshTarget {
+        jump_hosts: vec![jump_host(bastion.port())],
+        ..device.target()
+    };
+    let manager = support::manager();
+
+    let (closes, _) = as_the_shell(&manager, target).await;
+
+    let [CloseReason::Failed(OpenError::JumpHost { name, error })] = closes.as_slice() else {
+        panic!("expected one jump host failure, got {closes:?}");
+    };
+    assert_eq!(name, "bastion");
+    assert!(
+        matches!(error.as_ref(), OpenError::EndedDuringLogin(_)),
+        "{error:?}"
+    );
+    assert_eq!(bastion.connections(), 1);
+    assert_eq!(device.connections(), 0);
+}
+
+#[tokio::test]
+async fn a_jump_host_lost_while_the_device_logs_in_is_not_tried_again() {
+    let bastion = TestSshServer::start().await;
+    let link = LinkProxy::to_ssh(&bastion).await;
+    let device = TestSshServer::start().await;
+    device
+        .quirks()
+        .pause_at(Stage::Login, Duration::from_secs(30));
+    let target = SshTarget {
+        jump_hosts: vec![jump_host(link.port())],
+        ..device.target()
+    };
+    let manager = support::manager();
+
+    let cut = async {
+        // The device has been reached and is being logged in to.
+        wait_until(|| device.connections_alive() == 1, "the device's login").await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        link.cut();
+    };
+    let ((closes, _), ()) = tokio::join!(as_the_shell(&manager, target), cut);
+
+    let [CloseReason::Failed(error)] = closes.as_slice() else {
+        panic!("expected one failure, got {closes:?}");
+    };
+    eprintln!("the jump host lost during the device's login: {error}");
+    assert!(!closes[0].allows_auto_reconnect(), "{error:?}");
+    assert_eq!(device.connections(), 1);
+}
+
+#[tokio::test]
+async fn a_failure_before_the_login_is_tried_again_until_the_tries_run_out() {
+    // A device with all its lines in use hangs up before the login.
+    let device = HangUpServer::start().await;
+    let target = support::target_at("127.0.0.1", device.port());
+    let manager = support::manager();
+
+    let (closes, gave_up) = as_the_shell(&manager, target).await;
+
+    assert_eq!(closes.len(), AUTO_RECONNECT_DELAYS.len() + 1);
+    for reason in &closes {
+        assert!(
+            matches!(reason, CloseReason::Failed(OpenError::ClosedBeforeLogin)),
+            "{reason:?}"
+        );
+    }
+    assert!(gave_up);
 }

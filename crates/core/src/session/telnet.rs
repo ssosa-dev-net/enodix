@@ -198,7 +198,7 @@ pub(super) async fn run(
                 replies.room().await;
                 reader.read(&mut buffer).await
             } => match read {
-                Ok(0) => break CloseReason::RemoteExited { exit_status: None },
+                Ok(0) => break stream_ended(jumps.as_ref()).await,
                 Ok(count) => {
                     let Received { data, replies: answers, marks } = telnet.receive(&buffer[..count]);
                     silence.as_mut().reset(tokio::time::Instant::now() + interval);
@@ -255,6 +255,29 @@ async fn connect(
         .await?;
     let (reader, writer) = tokio::io::split(channel.into_stream());
     Ok((Box::new(reader), Box::new(writer), Some(jumps)))
+}
+
+/// How long the end of a forwarded channel waits for a jump connection to
+/// show that it ended: russh ends the channel's stream as its connection
+/// goes, a moment before the connection counts as closed.
+const JUMP_LOST_WAIT: Duration = Duration::from_millis(250);
+
+/// Why the session ends when the device's stream ended: the device closed
+/// it, unless a jump host's connection ended (the forwarded channel ends
+/// with it), which is a lost connection.
+async fn stream_ended(jumps: Option<&JumpConnections>) -> CloseReason {
+    let closed = CloseReason::RemoteExited { exit_status: None };
+    let Some(jumps) = jumps else {
+        return closed;
+    };
+    let deadline = tokio::time::Instant::now() + JUMP_LOST_WAIT;
+    while jumps.lost().is_none() {
+        if tokio::time::Instant::now() >= deadline {
+            return closed;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    CloseReason::ConnectionLost
 }
 
 /// The shortest wait between probes, whatever the connect timeout (a zero

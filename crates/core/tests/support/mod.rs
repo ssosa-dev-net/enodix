@@ -1310,6 +1310,18 @@ pub fn certificate(
     ca: &PrivateKey,
     valid: std::ops::Range<u64>,
 ) -> russh::keys::Certificate {
+    certificate_with_options(key, cert_type, principals, ca, valid, &[])
+}
+
+/// [`certificate`] carrying the critical `options` (name, value).
+pub fn certificate_with_options(
+    key: &PublicKey,
+    cert_type: russh::keys::ssh_key::certificate::CertType,
+    principals: &[&str],
+    ca: &PrivateKey,
+    valid: std::ops::Range<u64>,
+    options: &[(&str, &str)],
+) -> russh::keys::Certificate {
     use russh::keys::ssh_key::certificate::Builder;
     let mut builder = Builder::new_with_random_nonce(
         &mut rand::rng(),
@@ -1320,8 +1332,16 @@ pub fn certificate(
     .unwrap();
     builder.cert_type(cert_type).unwrap();
     builder.key_id("enodix test").unwrap();
+    // The builder takes no empty list: a certificate for no principal is
+    // the one it calls valid for all, which is how it reads on the wire.
+    if principals.is_empty() {
+        builder.all_principals_valid().unwrap();
+    }
     for principal in principals {
         builder.valid_principal(*principal).unwrap();
+    }
+    for (name, value) in options {
+        builder.critical_option(*name, *value).unwrap();
     }
     builder.sign(ca).unwrap()
 }

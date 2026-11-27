@@ -90,6 +90,11 @@ fn host_certificate_problem(
     if certificate.validate(fingerprints.iter()).is_err() {
         return Some("it is not valid now: expired, not valid yet, or badly signed".into());
     }
+    // OpenSSH refuses a host certificate with any critical option ("contains
+    // unsupported critical options"); `validate` leaves them to us.
+    if !certificate.critical_options().is_empty() {
+        return Some("it carries critical options, which a host certificate must not".into());
+    }
     if !certificate
         .valid_principals()
         .iter()
@@ -1298,7 +1303,10 @@ async fn blame_jump_hosts(
     jumps: &[Handle<Client>],
     error: OpenError,
 ) -> OpenError {
-    if let Some(lost) = lost_jump_host(jump_hosts, jumps) {
+    // A hop whose login had begun may have had its credentials counted: a
+    // jump host blamed for it is not tried again by itself either.
+    let login = from_login_on(&error);
+    if let Some(lost) = lost_jump_host(jump_hosts, jumps, login) {
         return lost;
     }
     if !matches!(error, OpenError::TimedOut { .. }) {
@@ -1308,33 +1316,66 @@ async fn blame_jump_hosts(
         // A ping to a hop crosses the ones before it, which answered.
         let answered = tokio::time::timeout(jump.connect_timeout, connection.send_ping()).await;
         if connection.is_closed() {
-            return lost_jump_host(jump_hosts, jumps).unwrap_or(error);
+            return lost_jump_host(jump_hosts, jumps, login).unwrap_or(error);
         }
         if answered.is_err() {
             return OpenError::JumpHost {
                 name: jump.name.clone(),
-                error: Box::new(OpenError::Connect(format!(
-                    "it stopped answering while the session was being opened (no answer \
-                     within {} s)",
-                    jump.connect_timeout.as_secs_f64()
-                ))),
+                error: Box::new(ended(
+                    login,
+                    format!(
+                        "it stopped answering while the session was being opened (no answer \
+                         within {} s)",
+                        jump.connect_timeout.as_secs_f64()
+                    ),
+                )),
             };
         }
     }
     error
 }
 
+/// Whether `error` came from the login stage on, when the hop's
+/// credentials may have been sent: a connection that ended then, or a
+/// wait that timed out at the login or after it.
+fn from_login_on(error: &OpenError) -> bool {
+    match error {
+        OpenError::EndedDuringLogin(_) => true,
+        OpenError::TimedOut { stage, .. } => !matches!(
+            stage,
+            ConnectStage::Tcp { .. } | ConnectStage::Identification | ConnectStage::KeyExchange
+        ),
+        _ => false,
+    }
+}
+
+/// A connection that ended for `reason`: from the login stage on if
+/// `login` (never tried again by itself), else before it.
+fn ended(login: bool, reason: String) -> OpenError {
+    if login {
+        OpenError::EndedDuringLogin(reason)
+    } else {
+        OpenError::Connect(reason)
+    }
+}
+
 /// When reaching the device failed because a jump host's connection ended
 /// on the way (the device's runs through it): that jump host's failure,
-/// the first in connect order whose connection has ended (#118).
-fn lost_jump_host(jump_hosts: &[JumpHost], jumps: &[Handle<Client>]) -> Option<OpenError> {
+/// the first in connect order whose connection has ended (#118); from the
+/// login stage on if `login` ([`from_login_on`]).
+fn lost_jump_host(
+    jump_hosts: &[JumpHost],
+    jumps: &[Handle<Client>],
+    login: bool,
+) -> Option<OpenError> {
     let (jump, _) = jump_hosts
         .iter()
         .zip(jumps)
         .find(|(_, connection)| connection.is_closed())?;
     Some(OpenError::JumpHost {
         name: jump.name.clone(),
-        error: Box::new(OpenError::Connect(
+        error: Box::new(ended(
+            login,
             "its connection ended while the session logged in to the device".into(),
         )),
     })
@@ -1779,7 +1820,7 @@ fn ended_during_login(ended: &EndedWhy) -> OpenError {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    OpenError::Connect(match ended {
+    OpenError::EndedDuringLogin(match ended {
         Some(Lost::Broken(reason)) => format!("the connection broke during the login ({reason})"),
         Some(Lost::NotAnswering) => "the device stopped answering during the login".into(),
         Some(Lost::Closed { message }) if !message.trim().is_empty() => format!(
