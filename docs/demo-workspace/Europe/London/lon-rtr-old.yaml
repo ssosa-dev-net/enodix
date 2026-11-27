@@ -8,3 +8,5 @@ environment: production
 tags: [legacy]
 legacy_crypto: true
 description: Due for replacement
+terminal_type: vt100
+encoding: iso-8859-1
