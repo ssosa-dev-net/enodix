@@ -529,7 +529,12 @@ start 60 s, reply 10 s, retries 10 } })` (async; opens the files, or
   XMODEM's trailing `0x1A` are stripped (the last block is held back),
   YMODEM files are cut to the header's size; names keep their last part
   only, with `<>:"|?*` and controls as `_` (`safe_name`), created with
-  `create_new` as `name (2).ext` and so on; a file cut short is removed.
+  `create_new` as `name (2).ext` and so on (Windows device names such as
+  `NUL.txt`, `COM3` get a `_` first); a file cut short is removed. An
+  XMODEM receive writes `.<name>.part` beside its target (`create_new`)
+  and renames it over the target in `ReceiveFile::finish`, so an existing
+  file survives a cancel or failure (review of #56); a YMODEM file shorter
+  than its header's size fails the transfer and is removed.
   Telnet, SSH and local transports ignore the commands. Shell:
   `session_transfer_start(id, request)`, `session_transfer_cancel(id)`;
   `Channels::deliver` emits `session-transfer` `{ id, status }` to every

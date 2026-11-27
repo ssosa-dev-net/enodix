@@ -771,8 +771,8 @@ impl Sender {
         match std::mem::replace(&mut self.phase, SendPhase::DataRequest) {
             SendPhase::HeaderRequest | SendPhase::DataRequest => {
                 transfer.fail(format!(
-                    "the device did not ask for the file within {} seconds; start its {} receive first",
-                    transfer.timeouts.start.as_secs(),
+                    "the device did not ask for the file within {}; start its {} receive first",
+                    seconds(transfer.timeouts.start),
                     transfer.protocol.name()
                 ));
             }
@@ -797,7 +797,12 @@ impl Sender {
 
 /// A file being received.
 struct ReceiveFile {
+    /// Where it ends up.
     path: PathBuf,
+    /// Where it is written meanwhile: `path` itself for a new YMODEM
+    /// file, a `.part` file beside it for XMODEM, so a file already at
+    /// `path` stays as it is unless the transfer completes.
+    writing: PathBuf,
     file: File,
     /// What the YMODEM header said, if anything.
     size: Option<u64>,
@@ -808,17 +813,48 @@ struct ReceiveFile {
 }
 
 impl ReceiveFile {
-    fn create(path: PathBuf, size: Option<u64>, replace: bool) -> io::Result<Self> {
-        let file = if replace {
-            File::create(&path)?
-        } else {
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)?
+    /// A new file at `path`; an error if there is one already.
+    fn create(path: PathBuf, size: Option<u64>) -> io::Result<Self> {
+        let file = create_new(&path)?;
+        Ok(Self {
+            writing: path.clone(),
+            path,
+            file,
+            size,
+            written: 0,
+            last: None,
+        })
+    }
+
+    /// A file that replaces `path` once complete, written beside it as
+    /// `.<name>.part` (or `.<name>.2.part` and so on, if taken) meanwhile.
+    fn replacing(path: PathBuf) -> io::Result<Self> {
+        let folder = path.parent().unwrap_or(Path::new("."));
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a file name"))?
+            .to_string_lossy()
+            .into_owned();
+        let mut count = 1u32;
+        let (writing, file) = loop {
+            let part = if count == 1 {
+                format!(".{name}.part")
+            } else {
+                format!(".{name}.{count}.part")
+            };
+            let writing = folder.join(part);
+            match create_new(&writing) {
+                Ok(file) => break (writing, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists && count < 1000 => {
+                    count += 1;
+                }
+                Err(error) => return Err(error),
+            }
         };
+        let size = None;
         Ok(Self {
             path,
+            writing,
             file,
             size,
             written: 0,
@@ -846,17 +882,54 @@ impl ReceiveFile {
         }
     }
 
-    /// The end of the file: the held block without its padding.
-    fn finish(mut self) -> io::Result<PathBuf> {
+    /// The end of the file: the held block without its padding, then the
+    /// file in its place. On an error nothing of it is left.
+    fn finish(mut self) -> Result<PathBuf, String> {
+        let done = self.complete();
+        drop(self.file);
+        match done {
+            Ok(()) => {
+                if self.writing != self.path {
+                    if let Err(error) = fs::rename(&self.writing, &self.path) {
+                        let _ = fs::remove_file(&self.writing);
+                        return Err(format!("cannot write {}: {error}", self.path.display()));
+                    }
+                }
+                Ok(self.path)
+            }
+            Err(reason) => {
+                let _ = fs::remove_file(&self.writing);
+                Err(reason)
+            }
+        }
+    }
+
+    fn complete(&mut self) -> Result<(), String> {
+        let failed = |error: io::Error| format!("cannot write {}: {error}", self.path.display());
+        if let Some(size) = self.size {
+            if self.written < size {
+                return Err(format!(
+                    "{} ended after {} of its {size} bytes",
+                    self.path.file_name().unwrap_or_default().to_string_lossy(),
+                    self.written
+                ));
+            }
+        }
         if let Some(mut last) = self.last.take() {
             while last.last() == Some(&SUB) {
                 last.pop();
             }
-            self.file.write_all(&last)?;
+            self.file.write_all(&last).map_err(failed)?;
         }
-        self.file.flush()?;
-        self.file.sync_all()?;
-        Ok(self.path)
+        self.file.flush().map_err(failed)?;
+        self.file.sync_all().map_err(failed)
+    }
+
+    /// Removes what was written of it.
+    fn discard(self) {
+        let writing = self.writing.clone();
+        drop(self);
+        let _ = fs::remove_file(writing);
     }
 }
 
@@ -902,10 +975,7 @@ impl Receiver {
             if to.is_dir() {
                 return Err(file_error(&to, "a folder, not a file"));
             }
-            Some(
-                ReceiveFile::create(to.clone(), None, true)
-                    .map_err(|error| file_error(&to, error))?,
-            )
+            Some(ReceiveFile::replacing(to.clone()).map_err(|error| file_error(&to, error))?)
         };
         Ok(Self {
             to,
@@ -1135,8 +1205,8 @@ impl Receiver {
                             transfer.status.files_done += 1;
                             transfer.changed = true;
                         }
-                        Err(error) => {
-                            transfer.fail(format!("cannot write the file: {error}"));
+                        Err(reason) => {
+                            transfer.fail(reason);
                             return;
                         }
                     }
@@ -1167,8 +1237,8 @@ impl Receiver {
                     "the device did not start sending"
                 };
                 transfer.fail(format!(
-                    "{what} within {} seconds; start its {} send first",
-                    transfer.timeouts.start.as_secs(),
+                    "{what} within {}; start its {} send first",
+                    seconds(transfer.timeouts.start),
                     transfer.protocol.name()
                 ));
             } else {
@@ -1197,9 +1267,7 @@ impl Receiver {
             .into_iter()
             .flatten()
         {
-            let path = file.path.clone();
-            drop(file);
-            let _ = fs::remove_file(path);
+            file.discard();
         }
     }
 }
@@ -1220,9 +1288,40 @@ fn safe_name(given: &str) -> String {
         .collect();
     let cleaned = cleaned.trim_end_matches(['.', ' ']).to_string();
     if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
-        "received".to_string()
+        return "received".to_string();
+    }
+    // Names Windows keeps for devices, with any extension: `NUL.txt` is
+    // the null device there.
+    let stem = cleaned.split('.').next().unwrap_or_default().trim_end();
+    let reserved = matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || matches!(
+        stem.as_bytes(),
+        [a, b, c, b'1'..=b'9']
+            if [a, b, c].map(u8::to_ascii_uppercase) == *b"COM"
+                || [a, b, c].map(u8::to_ascii_uppercase) == *b"LPT"
+    );
+    if reserved {
+        format!("_{cleaned}")
     } else {
         cleaned
+    }
+}
+
+fn create_new(path: &Path) -> io::Result<File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+/// A wait as the reasons say it: "60 seconds", "0.8 seconds".
+fn seconds(wait: Duration) -> String {
+    if wait.subsec_millis() == 0 {
+        format!("{} seconds", wait.as_secs())
+    } else {
+        format!("{:.1} seconds", wait.as_secs_f64())
     }
 }
 
@@ -1238,7 +1337,7 @@ fn free_file(folder: &Path, name: &str, size: Option<u64>) -> io::Result<Receive
         } else {
             format!("{stem} ({count}){extension}")
         };
-        match ReceiveFile::create(folder.join(candidate), size, false) {
+        match ReceiveFile::create(folder.join(candidate), size) {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists && count < 1000 => {}
             other => return other,
         }
@@ -1261,5 +1360,9 @@ mod tests {
         assert_eq!(safe_name("C:\\boot\\ios.bin"), "ios.bin");
         assert_eq!(safe_name(".."), "received");
         assert_eq!(safe_name("a:b?.txt"), "a_b_.txt");
+        assert_eq!(safe_name("NUL.txt"), "_NUL.txt");
+        assert_eq!(safe_name("com3"), "_com3");
+        assert_eq!(safe_name("COM10.bin"), "COM10.bin");
+        assert_eq!(safe_name("console.log"), "console.log");
     }
 }

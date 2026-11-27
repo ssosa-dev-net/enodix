@@ -369,7 +369,10 @@ and what you typed meanwhile goes out then.
   keeps only its last part), and never replace a file already there:
   `config.txt` becomes `config (2).txt`.
 - A file cut short by a cancel or a failure is removed; the files of a
-  YMODEM batch received in full before it stay.
+  YMODEM batch received in full before it stay. Receiving with XMODEM into a
+  file that exists replaces it only once the transfer completes (it is
+  written as `.<name>.part` beside it meanwhile). A YMODEM file that ends
+  before the size its header gave is not kept.
 - ZMODEM and Kermit are not supported, nor transfers over telnet or SSH (use
   the [Files tab](files.md) for SSH hosts).
 

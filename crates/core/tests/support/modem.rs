@@ -44,6 +44,9 @@ pub struct Faults {
     /// Sending, answers only a NAK request: an old sender that knows
     /// nothing of CRC.
     pub ignore_crc_requests: bool,
+    /// Sending YMODEM, gives each file's size as this many bytes more than
+    /// it sends: a file that arrives cut short.
+    pub overstate_size: usize,
 }
 
 /// How the device's side of a transfer ended.
@@ -437,7 +440,7 @@ impl ModemDevice {
                 return Ended::CancelledBySession;
             };
             self.crc = crc;
-            let field = data.len().to_string();
+            let field = (data.len() + self.faults.overstate_size).to_string();
             let mut header = name.as_bytes().to_vec();
             header.push(0);
             header.extend_from_slice(field.as_bytes());

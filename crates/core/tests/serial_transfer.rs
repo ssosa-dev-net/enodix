@@ -472,6 +472,114 @@ async fn cancelling_tells_the_device_and_gives_the_terminal_back_with_what_was_t
     terminal_is_back(&mut console).await;
 }
 
+/// The files in the test folder, sorted: nothing left over.
+fn files_in(console: &Console) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(console.folder.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn an_xmodem_receive_replaces_a_file_only_once_it_completes() {
+    let mut console = console().await;
+    let to = console.folder.path().join("startup-config");
+    fs::write(&to, b"the config of yesterday").unwrap();
+
+    // Cancelled: the file there stays as it was.
+    let device = ModemDevice::spawn(
+        &console.device,
+        Role::SendXmodem {
+            data: contents(200_000, 13),
+            large: true,
+        },
+        Faults::default(),
+    );
+    start(
+        &console,
+        ModemProtocol::Xmodem1k,
+        TransferAction::Receive(to.clone()),
+    )
+    .await;
+    tokio::time::timeout(WAIT, async {
+        loop {
+            match console.events.next().await {
+                Some(SessionEvent::Transfer(status)) if status.blocks >= 2 => return,
+                Some(SessionEvent::Transfer(_)) => {}
+                other => panic!("expected the transfer's progress, got {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("no blocks went through");
+    console.manager.cancel_transfer(console.id).unwrap();
+    let reported = until_ended(&mut console.events).await;
+    assert_eq!(
+        reported.last().state,
+        TransferState::Cancelled { by_device: false }
+    );
+    assert_eq!(device.await.unwrap().ended, Ended::CancelledBySession);
+    assert_eq!(fs::read(&to).unwrap(), b"the config of yesterday");
+    assert_eq!(files_in(&console), ["startup-config"]);
+
+    // Completed: it is replaced.
+    let data = contents(700, 14);
+    let device = ModemDevice::spawn(
+        &console.device,
+        Role::SendXmodem {
+            data: data.clone(),
+            large: false,
+        },
+        Faults::default(),
+    );
+    start(
+        &console,
+        ModemProtocol::XmodemCrc,
+        TransferAction::Receive(to.clone()),
+    )
+    .await;
+    let reported = until_ended(&mut console.events).await;
+    assert_eq!(reported.last().state, TransferState::Done);
+    assert_eq!(device.await.unwrap().ended, Ended::Done(Vec::new()));
+    assert_eq!(fs::read(&to).unwrap(), data);
+    assert_eq!(files_in(&console), ["startup-config"]);
+    terminal_is_back(&mut console).await;
+}
+
+#[tokio::test]
+async fn a_ymodem_file_shorter_than_its_size_is_not_kept() {
+    let mut console = console().await;
+    let device = ModemDevice::spawn(
+        &console.device,
+        Role::SendYmodem {
+            files: vec![("short.bin".into(), contents(300, 16))],
+        },
+        Faults {
+            overstate_size: 1000,
+            ..Faults::default()
+        },
+    );
+    start(
+        &console,
+        ModemProtocol::Ymodem,
+        TransferAction::Receive(console.folder.path().to_path_buf()),
+    )
+    .await;
+
+    let reported = until_ended(&mut console.events).await;
+    drop(device);
+    assert!(
+        matches!(&reported.last().state, TransferState::Failed { reason } if reason.contains("short.bin ended after 1024 of its 1300 bytes")),
+        "{:?}",
+        reported.last().state
+    );
+    assert!(reported.last().saved.is_empty());
+    assert!(files_in(&console).is_empty(), "{:?}", files_in(&console));
+    terminal_is_back(&mut console).await;
+}
+
 #[tokio::test]
 async fn a_device_that_cancels_ends_the_transfer() {
     let mut console = console().await;
