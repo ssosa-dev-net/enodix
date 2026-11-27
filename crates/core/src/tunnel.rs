@@ -206,6 +206,17 @@ fn request(
         .trusted(&target.host, target.port)
         .map_err(|error| error.to_string())?;
     if keys.is_empty() {
+        let revoked = known_hosts
+            .revoked_remembered(&target.host, target.port)
+            .map_err(|error| error.to_string())?;
+        if !revoked.is_empty() {
+            return Err(format!(
+                "its host key (at {} port {}) is revoked in the known hosts, so the script \
+                 could not trust it: the device has to present another key, which is then \
+                 trusted by connecting to it once in the app",
+                target.host, target.port
+            ));
+        }
         return Err(format!(
             "the app has not trusted its host key (at {} port {}) yet, so the script could not \
              check it: connect to it once in the app and trust and remember its key",

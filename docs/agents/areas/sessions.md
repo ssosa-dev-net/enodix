@@ -150,11 +150,12 @@ TrustOnce | Cancel)` (or closing). Cancel → `OpenError::HostKeyNotTrusted`
   `Preferred::host_key_certificates` (= the key list) and
   `Client.authorities`. `check_server_key` accepts a certificate when
   `host_certificate_problem` finds none (host type, signer among the
-  authorities, `validate` now, the target's host among the principals,
+authorities, `validate` now, no critical options (OpenSSH: "unsupported
+  critical options"), the target's host among the principals,
   ignoring case; an empty list names none); otherwise it asks about the
   certificate's key, with `HostKeyQuestion.certificate` = the reason
   (`[data-host-certificate]` in `HostKeyCheck.svelte`). Job pre-flight
-  (`job.rs` `host_key_warning`) counts a host with an authority as
+  (`job.rs` `host_key_warning`) counts a host with a non-revoked authority (`vouching_authorities`) as
   trusted; tunnels and the cli export only plain keys (known limit).
   Revoked keys: `KnownHosts::revoked(host, port)` reads `@revoked` lines
   the same way (`marked` in `known_hosts.rs`); `Client.revoked` is
@@ -162,8 +163,13 @@ TrustOnce | Cancel)` (or closing). Cancel → `OpenError::HostKeyNotTrusted`
   its signer that is revoked is `OpenError::KnownHosts("... revoked ...")`,
   no question. Marker-line patterns may be hashed (`|1|salt|hash`,
   HMAC-SHA1 of the lower-cased name: `matches_hashed`); plain entries under
-  hashed names are still ignored by `check`/`trusted`. Pre-flight does not
-  read `@revoked` (the run fails on that host instead). Tests: `tests/host_certificates.rs`
+  hashed names are still ignored by `check`/`trusted`. `KnownHosts::trusted`
+  never returns a key a matching `@revoked` line names (tunnel, cli export,
+  pre-flight all use it); `revoked_remembered` gives the remembered keys it
+  left out, so tunnel and pre-flight say "revoked" instead of "not trusted
+  yet" (the pre-flight warning has no `keys` for it: connecting cannot fix
+  it). `Store::load` strips a leading U+FEFF, so a marker on the first line
+  is read; a save writes the file without it. Tests: `tests/host_certificates.rs`
   (servers get `config.certificates` through `start_tuned`; `host_ca()`,
   `certificate()` in support), `preflight_host_keys.rs`. Known limit:
   writes are serialised per process only.

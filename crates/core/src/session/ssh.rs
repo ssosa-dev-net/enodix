@@ -90,6 +90,11 @@ fn host_certificate_problem(
     if certificate.validate(fingerprints.iter()).is_err() {
         return Some("it is not valid now: expired, not valid yet, or badly signed".into());
     }
+    // OpenSSH refuses a host certificate with any critical option ("contains
+    // unsupported critical options"); `validate` leaves them to us.
+    if !certificate.critical_options().is_empty() {
+        return Some("it carries critical options, which a host certificate must not".into());
+    }
     if !certificate
         .valid_principals()
         .iter()

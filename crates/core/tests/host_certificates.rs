@@ -17,8 +17,8 @@ use enodix_core::session::{
 use russh::keys::ssh_key::certificate::CertType;
 use russh::keys::{Algorithm, HashAlg, PrivateKey};
 use support::{
-    certificate, host_ca, next_host_key_question, next_state, output_ending_with, unix_now,
-    TestSshServer, PROMPT,
+    certificate_with_options, host_ca, next_host_key_question, next_state, output_ending_with,
+    unix_now, TestSshServer, PROMPT,
 };
 use tempfile::TempDir;
 
@@ -30,6 +30,8 @@ struct Signed {
     principals: &'static [&'static str],
     ca: &'static PrivateKey,
     valid: Range<u64>,
+    /// Critical options, (name, value).
+    critical: &'static [(&'static str, &'static str)],
 }
 
 impl Signed {
@@ -41,6 +43,7 @@ impl Signed {
             principals: &["127.0.0.1"],
             ca: host_ca(),
             valid: now - 60..now + 3600,
+            critical: &[],
         }
     }
 }
@@ -49,12 +52,13 @@ impl Signed {
 async fn server_with(signed: Signed) -> TestSshServer {
     TestSshServer::start_tuned(move |config| {
         let key = config.keys[0].public_key().clone();
-        config.certificates.push(certificate(
+        config.certificates.push(certificate_with_options(
             &key,
             signed.cert_type,
             signed.principals,
             signed.ca,
             signed.valid,
+            signed.critical,
         ));
     })
     .await
@@ -168,6 +172,116 @@ async fn a_certificate_for_another_host_is_not_accepted() {
         question.certificate.as_deref(),
         Some("it is not for 127.0.0.1")
     );
+}
+
+#[tokio::test]
+async fn a_certificate_not_valid_yet_is_not_accepted() {
+    let now = unix_now();
+    let server = server_with(Signed {
+        valid: now + 3600..now + 7200,
+        ..Signed::good()
+    })
+    .await;
+    let (_data, manager) = manager_with(&authority_line("*", host_ca()));
+
+    let mut events = open(&manager, &server).await;
+
+    let question = next_host_key_question(&mut events).await;
+    assert_eq!(
+        question.certificate.as_deref(),
+        Some("it is not valid now: expired, not valid yet, or badly signed")
+    );
+}
+
+#[tokio::test]
+async fn a_certificate_with_no_principals_is_not_accepted() {
+    let server = server_with(Signed {
+        principals: &[],
+        ..Signed::good()
+    })
+    .await;
+    let (_data, manager) = manager_with(&authority_line("*", host_ca()));
+
+    let mut events = open(&manager, &server).await;
+
+    let question = next_host_key_question(&mut events).await;
+    assert_eq!(
+        question.certificate.as_deref(),
+        Some("it is not for 127.0.0.1")
+    );
+}
+
+#[tokio::test]
+async fn a_certificate_with_a_critical_option_is_not_accepted() {
+    // OpenSSH refuses a host certificate with any critical option.
+    let server = server_with(Signed {
+        critical: &[("force-command", "/bin/true")],
+        ..Signed::good()
+    })
+    .await;
+    let (_data, manager) = manager_with(&authority_line("*", host_ca()));
+
+    let mut events = open(&manager, &server).await;
+
+    let question = next_host_key_question(&mut events).await;
+    assert_eq!(
+        question.certificate.as_deref(),
+        Some("it carries critical options, which a host certificate must not")
+    );
+}
+
+#[tokio::test]
+async fn a_byte_order_mark_does_not_hide_a_first_line_authority() {
+    let server = server_with(Signed::good()).await;
+    let (_data, manager) = manager_with(&format!("\u{feff}{}", authority_line("*", host_ca())));
+
+    let mut events = open(&manager, &server).await;
+
+    assert_eq!(next_state(&mut events).await, SessionState::Connected);
+}
+
+#[tokio::test]
+async fn a_byte_order_mark_does_not_hide_a_first_line_revocation() {
+    let server = TestSshServer::start().await;
+    let key = server.host_key().clone();
+    let (_data, manager) = manager_with(&format!(
+        "\u{feff}{}[127.0.0.1]:{} {}\n",
+        revoked_line(&key),
+        server.target().port,
+        key.to_openssh().unwrap(),
+    ));
+
+    let mut events = open(&manager, &server).await;
+
+    let state = next_state(&mut events).await;
+    assert!(refused_as_revoked(&state), "{state:?}");
+}
+
+#[tokio::test]
+async fn a_revoked_key_under_a_hashed_pattern_is_refused() {
+    use base64ct::{Base64, Encoding};
+    use hmac::{KeyInit, Mac};
+    let server = TestSshServer::start().await;
+    let key = server.host_key().clone();
+    let name = format!("[127.0.0.1]:{}", server.target().port);
+    let salt = [7u8; 20];
+    let mut mac = hmac::Hmac::<sha1::Sha1>::new_from_slice(&salt).unwrap();
+    mac.update(name.as_bytes());
+    let hashed = format!(
+        "|1|{}|{}",
+        Base64::encode_string(&salt),
+        Base64::encode_string(&mac.finalize().into_bytes())
+    );
+    let (_data, manager) = manager_with(&format!(
+        "{name} {}\n@revoked {hashed} {}\n",
+        key.to_openssh().unwrap(),
+        key.to_openssh().unwrap(),
+    ));
+
+    let mut events = open(&manager, &server).await;
+
+    let state = next_state(&mut events).await;
+    assert!(refused_as_revoked(&state), "{state:?}");
 }
 
 #[tokio::test]
