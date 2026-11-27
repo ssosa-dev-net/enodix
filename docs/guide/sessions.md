@@ -351,7 +351,9 @@ switch's boot loader when the network is not up yet. **Send file…** and
    file name for XMODEM, which sends no name, or a folder for YMODEM.
 3. Sending, start the device's receive first (for example `xmodem -c` or
    `copy xmodem: flash:`), then **Start**. Receiving, **Start** first, then
-   the device's send.
+   the device's send. A device waiting to receive asks every few seconds,
+   and until you press **Start** the terminal shows what it asks with: a
+   run of `C`s is normal.
 
 A bar under the terminal shows the file, the bytes moved, the blocks and the
 retries, and has **Cancel**, which tells the device to stop as the protocol
@@ -362,6 +364,14 @@ and what you typed meanwhile goes out then.
 - A damaged block is sent (or asked for) again, up to 10 times in a row. A
   device that does not start within a minute, or stops answering for 10
   seconds at a time, ends the transfer with the reason.
+- Receiving, after a damaged block the rest of what the device sends is
+  dropped until the line has been quiet for a second, then the block is
+  asked for again: the file's own bytes are never taken for the end of the
+  file or for the device cancelling. An end of file counts only when
+  nothing follows it for a quarter of a second.
+- A YMODEM receive from a device that sends XMODEM (no header with the
+  file's name) stops at the first block and says so: choose XMODEM-1K
+  instead.
 - XMODEM pads a file's last block. Receiving, the padding (`0x1A` bytes) at
   the end is removed; a file that really ends in such bytes keeps them only
   with YMODEM, which sends the size.

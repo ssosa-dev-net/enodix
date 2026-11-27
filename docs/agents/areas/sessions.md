@@ -525,7 +525,20 @@ start 60 s, reply 10 s, retries 10 } })` (async; opens the files, or
   mtime; the first EOT of a YMODEM file is NAKed by the receiver and not
   counted as a retry by the sender; the sender takes no answer to the
   empty end-of-batch header within 2 s as done (`rb` sends none). The
-  cancel is 8 CAN then 8 BS; two CANs between blocks cancel. Receiving:
+  cancel is 8 CAN then 8 BS; two CANs between blocks cancel. Receiving
+  (review of #56): a damaged block, or a byte other than SOH/STX/EOT/CAN
+  where a block should start once the sender has begun, starts a purge
+  (`Receiver::purge`: everything dropped until 1 s of quiet, `PURGE_QUIET`
+  capped by `reply`, then NAK), so a block's data is never scanned as
+  control bytes; an EOT counts only after 250 ms of quiet (`EOT_QUIET`: a
+  block that lost its SOH has its number, 4 for block 4, right behind
+  it); the CRC to checksum fall back happens only if no block has begun
+  (`answered`); a YMODEM receive fails at a data block before any header;
+  dropping a `Receiver` (a transfer refused with `Running`, or never run)
+  removes its `.part` file. Before a transfer is in place the device's
+  bytes are the terminal's: a receiver's `C`/NAK sent before Start
+  reaches the terminal (the cause of the flaky checksum test, whose
+  `Reported::before` now holds it). Receiving:
   XMODEM's trailing `0x1A` are stripped (the last block is held back),
   YMODEM files are cut to the header's size; names keep their last part
   only, with `<>:"|?*` and controls as `_` (`safe_name`), created with
@@ -555,7 +568,9 @@ start 60 s, reply 10 s, retries 10 } })` (async; opens the files, or
   `tests/serial_transfer.rs` over `support/modem.rs` (`ModemDevice::spawn
 (device, Role, Faults)`: a device written apart from the engine;
   `Faults { damage_block, cancel_after, silent_after, checksum_only,
-ignore_crc_requests }`; `VirtualDevice::line()`), the engine's unit
+ignore_crc_requests, overstate_size, damage_start, drop_byte: DropByte {
+block, index, times, resend_after } }`; a CRC sender takes a `C` during
+block 1 as a NAK, as `sx` does; `VirtualDevice::line()`), the engine's unit
   tests (CRC, names), and `tests/serial_lrzsz.rs` (Unix, `#[ignore]`:
   `sx`/`sb`/`rx`/`rb` of lrzsz through the real driver on a `socat` pty
   pair; `cargo test -p enodix-core --test serial_lrzsz -- --ignored`,
