@@ -16,7 +16,7 @@
 //!
 //! Each wait has a timeout; the run stops when it passes. The run also stops
 //! when the user stops it, when the user's own input reaches the session
-//! ([`StepRuns::user_input`]: the input that stops it is not sent), and when
+//! ([`StepRuns::user_input`]: the input that stops it is not sent, nor the rest of a paste it began), and when
 //! the session's connection ends. Nothing is ever retried.
 //!
 //! Patterns are plain text, matched as written (case counts); a pattern
@@ -580,8 +580,10 @@ pub enum RunEvent {
 pub enum CalledOff {
     /// The user stopped it ([`StepRuns::stop`]).
     User,
-    /// The user's own input reached the session ([`StepRuns::user_input`]).
+    /// The user's own typed input reached the session ([`StepRuns::user_input`]).
     Input,
+    /// A paste (or a snippet) reached the session: none of it was sent.
+    Paste,
 }
 
 /// How a run ended.
@@ -660,6 +662,14 @@ impl RunEnd {
                 "Stopped {} as you typed in the session (that key was not sent). Nothing more was sent.",
                 at(*step, line)
             ),
+            Self::CalledOff {
+                step,
+                line,
+                by: CalledOff::Paste,
+            } => format!(
+                "Stopped {} as you pasted in the session (none of that paste was sent). Nothing more was sent.",
+                at(*step, line)
+            ),
             Self::SessionEnded { step, line } => {
                 format!("Stopped {}: the session ended.", at(*step, line))
             }
@@ -717,6 +727,9 @@ pub struct StepRuns {
 struct Runs {
     next: u64,
     running: HashMap<SessionId, Running>,
+    /// The paste last refused on each session because it stopped a run
+    /// ([`StepRuns::user_input_of`]): its other lines are refused too.
+    refused: HashMap<SessionId, u64>,
 }
 
 struct Running {
@@ -825,7 +838,11 @@ impl StepRuns {
     }
 
     fn call_off(&self, session: SessionId, by: CalledOff) -> bool {
-        match self.lock().running.remove(&session) {
+        Self::call_off_in(&mut self.lock(), session, by)
+    }
+
+    fn call_off_in(runs: &mut Runs, session: SessionId, by: CalledOff) -> bool {
+        match runs.running.remove(&session) {
             Some(running) => {
                 let _ = running.call_off.send(Some(by));
                 true
@@ -834,19 +851,54 @@ impl StepRuns {
         }
     }
 
+    /// [`Self::user_input_of`] for input that is not a line of a paste the
+    /// caller tracks.
+    pub fn user_input(&self, targets: Vec<SessionId>, origin: InputOrigin) -> Vec<SessionId> {
+        self.user_input_of(targets, origin, None)
+    }
+
     /// The user's input from a terminal, of `origin`, is about to be written
     /// to `targets`: the sessions it may still go to. A run on a target is
     /// stopped by the user's own input (typed, pasted, mouse), and that
     /// target does not get the input, so the key that stops a run never
     /// reaches the device. The terminal's replies to the device go on (they
     /// are not the user's).
-    pub fn user_input(&self, targets: Vec<SessionId>, origin: InputOrigin) -> Vec<SessionId> {
+    ///
+    /// `paste` identifies the paste a line belongs to (the interface sends
+    /// each line of a paste as its own input, and gives them one id, new for
+    /// each paste): when a paste stops a run, none of its lines reaches that
+    /// target, not only the first. Typing, and a later paste (another id),
+    /// go through as usual.
+    pub fn user_input_of(
+        &self,
+        targets: Vec<SessionId>,
+        origin: InputOrigin,
+        paste: Option<u64>,
+    ) -> Vec<SessionId> {
         if origin == InputOrigin::Reply {
             return targets;
         }
+        let pasted = matches!(origin, InputOrigin::Pasted | InputOrigin::GroupPaste);
+        let by = if pasted {
+            CalledOff::Paste
+        } else {
+            CalledOff::Input
+        };
+        let mut runs = self.lock();
         targets
             .into_iter()
-            .filter(|&session| !self.call_off(session, CalledOff::Input))
+            .filter(|&session| {
+                if pasted && paste.is_some() && runs.refused.get(&session) == paste.as_ref() {
+                    return false;
+                }
+                if Self::call_off_in(&mut runs, session, by) {
+                    if let (true, Some(paste)) = (pasted, paste) {
+                        runs.refused.insert(session, paste);
+                    }
+                    return false;
+                }
+                true
+            })
             .collect()
     }
 }

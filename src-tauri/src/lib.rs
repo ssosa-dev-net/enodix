@@ -3107,7 +3107,8 @@ fn session_decide_host_key(
 /// whichever window it is in, otherwise to `id` only; a group paste's line
 /// to `id` while it is a member's; anything else (a paste of its own, the
 /// terminal's replies, mouse reports) to `id` only
-/// (`Windows::input_targets`).
+/// (`Windows::input_targets`). `paste`: the id the interface gives all lines
+/// of one paste, so a paste that stops a snippet's steps is refused whole.
 #[tauri::command]
 fn session_input(
     manager: State<'_, SessionManager>,
@@ -3116,11 +3117,12 @@ fn session_input(
     id: u64,
     data: Vec<u8>,
     origin: InputOrigin,
+    paste: Option<u64>,
 ) {
     let targets = tabs.lock().input_targets(SessionId(id), origin);
     // The user's input stops a snippet's steps running on a target, which
     // then does not get it (#23).
-    let targets = runs.user_input(targets, origin);
+    let targets = runs.user_input_of(targets, origin, paste);
     manager.write_to_each(&targets, &data);
 }
 
