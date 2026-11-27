@@ -79,10 +79,22 @@ canvas:not(.xterm-link-layer)` (the link layer is a 2D canvas). Smoke
   End, Insert, Delete, Space). `normalized` drops unknown actions, bad
   chords, a second action on a taken chord, and snippet keys on a chord an
   app action uses; `effective_shortcuts()`. Interface: `keyBindings.ts`
-  (`chordOf(event)` by `event.code`, `actionFor`, interface copy of the
-  action list), `App.svelte` `shortcut()` dispatches the nine movable
-  actions by chord, then snippet keys (only with a connected active session,
-  via `sendSnippet`), then the fixed keys (tab cycling, side views).
+  (`chordsOf(event)`: the printed key, `event.key`, first, then the position,
+  `event.code`; `bindingOf` takes the first chord bound to an action or a
+  snippet and stops at a reserved printed chord, so the printed letter wins
+  and copy/paste stay where the user sees them; `chordOf` is the first, what
+  Preferences records; `typedLetter` is the letter match shared by the
+  terminal's copy, paste and search keys and the app's fixed keys: printed
+  Latin letter, else position), `App.svelte` `shortcut()` dispatches the nine
+  movable actions by `bindingOf`, then snippet keys (only with a connected
+  active session, via `sendSnippet`; `event.repeat` sends nothing and is
+  swallowed), then the fixed keys (tab cycling, side views). Reserved keys:
+  core `RESERVED_KEYS`/`reserved_key` (copy, paste, search, tab keys, zoom,
+  side views); `normalized` drops a shortcut or snippet key on one on read and
+  write; the shell serves the list as `reserved_keys`, the interface keeps it
+  in `reservedKeys` and the Preferences view refuses to record one and says
+  why (`[data-key-refused]`). Checked by a throwaway script over key events
+  for QWERTY, AZERTY, Dvorak and Cyrillic (no interface test runner).
   Preferences view `[data-key-bindings]` (`preference-key-<action>`,
   `preference-new-snippet-key`). Limits: tooltips/palette hints and
   `SessionWindow.svelte` still use the default keys; zoom and the terminal's
@@ -303,7 +315,7 @@ cancel]`; hiding or closing its tab drops it, and shortcuts stay on
   target and drops that target). Events `RunEvent::Step{index,count,doing}
   |Answered{index,question}` (never the reply) `|Ended{end,message}`;
   `RunEnd::Finished|Stopped{step,line,pattern,shown}|TimedOut{step,line,
-  waiting_for}|CalledOff{step,line,by: User|Input}|SessionEnded`, serde
+  waiting_for}|CalledOff{step,line,by: User|Input|Paste}|SessionEnded`, serde
   `kind` camelCase. Engine: output as `PlainText`, looked in from the last
   send (the echo of the step's own line skipped), stops checked first, then
   the step's own pattern, then answers (the earliest match; consumed so it
@@ -343,6 +355,21 @@ cancel]`; hiding or closing its tab drops it, and shortcuts stay on
   interface (svelte-check only). Known limits: no paging handling (a
   `--More--` waits to the timeout), no editing of steps in the app, no
   loops or conditions.
+- A paste stops a run whole (`StepRuns::user_input_of(targets, origin,
+  paste)`, shell `session_input { .., paste }`). The interface sends each
+  line of a paste as its own `session_input`, all with one id
+  (`newPasteId()` in `pasteEach`, passed by `TerminalSession`'s input
+  callback for `pasted`/`group-paste` lines). A pasted line that stops a run
+  ends it with `CalledOff::Paste` ("none of that paste was sent") and the
+  core remembers the id per session (`Runs::refused`, the last one): the
+  paste's other lines on that session are refused, typed input and a paste
+  with another id go through, replies are never touched. Without an id
+  (`user_input`) only the stopping call is dropped. Tests: `snippet_steps`
+  (`a_paste_that_stops_the_run_is_refused_whole`, `a_group_paste_line_...`).
+  Looked at, not changed: after a `wait: none` step the unread output is
+  not discarded (the watch is read in the next wait, after the next line's
+  `Screen::sent`, so it counts for that wait); only the last step's output
+  is never looked in, by design.
 - Input origins (#34, `src/lib/terminalInput.ts`; for multi-send, #33).
   `terminalInput(terminal, onInput)` replaces `onData`/`onBinary` in
   `TerminalSession`: each `Input { data, binary, origin }` has origin

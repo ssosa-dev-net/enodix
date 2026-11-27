@@ -21,7 +21,7 @@ export type StepsPreview =
   | { kind: "missing"; names: string[] };
 
 /** Who called a run off. */
-export type CalledOff = "user" | "input";
+export type CalledOff = "user" | "input" | "paste";
 
 /** How a run ended. */
 export type RunEnd =

@@ -17,7 +17,8 @@ long) })
   **a device whose key the app has not trusted** (`KnownHosts::trusted(
 host, port)`, new; empty → "connect to it once in the app and trust and
   remember its key": jobs refuse unknown keys too, so nothing is checked
-  off). `host_keys` = `<type> <base64>`. `tunnel::behind_jump_hosts(ws,
+  off). `host_keys` = `<type> <base64>`, never a revoked key (a host whose only key
+  is revoked is refused as revoked). `tunnel::behind_jump_hosts(ws,
 ids)` (no store). `Tunnels::open(plan, known_hosts, TunnelOptions {
 buffer_limit (DEFAULT_BUFFER_LIMIT 8 MiB) }, report).await` (current
   runtime) connects each distinct chain (key = jump host names) once, in

@@ -152,6 +152,20 @@ function adopt(
   return queue;
 }
 
+/** The keys the app keeps for itself (`RESERVED_KEYS` in the core): no
+ * shortcut or snippet can be bound to one. Empty until the core answers. */
+export const reservedKeys = $state<{ list: { chord: string; what: string }[] }>(
+  { list: [] },
+);
+
+export async function loadReservedKeys() {
+  try {
+    reservedKeys.list = await invoke("reserved_keys");
+  } catch {
+    // Without the list the core still refuses these keys when saving.
+  }
+}
+
 export function loadPreferences() {
   return adopt(() => invoke<Preferences>("preferences_get"));
 }

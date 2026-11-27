@@ -73,7 +73,7 @@ fn the_profiles_username_is_passed_but_never_its_secret() {
         .unwrap();
     assert_eq!(host.username.as_deref(), Some("admin"));
     assert_eq!(host.port, DEFAULT_SSH_PORT);
-    let target = system_ssh_target(None, &host, None, Vec::new());
+    let target = system_ssh_target(None, &host, None, Vec::new(), &Default::default());
     assert!(
         !format!("{target:?}").contains("s3cret-pw"),
         "the password reached the command line"

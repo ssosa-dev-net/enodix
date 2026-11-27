@@ -41,10 +41,10 @@ use enodix_core::paste::{
 use enodix_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use enodix_core::preferences::{FontZoom, Preferences, Theme};
 use enodix_core::session::{
-    local_environment, local_shells, local_start_folder, pick_local_shell, system_ssh_target,
-    AlgorithmKind, AlgorithmLists, AutoReconnects, Consumer, ConsumerGone, ConsumerKey,
-    ForwardStatus, HostKeyDecision, HostKeyQuestion, HostSession, HostWay, LoginPrompt,
-    NegotiatedAlgorithms, OpenOptions, Reconnection, SerialParameters, SerialPortInfo,
+    ask_client_algorithms, local_environment, local_shell_for, local_shells, local_start_folder,
+    system_ssh_target, AlgorithmKind, AlgorithmLists, AutoReconnects, Consumer, ConsumerGone,
+    ConsumerKey, ForwardStatus, HostKeyDecision, HostKeyQuestion, HostSession, HostWay,
+    LoginPrompt, NegotiatedAlgorithms, OpenOptions, Reconnection, SerialParameters, SerialPortInfo,
     SerialTarget, SessionEvent, SessionId, SessionManager, SessionRecord, SessionRecords,
     SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType,
     TransferRequest, TransferStatus, Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
@@ -2284,9 +2284,9 @@ async fn session_open(
         }
         ConnectTarget::Local { shell: which } => {
             let chosen = which.unwrap_or_else(|| preferred.lock().local_shell.clone());
-            let shells = local_shells();
-            let picked = pick_local_shell(&shells, Some(&chosen))
-                .ok_or("this computer has no shell to open")?;
+            // Never lists WSL: opening a shell starts no `wsl.exe` of its own.
+            let picked =
+                local_shell_for(Some(&chosen)).ok_or("this computer has no shell to open")?;
             let (folder, environment) = local_start(&shell, &python);
             let target = SessionTarget::Local(picked.target(folder, environment));
             // Not logged: it shows the user's own computer, not a device.
@@ -2297,6 +2297,8 @@ async fn session_open(
             )
         }
         ConnectTarget::SystemSsh { id } => {
+            // Ask the client what it knows before the workspace is locked.
+            let client = ask_client_algorithms(None).await;
             let guard = shell.workspace();
             let workspace = guard.as_ref().ok_or("no workspace is open")?;
             let profiles = Profiles::new(&*shell.credentials, workspace);
@@ -2304,7 +2306,8 @@ async fn session_open(
                 .system_ssh_host(&id)
                 .map_err(|error| error.to_string())?;
             let (folder, environment) = local_start(&shell, &python);
-            let target = SessionTarget::Local(system_ssh_target(None, &host, folder, environment));
+            let target =
+                SessionTarget::Local(system_ssh_target(None, &host, folder, environment, &client));
             let record = SessionRecord::for_host(workspace, &id, Transport::Local, &name, &title)
                 .unwrap_or_else(|| SessionRecord::new(&name, &title))
                 .insecure(SYSTEM_SSH_WARNING);
@@ -2586,10 +2589,12 @@ impl Consumer for Channels {
                 let auto = self.app.state::<AutoReconnects>();
                 let mut message = StateMessage::from(state.clone());
                 match (&state, &mut message) {
-                    (SessionState::Connected, _) => auto.connected(self.session),
+                    (SessionState::Connected, _) => {
+                        auto.connected(self.session, std::time::Instant::now());
+                    }
                     (SessionState::Closed(reason), StateMessage::Closed { retry, gave_up, .. }) => {
                         *retry = auto
-                            .after_close(self.session, reason)
+                            .after_close(self.session, reason, std::time::Instant::now())
                             .map(|next| RetryMessage {
                                 seconds: next.after.as_secs(),
                                 attempt: next.attempt,
@@ -3107,7 +3112,8 @@ fn session_decide_host_key(
 /// whichever window it is in, otherwise to `id` only; a group paste's line
 /// to `id` while it is a member's; anything else (a paste of its own, the
 /// terminal's replies, mouse reports) to `id` only
-/// (`Windows::input_targets`).
+/// (`Windows::input_targets`). `paste`: the id the interface gives all lines
+/// of one paste, so a paste that stops a snippet's steps is refused whole.
 #[tauri::command]
 fn session_input(
     manager: State<'_, SessionManager>,
@@ -3116,11 +3122,12 @@ fn session_input(
     id: u64,
     data: Vec<u8>,
     origin: InputOrigin,
+    paste: Option<u64>,
 ) {
     let targets = tabs.lock().input_targets(SessionId(id), origin);
     // The user's input stops a snippet's steps running on a target, which
     // then does not get it (#23).
-    let targets = runs.user_input(targets, origin);
+    let targets = runs.user_input_of(targets, origin, paste);
     manager.write_to_each(&targets, &data);
 }
 
@@ -3242,8 +3249,11 @@ async fn serial_ports(manager: State<'_, SessionManager>) -> Result<Vec<SerialPo
 /// The shells this computer can open as a local session (#22), the first
 /// being what an unset preference opens.
 #[tauri::command]
-fn local_shell_list() -> Vec<enodix_core::session::LocalShell> {
-    local_shells()
+async fn local_shell_list() -> Result<Vec<enodix_core::session::LocalShell>, String> {
+    // `wsl.exe` is run on a blocking thread, not the window's.
+    tokio::task::spawn_blocking(local_shells)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// The user's preferences, as loaded at launch or last saved.
@@ -3293,6 +3303,22 @@ fn adopt_preferences(
 #[tauri::command]
 fn preferences_get(preferred: State<'_, UserPreferences>) -> Preferences {
     preferred.lock().clone()
+}
+
+/// A key the app keeps for itself and what it does there (`RESERVED_KEYS`).
+#[derive(serde::Serialize)]
+struct ReservedKey {
+    chord: &'static str,
+    what: &'static str,
+}
+
+/// The keys no shortcut or snippet can be bound to, for the Preferences view.
+#[tauri::command]
+fn reserved_keys() -> Vec<ReservedKey> {
+    enodix_core::preferences::RESERVED_KEYS
+        .iter()
+        .map(|(chord, what)| ReservedKey { chord, what })
+        .collect()
 }
 
 #[tauri::command]
@@ -3981,6 +4007,7 @@ pub fn run() {
             layout_reset,
             layout_edit,
             preferences_get,
+            reserved_keys,
             preferences_save,
             preferences_zoom,
             paste_plan,

@@ -150,11 +150,12 @@ TrustOnce | Cancel)` (or closing). Cancel → `OpenError::HostKeyNotTrusted`
   `Preferred::host_key_certificates` (= the key list) and
   `Client.authorities`. `check_server_key` accepts a certificate when
   `host_certificate_problem` finds none (host type, signer among the
-  authorities, `validate` now, the target's host among the principals,
+authorities, `validate` now, no critical options (OpenSSH: "unsupported
+  critical options"), the target's host among the principals,
   ignoring case; an empty list names none); otherwise it asks about the
   certificate's key, with `HostKeyQuestion.certificate` = the reason
   (`[data-host-certificate]` in `HostKeyCheck.svelte`). Job pre-flight
-  (`job.rs` `host_key_warning`) counts a host with an authority as
+  (`job.rs` `host_key_warning`) counts a host with a non-revoked authority (`vouching_authorities`) as
   trusted; tunnels and the cli export only plain keys (known limit).
   Revoked keys: `KnownHosts::revoked(host, port)` reads `@revoked` lines
   the same way (`marked` in `known_hosts.rs`); `Client.revoked` is
@@ -162,8 +163,13 @@ TrustOnce | Cancel)` (or closing). Cancel → `OpenError::HostKeyNotTrusted`
   its signer that is revoked is `OpenError::KnownHosts("... revoked ...")`,
   no question. Marker-line patterns may be hashed (`|1|salt|hash`,
   HMAC-SHA1 of the lower-cased name: `matches_hashed`); plain entries under
-  hashed names are still ignored by `check`/`trusted`. Pre-flight does not
-  read `@revoked` (the run fails on that host instead). Tests: `tests/host_certificates.rs`
+  hashed names are still ignored by `check`/`trusted`. `KnownHosts::trusted`
+  never returns a key a matching `@revoked` line names (tunnel, cli export,
+  pre-flight all use it); `revoked_remembered` gives the remembered keys it
+  left out, so tunnel and pre-flight say "revoked" instead of "not trusted
+  yet" (the pre-flight warning has no `keys` for it: connecting cannot fix
+  it). `Store::load` strips a leading U+FEFF, so a marker on the first line
+  is read; a save writes the file without it. Tests: `tests/host_certificates.rs`
   (servers get `config.certificates` through `start_tuned`; `host_ca()`,
   `certificate()` in support), `preflight_host_keys.rs`. Known limit:
   writes are serialised per process only.
@@ -242,22 +248,42 @@ ConnectionRefused | TimedOut { after, stage } | AuthenticationFailed`
   `CloseReason::allows_auto_reconnect` (connection lost, name not resolved,
   unreachable, refused, `Connect`, closed before login, a timeout only at
   the TCP, identification or key-exchange stage, a jump host's such error;
-  never a timeout from the login on, a refused login, key or agent failure,
-  host key, or a close the user made: the credentials may have reached a
-  RADIUS or TACACS+ server that counts each try); `AutoReconnect`
-  (`after_close(&CloseReason)` → `Option<Retry>`, `connected`, `restart`,
-  `stop`, `gave_up`; waits `AUTO_RECONNECT_DELAYS` 2, 4, 8, 16, 30, 60, 60,
-  60 s, then it gives up) and `AutoReconnects`, one per session id. The
-  shell keeps one `AutoReconnects`; `Channels` feeds it every state
-  (`Connected` resets, `Closed` plans) and sends `retry { seconds, attempt,
+  never a timeout from the login on, `OpenError::EndedDuringLogin`, a
+  refused login, key or agent failure, host key, or a close the user made:
+  the credentials may have reached a RADIUS or TACACS+ server that counts
+  each try). `EndedDuringLogin(String)` (reads as `Connect`, "could not
+  connect: …") is what `ssh.rs`'s `ended_during_login` gives for a
+  connection that closed, broke or stopped answering once the login began,
+  for the device and a jump host's own login alike; `blame_jump_hosts`
+  passes it on (`from_login_on`, `ended`): a jump host lost or silent while
+  a later hop was logging in (or timed out from the login on) is a
+  `JumpHost { EndedDuringLogin }` too, else `Connect`. `AutoReconnect`
+  (`after_close(&CloseReason, now: Instant)` → `Option<Retry>`,
+  `connected(now)`, `restart`, `stop`, `gave_up`; waits
+  `AUTO_RECONNECT_DELAYS` 2, 4, 8, 16, 30, 60, 60, 60 s, then it gives up)
+  and `AutoReconnects`, one per session id. The time is passed in (tests
+  drive it without sleeping). `connected` ends a stop and notes the time
+  but keeps the count: only a close `AUTO_RECONNECT_STABLE` (60 s) or more
+  after the last `Connected` starts it again, so a telnet peer that accepts
+  then resets (telnet is `Connected` once TCP opens) or an SSH device that
+  drops right after the login runs out of tries instead of being retried
+  every 2 s for ever (each try a full login, backup on login and forwards);
+  `restart` (the user's Enter) clears it. The shell keeps one
+  `AutoReconnects`; `Channels` feeds it every state with `Instant::now()`
+  (`Connected` notes, `Closed` plans) and sends `retry { seconds, attempt,
   of }` and `gaveUp` in `StateMessage::Closed`; the interface tells it
   `session_auto_reconnect_enable` (the host's setting, from
   `reconnecting_hosts` in the workspace view, applied as the session shows),
   `_stop` (a key) and `_restart` (Enter). `TerminalSession` only counts the
   wait down in the closed bar (`[data-auto-reconnect]`, then
   `[data-auto-reconnect-gave-up]`) and calls its own `reconnect()`.
-  Tests: `tests/auto_reconnect.rs`. Not verified: the countdown in the real
-  window (no smoke step; smoke needs Windows).
+  Tests: `tests/auto_reconnect.rs` (its `as_the_shell` runs a session
+  against the in-process servers as the shell would, reconnecting at once
+  on each `Retry`: a device or jump host closing during its login, a jump
+  host cut while the device logs in, one login each; a hang-up before the
+  login retried until it gives up; the count with passed-in times). Not
+  verified: the countdown in the real window (no smoke step; smoke needs
+  Windows).
 - What to check next (#116). `OpenError::advice()` / `CloseReason::advice()`
   → `Option<String>`, a sentence for the user: `NameNotResolved`,
   `Unreachable`, `ConnectionRefused { port }` (the Port setting, SSH or
@@ -427,13 +453,19 @@ SessionLogin, note }` (through `profile_target` / `prompted_target` /
   the last hop (`JumpConnections::forward`, the telnet connect timeout)
   and runs telnet over `Channel::into_stream()` split in two (the socket
   path's `set_nodelay`/keep-alive do not apply; the timing-mark probe
-  does). The jump connections drop when the session ends. Login banners
+  does). The channel's stream ends both when the device closes and when a
+  jump connection dies, so at its end `stream_ended` waits up to
+  `JUMP_LOST_WAIT` (250 ms) for `JumpConnections::lost()`: a lost jump
+  host is `ConnectionLost` (retried by `auto_reconnect`), else
+  `RemoteExited`; a device's close through a jump host so ends 250 ms
+  later. The jump connections drop when the session ends. Login banners
   of the jump hosts are not shown. `SessionRecord::for_host` gives telnet
   its jump host (header "via X"; the Unencrypted marker's title names the
   leg from it). Jobs (`SkipReason::TelnetBehindJumpHost`) and script
   tunnels still skip such hosts. Tests: `jump_hosts.rs`
   `a_telnet_host_with_a_jump_host_connects_through_it` and the three
-  after it; `telnet_session.rs`
+  after it, `a_telnet_session_whose_jump_host_goes_away_closes_as_a_lost_
+  connection` and the device's own close after it; `telnet_session.rs`
   `a_telnet_host_behind_a_jump_host_goes_through_it`.
   Credential profiles are not used for telnet logins (nothing types
   them). Tests: `tests/telnet_session.rs` against `support/telnet.rs`
@@ -946,11 +978,27 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   algorithms allowed (`-o KexAlgorithms=+...` and so on, `-p`, `-l`, then
   `-- host`), on the local transport of #22 (`local.rs`). It is not an SSH
   session of enodix: no host key check against the app's, no workspace
-  credentials, no logging. A newer client refuses options for algorithms it
-  dropped (Blowfish, RC4), and OpenSSH has no SSH-1. The negotiation card
-  names the fallback when the device offers only unsupported algorithms.
-  Tests: `system_ssh.rs` (a stand-in script prints its arguments, Unix
-  only), `system_ssh_host.rs` (`Profiles::system_ssh_host`: address, port
+  credentials, no logging. OpenSSH refuses a whole `-o` option and exits
+  before connecting when it names one algorithm it no longer knows
+  (Blowfish, CAST, RC4, DSA in 10.x; it has no SSH-1), so the options are
+  built from what the client reports: `ask_client_algorithms` runs
+  `ssh -Q cipher|mac|kex|key` on a blocking thread (10 s limit, no console
+  window) into a `ClientAlgorithms` (text per query, `None` if it could not
+  be asked), `legacy_options` keeps from each wanted list what
+  `filter_known_algorithms` finds in the client's lines and leaves an option
+  out when nothing remains, and `system_ssh_target` takes the answers as a
+  parameter (so the filter is tested without a client). Not asked: no legacy
+  option at all. `HostKeyAlgorithms` and `PubkeyAcceptedKeyTypes` both use
+  `-Q key` (the latter is the option name every version takes; 8.5 and later
+  alias it to `PubkeyAcceptedAlgorithms`, older ones lack that). The
+  negotiation card names the fallback when the device offers only
+  unsupported algorithms.
+  Tests: `system_ssh.rs` (the filter against the `-Q` text of an old client
+  (written from the 7.4 lists, not captured) and of 9.5 and 10.6 (captured),
+  an empty option, an unaskable client; where an `ssh` is on the `PATH`, and on
+  Windows also `System32\OpenSSH\ssh.exe`, the real client reads the core's
+  arguments with `-G` and must exit 0, which connects to nothing and uses no
+  agent; on Unix a stand-in script prints its arguments), `system_ssh_host.rs` (`Profiles::system_ssh_host`: address, port
   and the profile's username only, never a secret; a host behind a jump
   host is refused; the record carries the warning).
   From the interface: `ConnectTarget::SystemSsh { id }` (`src-tauri/src/lib.rs`,
@@ -1039,7 +1087,20 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   starts the program again (a quick target is kept by the manager).
 - `local_shells()` lists what the computer has: Windows `pwsh` if on the
   `PATH` (`pwsh`, plus `powershell`), else `powershell`; `cmd`; each WSL
-  distribution (`wsl.exe -l -q`, UTF-16, ids `wsl:<name>`). Unix: `$SHELL`
+  distribution (`wsl.exe -l -q`, UTF-16, ids `wsl:<name>`). `wsl.exe` is
+  started only for that list, never when a session opens: `local_shell_for`
+  (used by `session_open`) takes a `wsl:<name>` id as it is (a distribution
+  that is gone shows `wsl.exe`'s own message in the tab, instead of falling
+  back to the first shell) and looks other ids up without WSL. The list is
+  remembered for 10 s (`WSL_CACHE`), so the shell choice in quick connect
+  and in preferences, opened in turn, starts it once; `wsl.exe` has 5 s
+  (`WSL_TIMEOUT`, then it is killed), no stdin and no console window. Without
+  WSL installed `wsl.exe` is a stub that prints a hint: it fails, and
+  `parse_wsl_list` drops any line with a space in it, so no hint becomes a
+  shell. The shell command `local_shell_list` is async and runs it on a
+  blocking thread. Not verified: a Windows without WSL (none here; the
+  parsing of the stub's text is unit-tested) and a count of `wsl.exe`
+  processes in the smoke test (not run). Unix: `$SHELL`
   (id `login`) then the existing shells of `/etc/shells` (id = the path),
   all started with `-l`. `pick_local_shell(shells, preference)` matches the
   id ignoring case, else the first. `Preferences.local_shell` holds the id

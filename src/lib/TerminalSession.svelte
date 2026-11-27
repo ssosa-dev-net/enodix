@@ -9,6 +9,7 @@
   import { terminalInput, type TerminalInput } from "./terminalInput";
   import { unserializedModes } from "./handover";
   import { giveKeys } from "./keys";
+  import { typedLetter } from "./keyBindings";
   import { highlighting, highlightTerminal } from "./highlight.svelte";
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
@@ -48,6 +49,7 @@
   import {
     discardSession,
     openSession,
+    newPasteId,
     reconnectFailure,
     enableAutoReconnect,
     restartAutoReconnect,
@@ -1114,6 +1116,8 @@
       lineDelayMs: number,
       group: boolean,
     ) => {
+      // One id for the paste: the core refuses all of it or none.
+      const id = newPasteId();
       for (const [index, line] of lines.entries()) {
         if (index > 0 && lineDelayMs > 0) await wait(lineDelayMs);
         // A session that ended (or a terminal gone) takes no more lines.
@@ -1122,10 +1126,12 @@
         // gets no more of it.
         if (group && untrack(() => groupSize) === null) return;
         pastingGroup = group;
+        pasteId = id;
         try {
           input?.paste(line);
         } finally {
           pastingGroup = false;
+          pasteId = undefined;
         }
       }
     };
@@ -1165,9 +1171,9 @@
       if (event.altKey || event.metaKey) return null;
       const ctrl = event.ctrlKey;
       const shift = event.shiftKey;
-      const letter = (name: string) =>
-        event.code === `Key${name.toUpperCase()}` ||
-        event.key.toLowerCase() === name;
+      // The key that prints the letter on the user's layout, as the app's
+      // shortcuts match it, so a press is the app's or the terminal's.
+      const letter = (name: string) => typedLetter(event, name);
       if (ctrl && shift && letter("c")) return copySelection;
       // Ctrl+C copies only text that is selected; otherwise it interrupts.
       if (ctrl && !shift && letter("c") && terminal.hasSelection()) {
@@ -1248,6 +1254,7 @@
     let disposed = false;
     /** Set while one of this member's lines of a group paste goes out. */
     let pastingGroup = false;
+    let pasteId: number | undefined;
     const encoder = new TextEncoder();
     const size = () => ({ cols: terminal.cols, rows: terminal.rows });
     currentSize = size;
@@ -1280,8 +1287,13 @@
       // dropped by the core anyway, and must not reach the other members).
       if (status.state !== "connected") session?.write(bytes);
       else if (origin === "pasted" && pastingGroup)
-        session?.input(bytes, "group-paste");
-      else session?.input(bytes, origin);
+        session?.input(bytes, "group-paste", pasteId);
+      else
+        session?.input(
+          bytes,
+          origin,
+          origin === "pasted" ? pasteId : undefined,
+        );
     });
     // For the smoke test, which checks where input came from.
     Object.assign(container, { input });

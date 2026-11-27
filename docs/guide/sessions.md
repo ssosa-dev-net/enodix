@@ -39,7 +39,8 @@ The tab shows the host's name with a dot for its state. The header line above
 the terminal shows the host's role, name, address, protocol and its markers:
 **Production** (or Staging, Lab), **Unencrypted** for telnet, **Legacy
 crypto**, **Insecure** (the system's ssh client, see
-[Legacy crypto](legacy-crypto.md)), **Multi-send**, and **Not logging**. A **Session actions** button at
+[Legacy crypto](legacy-crypto.md), which also says which devices it can and
+cannot reach), **Multi-send**, and **Not logging**. A **Session actions** button at
 its right end opens the session menu, which is also the tab's right-click
 menu.
 
@@ -79,13 +80,15 @@ wildcards, `!` to leave one out; a host on another port than 22 is matched as
 connects without the card when the certificate:
 
 - is a host certificate signed by that authority,
-- is valid now, and
+- is valid now,
+- carries no critical options (OpenSSH refuses a host certificate that has
+  one), and
 - names the host, as you wrote it in the workspace, among its principals.
 
 A certificate that fails one of these is not accepted. The app then asks
 about the key inside it, as on a first connection, and the card says why the
 certificate was not taken. Jobs count a host an authority speaks for as
-trusted. Python scripts do not use authorities yet: they get only the
+trusted, unless the authority is revoked (see below). Python scripts do not use authorities yet: they get only the
 remembered keys, so trust such a host's key once if a script needs it.
 
 ### Revoked keys
@@ -98,6 +101,14 @@ To refuse a key for good, add a `@revoked` line for it, as for OpenSSH:
 
 A host whose key, host certificate key, or certificate authority is revoked
 for it is refused with no card, even if the key was trusted before.
+Scripts and jobs follow the same rule: a revoked key is never given to a
+script as a key to accept, and a job or tunnel for a host whose only key is
+revoked says that the key is revoked, not that it is untrusted. A revoked
+authority does not vouch for a host in a job's check either.
+
+The `known_hosts` file may start with a byte-order mark (some editors add
+one); it is ignored, so the first line counts like any other. The app drops
+the mark the next time it saves the file.
 
 ## Logins
 
@@ -168,6 +179,29 @@ profile is picked up. A login you typed for the session is used again. A
 grey line under `--- reconnecting ---` tells you when the login is not the
 one the session had. A quick connection reconnects as it was made.
 
+### Automatic reconnect
+
+A host with `auto_reconnect: true` (see [the inventory](inventory.md))
+reconnects by itself when its session drops. The closed bar counts down the
+wait, which grows from 2 s to 60 s over 8 tries; then it gives up. Any key
+stops it, and Enter reconnects at once.
+
+It tries again only when the connection was lost, or the device (or a jump
+host) could not be reached or hung up before the login began. Once a login
+has started, the password or key may already have reached the device's
+RADIUS or TACACS+ server, which counts each try against the account. So a
+refused login, a device that closes or stops answering during the login,
+and a jump host lost while a login runs through it are never tried again
+by themselves: reconnect by hand once you have checked the login.
+
+The count of tries starts again only after a session has stayed connected
+for a minute. A device that accepts the connection and drops it at once
+uses up the tries, rather than being reconnected every 2 s for ever.
+Reconnecting by hand starts the count again too.
+
+A telnet session through a jump host that goes away closes as a lost
+connection, so it reconnects by itself; one the device closes does not.
+
 ## Search, copy, paste and font size
 
 - **Search the scrollback**: Ctrl+Shift+F opens a search bar over the
@@ -188,8 +222,15 @@ one the session had. A quick connection reconnects as it was made.
   press the new keys; **Reset** restores the default. **Snippet keys** bind a
   key to a snippet, sent to the active session like a click in the Snippets
   view; that key no longer reaches the device. A key needs Ctrl or Alt
-  (function keys stand alone). Tooltips and the palette still name the
-  default keys, and a separate session window keeps its own.
+  (function keys stand alone). A key answers to the key that prints its
+  letter on your layout (on AZERTY the key labelled W for Ctrl+Shift+W, on
+  Dvorak the key labelled K for Ctrl+K), and also to the key at that place on
+  a QWERTY keyboard. When the two name different actions, the printed letter
+  wins; one press never runs two things. Keys the app keeps (copy and paste,
+  search, the tab keys, the font size keys, the side view keys) cannot be
+  bound: Preferences says why. A key bound to a snippet sends it once per
+  press: holding it sends nothing more. Tooltips and the palette still name
+  the default keys, and a separate session window keeps its own.
 - **Colour scheme**: Preferences offers Solarized Dark and Light, Dracula,
   Nord and Gruvbox Dark besides the app's own colours (which follow its
   light or dark theme). **Own colours** sets the background, text, cursor,

@@ -44,11 +44,13 @@ pub use algorithms::{
     is_legacy, offered_algorithms, AlgorithmKind, AlgorithmLists, NegotiatedAlgorithms,
     NegotiationFailure, LEGACY_ALGORITHMS, UNSUPPORTED_ALGORITHMS,
 };
-pub use auto_reconnect::{AutoReconnect, AutoReconnects, Retry, AUTO_RECONNECT_DELAYS};
+pub use auto_reconnect::{
+    AutoReconnect, AutoReconnects, Retry, AUTO_RECONNECT_DELAYS, AUTO_RECONNECT_STABLE,
+};
 pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward, SOCKS_HANDSHAKE_TIMEOUT};
 pub use local::{
-    local_environment, local_shells, local_start_folder, pick_local_shell, LocalShell, LocalTarget,
-    CLI_VARIABLE, WORKSPACE_VARIABLE,
+    local_environment, local_shell_for, local_shells, local_start_folder, pick_local_shell,
+    LocalShell, LocalTarget, CLI_VARIABLE, WORKSPACE_VARIABLE,
 };
 pub use modem::{
     ModemProtocol, TransferAction, TransferDirection, TransferError, TransferRequest,
@@ -67,7 +69,10 @@ pub use serial::{
     SystemSerialPorts, BREAK_DURATION, SERIAL_POLL,
 };
 pub(crate) use ssh::JumpConnections;
-pub use system_ssh::{system_ssh_target, SystemSshHost, SYSTEM_SSH_PROGRAM, SYSTEM_SSH_WARNING};
+pub use system_ssh::{
+    ask_client_algorithms, filter_known_algorithms, legacy_options, system_ssh_target,
+    ClientAlgorithms, SystemSshHost, SYSTEM_SSH_PROGRAM, SYSTEM_SSH_WARNING,
+};
 
 /// Identifies one session within its [`SessionManager`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -423,6 +428,13 @@ pub enum OpenError {
     /// connection broke while it was being set up.
     #[error("could not connect: {0}")]
     Connect(String),
+    /// The connection closed, broke or stopped answering once the login
+    /// had begun: the password or key may have reached the device (and its
+    /// RADIUS or TACACS+ server), so this is never tried again by itself
+    /// ([`OpenError::allows_auto_reconnect`]). Reads as a
+    /// [`OpenError::Connect`] does.
+    #[error("could not connect: {0}")]
+    EndedDuringLogin(String),
     /// The device closed the connection before sending a byte of SSH: a
     /// device whose lines (vty) are all in use does that, as IOS does.
     #[error(
@@ -633,8 +645,9 @@ impl ConnectStage {
 impl OpenError {
     /// Whether trying the same login again by itself is safe: the device
     /// was not reached, or hung up before a login began. Never a refused
-    /// login (accounts lock), a host-key question, or a failure that
-    /// trying again cannot change (a key, the agent, the algorithms).
+    /// login (accounts lock), a connection that ended once the login began
+    /// ([`OpenError::EndedDuringLogin`]), a host-key question, or a failure
+    /// that trying again cannot change (a key, the agent, the algorithms).
     pub fn allows_auto_reconnect(&self) -> bool {
         match self {
             Self::NameNotResolved { .. }

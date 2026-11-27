@@ -119,7 +119,10 @@ and **Run** it (the same rule as a paste: asked unless you turned **Ask
 before pasting more than one line** off, and always on a production host).
 While it runs, a bar under the terminal shows the step and what it waits
 for, with **Stop**. **Typing in the terminal also stops it**, and the key you
-typed is not sent, so you can always take over. When it ends, the bar says
+typed is not sent, so you can always take over. So does a paste (or a
+snippet without steps, or a multi-send paste): none of that paste is sent to
+the session, not only its first line, and the bar says so. What you type
+next, and the next paste, go through as usual. When it ends, the bar says
 how: done, or where and why it stopped. Nothing is ever retried.
 
 Steps run on one session at a time. They are not sent to a
