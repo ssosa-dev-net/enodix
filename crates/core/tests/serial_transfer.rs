@@ -18,7 +18,7 @@ use enodix_core::session::{
     TransferDirection, TransferError, TransferRequest, TransferState, TransferStatus,
     TransferTimeouts,
 };
-use support::modem::{Ended, Faults, ModemDevice, Role, Seen, SUB};
+use support::modem::{DropByte, Ended, Faults, ModemDevice, Role, Seen, CAN, EOT, NAK, SUB};
 use support::serial::{VirtualDevice, VirtualSerialPorts};
 use support::{known_hosts, next_state, output_ending_with, WAIT};
 use tempfile::TempDir;
@@ -81,6 +81,11 @@ fn contents(length: usize, seed: u8) -> Vec<u8> {
 /// meanwhile.
 struct Reported {
     statuses: Vec<TransferStatus>,
+    /// Terminal output from before the transfer was in place (its first
+    /// status): what the device sent before the user started it, which
+    /// is the terminal's, as a device already asking to start does.
+    before: Vec<u8>,
+    /// Terminal output once the transfer was in place: none is promised.
     output: Vec<u8>,
 }
 
@@ -93,6 +98,7 @@ impl Reported {
 async fn until_ended(events: &mut SessionEvents) -> Reported {
     let mut reported = Reported {
         statuses: Vec::new(),
+        before: Vec::new(),
         output: Vec::new(),
     };
     tokio::time::timeout(WAIT * 2, async {
@@ -107,7 +113,11 @@ async fn until_ended(events: &mut SessionEvents) -> Reported {
                 }
                 Some(SessionEvent::Output(bytes)) => {
                     events.acknowledge(bytes.len());
-                    reported.output.extend_from_slice(&bytes);
+                    if reported.statuses.is_empty() {
+                        reported.before.extend_from_slice(&bytes);
+                    } else {
+                        reported.output.extend_from_slice(&bytes);
+                    }
                 }
                 other => panic!("expected the transfer's progress, got {other:?}"),
             }
@@ -203,6 +213,15 @@ async fn xmodem_sends_a_file_with_the_checksum_a_device_asks_for() {
         .collect();
     assert!(blocks.windows(2).all(|pair| pair[0] <= pair[1]));
     assert!(blocks.contains(&4), "progress block by block: {blocks:?}");
+    // The device asks from the moment it is spawned: a request that comes
+    // before the transfer is in place is the terminal's, as on a real line
+    // where the user starts the send once the device is asking. Nothing
+    // else may reach the terminal, and nothing once the transfer runs.
+    assert!(
+        reported.before.iter().all(|&byte| byte == NAK),
+        "the terminal saw {:?} before the transfer",
+        reported.before
+    );
     assert!(
         reported.output.is_empty(),
         "the terminal saw {:?}",
@@ -332,6 +351,228 @@ async fn xmodem_crc_falls_back_to_the_checksum_for_an_old_sender() {
     assert!(!seen.crc);
     assert_eq!(reported.last().state, TransferState::Done);
     assert_eq!(fs::read(&to).unwrap(), data);
+}
+
+#[tokio::test]
+async fn xmodem_crc_keeps_the_crc_once_the_sender_answered_in_it() {
+    // The first block, sent in CRC, is cut short three times: asking for
+    // it again, the session stays with the CRC the sender chose.
+    let mut console = console().await;
+    let data = contents(300, 5);
+    let to = console.folder.path().join("flaky.txt");
+    let device = ModemDevice::spawn(
+        &console.device,
+        Role::SendXmodem {
+            data: data.clone(),
+            large: false,
+        },
+        Faults {
+            drop_byte: Some(DropByte {
+                block: 1,
+                index: 50,
+                times: 3,
+                resend_after: None,
+            }),
+            ..Faults::default()
+        },
+    );
+    start_with(
+        &console,
+        ModemProtocol::XmodemCrc,
+        TransferAction::Receive(to.clone()),
+        QUICK,
+    )
+    .await;
+
+    let reported = until_ended(&mut console.events).await;
+    let seen = device.await.unwrap();
+    assert_eq!(reported.last().state, TransferState::Done);
+    assert!(seen.crc);
+    assert_eq!(fs::read(&to).unwrap(), data);
+}
+
+/// A binary file of four 128-byte blocks whose third one begins with
+/// `start`: bytes that are control bytes where a block would start.
+fn binary_with(start: &[u8]) -> Vec<u8> {
+    let mut data = contents(4 * 128 - 20, 10);
+    data[256..256 + start.len()].copy_from_slice(start);
+    data
+}
+
+/// Receives `data` with XMODEM-CRC from a device that misbehaves as
+/// `faults` says, with the usual timeouts; what was reported, and what the
+/// device saw.
+async fn receive_xmodem(console: &mut Console, data: &[u8], faults: Faults) -> (Reported, Seen) {
+    let to = console.folder.path().join("image.bin");
+    let device = ModemDevice::spawn(
+        &console.device,
+        Role::SendXmodem {
+            data: data.to_vec(),
+            large: false,
+        },
+        faults,
+    );
+    start(
+        console,
+        ModemProtocol::XmodemCrc,
+        TransferAction::Receive(to.clone()),
+    )
+    .await;
+    let reported = until_ended(&mut console.events).await;
+    let seen = device.await.unwrap();
+    (reported, seen)
+}
+
+#[tokio::test]
+async fn a_block_whose_start_is_damaged_is_not_read_as_an_end_or_a_cancel() {
+    // The SOH of block 3 arrives damaged, so its number, complement and
+    // data come where a block would start: an EOT or two CANs in them are
+    // the file's, not the end of the file or the device cancelling.
+    for start in [&[EOT][..], &[CAN, CAN][..]] {
+        let mut console = console().await;
+        let data = binary_with(start);
+        let (reported, seen) = receive_xmodem(
+            &mut console,
+            &data,
+            Faults {
+                damage_start: Some(3),
+                ..Faults::default()
+            },
+        )
+        .await;
+        assert_eq!(reported.last().state, TransferState::Done, "{start:?}");
+        assert_eq!(seen.ended, Ended::Done(Vec::new()));
+        assert_eq!(
+            fs::read(console.folder.path().join("image.bin")).unwrap(),
+            data
+        );
+        assert_eq!((reported.last().blocks, reported.last().retries), (4, 1));
+        terminal_is_back(&mut console).await;
+    }
+}
+
+#[tokio::test]
+async fn a_block_without_its_start_is_not_read_as_an_end() {
+    // Block 4 loses its SOH: its number, 4, is an EOT where a block would
+    // start, with the rest of the block right behind it.
+    let mut console = console().await;
+    let data = binary_with(&[]);
+    let (reported, seen) = receive_xmodem(
+        &mut console,
+        &data,
+        Faults {
+            drop_byte: Some(DropByte {
+                block: 4,
+                index: 0,
+                times: 1,
+                resend_after: None,
+            }),
+            ..Faults::default()
+        },
+    )
+    .await;
+    assert_eq!(reported.last().state, TransferState::Done);
+    assert_eq!(seen.ended, Ended::Done(Vec::new()));
+    assert_eq!(
+        fs::read(console.folder.path().join("image.bin")).unwrap(),
+        data
+    );
+    assert_eq!(reported.last().retries, 1);
+}
+
+#[tokio::test]
+async fn a_block_cut_short_and_sent_again_is_asked_for_once_the_line_is_quiet() {
+    // Block 3 loses a byte and the device, not waiting for an answer,
+    // sends it again: the first byte of the second copy completes the
+    // first, and the rest of the copy must not be read as control bytes.
+    for start in [&[EOT][..], &[CAN, CAN][..]] {
+        let mut console = console().await;
+        let data = binary_with(start);
+        let (reported, seen) = receive_xmodem(
+            &mut console,
+            &data,
+            Faults {
+                drop_byte: Some(DropByte {
+                    block: 3,
+                    index: 60,
+                    times: 1,
+                    resend_after: Some(Duration::from_millis(200)),
+                }),
+                ..Faults::default()
+            },
+        )
+        .await;
+        assert_eq!(reported.last().state, TransferState::Done, "{start:?}");
+        assert_eq!(seen.ended, Ended::Done(Vec::new()));
+        assert_eq!(
+            fs::read(console.folder.path().join("image.bin")).unwrap(),
+            data
+        );
+        assert_eq!(reported.last().blocks, 4);
+    }
+}
+
+#[tokio::test]
+async fn a_ymodem_block_whose_start_is_damaged_is_not_read_as_a_cancel() {
+    let mut console = console().await;
+    let mut data = contents(4000, 11);
+    data[2048..2050].copy_from_slice(&[CAN, CAN]);
+    let device = ModemDevice::spawn(
+        &console.device,
+        Role::SendYmodem {
+            files: vec![("flash.bin".into(), data.clone())],
+        },
+        Faults {
+            damage_start: Some(3),
+            ..Faults::default()
+        },
+    );
+    start(
+        &console,
+        ModemProtocol::Ymodem,
+        TransferAction::Receive(console.folder.path().to_path_buf()),
+    )
+    .await;
+    let reported = until_ended(&mut console.events).await;
+    let seen = device.await.unwrap();
+    assert_eq!(reported.last().state, TransferState::Done);
+    assert_eq!(seen.ended, Ended::Done(Vec::new()));
+    assert_eq!(
+        fs::read(console.folder.path().join("flash.bin")).unwrap(),
+        data
+    );
+}
+
+#[tokio::test]
+async fn a_ymodem_receive_refuses_a_device_sending_xmodem() {
+    let mut console = console().await;
+    let device = ModemDevice::spawn(
+        &console.device,
+        Role::SendXmodem {
+            data: contents(1000, 12),
+            large: true,
+        },
+        Faults::default(),
+    );
+    start_with(
+        &console,
+        ModemProtocol::Ymodem,
+        TransferAction::Receive(console.folder.path().to_path_buf()),
+        QUICK,
+    )
+    .await;
+    let reported = until_ended(&mut console.events).await;
+    let seen = device.await.unwrap();
+    assert!(
+        matches!(&reported.last().state, TransferState::Failed { reason } if reason.contains("XMODEM")),
+        "{:?}",
+        reported.last().state
+    );
+    // Told at its first block, not after the whole file.
+    assert_eq!(seen.ended, Ended::CancelledBySession);
+    assert_eq!(seen.blocks, 0);
+    assert_eq!(fs::read_dir(console.folder.path()).unwrap().count(), 0);
+    terminal_is_back(&mut console).await;
 }
 
 #[tokio::test]
@@ -742,6 +983,34 @@ async fn transfers_that_cannot_start_say_why() {
             .await,
         Err(TransferError::Running)
     );
+}
+
+#[tokio::test]
+async fn a_receive_refused_while_another_runs_leaves_no_file_behind() {
+    let console = console().await;
+    let request = |to: PathBuf| TransferRequest {
+        protocol: ModemProtocol::Xmodem,
+        action: TransferAction::Receive(to),
+        timeouts: QUICK,
+    };
+    let folder = console.folder.path();
+    console
+        .manager
+        .start_transfer(console.id, request(folder.join("first.bin")))
+        .await
+        .unwrap();
+    assert_eq!(
+        console
+            .manager
+            .start_transfer(console.id, request(folder.join("second.bin")))
+            .await,
+        Err(TransferError::Running)
+    );
+    let names: Vec<_> = fs::read_dir(folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, [".first.bin.part"]);
 }
 
 #[tokio::test]

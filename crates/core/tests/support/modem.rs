@@ -47,6 +47,25 @@ pub struct Faults {
     /// Sending YMODEM, gives each file's size as this many bytes more than
     /// it sends: a file that arrives cut short.
     pub overstate_size: usize,
+    /// Sending, the first time data block `n` goes out its SOH or STX is
+    /// damaged (sent as 0x81), so the rest of it arrives where a block
+    /// should start.
+    pub damage_start: Option<u64>,
+    /// Sending, drops one byte of a data block on the line.
+    pub drop_byte: Option<DropByte>,
+}
+
+/// A byte lost on the line: byte `index` of data block `block` (0 is its
+/// SOH or STX), the first `times` times the block goes out.
+#[derive(Debug, Clone, Copy)]
+pub struct DropByte {
+    pub block: u64,
+    pub index: usize,
+    pub times: u32,
+    /// If set, the block cut short is sent again after this long without
+    /// an answer, once, as a sender with a short timeout does; otherwise
+    /// only when the session asks for it.
+    pub resend_after: Option<Duration>,
 }
 
 /// How the device's side of a transfer ended.
@@ -88,6 +107,8 @@ pub struct ModemDevice {
     blocks: u64,
     block_sizes: Vec<usize>,
     damaged: bool,
+    start_damaged: bool,
+    drops: u32,
     crc: bool,
     headers: Vec<(String, String)>,
 }
@@ -125,6 +146,8 @@ impl ModemDevice {
                 blocks: 0,
                 block_sizes: Vec::new(),
                 damaged: false,
+                start_damaged: false,
+                drops: faults.drop_byte.map_or(0, |drop| drop.times),
                 crc: false,
                 headers: Vec::new(),
             };
@@ -357,7 +380,15 @@ impl ModemDevice {
     /// Sends a block until it is acknowledged. `false` if the session
     /// cancelled.
     fn put(&mut self, number: u8, data: &[u8], counted: bool) -> bool {
-        let damage = counted && self.should_damage(self.blocks + 1);
+        let block = self.blocks + 1;
+        let damage = counted && self.should_damage(block);
+        let damage_start =
+            counted && !self.start_damaged && self.faults.damage_start == Some(block);
+        self.start_damaged |= damage_start;
+        let drop = self
+            .faults
+            .drop_byte
+            .filter(|drop| counted && drop.block == block);
         let mut packet = vec![if data.len() == 1024 { STX } else { SOH }, number, !number];
         packet.extend_from_slice(data);
         if self.crc {
@@ -371,14 +402,27 @@ impl ModemDevice {
             if damage && first {
                 sent[10] ^= 0xFF;
             }
+            if damage_start && first {
+                sent[0] = 0x81;
+            }
+            // Waits this long for an answer before sending it again.
+            let mut wait = WAIT;
+            if let Some(drop) = drop.filter(|_| self.drops > 0) {
+                sent.remove(drop.index);
+                self.drops -= 1;
+                if let Some(after) = drop.resend_after {
+                    wait = after;
+                }
+            }
             first = false;
             self.write(&sent);
             let mut cans = 0;
             loop {
-                match self
-                    .byte(WAIT)
-                    .expect("the session never answered the block")
-                {
+                let Some(answer) = self.byte(wait) else {
+                    assert!(wait < WAIT, "the session never answered the block");
+                    break;
+                };
+                match answer {
                     ACK => {
                         if counted {
                             self.blocks += 1;
@@ -387,6 +431,9 @@ impl ModemDevice {
                         return true;
                     }
                     NAK => break,
+                    // A CRC receiver asking again for the first block, as
+                    // lrzsz's `sx` takes it.
+                    b'C' if self.crc && counted && number == 1 => break,
                     CAN => {
                         cans += 1;
                         if cans == 2 {

@@ -51,6 +51,18 @@ const REQUEST_INTERVAL: Duration = Duration::from_secs(3);
 /// instead (for XMODEM, whose senders may not know CRC).
 const CRC_REQUESTS: u32 = 3;
 
+/// How long the line must stay quiet before a receiver asks for a block
+/// again, after a damaged block or bytes where a block should start: the
+/// PURGE of Christensen's and Forsberg's descriptions, which read with a
+/// one-second timeout until nothing comes. What arrives meanwhile is the
+/// rest of a block, never control bytes.
+const PURGE_QUIET: Duration = Duration::from_secs(1);
+
+/// How long an EOT must be followed by silence to be one: a sender says
+/// nothing more until it is answered, while a block that lost its SOH
+/// goes on right behind its number (block 4's is the EOT byte).
+const EOT_QUIET: Duration = Duration::from_millis(250);
+
 /// How long a YMODEM sender waits for the receiver to acknowledge the
 /// empty header that ends a batch, before taking the batch as done.
 const END_OF_BATCH_WAIT: Duration = Duration::from_secs(2);
@@ -960,8 +972,26 @@ struct Receiver {
     asking_since: Instant,
     /// Start requests made so far.
     requests: u32,
+    /// Whether a block has begun to arrive since the first request: the
+    /// sender has chosen the CRC or the checksum, so there is no falling
+    /// back from one to the other any more.
+    answered: bool,
+    /// Discarding what arrives, since then, until the line is quiet; then
+    /// the block is asked for again.
+    purging: Option<Instant>,
+    /// An EOT where a block would start, taken as one if the line stays
+    /// quiet behind it.
+    eot: bool,
     /// Retries in a row.
     tries: u32,
+}
+
+impl Drop for Receiver {
+    /// A transfer dropped before it ran (refused because another one
+    /// runs, or its session gone) leaves no file behind.
+    fn drop(&mut self) {
+        self.discard_unfinished();
+    }
 }
 
 impl Receiver {
@@ -992,6 +1022,9 @@ impl Receiver {
             started: false,
             asking_since: Instant::now(),
             requests: 0,
+            answered: false,
+            purging: None,
+            eot: false,
             tries: 0,
         })
     }
@@ -1001,6 +1034,7 @@ impl Receiver {
         if transfer.protocol != ModemProtocol::Ymodem
             && transfer.protocol != ModemProtocol::Xmodem
             && self.crc
+            && !self.answered
             && self.requests >= CRC_REQUESTS
         {
             self.crc = false;
@@ -1017,14 +1051,35 @@ impl Receiver {
     }
 
     fn byte(&mut self, transfer: &mut Transfer, byte: u8, now: Instant) {
+        if let Some(since) = self.purging {
+            // The line is not quiet yet; noise that never stops is given
+            // up on after the reply timeout.
+            let quiet = Self::purge_quiet(transfer);
+            transfer.deadline = (now + quiet).min(since + transfer.timeouts.reply + quiet);
+            return;
+        }
+        if self.eot {
+            // Not an EOT, then: a block that lost its SOH, or noise.
+            self.eot = false;
+            self.purge(transfer, now);
+            return;
+        }
         if self.buffer.is_empty() {
             if transfer.cancel_byte(byte) {
                 return;
             }
             match byte {
-                SOH | STX => self.buffer.push(byte),
-                EOT => self.end_of_file(transfer, now),
-                // Noise between blocks.
+                SOH | STX => {
+                    self.answered = true;
+                    self.buffer.push(byte);
+                }
+                EOT => {
+                    self.eot = true;
+                    transfer.deadline = now + EOT_QUIET.min(transfer.timeouts.reply);
+                }
+                // Where a block should start: one whose SOH was damaged.
+                _ if self.started || self.answered => self.purge(transfer, now),
+                // Noise before the first block.
                 _ => {}
             }
             return;
@@ -1055,15 +1110,19 @@ impl Receiver {
                 packet[data_end] == checksum(data)
             };
         if !intact {
-            self.refuse(transfer, now);
+            // Perhaps not even a block's length: what follows may be the
+            // rest of it.
+            self.purge(transfer, now);
             return;
         }
         self.started = true;
         transfer.running();
         match self.expect {
             Expect::Header if number == 0 => self.header(transfer, data, now),
-            // The last block again: our answer was lost.
-            Expect::Header => self.accept_again(transfer, now),
+            // Data with no header before it: nothing would be saved.
+            Expect::Header => transfer.fail(format!(
+                "the device sent block {number} where a YMODEM header was due; is it sending XMODEM?"
+            )),
             Expect::Data | Expect::SecondEot if number == self.number => {
                 self.data(transfer, data, now);
             }
@@ -1082,6 +1141,20 @@ impl Receiver {
                 self.number
             )),
         }
+    }
+
+    /// Something other than a good block: discards what arrives until the
+    /// line is quiet, then asks for the block again.
+    fn purge(&mut self, transfer: &mut Transfer, now: Instant) {
+        self.buffer.clear();
+        self.eot = false;
+        transfer.cancels = 0;
+        self.purging = Some(now);
+        transfer.deadline = now + Self::purge_quiet(transfer);
+    }
+
+    fn purge_quiet(transfer: &Transfer) -> Duration {
+        PURGE_QUIET.min(transfer.timeouts.reply)
     }
 
     /// A damaged block: asks for it again.
@@ -1228,6 +1301,14 @@ impl Receiver {
     }
 
     fn timed_out(&mut self, transfer: &mut Transfer, now: Instant) {
+        if self.purging.take().is_some() {
+            self.refuse(transfer, now);
+            return;
+        }
+        if std::mem::take(&mut self.eot) {
+            self.end_of_file(transfer, now);
+            return;
+        }
         self.buffer.clear();
         if !self.started {
             if now >= self.asking_since + transfer.timeouts.start {
