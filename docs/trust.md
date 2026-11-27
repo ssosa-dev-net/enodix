@@ -492,9 +492,11 @@ own interpreter installs nothing.
   ports and the port forwards of open sessions (all on `127.0.0.1`; a forward
   may use `::1`).
 - It does not forward X11 to devices, nor ports from a device back to this
-  computer (`ssh -R`). It forwards your SSH agent only to hosts where you
-  turn on **Agent forwarding** (off by default), and shows it in the
-  session header.
+  computer (`ssh -R`). It forwards your SSH agent only to a host whose
+  **Agent forwarding** setting asks for it (off by default) and only once
+  you have said yes on this computer, in the session's pane before it logs
+  in: for that session, or always for that host at that address. It shows
+  **Agent forwarded** in the session header while it is.
 - It does not open web pages itself: web links go to your browser.
 
 ## What it does not protect against
@@ -514,7 +516,11 @@ own interpreter installs nothing.
   send a host's address and other fields to that address when you click
   them. Its jump hosts are machines your sessions pass through, and they
   get the jump host's login. Its port forwards open ports on this computer
-  while a session to the host is open. Its scripts are code that runs as you, and its
+  while a session to the host is open. Its **Agent forwarding** setting
+  only asks: a session to such a host asks you before the login whether to
+  forward your SSH agent, and nothing is forwarded unless you say so on
+  this computer (an "always" is kept in the app's data folder, never in the
+  workspace, and covers that workspace, host, address and port only). Its scripts are code that runs as you, and its
   platform definitions say what is sent at login (paging off, privileged
   mode, the show command of back up on login; each must be one line, and a
   definition whose command holds a line break is refused). Its hosts'

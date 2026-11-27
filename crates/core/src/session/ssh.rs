@@ -594,9 +594,12 @@ impl DeviceConnection {
 
 /// Runs a second channel over `link`: asks the session it is on (through
 /// `parent`, its commands) for another shell, then carries it until it
-/// ends. Closing it closes only the channel.
+/// ends. Closing it closes only the channel. `forward_agent`: whether the
+/// channel asks for the agent, if that connection forwards it (a
+/// duplicated terminal does; a job's channel never does).
 pub(super) async fn run_channel(
     parent: Option<mpsc::UnboundedSender<Command>>,
+    forward_agent: bool,
     link: &mut Link,
 ) -> CloseReason {
     let not_open = || {
@@ -610,6 +613,7 @@ pub(super) async fn run_channel(
         parent
             .send(Command::OpenChannel {
                 size: requested_size,
+                forward_agent,
                 reply,
             })
             .is_ok()
@@ -716,7 +720,7 @@ async fn pump(
     let mut sending: Option<Sending<'_>> = None;
     // Second channels asked for, opened one at a time, each answering its
     // asker when done.
-    let mut asked: VecDeque<(TerminalSize, ChannelReply)> = VecDeque::new();
+    let mut asked: VecDeque<(TerminalSize, bool, ChannelReply)> = VecDeque::new();
     let mut opening: Option<Opening<'_>> = None;
     let mut exit_status = None;
     let flow = link.flow();
@@ -727,11 +731,14 @@ async fn pump(
             }
         }
         if opening.is_none() {
-            if let (Some(connection), Some((size, reply))) = (connection, asked.pop_front()) {
+            if let (Some(connection), Some((size, agent, reply))) = (connection, asked.pop_front())
+            {
+                // Only a channel that asks for it, on a connection that
+                // forwards the agent.
+                let agent = agent && forward_agent;
                 opening = Some(Box::pin(async move {
-                    let _ = reply.send(
-                        start_second_shell(connection, size, terminal_type, forward_agent).await,
-                    );
+                    let _ = reply
+                        .send(start_second_shell(connection, size, terminal_type, agent).await);
                 }));
             }
         }
@@ -751,15 +758,20 @@ async fn pump(
                 }
                 // A second channel carries no others (dropping the reply
                 // says so).
-                Command::OpenChannel { size, reply } => {
+                Command::OpenChannel {
+                    size,
+                    forward_agent: agent,
+                    reply,
+                } => {
                     if connection.is_some() {
-                        asked.push_back((size, reply));
+                        asked.push_back((size, agent, reply));
                     }
                 }
                 // Logged in already: nothing asked for these.
                 // The manager sends breaks to serial sessions only.
                 Command::Answer(_)
                 | Command::HostKey(_)
+                | Command::AgentForwarding(_)
                 | Command::Break
                 | Command::Transfer { .. }
                 | Command::CancelTransfer => {}

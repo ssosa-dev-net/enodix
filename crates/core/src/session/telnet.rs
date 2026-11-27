@@ -184,6 +184,7 @@ pub(super) async fn run(
                 // Nothing asks for these over telnet.
                 Command::Answer(_)
                 | Command::HostKey(_)
+                | Command::AgentForwarding(_)
                 | Command::OpenChannel { .. }
                 | Command::Transfer { .. }
                 | Command::CancelTransfer => {}

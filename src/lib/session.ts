@@ -92,7 +92,12 @@ export interface TerminalSize {
 
 export type SessionState =
   | { state: "connecting" }
-  | { state: "connected" }
+  | {
+      state: "connected";
+      /** Whether this connection forwards the SSH agent (settled before it
+       * connected). */
+      agentForwarded: boolean;
+    }
   | {
       state: "closed";
       reason: string;
@@ -179,6 +184,26 @@ export interface HostKeyQuestion {
 
 export type HostKeyDecision = "trustAndRemember" | "trustOnce" | "cancel";
 
+/**
+ * A workspace host whose settings ask to forward the SSH agent, and that the
+ * user has not approved it for: nothing reaches the device until answered.
+ */
+export interface AgentForwardingQuestion {
+  /** The host's name in the workspace. */
+  name: string;
+  /** The address and port connected to. */
+  host: string;
+  port: number;
+}
+
+/**
+ * The answer: connect without forwarding (the default, and what closing the
+ * question means), forward for this tab until it is closed, or always
+ * forward to this host at this address (kept on this computer).
+ */
+export type AgentForwardingDecision =
+  "withoutForwarding" | "forwardThisSession" | "alwaysForward";
+
 /** Where input came from, as the shell routes it (`InputOrigin` in the
  * core): a terminal's origins (`terminalInput`), and a group paste's line. */
 export type SessionInputOrigin = InputOrigin | "group-paste";
@@ -188,7 +213,8 @@ export interface Session {
   readonly id: number;
   /** Whether its traffic is encrypted on the network (telnet's is not). */
   readonly encrypted: boolean;
-  /** Whether it forwards the SSH agent to the device. */
+  /** Whether it forwarded the SSH agent to the device when opened; each
+   * connected state says it again (`agentForwarded`). */
   readonly agentForwarded: boolean;
   readonly transport: Transport;
   /**
@@ -207,6 +233,8 @@ export interface Session {
   answer(answers: string[]): void;
   /** Decides the last host-key question. */
   decideHostKey(decision: HostKeyDecision): void;
+  /** Answers `onAgentForwarding`'s question. */
+  decideAgentForwarding(decision: AgentForwardingDecision): void;
   resize(size: TerminalSize): void;
   close(): void;
   /**
@@ -311,6 +339,11 @@ export interface SessionHandlers {
    */
   onHostKey: (question: HostKeyQuestion) => void;
   /**
+   * Whether to forward the SSH agent (`Session.decideAgentForwarding`),
+   * asked before connecting; nothing reaches the device meanwhile.
+   */
+  onAgentForwarding: (question: AgentForwardingQuestion) => void;
+  /**
    * What each connection agreed on (jump hosts first), just before the
    * session is connected.
    */
@@ -403,6 +436,9 @@ function channels(handlers: SessionHandlers) {
     onState: new Channel<SessionState>(handlers.onState),
     onPrompt: new Channel<LoginPrompt>(handlers.onPrompt),
     onHostKey: new Channel<HostKeyQuestion>(handlers.onHostKey),
+    onAgentForwarding: new Channel<AgentForwardingQuestion>(
+      handlers.onAgentForwarding,
+    ),
     onAlgorithms: new Channel<NegotiatedAlgorithms[]>(handlers.onAlgorithms),
     onLogFailure: new Channel<string>(handlers.onLogFailure),
     onBackup: new Channel<LoginBackupOutcome>(handlers.onBackup),
@@ -430,12 +466,13 @@ function channels(handlers: SessionHandlers) {
 /** The channels alone, as a command takes them. */
 function eventsOf(current: ReturnType<typeof channels>) {
   const { onOutput, onState, onPrompt, onHostKey, onAlgorithms } = current;
-  const { onLogFailure, onBackup } = current;
+  const { onAgentForwarding, onLogFailure, onBackup } = current;
   return {
     onOutput,
     onState,
     onPrompt,
     onHostKey,
+    onAgentForwarding,
     onAlgorithms,
     onLogFailure,
     onBackup,
@@ -553,6 +590,8 @@ export async function openSession(
     answer: (answers) => send(id, "session_answer", { answers }),
     decideHostKey: (decision) =>
       send(id, "session_decide_host_key", { decision }),
+    decideAgentForwarding: (decision) =>
+      send(id, "session_decide_agent_forwarding", { decision }),
     resize: (size) => send(id, "session_resize", { size }),
     close: () => send(id, "session_close", {}),
     async reconnect(size) {

@@ -208,9 +208,12 @@
       set: (s, v) => ({ ...s, agent_forwarding: toFlag(v) }),
       effective: (e) => e.agent_forwarding,
       note:
-        "SSH sessions forward your SSH agent to the device, so you can hop " +
-        "on from it with your keys. Whoever is root there can use them " +
-        "while the session lasts: turn it on only for hosts you trust.",
+        "SSH sessions ask to forward your SSH agent to the device, so you " +
+        "can hop on from it with your keys. Each computer asks its user " +
+        "before the login, unless they chose to always forward to this " +
+        "host: the workspace alone never turns it on. Anyone with " +
+        "administrator rights on the device can use the keys while the " +
+        "session is open.",
     },
     {
       key: "connect_timeout",

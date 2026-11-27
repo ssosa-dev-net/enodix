@@ -42,13 +42,13 @@ use enodix_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use enodix_core::preferences::{FontZoom, Preferences, Theme};
 use enodix_core::session::{
     local_environment, local_shells, local_start_folder, pick_local_shell, system_ssh_target,
-    AlgorithmKind, AlgorithmLists, AutoReconnects, Consumer, ConsumerGone, ConsumerKey,
-    ForwardStatus, HostKeyDecision, HostKeyQuestion, HostSession, HostWay, LoginPrompt,
-    NegotiatedAlgorithms, OpenOptions, Reconnection, SerialParameters, SerialPortInfo,
-    SerialTarget, SessionEvent, SessionId, SessionManager, SessionRecord, SessionRecords,
-    SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType,
-    TransferRequest, TransferStatus, Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
-    SYSTEM_SSH_WARNING,
+    AgentApprovals, AgentForwardingDecision, AgentForwardingQuestion, AlgorithmKind,
+    AlgorithmLists, AutoReconnects, Consumer, ConsumerGone, ConsumerKey, ForwardStatus,
+    HostKeyDecision, HostKeyQuestion, HostSession, HostWay, LoginPrompt, NegotiatedAlgorithms,
+    OpenOptions, Reconnection, SerialParameters, SerialPortInfo, SerialTarget, SessionEvent,
+    SessionId, SessionManager, SessionRecord, SessionRecords, SessionRelays, SessionState,
+    SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType, TransferRequest, TransferStatus,
+    Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
 };
 use enodix_core::steps::StepRuns;
 use enodix_core::template::Variables;
@@ -508,7 +508,12 @@ impl From<Size> for TerminalSize {
 #[allow(clippy::large_enum_variant)]
 enum StateMessage {
     Connecting,
-    Connected,
+    /// Connected; `agent_forwarded`: whether this connection forwards the
+    /// SSH agent (settled before it connected; the header's badge).
+    #[serde(rename_all = "camelCase")]
+    Connected {
+        agent_forwarded: bool,
+    },
     #[serde(rename_all = "camelCase")]
     Closed {
         reason: String,
@@ -557,7 +562,10 @@ impl From<SessionState> for StateMessage {
     fn from(state: SessionState) -> Self {
         match state {
             SessionState::Connecting => Self::Connecting,
-            SessionState::Connected => Self::Connected,
+            // The relay's consumer says whether it forwards the agent.
+            SessionState::Connected => Self::Connected {
+                agent_forwarded: false,
+            },
             SessionState::Closed(reason) => Self::Closed {
                 offers_password_login: reason.offers_password_login(),
                 negotiation: reason.negotiation_failure().map(|(jump_host, failure)| {
@@ -2240,6 +2248,7 @@ async fn session_open(
     on_state: Channel<StateMessage>,
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
+    on_agent_forwarding: Channel<AgentForwardingQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
@@ -2323,17 +2332,18 @@ async fn session_open(
             host_made(&shell, &configs, id, HostWay::Serial, &name, &title)?
         }
     };
-    let (encrypted, agent_forwarded, transport) = match &made {
-        Made::Quick(target) | Made::Host(HostSession { target, .. }) => (
-            target.encrypted(),
-            target.agent_forwarding(),
-            target.transport(),
-        ),
+    let (encrypted, transport) = match &made {
+        Made::Quick(target) | Made::Host(HostSession { target, .. }) => {
+            (target.encrypted(), target.transport())
+        }
     };
     let (id, events) = match made {
         Made::Quick(target) => manager.open_with(target, size.into(), options),
         Made::Host(session) => manager.open_host(session, size.into(), options),
     };
+    // Settled before it connects (a workspace host asks the user first):
+    // the connected state says it again.
+    let agent_forwarded = manager.agent_forwarded(id).unwrap_or(false);
     records.record(id, record.clone());
     tabs.attach(window, tab, id, transport);
     let consumer = relays.start(
@@ -2346,6 +2356,7 @@ async fn session_open(
             state: on_state,
             prompt: on_prompt,
             host_key: on_host_key,
+            agent_forwarding: on_agent_forwarding,
             algorithms: on_algorithms,
             log_failure: on_log_failure,
             backup: on_backup,
@@ -2363,6 +2374,8 @@ async fn session_open(
 }
 
 /// What a session is opened to.
+// Made once per open and taken apart at once: boxing would only add noise.
+#[allow(clippy::large_enum_variant)]
 enum Made {
     /// A quick connection: reconnects as made.
     Quick(SessionTarget),
@@ -2549,7 +2562,8 @@ struct Opened {
     consumer: u64,
     /// Whether its traffic is encrypted on the network; telnet's is not.
     encrypted: bool,
-    /// Whether it forwards the SSH agent to the device.
+    /// Whether it forwards the SSH agent to the device now (each
+    /// connected state says it again).
     #[serde(rename = "agentForwarded")]
     agent_forwarded: bool,
     /// `ssh`, `telnet` or `serial` (serial and telnet sessions can send a break).
@@ -2566,6 +2580,8 @@ struct Channels {
     state: Channel<StateMessage>,
     prompt: Channel<LoginPrompt>,
     host_key: Channel<HostKeyQuestion>,
+    /// Whether to forward the SSH agent, asked before connecting.
+    agent_forwarding: Channel<AgentForwardingQuestion>,
     algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     /// Why the session's log could not be written.
     log_failure: Channel<String>,
@@ -2586,7 +2602,14 @@ impl Consumer for Channels {
                 let auto = self.app.state::<AutoReconnects>();
                 let mut message = StateMessage::from(state.clone());
                 match (&state, &mut message) {
-                    (SessionState::Connected, _) => auto.connected(self.session),
+                    (SessionState::Connected, StateMessage::Connected { agent_forwarded }) => {
+                        auto.connected(self.session);
+                        *agent_forwarded = self
+                            .app
+                            .state::<SessionManager>()
+                            .agent_forwarded(self.session)
+                            .unwrap_or(false);
+                    }
                     (SessionState::Closed(reason), StateMessage::Closed { retry, gave_up, .. }) => {
                         *retry = auto
                             .after_close(self.session, reason)
@@ -2603,6 +2626,7 @@ impl Consumer for Channels {
             }
             SessionEvent::Prompt(prompt) => self.prompt.send(prompt),
             SessionEvent::HostKey(question) => self.host_key.send(question),
+            SessionEvent::AgentForwarding(question) => self.agent_forwarding.send(question),
             SessionEvent::Algorithms(algorithms) => self.algorithms.send(algorithms),
             SessionEvent::LogFailed(failure) => self.log_failure.send(failure.to_string()),
             SessionEvent::Backup(outcome) => {
@@ -2689,6 +2713,7 @@ async fn session_reconnect(
     on_state: Channel<StateMessage>,
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
+    on_agent_forwarding: Channel<AgentForwardingQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
@@ -2743,6 +2768,7 @@ async fn session_reconnect(
             state: on_state,
             prompt: on_prompt,
             host_key: on_host_key,
+            agent_forwarding: on_agent_forwarding,
             algorithms: on_algorithms,
             log_failure: on_log_failure,
             backup: on_backup,
@@ -2774,6 +2800,7 @@ async fn session_duplicate(
     on_state: Channel<StateMessage>,
     on_prompt: Channel<LoginPrompt>,
     on_host_key: Channel<HostKeyQuestion>,
+    on_agent_forwarding: Channel<AgentForwardingQuestion>,
     on_algorithms: Channel<Vec<NegotiatedAlgorithms>>,
     on_log_failure: Channel<String>,
     on_backup: Channel<LoginBackupOutcome>,
@@ -2795,6 +2822,7 @@ async fn session_duplicate(
             state: on_state,
             prompt: on_prompt,
             host_key: on_host_key,
+            agent_forwarding: on_agent_forwarding,
             algorithms: on_algorithms,
             log_failure: on_log_failure,
             backup: on_backup,
@@ -3087,6 +3115,19 @@ fn session_answer(
 ) -> Result<(), String> {
     manager
         .answer(SessionId(id), answers)
+        .map_err(|error| error.to_string())
+}
+
+/// Answers whether to forward the SSH agent, as the session asked last
+/// (the approval store and its keying live in the core).
+#[tauri::command]
+fn session_decide_agent_forwarding(
+    manager: State<'_, SessionManager>,
+    id: u64,
+    decision: AgentForwardingDecision,
+) -> Result<(), String> {
+    manager
+        .decide_agent_forwarding(SessionId(id), decision)
         .map_err(|error| error.to_string())
 }
 
@@ -3717,7 +3758,12 @@ pub fn run() {
             app.manage(CredentialAgent(agent));
             // Trusted host keys are per user, beside the app state.
             let known_hosts = KnownHosts::in_data_folder(&data_folder);
-            app.manage(SessionManager::new(known_hosts.clone()));
+            // So are the hosts the user always forwards the agent to,
+            // never in a workspace.
+            app.manage(
+                SessionManager::new(known_hosts.clone())
+                    .with_agent_approvals(AgentApprovals::in_data_folder(&data_folder)),
+            );
             // The Files tab's connections (#103) check the same keys.
             app.manage(files::FileTabs {
                 browsers: enodix_core::files::FileBrowsers::new(),
@@ -3956,6 +4002,7 @@ pub fn run() {
             steps::steps_stop,
             session_answer,
             session_decide_host_key,
+            session_decide_agent_forwarding,
             session_acknowledge,
             session_resize,
             session_close,

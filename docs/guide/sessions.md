@@ -380,20 +380,40 @@ and what you typed meanwhile goes out then.
 
 The **Agent forwarding** setting (`agent_forwarding: true` in a host file
 or a folder's `_folder.yaml`, or "Agent forwarding" in the side panel)
-lets the device use your SSH agent while the session is open, for example
-to log in from it to another device or to fetch a file over SSH with your
-key. It is off unless you turn it on.
+asks to let the device use your SSH agent while the session is open, for
+example to log in from it to another device or to fetch a file over SSH
+with your key. It is off unless a workspace turns it on.
+
+The setting only asks: a workspace is often written by someone else, and
+it also decides where your sessions go. So a terminal session to a host
+whose setting is on asks you first, in its pane, before it logs in, naming
+the host and its address and port:
+
+- **Connect without forwarding** (the default; Escape answers it too).
+- **Forward for this session**: this tab forwards the agent, its
+  reconnects too, until you close the tab. A duplicate of the tab keeps
+  the answer.
+- **Always forward to this host**: from now on this host is not asked
+  about again on this computer. The answer is kept in the app's data
+  folder (`agent_forwarding.json`), never in the workspace, and covers only
+  that workspace, host, address and port: if the host's address or port
+  changes, another host asks, or the same files are opened as another
+  workspace, you are asked again. Delete the file to forget every answer.
+
+Connecting without forwarding also holds for the tab until it is closed;
+closing the tab while the question is open closes the session.
 
 The device never gets the private keys, but anyone with administrator
 rights on it can ask your agent to sign with them while you are connected.
-Turn it on only for devices you trust. A session that forwards the agent
-shows **Agent forwarded** in its header.
+Forward it only to devices you trust. While a session forwards the agent,
+its header shows **Agent forwarded**.
 
 The agent forwarded is the one the host's profile logs in with, if it uses
 the SSH agent; otherwise the agent on this computer (`SSH_AUTH_SOCK`, or on
 Windows the OpenSSH agent or Pageant). It is forwarded to the device only,
-never to a jump host, and only for terminal sessions: jobs and file
-connections do not forward it.
+never to a jump host, and only for terminal sessions: jobs, file
+connections, the back up on login and script tunnels do not forward it,
+even to a host you always forward to. A quick connection never does.
 
 ## Old equipment
 

@@ -10,6 +10,7 @@
   import { unserializedModes } from "./handover";
   import { giveKeys } from "./keys";
   import { highlighting, highlightTerminal } from "./highlight.svelte";
+  import AgentForwardingCheck from "./AgentForwardingCheck.svelte";
   import HostKeyCheck from "./HostKeyCheck.svelte";
   import LoginQuestions from "./LoginQuestions.svelte";
   import RoleIcon from "./RoleIcon.svelte";
@@ -52,6 +53,8 @@
     enableAutoReconnect,
     restartAutoReconnect,
     stopAutoReconnect,
+    type AgentForwardingDecision,
+    type AgentForwardingQuestion,
     type HostKeyDecision,
     type HostKeyQuestion,
     type LoginPrompt,
@@ -201,7 +204,7 @@
     if (!session) return "Not until the session has opened";
     if (status.state === "connecting")
       return "Not while the session is connecting";
-    if (prompt || hostKey || pasteQuestion || stepsQuestion)
+    if (prompt || hostKey || agentQuestion || pasteQuestion || stepsQuestion)
       return "Not while a question about the session is open";
     // Its events come to this window only.
     if (stepsRun) return "Not while a snippet's steps run on it";
@@ -249,6 +252,12 @@
   let prompts = 0;
   /** The host key waiting for a decision, with a new key each. */
   let hostKey = $state<{ question: HostKeyQuestion; key: number } | null>(null);
+  /** Whether to forward the SSH agent, waiting for an answer, with a new
+   * key each. */
+  let agentQuestion = $state<{
+    question: AgentForwardingQuestion;
+    key: number;
+  } | null>(null);
   /** What each connection agreed on, jump hosts first. */
   let algorithms = $state<NegotiatedAlgorithms[]>([]);
   /** Whether this connection showed output before it connected: an SSH
@@ -493,6 +502,12 @@
     xterm?.focus();
   }
 
+  function decideAgentForwarding(decision: AgentForwardingDecision) {
+    session?.decideAgentForwarding(decision);
+    agentQuestion = null;
+    xterm?.focus();
+  }
+
   function answer(answers: string[]) {
     session?.answer(answers);
     prompt = null;
@@ -585,6 +600,7 @@
     status = { state: "connecting" };
     prompt = null;
     hostKey = null;
+    agentQuestion = null;
     algorithms = [];
     bannerShown = false;
     logFailure = null;
@@ -691,6 +707,7 @@
       focused &&
       !prompt &&
       !hostKey &&
+      !agentQuestion &&
       !closedCard &&
       !searching &&
       !pasteQuestion &&
@@ -1337,6 +1354,7 @@
           if (state.state !== "connecting") {
             prompt = null;
             hostKey = null;
+            agentQuestion = null;
           }
           // Nothing is pasted into a session that ended.
           if (state.state === "closed" && pasteQuestion) {
@@ -1351,6 +1369,8 @@
         },
         onPrompt: (asked) => (prompt = { prompt: asked, key: ++prompts }),
         onHostKey: (question) => (hostKey = { question, key: ++prompts }),
+        onAgentForwarding: (question) =>
+          (agentQuestion = { question, key: ++prompts }),
         onAlgorithms: (agreed) => (algorithms = agreed),
         onLogFailure: (reason) => (logFailure = reason),
         onBackup: (outcome) => {
@@ -1512,11 +1532,11 @@
         Insecure
       </span>
     {/if}
-    {#if session?.agentForwarded}
+    {#if status.state === "connected" && status.agentForwarded}
       <span
         class="marker forwarded"
         data-agent-forwarded
-        title="Your SSH agent is forwarded to this device: whoever is root on it can log in with your keys while this session lasts"
+        title="Your SSH agent is forwarded to this device now, as you approved: anyone with administrator rights on it can use the keys in your agent while this session is open"
       >
         Agent forwarded
       </span>
@@ -1817,6 +1837,15 @@
           >New connection</button
         >
       </div>
+    {/if}
+    {#if agentQuestion}
+      {#key agentQuestion.key}
+        <AgentForwardingCheck
+          question={agentQuestion.question}
+          ready={session !== null}
+          ondecide={decideAgentForwarding}
+        />
+      {/key}
     {/if}
     {#if hostKey}
       {#key hostKey.key}

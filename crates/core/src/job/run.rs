@@ -16,8 +16,9 @@ use crate::enrich::CollectedFacts;
 use crate::files::Hashes;
 use crate::logging::PlainText;
 use crate::session::{
-    CloseReason, HostKeyDecision, HostKeyQuestion, LoginPrompt, OpenError, SessionEvent,
-    SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshTarget, TerminalSize,
+    AgentForwardingDecision, CloseReason, HostKeyDecision, HostKeyQuestion, LoginPrompt, OpenError,
+    SessionEvent, SessionEvents, SessionId, SessionManager, SessionState, SessionTarget, SshTarget,
+    TerminalSize,
 };
 use crate::workspace::HostId;
 
@@ -1044,6 +1045,13 @@ impl HostRunner {
                 Some(SessionEvent::Prompt(prompt)) => {
                     refused = Some(login_question_refused(&prompt));
                     let _ = self.manager.close(id);
+                }
+                // A job never forwards the agent (its targets do not ask),
+                // and nobody could answer.
+                Some(SessionEvent::AgentForwarding(_)) => {
+                    let _ = self
+                        .manager
+                        .decide_agent_forwarding(id, AgentForwardingDecision::WithoutForwarding);
                 }
                 Some(
                     SessionEvent::Algorithms(_)
