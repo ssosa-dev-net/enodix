@@ -308,7 +308,7 @@ pub(super) struct Transfer {
 
 enum Side {
     Send(Sender),
-    Receive(Receiver),
+    Receive(Box<Receiver>),
 }
 
 impl Transfer {
@@ -336,7 +336,7 @@ impl Transfer {
                 )
             }
             TransferAction::Receive(to) => (
-                Side::Receive(Receiver::new(protocol, to)?),
+                Side::Receive(Box::new(Receiver::new(protocol, to)?)),
                 TransferDirection::Receive,
                 None,
             ),
