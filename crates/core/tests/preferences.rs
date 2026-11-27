@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use enodix_core::preferences::{
-    normalize_chord, ColorScheme, FontZoom, Preferences, SideView, Theme, DEFAULT_FONT_SIZE,
-    DEFAULT_LEFT_PANEL_WIDTH, MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK, MIN_FONT_SIZE,
-    MIN_PANEL_WIDTH,
+    normalize_chord, reserved_key, ColorScheme, FontZoom, Preferences, SideView, Theme,
+    DEFAULT_FONT_SIZE, DEFAULT_LEFT_PANEL_WIDTH, MAX_FONT_SIZE, MAX_PANEL_WIDTH, MAX_SCROLLBACK,
+    MIN_FONT_SIZE, MIN_PANEL_WIDTH, RESERVED_KEYS,
 };
 use tempfile::TempDir;
 
@@ -550,4 +550,57 @@ fn bad_or_clashing_keys_are_dropped_one_by_one() {
         loaded.snippet_keys,
         map(&[("Ctrl+K", "free, quick open moved")])
     );
+}
+
+#[test]
+fn keys_the_app_keeps_cannot_be_bound_on_read_or_write() {
+    // Read: from a hand-edited file, one by one.
+    let data = TempDir::new().unwrap();
+    fs::write(
+        data.path().join("preferences.yaml"),
+        "shortcuts:\n  quick-open: ctrl+v\n  close-tab: Ctrl+Shift+Q\n  details: ctrl+tab\n\
+         snippet_keys:\n  ctrl+c: copy\n  Ctrl+=: zoom\n  ctrl+shift+h: hosts\n  F5: fine\n",
+    )
+    .unwrap();
+    let loaded = Preferences::load(data.path());
+    assert_eq!(loaded.shortcuts, map(&[("close-tab", "Ctrl+Shift+Q")]));
+    assert_eq!(loaded.snippet_keys, map(&[("F5", "fine")]));
+    // The refused action keeps its own default key.
+    assert_eq!(loaded.effective_shortcuts()["quick-open"], "Ctrl+K");
+
+    // Write: what is saved is already without them.
+    let saved = TempDir::new().unwrap();
+    Preferences {
+        shortcuts: map(&[("preferences", "Ctrl+Shift+V"), ("details", "Ctrl+J")]),
+        snippet_keys: map(&[("Ctrl+PageUp", "tab"), ("Alt+1", "ok")]),
+        ..Preferences::default()
+    }
+    .save(saved.path())
+    .unwrap();
+    let text = fs::read_to_string(saved.path().join("preferences.yaml")).unwrap();
+    assert!(
+        !text.contains("Ctrl+Shift+V") && !text.contains("PageUp"),
+        "{text}"
+    );
+    let back = Preferences::load(saved.path());
+    assert_eq!(back.shortcuts, map(&[("details", "Ctrl+J")]));
+    assert_eq!(back.snippet_keys, map(&[("Alt+1", "ok")]));
+}
+
+#[test]
+fn the_reserved_keys_are_listed_with_what_they_do() {
+    assert_eq!(
+        reserved_key("ctrl+c"),
+        Some("copies the selection or interrupts")
+    );
+    assert_eq!(
+        reserved_key("Ctrl+Shift+PageUp"),
+        Some("moves the tab left")
+    );
+    assert_eq!(reserved_key("Ctrl+J"), None);
+    // No default shortcut is reserved.
+    for (_, default) in enodix_core::preferences::SHORTCUT_ACTIONS {
+        assert_eq!(reserved_key(default), None, "{default}");
+    }
+    assert!(!RESERVED_KEYS.is_empty());
 }

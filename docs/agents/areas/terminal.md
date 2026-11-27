@@ -79,10 +79,22 @@ canvas:not(.xterm-link-layer)` (the link layer is a 2D canvas). Smoke
   End, Insert, Delete, Space). `normalized` drops unknown actions, bad
   chords, a second action on a taken chord, and snippet keys on a chord an
   app action uses; `effective_shortcuts()`. Interface: `keyBindings.ts`
-  (`chordOf(event)` by `event.code`, `actionFor`, interface copy of the
-  action list), `App.svelte` `shortcut()` dispatches the nine movable
-  actions by chord, then snippet keys (only with a connected active session,
-  via `sendSnippet`), then the fixed keys (tab cycling, side views).
+  (`chordsOf(event)`: the printed key, `event.key`, first, then the position,
+  `event.code`; `bindingOf` takes the first chord bound to an action or a
+  snippet and stops at a reserved printed chord, so the printed letter wins
+  and copy/paste stay where the user sees them; `chordOf` is the first, what
+  Preferences records; `typedLetter` is the letter match shared by the
+  terminal's copy, paste and search keys and the app's fixed keys: printed
+  Latin letter, else position), `App.svelte` `shortcut()` dispatches the nine
+  movable actions by `bindingOf`, then snippet keys (only with a connected
+  active session, via `sendSnippet`; `event.repeat` sends nothing and is
+  swallowed), then the fixed keys (tab cycling, side views). Reserved keys:
+  core `RESERVED_KEYS`/`reserved_key` (copy, paste, search, tab keys, zoom,
+  side views); `normalized` drops a shortcut or snippet key on one on read and
+  write; the shell serves the list as `reserved_keys`, the interface keeps it
+  in `reservedKeys` and the Preferences view refuses to record one and says
+  why (`[data-key-refused]`). Checked by a throwaway script over key events
+  for QWERTY, AZERTY, Dvorak and Cyrillic (no interface test runner).
   Preferences view `[data-key-bindings]` (`preference-key-<action>`,
   `preference-new-snippet-key`). Limits: tooltips/palette hints and
   `SessionWindow.svelte` still use the default keys; zoom and the terminal's

@@ -189,8 +189,15 @@ one the session had. A quick connection reconnects as it was made.
   press the new keys; **Reset** restores the default. **Snippet keys** bind a
   key to a snippet, sent to the active session like a click in the Snippets
   view; that key no longer reaches the device. A key needs Ctrl or Alt
-  (function keys stand alone). Tooltips and the palette still name the
-  default keys, and a separate session window keeps its own.
+  (function keys stand alone). A key answers to the key that prints its
+  letter on your layout (on AZERTY the key labelled W for Ctrl+Shift+W, on
+  Dvorak the key labelled K for Ctrl+K), and also to the key at that place on
+  a QWERTY keyboard. When the two name different actions, the printed letter
+  wins; one press never runs two things. Keys the app keeps (copy and paste,
+  search, the tab keys, the font size keys, the side view keys) cannot be
+  bound: Preferences says why. A key bound to a snippet sends it once per
+  press: holding it sends nothing more. Tooltips and the palette still name
+  the default keys, and a separate session window keeps its own.
 - **Colour scheme**: Preferences offers Solarized Dark and Light, Dracula,
   Nord and Gruvbox Dark besides the app's own colours (which follow its
   light or dark theme). **Own colours** sets the background, text, cursor,
