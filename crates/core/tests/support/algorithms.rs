@@ -196,7 +196,12 @@ pub struct FakeDevice {
 
 impl FakeDevice {
     pub async fn start(offer: Offer) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        Self::start_on(0, offer).await
+    }
+
+    /// The same on `port` (0: any free one), for the example server.
+    pub async fn start_on(port: u16, offer: Offer) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let packet = kexinit_packet(&offer);
         let task = tokio::spawn(async move {

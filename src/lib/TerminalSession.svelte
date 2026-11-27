@@ -248,6 +248,13 @@
   /** For focusing the terminal again after a login prompt. */
   let xterm: Terminal | null = null;
   let session = $state<Session | null>(null);
+  /**
+   * Input made before the session's open was answered, sent in order once
+   * it is. Output can arrive before that answer, and the terminal's reply
+   * to it must not be lost: a local shell's ConPTY asks for the cursor
+   * position first and holds the shell until it has the answer.
+   */
+  let unsent: (() => void)[] = [];
   let status = $state<SessionState>({ state: "connecting" });
   /** The server's login questions waiting for answers, with a new key each. */
   let prompt = $state<{ prompt: LoginPrompt; key: number } | null>(null);
@@ -1300,17 +1307,22 @@
         ? // One character per byte (some mouse reports).
           Uint8Array.from(data, (char) => char.charCodeAt(0))
         : encoder.encode(data);
-      // Only a connected session shares (input while connecting is
-      // dropped by the core anyway, and must not reach the other members).
-      if (status.state !== "connected") session?.write(bytes);
-      else if (origin === "pasted" && pastingGroup)
-        session?.input(bytes, "group-paste", pasteId);
-      else
-        session?.input(
-          bytes,
-          origin,
-          origin === "pasted" ? pasteId : undefined,
-        );
+      const group = origin === "pasted" && pastingGroup;
+      const paste = pasteId;
+      const send = () => {
+        // Only a connected session shares (input while connecting is
+        // dropped by the core anyway, and must not reach the other members).
+        if (status.state !== "connected") session?.write(bytes);
+        else if (group) session?.input(bytes, "group-paste", paste);
+        else
+          session?.input(
+            bytes,
+            origin,
+            origin === "pasted" ? paste : undefined,
+          );
+      };
+      if (session) send();
+      else unsent.push(send);
     });
     // For the smoke test, which checks where input came from.
     Object.assign(container, { input });
@@ -1399,6 +1411,7 @@
           return;
         }
         session = opened;
+        for (const send of unsent.splice(0)) send();
         // What it reported to the window before, unless newer events
         // (those that waited for this window) said otherwise (#86).
         const taken = opened.taken;
@@ -1422,13 +1435,15 @@
         // Opened a while after it was asked for: not over a move since.
         if (untrack(() => focused)) giveKeys(terminal);
       },
-      (error) =>
-        (status = {
+      (error) => {
+        unsent = [];
+        status = {
           state: "closed",
           reason: String(error),
           offersPasswordLogin: false,
           negotiation: null,
-        }),
+        };
+      },
     );
 
     return () => {

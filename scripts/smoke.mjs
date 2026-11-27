@@ -44,7 +44,10 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createTlsServer } from "node:https";
-import { createServer as createTcpServer } from "node:net";
+import {
+  createServer as createTcpServer,
+  connect as tcpConnect,
+} from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -76,6 +79,11 @@ const DEVICE_PORT = 22725;
 const SCP_PORT = 22726;
 // A server that sends an SSH login banner before the login (#134).
 const BANNER_PORT = 22727;
+// A stand-in device offering only algorithms the app lacks (MD5 MACs), whose
+// failure card offers the system's ssh client.
+const UNSUPPORTED_PORT = 22728;
+// Where a workspace host's local port forward listens (the test's own).
+const FORWARD_PORT = 22729;
 const DEVTOOLS_PORT = 9333;
 // A port of this computer nobody listens on, for the refused connection.
 const CLOSED_PORT = 1;
@@ -1657,6 +1665,8 @@ function startServer() {
       scpFolder,
       "--banner",
       String(BANNER_PORT),
+      "--unsupported-device",
+      String(UNSUPPORTED_PORT),
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
@@ -2536,6 +2546,8 @@ async function main() {
       DEVICE_PORT,
       SCP_PORT,
       BANNER_PORT,
+      UNSUPPORTED_PORT,
+      FORWARD_PORT,
       DEVTOOLS_PORT,
       CLOSED_PORT,
       Number(new URL(releaseServer.url).port),
@@ -3447,6 +3459,18 @@ async function main() {
     doubleClick,
     hostKeyCheck,
     decideHostKey,
+    status,
+    screen,
+    screenshot,
+    step,
+  });
+
+  await screensOf080({
+    evaluate,
+    text,
+    click,
+    type,
+    doubleClick,
     status,
     screen,
     screenshot,
@@ -10124,6 +10148,7 @@ async function fileJob({ evaluate, fillForm, screenshot, step }) {
 /** The keys held during a click, as DevTools counts them. */
 const CTRL = 2;
 const SHIFT = 8;
+const ALT = 1;
 
 /**
  * A selection of several hosts (#110), in the Jobs folder `jobs` leaves
@@ -13575,6 +13600,717 @@ async function legacyCrypto({
   await until(
     "the old device gone from the tree",
     async () => !(await exists(hostRow)),
+  );
+}
+
+/** Every file below `folder` (paths relative to it), without reading any. */
+function pathsBelow(folder, prefix = "") {
+  if (!existsSync(folder)) return [];
+  return readdirSync(folder, { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory()
+      ? pathsBelow(join(folder, entry.name), `${prefix}${entry.name}/`)
+      : [`${prefix}${entry.name}`],
+  );
+}
+
+/** What a TCP connection to `port` of this computer reads until it closes;
+ * rejects if it is refused. */
+function readFromPort(port) {
+  return new Promise((resolve, reject) => {
+    const socket = tcpConnect(port, "127.0.0.1");
+    let read = "";
+    socket.setTimeout(10_000, () => {
+      socket.destroy();
+      reject(new Error(`nothing more from port ${port} within 10 s: ${read}`));
+    });
+    socket.on("data", (chunk) => (read += chunk.toString()));
+    socket.on("end", () => resolve(read));
+    socket.on("error", reject);
+  });
+}
+
+/** What a connection to 127.0.0.1:`targetPort` through the SOCKS5 proxy on
+ * `proxyPort` reads until it closes (no authentication, CONNECT). */
+function readThroughSocks(proxyPort, targetPort) {
+  return new Promise((resolve, reject) => {
+    const socket = tcpConnect(proxyPort, "127.0.0.1");
+    let stage = "greeting";
+    let buffer = Buffer.alloc(0);
+    socket.setTimeout(10_000, () => {
+      socket.destroy();
+      reject(new Error(`the SOCKS proxy stalled at its ${stage}`));
+    });
+    socket.on("connect", () => socket.write(Buffer.from([5, 1, 0])));
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (stage === "greeting" && buffer.length >= 2) {
+        if (buffer[0] !== 5 || buffer[1] !== 0) {
+          socket.destroy();
+          reject(new Error(`the SOCKS greeting was answered ${buffer[1]}`));
+          return;
+        }
+        buffer = buffer.subarray(2);
+        stage = "request";
+        socket.write(
+          Buffer.from([
+            5,
+            1,
+            0,
+            1,
+            127,
+            0,
+            0,
+            1,
+            targetPort >> 8,
+            targetPort & 255,
+          ]),
+        );
+      }
+      if (stage === "request" && buffer.length >= 10) {
+        if (buffer[1] !== 0) {
+          socket.destroy();
+          reject(new Error(`the SOCKS request was answered ${buffer[1]}`));
+          return;
+        }
+        buffer = buffer.subarray(10);
+        stage = "data";
+      }
+    });
+    socket.on("end", () =>
+      stage === "data"
+        ? resolve(buffer.toString())
+        : reject(new Error(`the SOCKS proxy closed at its ${stage}`)),
+    );
+    socket.on("error", reject);
+  });
+}
+
+/**
+ * The screens that came with 0.8.0, as a user sees them: a local shell
+ * (quick connect and the palette), a host's port forwards, the agent
+ * forwarding question, automatic reconnect, moved key bindings and a
+ * snippet key, colour schemes, and the system's ssh client offered for a
+ * device the app cannot negotiate with. The serial file transfer needs a
+ * serial port, which the smoke test has none of.
+ */
+async function screensOf080({
+  evaluate,
+  text,
+  click,
+  type,
+  doubleClick,
+  status,
+  screen,
+  screenshot,
+  step,
+}) {
+  const exists = (selector) =>
+    evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
+  const shown = (selector) => `${SHOWN_SESSION} ${selector}`;
+  const hasButton = (label) =>
+    evaluate(
+      `[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === ${JSON.stringify(label)} && b.checkVisibility())`,
+    );
+  // Ends the session shown and goes back to the connect view.
+  const closeShown = async () => {
+    await sessionAction(evaluate, "disconnect");
+    await until("the session closed", async () =>
+      (await status()).startsWith("Closed"),
+    );
+    await until("the New connection button", () => hasButton("New connection"));
+    await clickButton(evaluate, "New connection", SHOWN_SESSION);
+    await until("the connect view", () => exists(".slot.connect"));
+  };
+  const connected = async (prompt = "test-ssh$") => {
+    await until(
+      "the Connected status",
+      async () => (await status()) === "Connected",
+    );
+    await until("the shell prompt", async () =>
+      (await screen()).includes(prompt),
+    );
+  };
+  // Hosts in the Lab folder (its port is the test server's), logging in
+  // with the agent profile `agentAndKeyboardInteractive` made, which uses
+  // the test server's agent (the app's SSH_AUTH_SOCK), never the user's.
+  const labHost = async (name, extra = "") => {
+    const file = join(workspace, "Lab", `${name}.yaml`);
+    writeFileSync(
+      file,
+      `name: ${name}\naddress: 127.0.0.1\ncredential_profile: agent-login\n${extra}`,
+    );
+    const row = `nav [data-host="Lab/${name}.yaml"]`;
+    await until(`${name} in the tree`, () => exists(row));
+    return { file, row };
+  };
+  const removeHost = async ({ file, row }) => {
+    rmSync(file);
+    await until(`${row} gone from the tree`, async () => !(await exists(row)));
+  };
+
+  // ---- Local shell (#22), from quick connect's third mode.
+  await until("the connect view", () => exists(".slot.connect"));
+  await mouseClick(evaluate, ".slot.connect [data-quick-mode=local]");
+  await until("the local shell form", () =>
+    exists(".slot.connect [data-quick-local] [data-open-local-shell]"),
+  );
+  // The computer's shells arrive a moment after the form (WSL is asked).
+  const shells = await until(
+    "this computer's shells listed",
+    () =>
+      evaluate(`(() => {
+      const values = [...document.querySelectorAll(".slot.connect [name=local-shell] option")].map((o) => o.value);
+      return values.includes("cmd") && values;
+    })()`),
+    30_000,
+  );
+  if (
+    shells[0] !== "" ||
+    !shells.some((id) => /^(pwsh|powershell)$/.test(id))
+  ) {
+    fail(`the shell choice lists ${JSON.stringify(shells)}`);
+  }
+  await screenshot("local-shell-form");
+  await evaluate(`(() => {
+    const select = document.querySelector(".slot.connect [name=local-shell]");
+    select.value = "cmd";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  const logsBefore = pathsBelow(join(appData, "logs"));
+  await mouseClick(evaluate, ".slot.connect [data-open-local-shell]");
+  await until("the local session's tab", () =>
+    exists(shown("[data-session-protocol=local]")),
+  );
+  // It starts in the workspace folder, which the prompt names.
+  await until(
+    "the Command Prompt's prompt",
+    async () => /smoke-workspace>/.test(await screen()),
+    30_000,
+  );
+  await type("echo smoke%ERRORLEVEL%x\r");
+  await until("the command's output", async () =>
+    /^smoke0x\s*$/m.test(await screen()),
+  );
+  if ((await text(shown("[data-session-protocol]"))).trim() !== "Local") {
+    fail(
+      `the local session's header says ${await text(shown("[data-session-protocol]"))}`,
+    );
+  }
+  await checkHeaderLine(evaluate, SHOWN_SESSION, [
+    "[data-session-protocol=local]",
+  ]);
+  await mouseClick(evaluate, shown("[data-session-menu]"));
+  await until("the local session's menu", () => menuEntries(evaluate));
+  const localEntries = await menuEntries(evaluate);
+  if (localEntries.includes("multi-send")) {
+    fail(
+      `a local shell offers to join the multi-send group: ${JSON.stringify(localEntries)}`,
+    );
+  }
+  await pressKey(evaluate, "Escape");
+  await until(
+    "the local session's menu closed",
+    async () => (await menuEntries(evaluate)).length === 0,
+  );
+  const logsAfter = pathsBelow(join(appData, "logs"));
+  const newLogs = logsAfter.filter((path) => !logsBefore.includes(path));
+  if (newLogs.length > 0)
+    fail(`the local shell was logged: ${newLogs.join(", ")}`);
+  await screenshot("local-shell");
+  step(
+    "a local shell (Command Prompt) from quick connect showed its prompt in the workspace folder and ran a command; marked Local, not logged, no multi-send",
+  );
+  await closeShown();
+
+  // The palette's New local shell opens the default one (PowerShell).
+  await mouseClick(evaluate, ".slot.connect [data-empty-pane=palette]");
+  await until("the palette", () => exists("input[name=palette-query]"));
+  await paletteChoose(
+    evaluate,
+    "local shell",
+    '[data-palette-command="local-shell"]',
+  );
+  await until("the palette's local shell tab", () =>
+    exists(shown("[data-session-protocol=local]")),
+  );
+  await until(
+    "PowerShell's prompt",
+    async () => /PS [^\n]*>/.test(await screen()),
+    40_000,
+  );
+  await type('Write-Output ("ps" + "-ok")\r');
+  await until("PowerShell's output", async () =>
+    /^ps-ok\s*$/m.test(await screen()),
+  );
+  step("the palette's New local shell opened PowerShell, which ran a command");
+  await closeShown();
+
+  // ---- Port forwards (#21): a local forward to a port of the test's own
+  // and a SOCKS proxy on any free port, both on loopback.
+  const target = createTcpServer((socket) => socket.end("forward-target-ok\n"));
+  await new Promise((resolve) => target.listen(0, "127.0.0.1", resolve));
+  const targetPort = target.address().port;
+  try {
+    const forwarding = await labHost(
+      "fwd-r1",
+      `forwards:\n  web: L ${FORWARD_PORT}:127.0.0.1:${targetPort}\n  proxy: D 0\n`,
+    );
+    await doubleClick(forwarding.row);
+    await connected();
+    const marker = shown("[data-forwards-marker]");
+    await until(
+      "the Forwarding 2 marker",
+      async () => (await text(marker)).trim() === "Forwarding 2",
+    );
+    await checkHeaderLine(evaluate, SHOWN_SESSION, ["[data-forwards-marker]"]);
+    await mouseClick(evaluate, marker);
+    await until("the forwards' list", () => exists("[data-forwards-panel]"));
+    const rows = await until("both forwards listed", () =>
+      evaluate(`(() => {
+        const row = (name) => document.querySelector("[data-forwards-panel] [data-forward-row=" + name + "]");
+        return row("web") && row("proxy") && {
+          web: row("web").textContent, webState: row("web").dataset.forwardState,
+          proxy: row("proxy").textContent, proxyState: row("proxy").dataset.forwardState,
+        };
+      })()`),
+    );
+    if (
+      rows.webState !== "listening" ||
+      !rows.web.includes(
+        `127.0.0.1:${FORWARD_PORT} reaches 127.0.0.1 port ${targetPort}`,
+      )
+    ) {
+      fail(`the local forward is listed as ${JSON.stringify(rows.web)}`);
+    }
+    const proxyPort = Number(
+      /SOCKS5 proxy on 127\.0\.0\.1:(\d+)/.exec(rows.proxy)?.[1] ?? 0,
+    );
+    if (rows.proxyState !== "listening" || !proxyPort) {
+      fail(`the SOCKS proxy is listed as ${JSON.stringify(rows.proxy)}`);
+    }
+    await screenshot("port-forwards");
+    const direct = await readFromPort(FORWARD_PORT);
+    if (direct !== "forward-target-ok\n") {
+      fail(`the local forward read ${JSON.stringify(direct)}`);
+    }
+    const proxied = await readThroughSocks(proxyPort, targetPort);
+    if (proxied !== "forward-target-ok\n") {
+      fail(`the SOCKS proxy read ${JSON.stringify(proxied)}`);
+    }
+    step(
+      `a host's forwards were marked Forwarding 2 and listed with where they listen; both reached their target (SOCKS on ${proxyPort})`,
+    );
+
+    await mouseClick(evaluate, "[data-forwards-panel] [data-forward-stop=web]");
+    await until("the local forward stopped", () =>
+      exists(
+        "[data-forwards-panel] [data-forward-row=web][data-forward-state=stopped]",
+      ),
+    );
+    await until(
+      "the Forwarding 1 marker",
+      async () => (await text(marker)).trim() === "Forwarding 1",
+    );
+    await until("the local forward's port closed", () =>
+      readFromPort(FORWARD_PORT).then(
+        () => false,
+        (error) => error.code === "ECONNREFUSED",
+      ),
+    );
+    await pressKey(evaluate, "Escape");
+    await until(
+      "the forwards' list closed",
+      async () => !(await exists("[data-forwards-panel]")),
+    );
+    await closeShown();
+    if (await exists("[data-forwards-marker]")) {
+      fail("a forwards marker stayed after its session closed");
+    }
+    await until("the SOCKS port closed with the session", () =>
+      readFromPort(proxyPort).then(
+        () => false,
+        (error) => error.code === "ECONNREFUSED",
+      ),
+    );
+    step("Stop closed one forward; closing the session closed the other");
+    await removeHost(forwarding);
+  } finally {
+    target.close();
+  }
+
+  // ---- The agent forwarding question (#26), for a host that asks for it.
+  const agentFile = join(appData, "agent_forwarding.json");
+  rmSync(agentFile, { force: true });
+  const forwarded = shown("[data-agent-forwarded]");
+  const agentHost = await labHost("agent-fwd", "agent_forwarding: true\n");
+  const question = async () => {
+    await doubleClick(agentHost.row);
+    await until("the agent forwarding question", () =>
+      exists(
+        `${SHOWN_SESSION} [data-agent-question] [data-decision=withoutForwarding]:not(:disabled)`,
+      ),
+    );
+  };
+  await question();
+  const where = await text(`${SHOWN_SESSION} [data-agent-question-where]`);
+  if (where.trim() !== `127.0.0.1 port ${SSH_PORT}`) {
+    fail(`the agent question names ${JSON.stringify(where)}`);
+  }
+  // Asked before the login: nothing of the device is on screen yet.
+  if (
+    (await status()) === "Connected" ||
+    (await screen()).includes("test-ssh$")
+  ) {
+    fail("the agent question came after the session connected");
+  }
+  await reachable(
+    evaluate,
+    `${SHOWN_SESSION} [data-decision=forwardThisSession]`,
+  );
+  await screenshot("agent-question");
+  await until("the safe answer focused", () =>
+    evaluate(
+      `document.activeElement?.dataset.decision === "withoutForwarding"`,
+    ),
+  );
+  await pressKey(evaluate, "Escape");
+  await connected();
+  if (await exists(forwarded)) fail("Escape forwarded the agent");
+  await type("agent\r");
+  await until("the device sees no agent", async () =>
+    (await screen()).includes("agent: not forwarded"),
+  );
+  step(
+    "the agent question showed the address before connecting; Escape connected without forwarding",
+  );
+  await closeShown();
+
+  await question();
+  await mouseClick(
+    evaluate,
+    `${SHOWN_SESSION} [data-decision=forwardThisSession]`,
+  );
+  await connected();
+  await until("the Agent forwarded marker", () => exists(forwarded));
+  await type("agent\r");
+  await until("the device reaches the agent", async () =>
+    /agent keys: 1/.test(await screen()),
+  );
+  await type("drop\r");
+  await until(
+    "the lost connection",
+    async () => (await status()) === "Closed: connection lost",
+  );
+  await type("\r");
+  await until("the reconnect", async () => {
+    if (await exists(`${SHOWN_SESSION} [data-agent-question]`)) {
+      fail("the reconnect asked about the agent again");
+    }
+    return (
+      (await status()) === "Connected" &&
+      /reconnecting ---\s*test-ssh\$/.test(await screen())
+    );
+  });
+  await until("the Agent forwarded marker after the reconnect", () =>
+    exists(forwarded),
+  );
+  await checkHeaderLine(evaluate, SHOWN_SESSION, ["[data-agent-forwarded]"]);
+  if (existsSync(agentFile)) fail("Forward for this session was written down");
+  step(
+    "Forward for this session forwarded the agent (marked), and a reconnect of the tab kept it without asking",
+  );
+  await closeShown();
+
+  await question();
+  await mouseClick(evaluate, `${SHOWN_SESSION} [data-decision=alwaysForward]`);
+  await connected();
+  await until("the Agent forwarded marker", () => exists(forwarded));
+  const approved = await until(
+    "the approval written",
+    () => existsSync(agentFile) && readFileSync(agentFile, "utf8"),
+  );
+  if (
+    !approved.includes("Lab/agent-fwd.yaml") ||
+    !approved.includes(String(SSH_PORT))
+  ) {
+    fail(`agent_forwarding.json holds ${approved}`);
+  }
+  await closeShown();
+  await doubleClick(agentHost.row);
+  await until("the approved host connected", async () => {
+    if (await exists(`${SHOWN_SESSION} [data-agent-question]`)) {
+      fail("an approved host asked about the agent again");
+    }
+    return (await status()) === "Connected";
+  });
+  await until("the Agent forwarded marker", () => exists(forwarded));
+  step(
+    "Always forward to this host wrote agent_forwarding.json, and a new tab to it forwarded without asking",
+  );
+  await closeShown();
+  await removeHost(agentHost);
+  rmSync(agentFile, { force: true });
+
+  // ---- Automatic reconnect (#24): the closed bar counts down and tries.
+  const autoHost = await labHost("auto-r1", "auto_reconnect: true\n");
+  await doubleClick(autoHost.row);
+  await connected();
+  const countdown = shown("[data-auto-reconnect]");
+  await type("drop\r");
+  const first = await until("the countdown", async () =>
+    (await exists(countdown)) ? text(countdown) : null,
+  );
+  if (!/Reconnecting in \d+ s \(try 1 of \d+\)/.test(first)) {
+    fail(`the countdown reads ${JSON.stringify(first)}`);
+  }
+  await screenshot("auto-reconnect");
+  await until(
+    "the session reconnected by itself",
+    async () =>
+      (await status()) === "Connected" &&
+      /reconnecting ---\s*test-ssh\$/.test(await screen()),
+  );
+  step(
+    `a lost connection counted down ("${first.trim().replace(/\s+/g, " ")}") and reconnected by itself`,
+  );
+
+  await type("drop\r");
+  const second = await until("the second countdown", async () =>
+    (await exists(countdown)) ? text(countdown) : null,
+  );
+  if (!/try 2 of/.test(second)) fail(`the second countdown reads ${second}`);
+  await type("x");
+  await until("the countdown stopped", async () => !(await exists(countdown)));
+  // Longer than that wait (4 s): it stays closed.
+  await sleep(6000);
+  if (!(await status()).startsWith("Closed")) {
+    fail(`the stopped countdown reconnected all the same: ${await status()}`);
+  }
+  await type("\r");
+  await until(
+    "the session reconnected with Enter",
+    async () => (await status()) === "Connected",
+  );
+  step("a key stopped the countdown, and Enter reconnected");
+
+  // ---- Key bindings (#24), with the session connected for a snippet key.
+  const snippetsFile = join(workspace, "_snippets.yaml");
+  if (existsSync(snippetsFile)) fail("a snippets file was there already");
+  writeFileSync(snippetsFile, "Key check: later 0 snippet-key-ok\n");
+  const sessionTerminal = await evaluate(
+    `document.querySelector("${SHOWN_SESSION}").dataset.tab`,
+  );
+  const themeOf = () =>
+    evaluate(
+      `document.querySelector('.slot[data-tab="${sessionTerminal}"] .terminal').xterm.options.theme.background`,
+    );
+  const backgroundBefore = await themeOf();
+  await openPreferences(evaluate);
+  const bindings = `${PREFERENCES} [data-key-bindings]`;
+  await mouseClick(evaluate, `${bindings} summary`);
+  const field = (action) => `${bindings} [name=preference-key-${action}]`;
+  const valueOf = (selector) =>
+    evaluate(`document.querySelector(${JSON.stringify(selector)}).value`);
+  await until("the key bindings", () => exists(field("quick-open")));
+  if ((await valueOf(field("quick-open"))) !== "Ctrl+K") {
+    fail(`Quick open is bound to ${await valueOf(field("quick-open"))}`);
+  }
+  await mouseClick(evaluate, field("quick-open"));
+  await pressKey(evaluate, "j", "KeyJ", CTRL | ALT);
+  await until(
+    "Quick open moved to Ctrl+Alt+J",
+    async () => (await valueOf(field("quick-open"))) === "Ctrl+Alt+J",
+  );
+  // A key the app keeps is refused, with its reason.
+  await mouseClick(evaluate, field("details"));
+  await pressKey(evaluate, "F", "KeyF", CTRL | SHIFT);
+  await until("the refusal", async () =>
+    (await text(`${bindings} [data-key-refused]`)).includes(
+      "Ctrl+Shift+F is kept by the app: it searches the scrollback.",
+    ),
+  );
+  if ((await valueOf(field("details"))) !== "Ctrl+Shift+D") {
+    fail(`a refused key was recorded: ${await valueOf(field("details"))}`);
+  }
+  await screenshot("key-bindings");
+  // A snippet on a key of its own.
+  const snippetKey = `${bindings} [name=preference-new-snippet-key]`;
+  await mouseClick(evaluate, snippetKey);
+  await pressKey(evaluate, "y", "KeyY", CTRL | ALT);
+  await until(
+    "the snippet's key recorded",
+    async () => (await valueOf(snippetKey)) === "Ctrl+Alt+Y",
+  );
+  await until("the snippet offered for a key", () =>
+    exists(
+      `${bindings} [name=preference-new-snippet-key-snippet] option[value="Key check"]`,
+    ),
+  );
+  await evaluate(`(() => {
+    const select = document.querySelector(${JSON.stringify(`${bindings} [name=preference-new-snippet-key-snippet]`)});
+    select.value = "Key check";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  })()`);
+  await clickButton(evaluate, "Add", bindings);
+  await until("the snippet key listed", async () =>
+    (await text(`${bindings} .chord`)).includes("Ctrl+Alt+Y"),
+  );
+  // Out of the fields: the moved key opens the palette, the old one not.
+  await mouseClick(evaluate, `${PREFERENCES} h2`);
+  await pressKey(evaluate, "j", "KeyJ", CTRL | ALT);
+  await until("the palette by Ctrl+Alt+J", () =>
+    exists("input[name=palette-query]"),
+  );
+  await pressKey(evaluate, "Escape");
+  await until(
+    "the palette closed",
+    async () => !(await exists("input[name=palette-query]")),
+  );
+  await mouseClick(evaluate, `${PREFERENCES} h2`);
+  await pressKey(evaluate, "k", "KeyK", CTRL);
+  await sleep(1000);
+  if (await exists("input[name=palette-query]")) {
+    fail("Ctrl+K still opens the palette after Quick open moved");
+  }
+  step(
+    "a shortcut moved to Ctrl+Alt+J works there and no longer on Ctrl+K; a key the app keeps was refused with its reason",
+  );
+
+  // ---- Colour schemes (#24): the terminal takes the scheme's colours.
+  const scheme = `${PREFERENCES} [name=preference-color-scheme]`;
+  const chooseScheme = (id) =>
+    evaluate(`(() => {
+      const select = document.querySelector(${JSON.stringify(scheme)});
+      select.value = ${JSON.stringify(id)};
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`);
+  await chooseScheme("dracula");
+  const dracula = await until("the Dracula background", async () => {
+    const now = await themeOf();
+    return now !== backgroundBefore && now;
+  });
+  if (dracula.toLowerCase() !== "#282a36") {
+    fail(`the Dracula scheme's background is ${dracula}`);
+  }
+  await screenshot("colour-scheme");
+  step(
+    `the Dracula scheme gave the terminal its colours (${backgroundBefore} → ${dracula})`,
+  );
+
+  // The snippet key sends its snippet once to the connected session.
+  await closePreferences(evaluate);
+  await evaluate(
+    `document.querySelector("${SHOWN_SESSION} .xterm textarea")?.focus()`,
+  );
+  await until("the session's terminal has the keys", () =>
+    evaluate(`!!document.activeElement?.closest("${SHOWN_SESSION}")`),
+  );
+  // The command line typed by the key, and its output (which the shell
+  // prints after its next prompt), each counted.
+  const snippetSends = async () => {
+    const shownNow = await screen();
+    return {
+      typed: shownNow.split("later 0 snippet-key-ok").length - 1,
+      output: [...shownNow.matchAll(/(?<!later 0 )snippet-key-ok/g)].length,
+    };
+  };
+  await pressKey(evaluate, "y", "KeyY", CTRL | ALT);
+  await until(
+    "the snippet's output",
+    async () => (await snippetSends()).output >= 1,
+  );
+  await sleep(1500);
+  const sends = await snippetSends();
+  if (sends.typed !== 1 || sends.output !== 1) {
+    fail(`the snippet key sent its snippet ${JSON.stringify(sends)}`);
+  }
+  step(
+    "a key bound to a one-line snippet sent it once to the connected session",
+  );
+
+  // Everything back as it was, for the parts after this one.
+  await openPreferences(evaluate);
+  await chooseScheme("default");
+  await until(
+    "the default colours again",
+    async () => (await themeOf()) === backgroundBefore,
+  );
+  if (!(await exists(`${bindings}[open]`)))
+    await mouseClick(evaluate, `${bindings} summary`);
+  await mouseClickElement(
+    evaluate,
+    `document.querySelector(${JSON.stringify(field("quick-open"))}).parentElement.querySelector("button")`,
+    "Quick open's Reset",
+  );
+  await until(
+    "Quick open back on Ctrl+K",
+    async () => (await valueOf(field("quick-open"))) === "Ctrl+K",
+  );
+  await clickButton(evaluate, "Remove", bindings);
+  await until(
+    "the snippet key removed",
+    async () => !(await exists(`${bindings} .chord`)),
+  );
+  await closePreferences(evaluate);
+  rmSync(snippetsFile);
+  await closeShown();
+  await removeHost(autoHost);
+
+  // ---- The system's ssh client (#26) for a device that offers only
+  // algorithms the app lacks: the stand-in sends its offer and nothing
+  // more, so the client never logs in; the tab and its marker are checked.
+  const ancient = join(workspace, "Lab", "ancient-sw.yaml");
+  writeFileSync(
+    ancient,
+    `name: ancient-sw\naddress: 127.0.0.1\nport: ${UNSUPPORTED_PORT}\ncredential_profile: agent-login\n`,
+  );
+  const ancientRow = 'nav [data-host="Lab/ancient-sw.yaml"]';
+  await until("ancient-sw in the tree", () => exists(ancientRow));
+  await doubleClick(ancientRow);
+  const card = shown("[data-negotiation-failure=unsupported]");
+  await until("the unsupported failure", () =>
+    exists(`${card} [data-system-ssh]`),
+  );
+  if (!(await text(card)).includes("Legacy crypto would not help")) {
+    fail(`the failure card says ${await text(card)}`);
+  }
+  if (
+    (await text(`${card} [data-system-ssh]`)).trim() !==
+    "Open with the system ssh (insecure)"
+  ) {
+    fail(`the button reads ${await text(`${card} [data-system-ssh]`)}`);
+  }
+  await screenshot("system-ssh-offer");
+  await mouseClick(evaluate, `${card} [data-system-ssh]`);
+  // The client is asked what it supports first (`ssh -Q`, up to 10 s each).
+  await until(
+    "the system ssh tab",
+    async () =>
+      (await exists(shown("[data-session-protocol=local]"))) ||
+      Promise.reject(
+        new Error(
+          `the pane shows ${JSON.stringify((await text(".centre")).slice(0, 300))}`,
+        ),
+      ),
+    45_000,
+  );
+  await until(
+    "the Insecure marker",
+    async () => (await text(shown("[data-insecure]"))).trim() === "Insecure",
+  );
+  await checkHeaderLine(evaluate, SHOWN_SESSION, ["[data-insecure]"]);
+  if (await exists("[data-negotiation-failure]")) {
+    fail("the system ssh opened beside the failed tab instead of in its place");
+  }
+  await screenshot("system-ssh");
+  step(
+    "Open with the system ssh (insecure) replaced the failed tab with a local one marked Insecure",
+  );
+  await closeShown();
+  rmSync(ancient);
+  await until(
+    "ancient-sw gone from the tree",
+    async () => !(await exists(ancientRow)),
   );
 }
 

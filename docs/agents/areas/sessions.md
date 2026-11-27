@@ -132,8 +132,11 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   `[data-decision=withoutForwarding|forwardThisSession|alwaysForward]`;
   "without" has focus, Escape answers it) and sends
   `session_decide_agent_forwarding`. A question open when the tab moves
-  to another window is not shown there (as for host keys). Not covered by
-  the smoke test yet. Tests:
+  to another window is not shown there (as for host keys). Smoke:
+  `screensOf080` (the question and its address before the login, Escape,
+  Forward for this session kept over a reconnect, Always writing
+  `agent_forwarding.json` and a new tab not asking; the device's `agent`
+  command says whether it reaches the test agent). Tests:
   `tests/agent_forwarding.rs` (the scripted shell's `agent` command opens
   `channel_open_agent` and prints `agent keys: N`, or
   `agent: not forwarded`; `agent unasked` opens one anyway, which is
@@ -324,9 +327,9 @@ ConnectionRefused | TimedOut { after, stage } | AuthenticationFailed`
   against the in-process servers as the shell would, reconnecting at once
   on each `Retry`: a device or jump host closing during its login, a jump
   host cut while the device logs in, one login each; a hang-up before the
-  login retried until it gives up; the count with passed-in times). Not
-  verified: the countdown in the real window (no smoke step; smoke needs
-  Windows).
+  login retried until it gives up; the count with passed-in times). Smoke:
+  `screensOf080` (the countdown after the shell's `drop`, the try made by
+  itself, a key stopping the second countdown, Enter reconnecting).
 - What to check next (#116). `OpenError::advice()` / `CloseReason::advice()`
   → `Option<String>`, a sentence for the user: `NameNotResolved`,
   `Unreachable`, `ConnectionRefused { port }` (the Port setting, SSH or
@@ -1052,8 +1055,15 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   shown when the device offers only unsupported algorithms, in the main
   window only: `TerminalSession`'s `onsystemssh`, wired by `App.svelte`
   `systemSsh`) replaces the tab with it. Not done: a way in from the tree
-  or the details sheet (the card is the one entry), session windows, the
-  smoke test (the button was not driven in the real app).
+  or the details sheet (the card is the one entry), session windows.
+  Smoke: `screensOf080` (the example server's `--unsupported-device`
+  stand-in: the card, the button, the tab in place of the failed one with
+  **Insecure**; the client never logs in to the stand-in, so a login
+  through the system ssh is not checked). Its first run found that 0.8.0's
+  `SystemSsh` arm called `local_start` (which locks the workspace) while
+  holding the workspace's guard: the same `std::sync::Mutex` locked twice,
+  so the tab stayed Connecting for ever and every later use of the
+  workspace hung. `local_start` now runs before the lock is taken.
 
 - Port forwards (#21, `src/session/forward.rs`). `PortForward { name,
   bind (default 127.0.0.1; `*` = 0.0.0.0, `localhost`; from the workspace
@@ -1104,8 +1114,10 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   second channel, a silent SOCKS client closed after the timeout (~10 s),
   through a jump host from the workspace, inheritance /
   `off`, a bad forward as a file problem, folder edits) and the parse
-  unit tests in `forward.rs`. Not tried on a real device or by the smoke
-  test.
+  unit tests in `forward.rs`. Smoke: `screensOf080` (a local forward to a
+  port of the test's own and `D 0`: **Forwarding 2**, the list with where
+  each listens, a connection through each, **Stop**, all gone when the
+  session closes). Not tried on a real device.
 
 ## Local shell (#22)
 
@@ -1143,7 +1155,7 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   shell. The shell command `local_shell_list` is async and runs it on a
   blocking thread. Not verified: a Windows without WSL (none here; the
   parsing of the stub's text is unit-tested) and a count of `wsl.exe`
-  processes in the smoke test (not run). Unix: `$SHELL`
+  processes. Unix: `$SHELL`
   (id `login`) then the existing shells of `/etc/shells` (id = the path),
   all started with `-l`. `pick_local_shell(shells, preference)` matches the
   id ignoring case, else the first. `Preferences.local_shell` holds the id
@@ -1174,8 +1186,17 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   the program until the terminal answers `ESC [ row ; col R`: xterm.js does
   in the app, the tests' `until_closed` does), the solo tests in
   `tests/windows.rs`, unit tests in `local.rs`, `preferences.rs`. Not
-  verified: ConPTY, the Windows shells and WSL (no Windows here), the
-  interface in a built app and the smoke test (no run). Known limits: a
+  verified: WSL shells in the app. Smoke: `screensOf080` (quick connect's
+  Local shell mode with Command Prompt: the shells listed, the prompt in
+  the workspace folder, a command's output, the Local marker, no log, no
+  multi-send entry; the palette's New local shell with PowerShell).
+  Start-up race (found after 0.8.0): output can reach the page before
+  `session_open` answers, and ConPTY's first `ESC [ 6 n` was answered by
+  xterm.js into `session?.write` while `session` was still null, so the
+  answer was lost and the shell held for ever (an empty tab; 16 of 22
+  probes opening it at once after the page loaded, 0 after the fix).
+  `TerminalSession` now queues input made before the open is answered
+  (`unsent`) and sends it in order once it is. Known limits: a
   Windows shell's program must be on the `PATH`; a shell the user closed
   while it printed may keep a ConPTY reader thread until the pty drops;
   `open_failure`'s hint matches English error text (portable-pty wraps its
