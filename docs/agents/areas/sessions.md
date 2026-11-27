@@ -931,11 +931,27 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   algorithms allowed (`-o KexAlgorithms=+...` and so on, `-p`, `-l`, then
   `-- host`), on the local transport of #22 (`local.rs`). It is not an SSH
   session of enodix: no host key check against the app's, no workspace
-  credentials, no logging. A newer client refuses options for algorithms it
-  dropped (Blowfish, RC4), and OpenSSH has no SSH-1. The negotiation card
-  names the fallback when the device offers only unsupported algorithms.
-  Tests: `system_ssh.rs` (a stand-in script prints its arguments, Unix
-  only), `system_ssh_host.rs` (`Profiles::system_ssh_host`: address, port
+  credentials, no logging. OpenSSH refuses a whole `-o` option and exits
+  before connecting when it names one algorithm it no longer knows
+  (Blowfish, CAST, RC4, DSA in 10.x; it has no SSH-1), so the options are
+  built from what the client reports: `ask_client_algorithms` runs
+  `ssh -Q cipher|mac|kex|key` on a blocking thread (10 s limit, no console
+  window) into a `ClientAlgorithms` (text per query, `None` if it could not
+  be asked), `legacy_options` keeps from each wanted list what
+  `filter_known_algorithms` finds in the client's lines and leaves an option
+  out when nothing remains, and `system_ssh_target` takes the answers as a
+  parameter (so the filter is tested without a client). Not asked: no legacy
+  option at all. `HostKeyAlgorithms` and `PubkeyAcceptedKeyTypes` both use
+  `-Q key` (the latter is the option name every version takes; 8.5 and later
+  alias it to `PubkeyAcceptedAlgorithms`, older ones lack that). The
+  negotiation card names the fallback when the device offers only
+  unsupported algorithms.
+  Tests: `system_ssh.rs` (the filter against the `-Q` text of an old client
+  (written from the 7.4 lists, not captured) and of 9.5 and 10.6 (captured),
+  an empty option, an unaskable client; where an `ssh` is on the `PATH`, and on
+  Windows also `System32\OpenSSH\ssh.exe`, the real client reads the core's
+  arguments with `-G` and must exit 0, which connects to nothing and uses no
+  agent; on Unix a stand-in script prints its arguments), `system_ssh_host.rs` (`Profiles::system_ssh_host`: address, port
   and the profile's username only, never a secret; a host behind a jump
   host is refused; the record carries the warning).
   From the interface: `ConnectTarget::SystemSsh { id }` (`src-tauri/src/lib.rs`,
@@ -1024,7 +1040,20 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   starts the program again (a quick target is kept by the manager).
 - `local_shells()` lists what the computer has: Windows `pwsh` if on the
   `PATH` (`pwsh`, plus `powershell`), else `powershell`; `cmd`; each WSL
-  distribution (`wsl.exe -l -q`, UTF-16, ids `wsl:<name>`). Unix: `$SHELL`
+  distribution (`wsl.exe -l -q`, UTF-16, ids `wsl:<name>`). `wsl.exe` is
+  started only for that list, never when a session opens: `local_shell_for`
+  (used by `session_open`) takes a `wsl:<name>` id as it is (a distribution
+  that is gone shows `wsl.exe`'s own message in the tab, instead of falling
+  back to the first shell) and looks other ids up without WSL. The list is
+  remembered for 10 s (`WSL_CACHE`), so the shell choice in quick connect
+  and in preferences, opened in turn, starts it once; `wsl.exe` has 5 s
+  (`WSL_TIMEOUT`, then it is killed), no stdin and no console window. Without
+  WSL installed `wsl.exe` is a stub that prints a hint: it fails, and
+  `parse_wsl_list` drops any line with a space in it, so no hint becomes a
+  shell. The shell command `local_shell_list` is async and runs it on a
+  blocking thread. Not verified: a Windows without WSL (none here; the
+  parsing of the stub's text is unit-tested) and a count of `wsl.exe`
+  processes in the smoke test (not run). Unix: `$SHELL`
   (id `login`) then the existing shells of `/etc/shells` (id = the path),
   all started with `-l`. `pick_local_shell(shells, preference)` matches the
   id ignoring case, else the first. `Preferences.local_shell` holds the id

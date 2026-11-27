@@ -41,10 +41,10 @@ use enodix_core::paste::{
 use enodix_core::platform::{ListedPlatform, PlatformDefinition, PlatformName};
 use enodix_core::preferences::{FontZoom, Preferences, Theme};
 use enodix_core::session::{
-    local_environment, local_shells, local_start_folder, pick_local_shell, system_ssh_target,
-    AlgorithmKind, AlgorithmLists, AutoReconnects, Consumer, ConsumerGone, ConsumerKey,
-    ForwardStatus, HostKeyDecision, HostKeyQuestion, HostSession, HostWay, LoginPrompt,
-    NegotiatedAlgorithms, OpenOptions, Reconnection, SerialParameters, SerialPortInfo,
+    ask_client_algorithms, local_environment, local_shell_for, local_shells, local_start_folder,
+    system_ssh_target, AlgorithmKind, AlgorithmLists, AutoReconnects, Consumer, ConsumerGone,
+    ConsumerKey, ForwardStatus, HostKeyDecision, HostKeyQuestion, HostSession, HostWay,
+    LoginPrompt, NegotiatedAlgorithms, OpenOptions, Reconnection, SerialParameters, SerialPortInfo,
     SerialTarget, SessionEvent, SessionId, SessionManager, SessionRecord, SessionRecords,
     SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType,
     TransferRequest, TransferStatus, Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
@@ -2284,9 +2284,9 @@ async fn session_open(
         }
         ConnectTarget::Local { shell: which } => {
             let chosen = which.unwrap_or_else(|| preferred.lock().local_shell.clone());
-            let shells = local_shells();
-            let picked = pick_local_shell(&shells, Some(&chosen))
-                .ok_or("this computer has no shell to open")?;
+            // Never lists WSL: opening a shell starts no `wsl.exe` of its own.
+            let picked =
+                local_shell_for(Some(&chosen)).ok_or("this computer has no shell to open")?;
             let (folder, environment) = local_start(&shell, &python);
             let target = SessionTarget::Local(picked.target(folder, environment));
             // Not logged: it shows the user's own computer, not a device.
@@ -2297,6 +2297,8 @@ async fn session_open(
             )
         }
         ConnectTarget::SystemSsh { id } => {
+            // Ask the client what it knows before the workspace is locked.
+            let client = ask_client_algorithms(None).await;
             let guard = shell.workspace();
             let workspace = guard.as_ref().ok_or("no workspace is open")?;
             let profiles = Profiles::new(&*shell.credentials, workspace);
@@ -2304,7 +2306,8 @@ async fn session_open(
                 .system_ssh_host(&id)
                 .map_err(|error| error.to_string())?;
             let (folder, environment) = local_start(&shell, &python);
-            let target = SessionTarget::Local(system_ssh_target(None, &host, folder, environment));
+            let target =
+                SessionTarget::Local(system_ssh_target(None, &host, folder, environment, &client));
             let record = SessionRecord::for_host(workspace, &id, Transport::Local, &name, &title)
                 .unwrap_or_else(|| SessionRecord::new(&name, &title))
                 .insecure(SYSTEM_SSH_WARNING);
@@ -3242,8 +3245,11 @@ async fn serial_ports(manager: State<'_, SessionManager>) -> Result<Vec<SerialPo
 /// The shells this computer can open as a local session (#22), the first
 /// being what an unset preference opens.
 #[tauri::command]
-fn local_shell_list() -> Vec<enodix_core::session::LocalShell> {
-    local_shells()
+async fn local_shell_list() -> Result<Vec<enodix_core::session::LocalShell>, String> {
+    // `wsl.exe` is run on a blocking thread, not the window's.
+    tokio::task::spawn_blocking(local_shells)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// The user's preferences, as loaded at launch or last saved.

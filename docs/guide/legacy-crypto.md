@@ -87,10 +87,32 @@ In order of preference:
    credential profile's password (you type it in the terminal; only the
    profile's username is passed) or go through jump hosts (a host behind
    one is refused). It is as insecure as the algorithms the device
-   forces on it. Newer OpenSSH builds no longer know Blowfish, RC4 and
-   CAST, and none speaks SSH-1: for those, use telnet or serial, or an
-   old client. The button is in the main window's tabs, not in a session
-   window.
+   forces on it. The button is in the main window's tabs, not in a
+   session window.
+
+   **What this reaches depends on the client.** A current OpenSSH has
+   itself dropped some of these algorithms, and refuses a whole option
+   that names one it does not know. enodix therefore asks the client
+   (`ssh -Q`) what it knows and passes only that; if the client cannot be
+   asked, it passes none and the client's own message shows. As the two
+   clients on the computer this was written on report it (OpenSSH for
+   Windows 9.5 and OpenSSH 10.6 from Git):
+
+   | Offered by the device | Reached | Not reached |
+   | --- | --- | --- |
+   | Ciphers | `aes128-cbc`, `aes192-cbc`, `aes256-cbc`, `3des-cbc` | `blowfish-cbc`, `cast128-cbc`, `arcfour`, `arcfour128`, `arcfour256`, `rijndael-cbc@lysator.liu.se` |
+   | MACs | `hmac-sha1`, `hmac-sha1-96`, `hmac-md5`, `hmac-md5-96` | `hmac-ripemd160` |
+   | Key exchange | `diffie-hellman-group1-sha1`, `diffie-hellman-group14-sha1`, `diffie-hellman-group-exchange-sha1` | |
+   | Host key | `ssh-rsa`; `ssh-dss` with 9.5 | `ssh-dss` with 10.6 |
+
+   So a switch whose oldest offer is CBC with SHA-1 or MD5 and a 1024-bit
+   group is still reached. A device that offers only Blowfish, CAST or RC4
+   ciphers, only a RIPEMD MAC, only a DSA host key (with a 10.6 client) or
+   SSH-1 is not: use an older OpenSSH client (a build from before these were
+   removed, run by hand), telnet or the console port. "Known to the client"
+   is what `ssh -Q` lists; a device can still refuse the connection for
+   another reason, and this was checked by having the client read the
+   arguments, not by connecting to an old device.
 
 If you need a device that none of these reach, please report what the
 negotiation message lists as offered.
