@@ -194,7 +194,9 @@
           data-preview-skipped={preview.skipped.length}
         >
           <summary
-            >{preview.skipped.length} entries of the file are not imported</summary
+            >{preview.skipped.length === 1
+              ? "1 entry of the file is not imported"
+              : `${preview.skipped.length} entries of the file are not imported`}</summary
           >
           <ul>
             {#each preview.skipped as entry, index (index)}
