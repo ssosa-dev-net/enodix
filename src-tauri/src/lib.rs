@@ -2309,13 +2309,15 @@ async fn session_open(
         ConnectTarget::SystemSsh { id } => {
             // Ask the client what it knows before the workspace is locked.
             let client = ask_client_algorithms(None).await;
+            // Before the workspace is locked below: it locks it too (a
+            // second lock of the same mutex never returned).
+            let (folder, environment) = local_start(&shell, &python);
             let guard = shell.workspace();
             let workspace = guard.as_ref().ok_or("no workspace is open")?;
             let profiles = Profiles::new(&*shell.credentials, workspace);
             let host = profiles
                 .system_ssh_host(&id)
                 .map_err(|error| error.to_string())?;
-            let (folder, environment) = local_start(&shell, &python);
             let target =
                 SessionTarget::Local(system_ssh_target(None, &host, folder, environment, &client));
             let record = SessionRecord::for_host(workspace, &id, Transport::Local, &name, &title)

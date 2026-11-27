@@ -397,6 +397,11 @@ privilege|second_channel`. `LabRun` gives its workspace an id and writes
   run, another worktree held the fixed ports). `--banner <port>` runs a
   server with the same logins that sends an SSH login banner (#134; the
   smoke's 22727, in `agentAndKeyboardInteractive`).
+  `--unsupported-device <port>` runs `support::algorithms::FakeDevice`
+  (now also `FakeDevice::start_on(port, offer)`) with the MD5-only offer of
+  `legacy_crypto.rs`: it sends its KEXINIT and nothing more, so the app's
+  failure card is `unsupported` and offers the system's ssh client, which
+  hangs in its key exchange (the smoke's 22728, in `screensOf080`).
 - `scripts/linux-desktop-check.mjs` (`npm run test:linux-desktop`, #114) —
   drives the installed Linux app (or an AppImage) over WebDriver
   (`tauri-driver` + `WebKitWebDriver`) through docs/linux.md's desktop
@@ -561,7 +566,30 @@ isolate` taken out, the run fails on the host-key question's Trust once
   agent profiles (the example server's `--agent <pipe>`, reached through
   `SSH_AUTH_SOCK` set for the app); its `legacyCrypto` part connects to
   the example server's `--old-device <port>` (22723) with the switch off
-  (failure card), then on (header marker); its `telnet` part double-clicks
+  (failure card), then on (header marker); its `screensOf080` part (after
+  `legacyCrypto`) drives what 0.8.0 added: quick connect's Local shell
+  mode (the shell list, Command Prompt's prompt in the workspace folder, a
+  command's output, the Local marker, no log file, no multi-send entry)
+  and the palette's New local shell (PowerShell); a Lab host with a local
+  forward to a TCP server of the test's own on `FORWARD_PORT` (22729) and
+  `D 0` (**Forwarding 2**, the list, a connection through the forward and
+  one through SOCKS, **Stop**, both closed with the session); a host with
+  `agent_forwarding: true` and the `agent-login` profile (the question
+  before the login, Escape, Forward for this session over a reconnect,
+  Always and `agent_forwarding.json`, the device's `agent` line); a host
+  with `auto_reconnect: true` (`drop`, the countdown, the try made by
+  itself, a key stopping the next, Enter); Preferences' key bindings (a
+  moved shortcut, a refused key, a snippet key sending once) and the
+  Dracula colour scheme read from the xterm theme; and the
+  `--unsupported-device` stand-in's card, **Open with the system ssh
+  (insecure)** and the **Insecure** tab. It leaves nothing behind (hosts,
+  snippets file, preferences reset). The serial file transfer is not in
+  it: the smoke test has no serial port. With it (2026-11-27,
+  `npm run smoke:hidden`) the run is 341 checks (11 of them this part's)
+  and 412 s, app built. Its first runs found two defects of 0.8.0,
+  fixed with it: the system ssh deadlock (`sessions.md`) and a local
+  shell whose terminal stayed empty when opened at once after the page
+  loaded (`sessions.md`, Local shell). Its `telnet` part double-clicks
   a `protocol: telnet` host (the example server's `--telnet` 22724), logs
   in in the terminal, checks `[data-unencrypted]`, and uses the side
   panel's `[data-connect=telnet]` on an SSH host; its `serial` part

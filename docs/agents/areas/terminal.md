@@ -98,7 +98,10 @@ canvas:not(.xterm-link-layer)` (the link layer is a 2D canvas). Smoke
   Preferences view `[data-key-bindings]` (`preference-key-<action>`,
   `preference-new-snippet-key`). Limits: tooltips/palette hints and
   `SessionWindow.svelte` still use the default keys; zoom and the terminal's
-  copy/paste keys are not movable. Not verified in the running app.
+  copy/paste keys are not movable. Smoke: `screensOf080` (Quick open moved
+  to Ctrl+Alt+J opens the palette there and no longer on Ctrl+K,
+  Ctrl+Shift+F refused with its reason in `[data-key-refused]`, a snippet
+  key sending a one-line snippet once; all reset after).
 - Colour schemes (#24). `Preferences.color_scheme` (`ColorScheme`:
   default, solarized-dark, solarized-light, dracula, nord, gruvbox-dark;
   kebab-case in the file) and `custom_colors` (name → `#rrggbb` over the
@@ -112,8 +115,9 @@ canvas:not(.xterm-link-layer)` (the link layer is a 2D canvas). Smoke
   the highlighter's cache key includes `paletteKey()` so rows redraw when
   the scheme or an own colour changes. Preferences view: `preference-color-
   scheme`, `[data-own-colors]` with `preference-color-<name>` inputs.
-  Not verified in the real app (no smoke step; typecheck and core tests
-  only).
+  Smoke: `screensOf080` (Dracula sets the terminal's xterm theme
+  background to `#282a36`, the contrast check passes, then back to
+  default). Own colours are not driven by the smoke.
 - Terminal comforts (#19, `src/preferences.rs`). `Preferences { theme:
 System|Light|Dark, font_family, font_size (8–36, default 14),
 scrollback (0–100,000, default 10,000), copy_on_select,
