@@ -111,8 +111,9 @@ impl SessionTarget {
     }
 
     /// Whether the session asks to forward the SSH agent to the device
-    /// (for a session to a workspace host, the user approves it first:
-    /// [`SessionManager::agent_forwarded`] says whether it is).
+    /// (it only forwards if the user approved it, or the caller allowed it
+    /// with [`OpenOptions::forward_agent_without_asking`]:
+    /// [`SessionManager::agent_forwarded`] says whether it does).
     pub fn agent_forwarding(&self) -> bool {
         match self {
             Self::Ssh(target) => target.agent_forwarding,
@@ -774,6 +775,16 @@ pub struct OpenOptions {
     /// written to the session is converted back (#24). A second channel
     /// and local shells use UTF-8.
     pub encoding: Encoding,
+    /// Lets an SSH session whose target asks for it
+    /// ([`SshTarget::agent_forwarding`]) forward the SSH agent without
+    /// asking the user. Off, a target's flag alone never forwards: the
+    /// session connects without the agent ([`SessionManager::agent_forwarded`]
+    /// is `false`). Only a caller that has the user's consent by other
+    /// means may set it, and tests of the forwarding mechanics. A session
+    /// to a workspace host ([`SessionManager::open_host`]) ignores it: it
+    /// always asks ([`SessionEvent::AgentForwarding`]). Duplicates and
+    /// reconnects keep it.
+    pub forward_agent_without_asking: bool,
 }
 
 /// Something done each time a session connects, beside it.
@@ -1285,7 +1296,9 @@ impl SessionManager {
         };
         // A session to a workspace host whose settings ask to forward the
         // agent settles it with the user before connecting; one opened by
-        // its target alone forwards as the target says.
+        // its target alone forwards only if its options say so in so many
+        // words.
+        let forward_unasked = entry.options.forward_agent_without_asking;
         let channel_agent = entry.channel_agent;
         let agent_live = entry.agent_live.clone();
         agent_live.store(false, Ordering::Release);
@@ -1348,6 +1361,8 @@ impl SessionManager {
                             break 'ssh CloseReason::ClosedLocally;
                         };
                         target.agent_forwarding = forward;
+                    } else {
+                        target.agent_forwarding &= forward_unasked;
                     }
                     agent_live.store(target.agent_forwarding, Ordering::Release);
                     ssh::run(target, known_hosts, &mut link).await

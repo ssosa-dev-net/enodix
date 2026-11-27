@@ -110,8 +110,15 @@ KeysRefused|Failed)`; `CloseReason::offers_password_login()` is true for
   read on every check; unreadable = not approved; a failed write still
   forwards this time). A changed address or port, another host id (a
   moved host too) or another workspace id asks again. A session opened by
-  its target alone (`open`, `open_with`) forwards as the target says:
-  quick connections set it off, jobs clear it. The manager's store is in
+  its target alone (`open`, `open_with`) never forwards, whatever the
+  target's flag says, unless `OpenOptions.forward_agent_without_asking` is
+  set (`start` clears the flag otherwise; an `open_host` session ignores
+  the option and always asks). Only tests of the mechanics and a caller
+  with the user's consent by other means may set it; no code in the app
+  does. Callers: quick connections and jobs open by target with the flag
+  off; the shell's `open_host` / `reconnect_host` are the terminal's
+  workspace sessions; `duplicate` / `reconnect` keep the options. The
+  manager's store is in
   memory unless `SessionManager::with_agent_approvals` (on a new manager)
   is given one; the shell gives it the data folder's.
   Second channels: `Command::OpenChannel { forward_agent }` and

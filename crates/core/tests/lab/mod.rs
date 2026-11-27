@@ -1455,6 +1455,7 @@ async fn second_channel(run: &LabRun, device: &Device) -> Result<String, String>
         login_banner: false,
         forwards: Vec::new(),
         encoding: Default::default(),
+        forward_agent_without_asking: false,
     };
     let target = run.ssh_target(device)?;
     let password = match &target.auth {
@@ -1802,6 +1803,7 @@ async fn login_banner(run: &LabRun, device: &Device) -> Result<String, String> {
             login_banner: shown,
             forwards: Vec::new(),
             encoding: Default::default(),
+            forward_agent_without_asking: false,
         };
         let which = if shown {
             "with login_banner"
@@ -2054,6 +2056,7 @@ impl<'a> Conversation<'a> {
             login_banner: false,
             forwards: Vec::new(),
             encoding: Default::default(),
+            forward_agent_without_asking: false,
         };
         Self::connect_with(manager, target, options, timeout, password).await
     }
