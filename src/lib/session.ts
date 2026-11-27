@@ -179,12 +179,12 @@ export interface HostKeyQuestion {
 
 export type HostKeyDecision = "trustAndRemember" | "trustOnce" | "cancel";
 
-/** Where input came from, as the shell routes it (`InputOrigin` in the
- * core): a terminal's origins (`terminalInput`), and a group paste's line. */
 /** A new id for one paste: every line of it carries the id, so the core can
  * refuse the rest of a paste whose first line stopped a snippet's steps. */
 export const newPasteId = (): number => Math.floor(Math.random() * 2 ** 47) + 1;
 
+/** Where input came from, as the shell routes it (`InputOrigin` in the
+ * core): a terminal's origins (`terminalInput`), and a group paste's line. */
 export type SessionInputOrigin = InputOrigin | "group-paste";
 
 export interface Session {

@@ -16,8 +16,9 @@
 //!
 //! Each wait has a timeout; the run stops when it passes. The run also stops
 //! when the user stops it, when the user's own input reaches the session
-//! ([`StepRuns::user_input`]: the input that stops it is not sent, nor the rest of a paste it began), and when
-//! the session's connection ends. Nothing is ever retried.
+//! ([`StepRuns::user_input`]: the input that stops it is not sent, nor the
+//! rest of a paste it began), and when the session's connection ends. Nothing
+//! is ever retried.
 //!
 //! Patterns are plain text, matched as written (case counts); a pattern
 //! between slashes (`/Proceed.*\?/`) is a regular expression. They are
