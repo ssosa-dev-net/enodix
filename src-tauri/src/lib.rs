@@ -47,7 +47,8 @@ use enodix_core::session::{
     NegotiatedAlgorithms, OpenOptions, Reconnection, SerialParameters, SerialPortInfo,
     SerialTarget, SessionEvent, SessionId, SessionManager, SessionRecord, SessionRecords,
     SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType,
-    Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
+    TransferRequest, TransferStatus, Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
+    SYSTEM_SSH_WARNING,
 };
 use enodix_core::steps::StepRuns;
 use enodix_core::template::Variables;
@@ -149,6 +150,17 @@ const CONFIG_SAVED_EVENT: &str = "config-saved";
 /// Told to every window when a session's port forwards change (#21): its
 /// header marker and the list of open forwards ask again.
 const FORWARDS_CHANGED_EVENT: &str = "forwards-changed";
+/// Told to every window as an XMODEM or YMODEM transfer on a serial
+/// session moves (#47), with the session's id and the transfer's status:
+/// the window showing the session updates its progress card.
+const TRANSFER_EVENT: &str = "session-transfer";
+
+/// A transfer's progress, as [`TRANSFER_EVENT`] carries it.
+#[derive(Clone, Serialize)]
+struct TransferMessage {
+    id: u64,
+    status: TransferStatus,
+}
 
 /// The main window's label; a detached run window's is this prefix and
 /// the run id; a detached config history's is its prefix and the host id
@@ -2602,6 +2614,14 @@ impl Consumer for Channels {
                 let _ = self.app.emit(FORWARDS_CHANGED_EVENT, ());
                 Ok(())
             }
+            SessionEvent::Transfer(status) => {
+                let message = TransferMessage {
+                    id: self.session.0,
+                    status,
+                };
+                let _ = self.app.emit(TRANSFER_EVENT, message);
+                Ok(())
+            }
         };
         delivered.map_err(|_| ConsumerGone)
     }
@@ -3136,6 +3156,28 @@ fn session_resize(manager: State<'_, SessionManager>, id: u64, size: Size) -> Re
 fn session_break(manager: State<'_, SessionManager>, id: u64) -> Result<(), String> {
     manager
         .send_break(SessionId(id))
+        .map_err(|error| error.to_string())
+}
+
+/// Starts an XMODEM or YMODEM transfer on the serial session `id` (#47);
+/// its progress arrives as `session-transfer` events.
+#[tauri::command]
+async fn session_transfer_start(
+    manager: State<'_, SessionManager>,
+    id: u64,
+    request: TransferRequest,
+) -> Result<(), String> {
+    manager
+        .start_transfer(SessionId(id), request)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Stops the transfer running on the session `id`, if any.
+#[tauri::command]
+fn session_transfer_cancel(manager: State<'_, SessionManager>, id: u64) -> Result<(), String> {
+    manager
+        .cancel_transfer(SessionId(id))
         .map_err(|error| error.to_string())
 }
 
@@ -3918,6 +3960,8 @@ pub fn run() {
             session_resize,
             session_close,
             session_break,
+            session_transfer_start,
+            session_transfer_cancel,
             session_forwards,
             forwards_list,
             forward_stop,

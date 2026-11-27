@@ -388,7 +388,9 @@ pub(super) async fn run(target: LocalTarget, link: &mut Link) -> CloseReason {
                 Command::Answer(_)
                 | Command::HostKey(_)
                 | Command::Break
-                | Command::OpenChannel { .. } => {}
+                | Command::OpenChannel { .. }
+                | Command::Transfer { .. }
+                | Command::CancelTransfer => {}
                 Command::Close => break CloseReason::ClosedLocally,
             },
             read = output.recv() => match read {

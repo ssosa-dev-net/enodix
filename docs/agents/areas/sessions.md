@@ -498,6 +498,70 @@ parameters }`, `serial_ports`, `session_break`, `Opened.transport`.
   COM250) and the smoke's `serial` part. Break, unplug, DTR/RTS on a real
   adapter: not verified yet. Never open the machine's real ports in tests
   (this one's COM4 is not a console).
+- XMODEM and YMODEM on serial sessions (#47, `session/modem.rs`).
+  `SessionManager::start_transfer(id, TransferRequest { protocol:
+ModemProtocol::Xmodem|XmodemCrc|Xmodem1k|Ymodem, action:
+TransferAction::Send(paths)|Receive(path), timeouts: TransferTimeouts {
+start 60 s, reply 10 s, retries 10 } })` (async; opens the files, or
+  creates the XMODEM file / checks the YMODEM folder, before it returns:
+  `TransferError::Unsupported` for any other transport, `Running`,
+  `NothingToSend`, `OneFileOnly`, `File { path, reason }`, `Session`) and
+  `cancel_transfer(id)`. `modem::Transfer` is a sans-IO engine (no I/O on
+  the line: `received(bytes, now)`, `tick(now)` at `deadline()`,
+  `cancel()`, `take_output()`, `take_status()`, `take_leftover()`; it
+  reads and writes the files itself). `serial::run` holds it: while it
+  runs, bytes read are acknowledged in `Flow` at once and fed to it (never
+  `forward_counted`: not logged, not watched, no `Output`), typed input
+  and breaks wait in `held`, and its output goes to the writer queue as
+  raw bytes; `pump` reports `SessionEvent::Transfer(TransferStatus)`
+  after each step (state `Waiting|Running|Done|Cancelled { by_device
+}|Failed { reason }`, file, file bytes and size, files done/total, bytes,
+  blocks, retries, `saved`) and, once ended, sends what came after it to
+  the terminal (`Link::output`) and then the held input. A session ending
+  mid-transfer cancels it. Protocol choices: a receiver asks every 3 s
+  (`C`, or NAK for `Xmodem`; `XmodemCrc`/`Xmodem1k` fall back to NAK
+  after 3 `C`s); 1 KiB blocks only with CRC, a file's last ≤128 bytes in
+  a 128-byte block (as lrzsz); YMODEM headers carry the size and octal
+  mtime; the first EOT of a YMODEM file is NAKed by the receiver and not
+  counted as a retry by the sender; the sender takes no answer to the
+  empty end-of-batch header within 2 s as done (`rb` sends none). The
+  cancel is 8 CAN then 8 BS; two CANs between blocks cancel. Receiving:
+  XMODEM's trailing `0x1A` are stripped (the last block is held back),
+  YMODEM files are cut to the header's size; names keep their last part
+  only, with `<>:"|?*` and controls as `_` (`safe_name`), created with
+  `create_new` as `name (2).ext` and so on (Windows device names such as
+  `NUL.txt`, `COM3` get a `_` first); a file cut short is removed. An
+  XMODEM receive writes `.<name>.part` beside its target (`create_new`)
+  and renames it over the target in `ReceiveFile::finish`, so an existing
+  file survives a cancel or failure (review of #56); a YMODEM file shorter
+  than its header's size fails the transfer and is removed.
+  Telnet, SSH and local transports ignore the commands. Shell:
+  `session_transfer_start(id, request)`, `session_transfer_cancel(id)`;
+  `Channels::deliver` emits `session-transfer` `{ id, status }` to every
+  window (no channel of its own; `Reported` keeps no transfer, so a
+  window taking a session over mid-transfer shows it from the next
+  status, and `moveRefusal` refuses a move while one runs). Capabilities:
+  `dialog:allow-save` (main), `dialog:allow-open`/`allow-save` (session
+  windows). Interface: `src/lib/modem.ts`, `ModemTransfer.svelte` (the
+  pane-scoped form: `[data-modem-form=send|receive]`,
+  `[data-modem-protocol]`, `[data-modem-choose]`, `[data-modem-picked]`,
+  `[data-modem=start|cancel]`, `[data-modem-problem]`); TerminalSession's
+  menu has `[data-send-file]` / `[data-receive-file]` (connected serial),
+  `[data-transfer-cancel-menu]` while one runs; the bar
+  `[data-transfer=waiting|running|done|cancelled|failed]`
+  `[data-transfer-direction]` `[data-transfer-blocks]`
+  `[data-transfer-retries]`, `[data-transfer-text]`,
+  `[data-transfer-cancel]`, `[data-transfer-dismiss]`. Tests:
+  `tests/serial_transfer.rs` over `support/modem.rs` (`ModemDevice::spawn
+(device, Role, Faults)`: a device written apart from the engine;
+  `Faults { damage_block, cancel_after, silent_after, checksum_only,
+ignore_crc_requests }`; `VirtualDevice::line()`), the engine's unit
+  tests (CRC, names), and `tests/serial_lrzsz.rs` (Unix, `#[ignore]`:
+  `sx`/`sb`/`rx`/`rb` of lrzsz through the real driver on a `socat` pty
+  pair; `cargo test -p enodix-core --test serial_lrzsz -- --ignored`,
+  passed on Linux in the cloud for #47). Not verified: a real device's
+  boot loader over a USB adapter, Windows' driver for it (the engine is
+  the same), the smoke test (no part for it).
 - Session logging (#20, `src/logging.rs`). `LogFolder::new(root)`:
   `host_folder(&ws, id)` = `<root>/workspaces/<workspace folder name>/<tree
 path>/<host file stem>`, `host_log(&ws, id)` → `Option<SessionLog>`

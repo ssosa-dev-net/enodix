@@ -28,8 +28,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
+use super::modem::Transfer;
 use super::output::Flow;
-use super::{CloseReason, Command, Link, OpenError, SessionState};
+use super::{CloseReason, Command, Link, OpenError, SessionEvent, SessionState, TransferError};
 use crate::workspace::{
     FlowControl, Parity, DEFAULT_BAUD_RATE, DEFAULT_DATA_BITS, DEFAULT_STOP_BITS,
 };
@@ -413,14 +414,37 @@ pub(super) async fn run(
         port: port.clone(),
         reason: error.to_string(),
     };
+    // An XMODEM or YMODEM transfer (#47): while it runs, what the device
+    // sends is its, and typed input and breaks wait in `held`.
+    let mut transfer: Option<Box<Transfer>> = None;
+    let mut held: Vec<Job> = Vec::new();
     let reason = loop {
+        let deadline = transfer
+            .as_ref()
+            .map(|transfer| tokio::time::Instant::from_std(transfer.deadline()));
         tokio::select! {
             command = link.command() => match command {
+                Command::Write(bytes) if transfer.is_some() => held.push(Job::Write(bytes)),
+                Command::Break if transfer.is_some() => held.push(Job::Break),
                 Command::Write(bytes) => {
                     let _ = jobs.send(Job::Write(bytes));
                 }
                 Command::Break => {
                     let _ = jobs.send(Job::Break);
+                }
+                Command::Transfer { transfer: mut new, reply } => {
+                    if transfer.is_some() {
+                        let _ = reply.send(Err(TransferError::Running));
+                    } else {
+                        new.start(Instant::now());
+                        let _ = reply.send(Ok(()));
+                        transfer = Some(new);
+                    }
+                }
+                Command::CancelTransfer => {
+                    if let Some(transfer) = &mut transfer {
+                        transfer.cancel();
+                    }
                 }
                 // A serial line has no window size, and asks nothing.
                 Command::Resize(_)
@@ -430,17 +454,38 @@ pub(super) async fn run(
                 Command::Close => break CloseReason::ClosedLocally,
             },
             read = output.recv() => match read {
-                Some(Ok(bytes)) => {
-                    if !link.forward_counted(bytes) {
-                        break CloseReason::ClosedLocally;
+                Some(Ok(bytes)) => match &mut transfer {
+                    Some(transfer) => {
+                        // Consumed here: the terminal never sees it.
+                        link.flow().acknowledge(bytes.len());
+                        transfer.received(&bytes, Instant::now());
                     }
-                }
+                    None => {
+                        if !link.forward_counted(bytes) {
+                            break CloseReason::ClosedLocally;
+                        }
+                    }
+                },
                 Some(Err(error)) => break lost(error),
                 None => break lost(io::Error::other("reading it stopped")),
             },
+            () = sleep_until(deadline), if deadline.is_some() => {
+                if let Some(transfer) = &mut transfer {
+                    transfer.tick(Instant::now());
+                }
+            },
             Some(error) = write_failed.recv() => break lost(error),
         }
+        if !pump(&mut transfer, &mut held, &jobs, link) {
+            break CloseReason::ClosedLocally;
+        }
     };
+    // A transfer cut short by the session's end: the device is told, and
+    // a file half received goes.
+    if let Some(running) = &mut transfer {
+        running.cancel();
+        let _ = pump(&mut transfer, &mut held, &jobs, link);
+    }
 
     // Closing from this side lets typed input still queued go out first;
     // otherwise the port is gone already. Either way the session reports
@@ -458,6 +503,44 @@ pub(super) async fn run(
         let _ = tokio::time::timeout(CLOSE_FLUSH, finished.recv()).await;
     }
     reason
+}
+
+/// After each step of a transfer: sends what it has to say, reports how
+/// it stands, and once it has ended gives the line back to the terminal
+/// (what the device sent after it, then the input held meanwhile).
+/// Returns `false` if nobody is listening any more.
+fn pump(
+    transfer: &mut Option<Box<Transfer>>,
+    held: &mut Vec<Job>,
+    jobs: &std_mpsc::Sender<Job>,
+    link: &mut Link,
+) -> bool {
+    let Some(running) = transfer else {
+        return true;
+    };
+    let output = running.take_output();
+    if !output.is_empty() {
+        let _ = jobs.send(Job::Write(output));
+    }
+    if let Some(status) = running.take_status() {
+        link.report(SessionEvent::Transfer(status));
+    }
+    if !running.ended() {
+        return true;
+    }
+    let leftover = running.take_leftover();
+    *transfer = None;
+    for job in held.drain(..) {
+        let _ = jobs.send(job);
+    }
+    leftover.is_empty() || link.output(leftover)
+}
+
+async fn sleep_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Why a port could not be opened, with a hint for the usual causes.
