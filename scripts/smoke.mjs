@@ -13881,12 +13881,15 @@ async function editInventory({
   if (await evaluate(`!!document.querySelector(".toolbar")`)) {
     fail("a toolbar of text buttons is still there");
   }
-  // The add control offers hosts, folders and both imports.
+  // The add control offers hosts, folders and the three imports.
   await clickOn("[data-add-menu]");
   const additions = await evaluate(
     `[...document.querySelectorAll("[data-add-entries] [data-add]")].map((b) => b.dataset.add)`,
   );
-  if (JSON.stringify(additions) !== '["host","folder","csv","nornir"]') {
+  if (
+    JSON.stringify(additions) !==
+    '["host","folder","csv","nornir","ssh-config"]'
+  ) {
     fail(`the add control offers ${JSON.stringify(additions)}`);
   }
   await screenshot("add-menu");

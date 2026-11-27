@@ -102,6 +102,46 @@ pub const SHORTCUT_ACTIONS: [(&str, &str); 9] = [
     ("details", "Ctrl+Shift+D"),
 ];
 
+/// Keys the app keeps for itself, with what each does: copy and paste, the
+/// terminal search, the tab keys, the font size and the side views. No
+/// shortcut or snippet can be bound to one (they would never fire, or would
+/// take copy and paste from the terminal). The interface is served this list.
+pub const RESERVED_KEYS: &[(&str, &str)] = &[
+    ("Ctrl+C", "copies the selection or interrupts"),
+    ("Ctrl+Shift+C", "copies"),
+    ("Ctrl+Insert", "copies"),
+    ("Ctrl+V", "pastes"),
+    ("Ctrl+Shift+V", "pastes"),
+    ("Ctrl+Shift+F", "searches the scrollback"),
+    ("Ctrl+Tab", "goes to the next tab"),
+    ("Ctrl+Shift+Tab", "goes to the previous tab"),
+    ("Ctrl+PageDown", "goes to the next tab"),
+    ("Ctrl+PageUp", "goes to the previous tab"),
+    ("Ctrl+Shift+PageDown", "moves the tab right"),
+    ("Ctrl+Shift+PageUp", "moves the tab left"),
+    ("Ctrl+=", "enlarges the font"),
+    ("Ctrl+Shift+=", "enlarges the font"),
+    ("Ctrl++", "enlarges the font"),
+    ("Ctrl+Shift++", "enlarges the font"),
+    ("Ctrl+-", "shrinks the font"),
+    ("Ctrl+0", "resets the font size"),
+    ("Ctrl+Shift+H", "shows the Hosts view"),
+    ("Ctrl+Shift+S", "shows the Snippets view"),
+    ("Ctrl+Shift+J", "shows the Jobs view"),
+    ("Ctrl+Shift+G", "shows the Config backups view"),
+    ("Ctrl+Shift+L", "shows the Credentials view"),
+];
+
+/// What the app does with `chord` itself, if it keeps it (any spelling of
+/// the chord is understood).
+pub fn reserved_key(chord: &str) -> Option<&'static str> {
+    let chord = normalize_chord(chord)?;
+    RESERVED_KEYS
+        .iter()
+        .find(|(reserved, _)| *reserved == chord)
+        .map(|(_, what)| *what)
+}
+
 /// A key combination in its one written form: `Ctrl+Alt+Shift+` and then the
 /// key (`K`, `7`, `,`, `F5`, `Tab`, `PageUp`). Case and the order of the
 /// modifiers do not matter when it is read. Nothing but a function key may
@@ -386,12 +426,13 @@ impl Preferences {
             .filter(|(name, _)| COLOR_NAMES.contains(&name.as_str()))
             .filter_map(|(name, color)| Some((name, normalized_color(&color)?)))
             .collect();
-        // Shortcuts: known actions, readable chords, one action per chord.
+        // Shortcuts: known actions, readable chords, none the app keeps, one
+        // action per chord.
         let mut taken = Vec::new();
         let mut shortcuts = BTreeMap::new();
         for (id, _) in SHORTCUT_ACTIONS {
             if let Some(chord) = self.shortcuts.get(id).and_then(|c| normalize_chord(c)) {
-                if !taken.contains(&chord) {
+                if reserved_key(&chord).is_none() && !taken.contains(&chord) {
                     taken.push(chord.clone());
                     shortcuts.insert(id.to_string(), chord);
                 }
@@ -405,8 +446,10 @@ impl Preferences {
             .filter_map(|(chord, snippet)| {
                 let chord = normalize_chord(&chord)?;
                 let snippet = snippet.trim().to_string();
-                (!snippet.is_empty() && !in_use.values().any(|used| *used == chord))
-                    .then_some((chord, snippet))
+                (!snippet.is_empty()
+                    && reserved_key(&chord).is_none()
+                    && !in_use.values().any(|used| *used == chord))
+                .then_some((chord, snippet))
             })
             .collect();
         self
