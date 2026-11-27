@@ -108,7 +108,8 @@ impl Reported {
             SessionEvent::Output(_)
             | SessionEvent::Prompt(_)
             | SessionEvent::HostKey(_)
-            | SessionEvent::Forwards(_) => {}
+            | SessionEvent::Forwards(_)
+            | SessionEvent::Transfer(_) => {}
         }
     }
 }

@@ -758,7 +758,11 @@ async fn pump(
                 }
                 // Logged in already: nothing asked for these.
                 // The manager sends breaks to serial sessions only.
-                Command::Answer(_) | Command::HostKey(_) | Command::Break => {}
+                Command::Answer(_)
+                | Command::HostKey(_)
+                | Command::Break
+                | Command::Transfer { .. }
+                | Command::CancelTransfer => {}
                 Command::Close => return ended_here(&outgoing, second).await,
             },
             // Output is read only while the consumer is less than a window

@@ -13,6 +13,7 @@ pub(crate) mod connection;
 mod encoding;
 mod forward;
 mod local;
+mod modem;
 mod origin;
 mod output;
 mod output_watch;
@@ -48,6 +49,10 @@ pub use forward::{ForwardKind, ForwardState, ForwardStatus, PortForward, SOCKS_H
 pub use local::{
     local_environment, local_shells, local_start_folder, pick_local_shell, LocalShell, LocalTarget,
     CLI_VARIABLE, WORKSPACE_VARIABLE,
+};
+pub use modem::{
+    ModemProtocol, TransferAction, TransferDirection, TransferError, TransferRequest,
+    TransferState, TransferStatus, TransferTimeouts,
 };
 pub use origin::{HostOrigin, HostSession, HostWay, ReconnectRefused, Reconnection, TypedLogin};
 use output::Flow;
@@ -286,6 +291,12 @@ pub enum SessionEvent {
     /// connection through one that failed), and empty when the connection
     /// ends. [`SessionManager::forwards`] gives the same list.
     Forwards(Vec<ForwardStatus>),
+    /// How the XMODEM or YMODEM transfer started with
+    /// [`SessionManager::start_transfer`] stands: sent as it starts, as
+    /// blocks go through, and once when it ends (its state then says how).
+    /// While it runs, the device's output goes to the transfer, not to
+    /// [`SessionEvent::Output`].
+    Transfer(TransferStatus),
 }
 
 /// Whether to trust a host key the server presented.
@@ -1362,6 +1373,49 @@ impl SessionManager {
             .map_err(|_| SessionError::NotFound)
     }
 
+    /// Starts sending or receiving files with XMODEM or YMODEM on the
+    /// connected serial session `id` (#47). Its files are opened (or the
+    /// file to receive into created) before it returns: a problem with them
+    /// is the error. From then on, until it ends, the device's output goes
+    /// to the transfer and input written to the session waits; progress
+    /// arrives as [`SessionEvent::Transfer`]. Telnet and SSH sessions
+    /// refuse ([`TransferError::Unsupported`]), and so does a session
+    /// running a transfer already.
+    pub async fn start_transfer(
+        &self,
+        id: SessionId,
+        request: TransferRequest,
+    ) -> Result<(), TransferError> {
+        let commands = {
+            let sessions = self.inner.sessions();
+            let entry = sessions.get(&id).ok_or(SessionError::NotFound)?;
+            if entry.target.transport() != Transport::Serial {
+                return Err(TransferError::Unsupported);
+            }
+            let session = open_session(&sessions, id)?;
+            if !session.connected.load(Ordering::Acquire) {
+                return Err(SessionError::NotConnected.into());
+            }
+            session.commands.clone()
+        };
+        let transfer = modem::Transfer::new(request)?;
+        let (reply, started) = tokio::sync::oneshot::channel();
+        commands
+            .send(Command::Transfer {
+                transfer: Box::new(transfer),
+                reply,
+            })
+            .map_err(|_| SessionError::NotFound)?;
+        started.await.map_err(|_| SessionError::NotConnected)?
+    }
+
+    /// Stops the transfer running on session `id`, if any: the device is
+    /// sent the protocol's cancel (CAN bytes), a file being received is
+    /// removed, and the terminal gets the line back.
+    pub fn cancel_transfer(&self, id: SessionId) -> Result<(), SessionError> {
+        self.send(id, Command::CancelTransfer)
+    }
+
     /// Closes the session. The `Closed` state follows on its event stream.
     pub fn close(&self, id: SessionId) -> Result<(), SessionError> {
         self.send(id, Command::Close)
@@ -1447,6 +1501,14 @@ enum Command {
         size: TerminalSize,
         reply: tokio::sync::oneshot::Sender<Result<ssh::OpenedChannel, OpenError>>,
     },
+    /// An XMODEM or YMODEM transfer, on a serial line; other transports
+    /// drop the reply.
+    Transfer {
+        transfer: Box<modem::Transfer>,
+        reply: tokio::sync::oneshot::Sender<Result<(), TransferError>>,
+    },
+    /// Stops the transfer running, if any.
+    CancelTransfer,
     Close,
 }
 
@@ -1520,7 +1582,11 @@ impl Link {
                     let _ = replies.decisions.send(decision);
                 }
                 // Not connected: a second channel cannot open yet.
-                Command::Write(_) | Command::Break | Command::OpenChannel { .. } => {}
+                Command::Write(_)
+                | Command::Break
+                | Command::OpenChannel { .. }
+                | Command::Transfer { .. }
+                | Command::CancelTransfer => {}
             }
         }
     }
@@ -1637,6 +1703,11 @@ impl Link {
     /// no more once this returns.
     async fn end_forwards(&mut self) {
         self.forwards.end().await;
+    }
+
+    /// Reports an event that is neither output nor a state change.
+    fn report(&mut self, event: SessionEvent) {
+        let _ = self.events.send(event);
     }
 
     fn algorithms(&mut self, algorithms: Vec<NegotiatedAlgorithms>) {

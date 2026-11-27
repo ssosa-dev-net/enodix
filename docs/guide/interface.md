@@ -101,6 +101,9 @@ it, and the terminals in tabs and split panes.
   and Run script (a folder's or host's details sheet, the tree's context
   menu, a saved filter's actions) and opens a job tab with a pre-flight
   list and a per-host result.
+- **Send file… / Receive file…** in a connected serial session's menu move a
+  file over the console line with XMODEM or YMODEM; a bar under its terminal
+  shows the progress and has Cancel ([Sessions](sessions.md#files-over-the-console-line)).
 - **Files tab**: an SSH host's files, titled "Files" and the host's name,
   opened from the host's details sheet, the tree's context menu, and a
   session's menu or its tab's menu. It lives in the main window only: from

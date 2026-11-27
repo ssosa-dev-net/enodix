@@ -101,6 +101,7 @@ pub mod http;
 pub mod jobs;
 pub mod keychain;
 pub mod memory;
+pub mod modem;
 pub mod processes;
 pub mod proxy;
 pub mod python;
@@ -2456,6 +2457,8 @@ pub async fn next_state(events: &mut SessionEvents) -> SessionState {
                 // Reported as they change; `port_forwards.rs` reads them
                 // from the manager.
                 Some(SessionEvent::Forwards(_)) => {}
+                // Transfer progress: `serial_transfer.rs` reads it.
+                Some(SessionEvent::Transfer(_)) => {}
                 Some(SessionEvent::LogFailed(failure)) => {
                     panic!("expected a state change, got the log failure {failure:?}")
                 }

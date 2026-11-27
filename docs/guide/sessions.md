@@ -336,6 +336,46 @@ font and scrollback as any session, and follows the pane's size.
   reconnects (Enter) by starting the shell again. Closing the tab ends the
   shell and what it started.
 
+## Files over the console line
+
+A serial session can send a file to the device, or receive one from it, with
+XMODEM or YMODEM: the way to load an image into a router's ROMMON or a
+switch's boot loader when the network is not up yet. **Send file…** and
+**Receive file…** are in the session's menu while it is connected.
+
+1. Pick the protocol. **XMODEM-1K** (1 KiB blocks with a CRC) is what most
+   boot loaders take; **XMODEM-CRC** and **XMODEM** (128-byte blocks, with a
+   CRC or a plain checksum) are for older devices; **YMODEM** sends each
+   file's name and size, and several files at once.
+2. Choose the file to send (several for YMODEM), or where to receive: a
+   file name for XMODEM, which sends no name, or a folder for YMODEM.
+3. Sending, start the device's receive first (for example `xmodem -c` or
+   `copy xmodem: flash:`), then **Start**. Receiving, **Start** first, then
+   the device's send.
+
+A bar under the terminal shows the file, the bytes moved, the blocks and the
+retries, and has **Cancel**, which tells the device to stop as the protocol
+says. While a transfer runs the terminal shows nothing of what the device
+sends and holds what you type; when it ends the terminal has the line again,
+and what you typed meanwhile goes out then.
+
+- A damaged block is sent (or asked for) again, up to 10 times in a row. A
+  device that does not start within a minute, or stops answering for 10
+  seconds at a time, ends the transfer with the reason.
+- XMODEM pads a file's last block. Receiving, the padding (`0x1A` bytes) at
+  the end is removed; a file that really ends in such bytes keeps them only
+  with YMODEM, which sends the size.
+- YMODEM names never reach outside the folder (a name with folders in it
+  keeps only its last part), and never replace a file already there:
+  `config.txt` becomes `config (2).txt`.
+- A file cut short by a cancel or a failure is removed; the files of a
+  YMODEM batch received in full before it stay. Receiving with XMODEM into a
+  file that exists replaces it only once the transfer completes (it is
+  written as `.<name>.part` beside it meanwhile). A YMODEM file that ends
+  before the size its header gave is not kept.
+- ZMODEM and Kermit are not supported, nor transfers over telnet or SSH (use
+  the [Files tab](files.md) for SSH hosts).
+
 ## Agent forwarding
 
 The **Agent forwarding** setting (`agent_forwarding: true` in a host file
@@ -373,7 +413,8 @@ the app shows when negotiation fails.
 - Session logs are plain text and not encrypted. They can hold secrets a
   device prints.
 - A session cannot move to another window while it is connecting, while a
-  question is open on it or while a paste is still being sent.
+  question is open on it, while a paste is still being sent or while a file
+  transfer runs on it.
 - Port forwards share the terminal's connection: while the terminal is
   paused (its window too busy to draw), they pause with it. A duplicate or a
   second channel of a session opens none. Remote forwards (`ssh -R`) are not
