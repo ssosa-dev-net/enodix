@@ -5,6 +5,19 @@ in the project's tracker.
 
 ## Unreleased
 
+## 0.8.1
+
+A fix release for two faults in 0.8.0.
+
+### Fixed
+
+- **Open with the system ssh (insecure)** never opened: the tab stayed on
+  connecting and the workspace stopped responding until the app was
+  restarted. It now opens [27].
+- A local shell tab could open with an empty terminal and no prompt, most
+  often when opened right after the app started on Windows. Its start-up
+  answer to the console is no longer lost, so the prompt always appears [22].
+
 ## 0.8.0
 
 This release reaches more of what a network engineer touches in a day: port
