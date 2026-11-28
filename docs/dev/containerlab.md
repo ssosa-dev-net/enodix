@@ -30,7 +30,7 @@ cEOS also prints it before `Username: ` on telnet.
 | large output with flow control | `large_command` prints at least `large_min_bytes`; while the reader stalls for 3 s, no more than the flow-control window (256 KiB + a batch) arrives |
 | session log                    | The session's log file holds the command output as plain text (no control sequences)                                                             |
 | login banner                   | Only where the entry has `login_banner` (or `motd`): a session opened as the app's terminal opens it (`login_banner: true`) shows every line of the banner, in order, before the first prompt; one opened as jobs, backups and file connections open theirs (`login_banner: false`) shows none of its lines. The `motd` is shown by both, after the banner. The config backup check then also checks that the backup does not start with either text and holds none of their lines more often than the text itself does (a configuration may hold them once, in its `banner` commands) |
-| telnet                         | Log in by telnet (answers typed into the terminal), run `command`. Then a second session with a 2 s connect timeout is left quiet for 8 s, through four of the timing marks a quiet telnet session asks the device for (#133): the device shows nothing for them, and `command` still works afterwards (cEOS 4.36.0.1F: passed on 2026-11-21); only where `telnet` is set, and behind a jump host only with `telnet_address` (telnet is not tunnelled) |
+| telnet                         | Log in by telnet (answers typed into the terminal), run `command`. Then a second session with a 2 s connect timeout is left quiet for 8 s, through four of the timing marks a quiet telnet session asks the device for (#133): the device shows nothing for them, and `command` still works afterwards (cEOS 4.36.0.1F: passed on 2026-11-21); only where `telnet` is set, and behind a jump host only with `telnet_address` (the check does not tunnel telnet) |
 | paging off                     | A job driven by the device's built-in platform definition runs `paging_command` (more lines than a job's 100-row terminal): no pager (`--More--`, `---(more)---`, ...) shows and the job ends at the prompt |
 | config backup                  | A config backup job keeps the configuration without the prompt (its last line matches `config_end`); a second backup of the unchanged device keeps nothing new, so the definition's ignored lines cover what changes by itself |
 | privileged mode                | Only where the definition has a privilege command: a job's `privilege_check` command shows `privilege_expect` (level 15). On an entry with an enable secret (the two privilege-1 logins): the device asked for it, and a job with a wrong secret fails the host as refused |
@@ -43,10 +43,10 @@ The output of every check (pass, fail or not checked, with the negotiated
 algorithms) is printed, so run it with `--nocapture` (the npm script does).
 A check that applies to no device still passes, but prints `NOT CHECKED on
 any device`: with the example lab, the terminal-size check on SR Linux and
-cEOS (no size command). The app does not tunnel telnet through a jump
-host, so telnet is checked on cEOS, which the topology configures for
-telnet and publishes on the server's port 2323; the lab file's
-`telnet_address` sends the telnet check there directly. The topology's cEOS
+cEOS (no size command). The suite's telnet check does not go through the
+jump host (the app itself can since 0.8.0), so telnet is checked on cEOS,
+which the topology configures for telnet and publishes on the server's port
+2323; the lab file's `telnet_address` sends the telnet check there directly. The topology's cEOS
 config also turns on eAPI over HTTPS (`management api http-commands`,
 `protocol https`) for the tunnel ports check; cJunos Evolved needs NETCONF on
 830 turned on by hand after each deploy (step 1 below). When the output
