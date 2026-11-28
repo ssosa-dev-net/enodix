@@ -256,8 +256,11 @@ legacy_crypto })` with `legacy_crypto_would_help()` /
   `deadline` in `ssh.rs`). Time spent waiting for the user (host key,
   login questions) does not count: `UserWait`, shared by `Prompter` and
   `HostKeyAsker`, flags it and the clock restarts after each answer.
-  Open sessions send SSH keepalives every connect timeout; 2 unanswered
-  (`KEEPALIVES_UNANSWERED`, ~3 timeouts of silence) → `ConnectionLost`.
+  Open sessions send SSH keepalives every connect timeout, or every
+  `SshTarget::keepalive_interval` when that is set (`None`, the default
+  everywhere, keeps the connect timeout; jump hosts always use their own
+  connect timeout; #74, a user setting follows in #111); 2 unanswered
+  (`KEEPALIVES_UNANSWERED`, ~3 intervals of silence) → `ConnectionLost`.
   Failure kinds: `OpenError::NameNotResolved | Unreachable |
 ConnectionRefused | TimedOut { after, stage } | AuthenticationFailed`
   (`stage`: `ConnectStage`, #140, below),
@@ -805,8 +808,10 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   nothing crossed: `ConnectionLost`, then reconnect); twenty sessions
   flooding at once; fifty opened and closed in a row (tasks, handles,
   device connections and log files all back where they were); rekeying
-  every 64 KiB and 500 ms (dozens of key exchanges, output whole); 15
-  keepalive rounds on an idle session; a 57 KiB login banner full of
+  every 64 KiB and 500 ms (dozens of key exchanges, output whole); 12
+  keepalive rounds on an idle session (a 400 ms `keepalive_interval` over
+  5 s, with the normal connect timeout so the login cannot miss it under
+  load, #74); a 57 KiB login banner full of
   control sequences; a megabyte before the shell is confirmed; text that
   is not UTF-8 and characters split across reads (delivered byte for
   byte; the log keeps them whole); a console a byte at a time; a login

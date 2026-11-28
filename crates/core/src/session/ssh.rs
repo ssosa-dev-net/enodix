@@ -33,7 +33,8 @@ use super::{
 };
 use crate::known_hosts::{HostKey, HostKeyStatus, KnownHosts, KnownHostsError};
 
-/// How many keepalives (one per connect timeout) may go unanswered before
+/// How many keepalives (one per keepalive interval, by default the connect
+/// timeout: see [`SshTarget::keepalive_interval`]) may go unanswered before
 /// the connection counts as lost.
 const KEEPALIVES_UNANSWERED: usize = 2;
 
@@ -1232,6 +1233,9 @@ struct Hop<'a> {
     auth: &'a SshAuth,
     legacy_crypto: bool,
     connect_timeout: Duration,
+    /// How often the open connection sends a keepalive; `None`: one per
+    /// connect timeout.
+    keepalive_interval: Option<Duration>,
     /// For a file connection's device: what the connection is followed by.
     followed: Option<Followed>,
     /// The agent the device may use, when the session forwards one.
@@ -1274,6 +1278,7 @@ async fn connect_device(
         auth: &target.auth,
         legacy_crypto: target.legacy_crypto,
         connect_timeout: target.connect_timeout,
+        keepalive_interval: target.keepalive_interval,
         // Only a terminal forwards the agent: a file connection (followed)
         // refuses any agent channel its server opens.
         forward_agent: followed
@@ -1439,6 +1444,7 @@ async fn connect_jumps(
             auth: &jump.auth,
             legacy_crypto: jump.legacy_crypto,
             connect_timeout: jump.connect_timeout,
+            keepalive_interval: None,
             followed: None,
             forward_agent: None,
         };
@@ -1711,8 +1717,9 @@ async fn connect_and_log_in(
     let config = Arc::new(client::Config {
         preferred,
         // A link that goes silent is lost once the device has answered no
-        // keepalive for about three connect timeouts.
-        keepalive_interval: Some(hop.connect_timeout),
+        // keepalive for about three keepalive intervals (by default, connect
+        // timeouts).
+        keepalive_interval: Some(hop.keepalive_interval.unwrap_or(hop.connect_timeout)),
         keepalive_max: KEEPALIVES_UNANSWERED,
         ..client::Config::default()
     });

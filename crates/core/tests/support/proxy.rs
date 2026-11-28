@@ -33,6 +33,8 @@ pub struct LinkProxy {
     task: tokio::task::JoinHandle<()>,
     state: watch::Sender<State>,
     open: Arc<AtomicUsize>,
+    to_server: Arc<AtomicUsize>,
+    to_client: Arc<AtomicUsize>,
 }
 
 impl LinkProxy {
@@ -43,6 +45,9 @@ impl LinkProxy {
         let (state, watching) = watch::channel(State::Passing);
         let open = Arc::<AtomicUsize>::default();
         let counted = open.clone();
+        let to_server = Arc::<AtomicUsize>::default();
+        let to_client = Arc::<AtomicUsize>::default();
+        let (writes_up, writes_down) = (to_server.clone(), to_client.clone());
         let task = tokio::spawn(async move {
             while let Ok((client, _)) = listener.accept().await {
                 let Ok(server) = TcpStream::connect(("127.0.0.1", upstream)).await else {
@@ -57,13 +62,14 @@ impl LinkProxy {
                 };
                 let watching = watching.clone();
                 let counted = counted.clone();
+                let (writes_up, writes_down) = (writes_up.clone(), writes_down.clone());
                 counted.fetch_add(1, Ordering::SeqCst);
                 tokio::spawn(async move {
                     let (client_read, client_write) = client.into_split();
                     let (server_read, server_write) = server.into_split();
                     tokio::select! {
-                        () = pass(client_read, server_write, watching.clone(), cuts) => {}
-                        () = pass(server_read, client_write, watching, cuts) => {}
+                        () = pass(client_read, server_write, watching.clone(), cuts, writes_up) => {}
+                        () = pass(server_read, client_write, watching, cuts, writes_down) => {}
                     }
                     counted.fetch_sub(1, Ordering::SeqCst);
                 });
@@ -74,6 +80,8 @@ impl LinkProxy {
             task,
             state,
             open,
+            to_server,
+            to_client,
         }
     }
 
@@ -118,6 +126,18 @@ impl LinkProxy {
         });
     }
 
+    /// How many writes the link has passed from the session to the server
+    /// so far (each is one or more SSH packets: a keepalive is one).
+    pub fn writes_to_server(&self) -> usize {
+        self.to_server.load(Ordering::SeqCst)
+    }
+
+    /// How many writes the link has passed from the server to the session
+    /// so far.
+    pub fn writes_to_client(&self) -> usize {
+        self.to_client.load(Ordering::SeqCst)
+    }
+
     /// How many connections pass through it now.
     pub fn open(&self) -> usize {
         self.open.load(Ordering::SeqCst)
@@ -138,6 +158,7 @@ async fn pass(
     mut to: OwnedWriteHalf,
     mut state: watch::Receiver<State>,
     cuts: u64,
+    writes: Arc<AtomicUsize>,
 ) {
     let mut buffer = vec![0u8; 16 * 1024];
     let cut = |state: State| matches!(state, State::Cut(n) if n > cuts);
@@ -172,5 +193,6 @@ async fn pass(
         if to.write_all(&buffer[..count]).await.is_err() {
             return;
         }
+        writes.fetch_add(1, Ordering::SeqCst);
     }
 }
