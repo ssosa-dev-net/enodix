@@ -13,9 +13,9 @@ use russh::keys::{Algorithm, PrivateKey};
 use russh::MethodKind;
 use support::agent::TestAgent;
 use support::{
-    next_prompt, next_state, output_ending_with, TestSshServer, CERT_USERNAME, CODE_INSTRUCTIONS,
-    CODE_NAME, CODE_QUESTION, KEY_THEN_PASSWORD_USERNAME, ONE_TIME_CODE, OTP_USERNAME, PASSWORD,
-    PASSWORD_QUESTION, PROMPT, RSA_CLIENT_KEY, USERNAME,
+    next_prompt, next_state, output_ending_with, rsa_client_key, TestSshServer, CERT_USERNAME,
+    CODE_INSTRUCTIONS, CODE_NAME, CODE_QUESTION, KEY_THEN_PASSWORD_USERNAME, ONE_TIME_CODE,
+    OTP_USERNAME, PASSWORD, PASSWORD_QUESTION, PROMPT, USERNAME,
 };
 
 const SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
@@ -75,7 +75,7 @@ async fn a_key_held_by_the_agent_logs_in() {
 #[tokio::test]
 async fn an_rsa_key_held_by_the_agent_logs_in() {
     let server = TestSshServer::start().await;
-    let rsa = russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap();
+    let rsa = russh::keys::load_secret_key(rsa_client_key(), None).unwrap();
     let agent = TestAgent::start(&[rsa]).await;
 
     let state = state_after_connecting(&server, USERNAME, agent_at(&agent)).await;

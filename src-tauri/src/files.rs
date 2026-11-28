@@ -19,7 +19,7 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use super::{calling_window, with_open_profiles, Prompted, Shell};
+use super::{calling_window, with_open_profiles, Prompted, Shell, WebviewWindow};
 use enodix_core::layout::WindowId;
 
 /// The open browsers, and the trusted host keys they check against (the
@@ -35,7 +35,7 @@ pub(super) struct FileTabs {
 /// login's folder. Its events arrive on `on_event`. Main window only.
 #[tauri::command]
 pub(super) async fn files_open(
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     shell: State<'_, Shell>,
     files: State<'_, FileTabs>,
     host: HostId,

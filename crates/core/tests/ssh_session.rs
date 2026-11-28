@@ -8,7 +8,7 @@ use enodix_core::session::{
     SessionTarget, SshAuth, SshTarget, TerminalSize,
 };
 use support::{
-    next_state, numbered_lines, output_ending_with, TestSshServer, PROMPT, RSA_CLIENT_KEY,
+    next_state, numbered_lines, output_ending_with, rsa_client_key, TestSshServer, PROMPT,
 };
 
 const SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
@@ -273,7 +273,7 @@ async fn an_ed25519_private_key_logs_in() {
 async fn an_rsa_private_key_logs_in() {
     let server = TestSshServer::start().await;
 
-    let state = state_after_connecting(&server, key_login(RSA_CLIENT_KEY, None)).await;
+    let state = state_after_connecting(&server, key_login(rsa_client_key(), None)).await;
 
     assert_eq!(state, SessionState::Connected);
 }

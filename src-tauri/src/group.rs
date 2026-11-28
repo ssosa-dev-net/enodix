@@ -33,9 +33,9 @@ use enodix_core::paste::PasteSafety;
 use enodix_core::session::{SessionId, SessionRecords, SessionRelays, SessionState};
 use enodix_core::workspace::HostId;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{Emitter, State};
 
-use super::{calling_window, session_windows, Shell, Tabs};
+use super::{calling_window, session_windows, AppHandle, Shell, Tabs, WebviewWindow};
 
 /// A window is told its layout: the multi-send group changed elsewhere.
 pub(super) const LAYOUT_CHANGED_EVENT: &str = "layout-changed";
@@ -103,7 +103,7 @@ pub(super) struct GroupMembers {
 /// off, #123) when the tab is not a member.
 #[tauri::command]
 pub(super) fn group_members(
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     shell: State<'_, Shell>,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
@@ -175,7 +175,7 @@ pub(super) struct MemberLines {
 #[tauri::command]
 pub(super) fn group_paste_send(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     tab: TabId,
     revision: u64,
@@ -212,7 +212,7 @@ pub(super) fn group_paste_send(
 /// when it sees the group change while the paste's question is open.
 #[tauri::command]
 pub(super) fn group_paste_check(
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     tab: TabId,
     revision: u64,

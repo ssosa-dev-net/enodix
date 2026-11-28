@@ -1069,6 +1069,11 @@ logging]` (secrets warning) in SettingsPanel, `[data-log-failed]` bar in
   window only: `TerminalSession`'s `onsystemssh`, wired by `App.svelte`
   `systemSsh`) replaces the tab with it. Not done: a way in from the tree
   or the details sheet (the card is the one entry), session windows.
+  The shell's test `the_system_ssh_tab_opens_and_runs_the_systems_client`
+  (`src-tauri/src/tests/sessions.rs`, #70) opens it through
+  `session_open`; 0.8.0's deadlock there (a helper locking the workspace
+  under its guard) is also caught by the shell's lock check
+  (`testing.md`).
   Smoke: `screensOf080` (the example server's `--unsupported-device`
   stand-in: the card, the button, the tab in place of the failed one with
   **Insecure**; the client never logs in to the stand-in, so a login

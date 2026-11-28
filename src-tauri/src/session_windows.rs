@@ -43,14 +43,13 @@ use enodix_core::workspace::{HostId, Workspace};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl,
-    WebviewWindowBuilder,
+    Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder,
 };
 
 use super::page_watch::Page;
 use super::{
-    calling_window, focused_main, product_name, window_theme, window_view, Channels,
-    LoginBackupOutcome, Shell, StateMessage, Tabs, UserPreferences, MAIN_WINDOW,
+    calling_window, focused_main, product_name, window_theme, window_view, AppHandle, Channels,
+    LoginBackupOutcome, Shell, StateMessage, Tabs, UserPreferences, WebviewWindow, MAIN_WINDOW,
 };
 
 const SESSION_WINDOW_PREFIX: &str = "session-";
@@ -119,7 +118,7 @@ pub(super) fn session_record(records: State<'_, SessionRecords>, id: u64) -> Opt
 /// before serialising its terminal. Only the window showing it can.
 #[tauri::command]
 pub(super) fn session_release(
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
     id: u64,
@@ -148,7 +147,7 @@ pub(super) fn session_release(
 #[tauri::command]
 pub(super) async fn window_open_session(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
     preferred: State<'_, UserPreferences>,
@@ -232,7 +231,7 @@ pub(super) async fn window_open_session(
 /// window (#85).
 fn leave(
     tabs: &Tabs,
-    window: &tauri::WebviewWindow,
+    window: &WebviewWindow,
     from: WindowId,
 ) -> Result<Option<WindowView>, String> {
     let view = tabs.lock().view(from);
@@ -339,7 +338,7 @@ pub(super) fn snippet_target(
 #[tauri::command]
 pub(super) fn terminal_used(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
     tab: TabId,
@@ -379,7 +378,7 @@ struct SnippetSend {
 #[tauri::command]
 pub(super) fn snippet_send_to(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
     target: WindowId,
@@ -460,7 +459,7 @@ struct MainRequested {
 #[tauri::command]
 pub(super) fn main_window_request(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     shell: State<'_, Shell>,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
@@ -505,12 +504,12 @@ pub(super) fn main_window_request(
 /// logical position, so the window is built hidden, placed, and shown.
 fn build(
     app: &AppHandle,
-    main: &tauri::WebviewWindow,
+    main: &WebviewWindow,
     label: String,
     title: String,
     theme: Option<tauri::Theme>,
     (width, height): (f64, f64),
-) -> Result<tauri::WebviewWindow, String> {
+) -> Result<WebviewWindow, String> {
     let monitor = main.current_monitor().ok().flatten();
     let scale = monitor
         .as_ref()
@@ -607,7 +606,7 @@ pub(super) struct Taken {
 /// session (the page before) is let go of.
 #[tauri::command]
 pub(super) async fn session_window_take(
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
     records: State<'_, SessionRecords>,
@@ -656,7 +655,7 @@ pub(super) struct TakenOne {
 /// while its page was open, with its snapshot (used up).
 #[tauri::command]
 pub(super) fn session_window_take_tab(
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
     tab: TabId,
@@ -700,7 +699,7 @@ pub(super) struct Attached {
 #[tauri::command]
 pub(super) async fn session_attach(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
@@ -794,7 +793,7 @@ pub(super) struct Docking {
 /// layout is returned until then.
 fn dock(
     app: &AppHandle,
-    window: &tauri::WebviewWindow,
+    window: &WebviewWindow,
     tabs: &Tabs,
     records: &SessionRecords,
     docking: Vec<Docking>,
@@ -846,7 +845,7 @@ fn dock(
 #[tauri::command]
 pub(super) async fn session_dock(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
     tab: TabId,
@@ -868,7 +867,7 @@ pub(super) async fn session_dock(
 #[tauri::command]
 pub(super) async fn session_dock_all(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
     docking: Vec<Docking>,
@@ -881,7 +880,7 @@ pub(super) async fn session_dock_all(
 #[tauri::command]
 pub(super) async fn session_window_close(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
@@ -932,7 +931,7 @@ pub(super) fn session_windows_live(
 #[tauri::command]
 pub(super) fn session_windows_close_workspace(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
@@ -972,7 +971,7 @@ pub(super) fn session_windows_close_workspace(
 /// every window goes, and their sessions with them (`close_detached`, on
 /// its `Destroyed`).
 #[tauri::command]
-pub(super) fn main_window_close(window: tauri::WebviewWindow) -> Result<(), String> {
+pub(super) fn main_window_close(window: WebviewWindow) -> Result<(), String> {
     if calling_window(&window)? != WindowId::MAIN {
         return Err("not the main window".into());
     }
@@ -986,7 +985,7 @@ pub(super) fn main_window_close(window: tauri::WebviewWindow) -> Result<(), Stri
 #[tauri::command]
 pub(super) fn main_window_connect(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     shell: State<'_, Shell>,
     host: HostId,
 ) -> Result<(), String> {
@@ -1103,7 +1102,7 @@ pub(super) fn ask_pages(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(PAGE_ASK_EVERY).await;
-            let open: Vec<(WindowId, tauri::WebviewWindow)> = app
+            let open: Vec<(WindowId, WebviewWindow)> = app
                 .webview_windows()
                 .into_iter()
                 .filter_map(|(label, webview)| Some((window_of(&label)?, webview)))
@@ -1149,7 +1148,7 @@ fn page_not_answering(app: &AppHandle, window: WindowId) {
 #[tauri::command]
 pub(super) fn session_window_answering(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     answers: State<'_, Answers>,
 ) -> Result<(), String> {
     let from = calling_window(&window)?;
@@ -1173,7 +1172,7 @@ pub(super) fn session_window_answering(
 #[tauri::command]
 pub(super) fn session_window_take_back(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     target: WindowId,
 ) -> Result<(), String> {
     if calling_window(&window)? != WindowId::MAIN {
@@ -1227,7 +1226,7 @@ fn hand_over(app: &AppHandle, window: WindowId) {
 /// `web-process-terminated` (as the page's own). Elsewhere nothing is
 /// watched. A page that hangs or is only slow raises neither: the shell's
 /// questions find one that hangs (`ask_pages`).
-fn watch_page(webview: &tauri::WebviewWindow) {
+fn watch_page(webview: &WebviewWindow) {
     let Some(window) = window_of(webview.label()) else {
         return;
     };
@@ -1247,7 +1246,7 @@ fn watch_page(webview: &tauri::WebviewWindow) {
 
 /// Watches the main window's page for the engine's end (#120): its own
 /// renderer's end is not acted on (its sessions have nowhere to go).
-pub(super) fn watch_main(webview: &tauri::WebviewWindow) {
+pub(super) fn watch_main(webview: &WebviewWindow) {
     let app = webview.app_handle().clone();
     let died = move |page| {
         if page == Page::EngineGone {

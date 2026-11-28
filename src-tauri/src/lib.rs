@@ -2,6 +2,7 @@
 //! interface. No behaviour lives here; it only translates between the
 //! interface's messages and the core's workspace and session interfaces.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -45,11 +46,11 @@ use enodix_core::session::{
     system_ssh_target, AgentApprovals, AgentForwardingDecision, AgentForwardingQuestion,
     AlgorithmKind, AlgorithmLists, AutoReconnects, Consumer, ConsumerGone, ConsumerKey,
     ForwardStatus, HostKeyDecision, HostKeyQuestion, HostSession, HostWay, LoginPrompt,
-    NegotiatedAlgorithms, OpenOptions, Reconnection, SerialParameters, SerialPortInfo,
-    SerialTarget, SessionEvent, SessionId, SessionManager, SessionRecord, SessionRecords,
-    SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget, TerminalSize, TerminalType,
-    TransferRequest, TransferStatus, Transport, TypedLogin, WhenConnected, DEFAULT_CONNECT_TIMEOUT,
-    SYSTEM_SSH_WARNING,
+    NegotiatedAlgorithms, OpenOptions, OutputOptions, Reconnection, SerialParameters,
+    SerialPortInfo, SerialPorts, SerialTarget, SessionEvent, SessionId, SessionManager,
+    SessionRecord, SessionRecords, SessionRelays, SessionState, SessionTarget, SshAuth, SshTarget,
+    TerminalSize, TerminalType, TransferRequest, TransferStatus, Transport, TypedLogin,
+    WhenConnected, DEFAULT_CONNECT_TIMEOUT, SYSTEM_SSH_WARNING,
 };
 use enodix_core::steps::StepRuns;
 use enodix_core::template::Variables;
@@ -62,8 +63,18 @@ use enodix_core::workspace::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
+
+/// The runtime the shell runs on: the system's webview, or, in the shell's
+/// own tests, Tauri's mock runtime (#70): every command and channel as the
+/// app has them, with no window on screen and no webview.
+#[cfg(not(test))]
+pub(crate) type Runtime = tauri::Wry;
+#[cfg(test)]
+pub(crate) type Runtime = tauri::test::MockRuntime;
+pub(crate) type AppHandle = tauri::AppHandle<Runtime>;
+pub(crate) type WebviewWindow = tauri::WebviewWindow<Runtime>;
 
 mod files;
 mod group;
@@ -71,6 +82,8 @@ mod page_watch;
 mod python;
 mod session_windows;
 mod steps;
+#[cfg(test)]
+mod tests;
 
 /// Overrides the per-user application data folder (the smoke test uses it to
 /// start from a known state).
@@ -190,10 +203,22 @@ struct Shell {
 }
 
 impl Shell {
-    fn workspace(&self) -> MutexGuard<'_, Option<Workspace>> {
-        self.workspace
+    /// The open workspace, held until the guard is dropped. Never call
+    /// anything that takes it again while holding it: the second lock never
+    /// returns (0.8.0's system ssh tab). The shell's tests check every call
+    /// made under it (`src/tests/workspace_lock.rs`), and a debug build panics
+    /// on such a second lock rather than hang (#70).
+    fn workspace(&self) -> WorkspaceGuard<'_> {
+        debug_assert!(
+            !HOLDING_WORKSPACE.get(),
+            "the workspace was locked again on the thread that holds it: the lock would never return"
+        );
+        let guard = self
+            .workspace
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner);
+        HOLDING_WORKSPACE.set(true);
+        WorkspaceGuard(guard)
     }
 
     /// Makes `workspace` the open one and watches its folder, so that
@@ -349,6 +374,37 @@ impl Shell {
                 watcher.check_again();
             }
         }
+    }
+}
+
+thread_local! {
+    /// Whether this thread holds the open workspace ([`Shell::workspace`]).
+    static HOLDING_WORKSPACE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The open workspace, held: [`Shell::workspace`]'s guard, which notes on
+/// its thread that it is held. Not `Send`, as a `MutexGuard`: a command
+/// cannot hold it across an `await`, so the thread that took it is the one
+/// that lets it go.
+struct WorkspaceGuard<'a>(MutexGuard<'a, Option<Workspace>>);
+
+impl std::ops::Deref for WorkspaceGuard<'_> {
+    type Target = Option<Workspace>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for WorkspaceGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for WorkspaceGuard<'_> {
+    fn drop(&mut self) {
+        HOLDING_WORKSPACE.set(false);
     }
 }
 
@@ -2233,7 +2289,7 @@ fn config_export(
 #[tauri::command]
 async fn session_open(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     manager: State<'_, SessionManager>,
     shell: State<'_, Shell>,
     configs: State<'_, Configs>,
@@ -2664,7 +2720,7 @@ impl Consumer for Channels {
 /// it: the window is always the caller, never an argument, so a page
 /// cannot edit another window's layout (#83). The main window, or a
 /// session window (`session-<n>`, #84).
-fn calling_window(window: &tauri::WebviewWindow) -> Result<WindowId, String> {
+fn calling_window(window: &WebviewWindow) -> Result<WindowId, String> {
     let label = window.label();
     if label == MAIN_WINDOW {
         return Ok(WindowId::MAIN);
@@ -2711,7 +2767,7 @@ impl From<String> for ReconnectFailure {
 #[tauri::command]
 async fn session_reconnect(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     manager: State<'_, SessionManager>,
     shell: State<'_, Shell>,
     configs: State<'_, Configs>,
@@ -2797,7 +2853,7 @@ async fn session_reconnect(
 #[tauri::command]
 async fn session_duplicate(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     manager: State<'_, SessionManager>,
     tabs: State<'_, Tabs>,
     relays: State<'_, SessionRelays>,
@@ -2970,7 +3026,7 @@ struct LayoutChanged {
 #[tauri::command]
 fn layout_reset(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     tabs: State<'_, Tabs>,
     files: State<'_, files::FileTabs>,
     records: State<'_, SessionRecords>,
@@ -3003,7 +3059,7 @@ fn layout_reset(
 #[tauri::command]
 fn layout_edit(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: WebviewWindow,
     shell: State<'_, Shell>,
     tabs: State<'_, Tabs>,
     records: State<'_, SessionRecords>,
@@ -3653,7 +3709,7 @@ async fn window_detach_configs(
 }
 
 /// The main window, brought forward.
-fn focused_main(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+fn focused_main(app: &AppHandle) -> Result<WebviewWindow, String> {
     let main = app
         .get_webview_window(MAIN_WINDOW)
         .ok_or("the main window is gone")?;
@@ -3666,7 +3722,7 @@ fn focused_main(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
 /// (`dock-run`) or config history (`dock-configs`) as a tab and takes the
 /// focus, and the window closes.
 #[tauri::command]
-async fn window_dock(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+async fn window_dock(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     let label = window.label();
     let (event, subject) = if let Some(run) = label.strip_prefix(RUN_WINDOW_PREFIX) {
         (DOCK_RUN_EVENT, run.to_string())
@@ -3684,7 +3740,7 @@ async fn window_dock(app: AppHandle, window: tauri::WebviewWindow) -> Result<(),
 /// From a detached config history: the main window opens a backup of its
 /// host (`back-up-host`, a job tab at pre-flight) and takes the focus.
 #[tauri::command]
-async fn window_back_up(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+async fn window_back_up(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     let host = config_window_host(window.label()).ok_or("not a config history window")?;
     focused_main(&app)?
         .emit_to(MAIN_WINDOW, BACK_UP_HOST_EVENT, host)
@@ -3720,18 +3776,59 @@ pub fn run() {
     // used for the check alone, and the plugin is left out.
     let updater_config = context.config().plugins.0.get("updater").cloned();
     let updater_plugin = cfg!(windows) && updater_config.is_some();
-    let mut builder = tauri::Builder::default()
+    let mut builder = tauri::Builder::<Runtime>::new()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
     if updater_plugin {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
+    let start = Start {
+        data_folder: std::env::var_os(DATA_DIR_VARIABLE).map(PathBuf::from),
+        credential_store: std::env::var(CREDENTIAL_STORE_VARIABLE).ok(),
+        serial_ports: None,
+        updater_config,
+        updater_plugin,
+    };
+    with_app(builder, start)
+        .build(context)
+        .expect("failed to start the app")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                end_with_the_app(app);
+            }
+        });
+}
+
+/// What `run` reads from the environment and the app's configuration
+/// before the app starts. The shell's tests (#70) give their own: a data
+/// folder of their own, credentials in memory, virtual serial ports.
+struct Start {
+    /// `ENODIX_DATA_DIR`: the data folder, else the system's per-user one.
+    data_folder: Option<PathBuf>,
+    /// `ENODIX_CREDENTIAL_STORE`: `memory`, `none`, else the keychain.
+    credential_store: Option<String>,
+    /// The serial ports sessions open, else the system's.
+    serial_ports: Option<Arc<dyn SerialPorts>>,
+    /// The updater's configuration (a release build's only).
+    updater_config: Option<serde_json::Value>,
+    /// Whether the updater plugin was added (it installs updates).
+    updater_plugin: bool,
+}
+
+/// The app on `builder`: its state, its main window, its window events and
+/// every command the interface calls.
+fn with_app(builder: tauri::Builder<Runtime>, start: Start) -> tauri::Builder<Runtime> {
+    let Start {
+        data_folder,
+        credential_store,
+        serial_ports: ports,
+        updater_config,
+        updater_plugin,
+    } = start;
     builder
         .setup(move |app| {
-            let (data_folder, local_folder, log_folder) = match std::env::var_os(DATA_DIR_VARIABLE)
-            {
+            let (data_folder, local_folder, log_folder) = match data_folder {
                 Some(folder) => {
-                    let folder = PathBuf::from(folder);
                     let logs = folder.join("logs");
                     (folder.clone(), folder, logs)
                 }
@@ -3764,9 +3861,9 @@ pub fn run() {
             // Without a keychain (Linux; the smoke's `none`) it is the only
             // store.
             let vault = vault_file(&data_folder);
-            let credentials = Arc::new(match std::env::var(CREDENTIAL_STORE_VARIABLE).as_deref() {
-                Ok("memory") => ActiveStore::new(Box::new(MemoryStore::new()), vault),
-                Ok("none") => ActiveStore::without_keychain(vault),
+            let credentials = Arc::new(match credential_store.as_deref() {
+                Some("memory") => ActiveStore::new(Box::new(MemoryStore::new()), vault),
+                Some("none") => ActiveStore::without_keychain(vault),
                 // Entries are named after the app's identifier, which
                 // stays put if the product is renamed.
                 _ if KeychainStore::is_supported() => ActiveStore::new(
@@ -3790,10 +3887,15 @@ pub fn run() {
             let known_hosts = KnownHosts::in_data_folder(&data_folder);
             // So are the hosts the user always forwards the agent to,
             // never in a workspace.
-            app.manage(
-                SessionManager::new(known_hosts.clone())
-                    .with_agent_approvals(AgentApprovals::in_data_folder(&data_folder)),
-            );
+            let manager = match ports {
+                None => SessionManager::new(known_hosts.clone()),
+                Some(ports) => SessionManager::with_serial_ports(
+                    known_hosts.clone(),
+                    OutputOptions::default(),
+                    ports,
+                ),
+            };
+            app.manage(manager.with_agent_approvals(AgentApprovals::in_data_folder(&data_folder)));
             // The Files tab's connections (#103) check the same keys.
             app.manage(files::FileTabs {
                 browsers: enodix_core::files::FileBrowsers::new(),
@@ -4081,13 +4183,6 @@ pub fn run() {
             python::python_use_interpreter,
             python::python_turn_off
         ])
-        .build(context)
-        .expect("failed to start the app")
-        .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
-                end_with_the_app(app);
-            }
-        });
 }
 
 /// The app is closing (#124): every running job is cancelled as Cancel

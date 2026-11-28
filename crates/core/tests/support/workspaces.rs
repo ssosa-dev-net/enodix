@@ -8,7 +8,7 @@ use tempfile::TempDir;
 
 /// The fixture workspace folder called `name`.
 pub fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    super::core_folder()
         .join("tests/fixtures/workspaces")
         .join(name)
 }

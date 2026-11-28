@@ -114,6 +114,7 @@ pub mod telnet;
 pub mod workspaces;
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -275,16 +276,28 @@ pub const INTERRUPTED: &[u8] = b"^C\r\n";
 /// How long a test waits for something the server should send.
 pub const WAIT: Duration = Duration::from_secs(10);
 
+/// The core's folder (`crates/core`), whichever crate's tests include this
+/// harness: the shell's do too (#70), from `src-tauri`.
+pub fn core_folder() -> PathBuf {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if env!("CARGO_PKG_NAME") == "enodix-core" {
+        manifest.to_path_buf()
+    } else {
+        manifest.join("../crates/core")
+    }
+}
+
 /// An RSA client key (OpenSSH format, no passphrase) that the server
 /// accepts for [`USERNAME`]. RSA keys are slow to generate, so it is a file.
-pub const RSA_CLIENT_KEY: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/keys/rsa_client"
-);
+pub fn rsa_client_key() -> PathBuf {
+    core_folder().join("tests/fixtures/keys/rsa_client")
+}
 
 /// A DSA host key (OpenSSH format, no passphrase), for servers restricted
 /// to `ssh-dss`. A throwaway test key.
-pub const DSA_HOST_KEY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/keys/dsa_host");
+pub fn dsa_host_key() -> PathBuf {
+    core_folder().join("tests/fixtures/keys/dsa_host")
+}
 
 /// The host keys of every test server started in this process.
 pub fn known_hosts() -> KnownHosts {
@@ -646,16 +659,16 @@ impl TestSshServer {
         tune: Option<Tune>,
     ) -> Self {
         let client_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
-        let rsa_key = russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap();
+        let rsa_key = russh::keys::load_secret_key(rsa_client_key(), None).unwrap();
         let authorized_keys = Arc::new(vec![
             client_key.public_key().clone(),
             rsa_key.public_key().clone(),
         ]);
         let host_key = match preferred.key.first() {
             Some(Algorithm::Rsa { .. }) => {
-                russh::keys::load_secret_key(RSA_CLIENT_KEY, None).unwrap()
+                russh::keys::load_secret_key(rsa_client_key(), None).unwrap()
             }
-            Some(Algorithm::Dsa) => russh::keys::load_secret_key(DSA_HOST_KEY, None).unwrap(),
+            Some(Algorithm::Dsa) => russh::keys::load_secret_key(dsa_host_key(), None).unwrap(),
             _ => PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap(),
         };
         let defaults = russh::server::Config::default();

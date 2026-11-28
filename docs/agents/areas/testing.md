@@ -31,6 +31,73 @@ The core's integration tests and their support, the interface tests, the contain
   test, the containerlab suite, the installer checks (they need a desktop,
   the lab, Windows Sandbox).
 
+- The shell's tests (#70, `src-tauri/src/tests/`, `cargo test -p
+  enodix`; part of `npm test` and of CI on Linux and Windows). The app as
+  `run` builds it (`with_app`: its state, its main window, every command)
+  on Tauri's mock runtime (`tauri` dev-dependency feature `test`): in the
+  shell's test build `Runtime`, `AppHandle` and `WebviewWindow` (aliases
+  at the top of `lib.rs`) are `MockRuntime`'s, in every other build
+  `Wry`'s, so the commands are the app's own, unchanged. `Start` is what
+  `run` reads from the environment (data folder, credential store) plus
+  the serial ports; a test gives its own (a temp data folder, `memory`,
+  `VirtualSerialPorts`), so it sets no variable and touches no keychain.
+  On Windows a test binary needs the app's manifest (Common Controls v6,
+  which Tauri's dialogs import from) or it never starts
+  (`STATUS_ENTRYPOINT_NOT_FOUND`); tauri-build's resource file reaches the
+  app's binary alone, so `src-tauri/build.rs` builds without its manifest
+  and embeds the same one through the linker in every binary
+  (`/MANIFEST:EMBED`, `/MANIFESTINPUT`, `/MANIFESTUAC:NO`: the app's
+  manifest is byte for byte what it was).
+  `tests/app.rs`: `TestApp::start()` / `with_serial_ports(ports)`;
+  `invoke(command, json)` calls a command from the main window through
+  the IPC as the page does (arguments by their camelCase names) on a
+  thread of its own, and panics if it has not answered within
+  `COMMAND_WAIT` (20 s: a deadlock) or ended without answering (it
+  panicked); `channel()` is a page's `new Channel()`: the builder's
+  `channel_interceptor` routes what the app sends on it to the test.
+  `open_session(target)` opens a tab (`layout_edit` `openTab`) and calls
+  `session_open` with all eight channels; `TestSession` reads like a
+  terminal: `output_showing(text)` acknowledges every chunk
+  (`session_acknowledge`), answers ConPTY's cursor query (`ESC [ 6 n`,
+  origin `reply`) and matches with CSI and OSC sequences left out;
+  `connected()`, `closed()`, `host_key_question()`, `type_text`,
+  `close()`; `workspace_answers()` calls `workspace_current`, which waits
+  for ever if a command left the workspace held. The test servers are the
+  core's (`#[path]` to `crates/core/tests/support/mod.rs`; the shell has
+  the core's test dev-dependencies for them). `tests/sessions.rs` opens
+  each kind of session that way: a workspace SSH host (host key question
+  answered `trustOnce`, logged in with a profile saved by
+  `profile_save`, `size` shows the tab's size), telnet (the device's
+  `Username: `), serial on a virtual port (its settings opened, both
+  ways), the local shell (`ENODIX_WORKSPACE` reaches it) and the system
+  ssh tab (the system's `ssh` to a closed port: it says so and the tab's
+  session closes; no agent, no known hosts written; needs an `ssh` on the
+  `PATH`, as CI's runners have). With #67's fix undone the system ssh test
+  fails in 0.1 s (debug builds panic on the second lock, below) or in 20
+  s without that check, and the lock check names the line (all three
+  seen on Windows, 2026-11-28). `tests/workspace_lock.rs` is a lint run as a
+  test: it parses every `.rs` file of `src-tauri/src` outside `tests`
+  (`syn`, `full` + `visit`; `proc-macro2` `span-locations` for lines) and
+  fails on any call, made while `Shell::workspace()` is held, of a
+  function that locks it again: the lock is `.workspace()` on `shell`,
+  `self` in `impl Shell` or `….state::<Shell>()` (any other receiver but
+  `profiles` fails the check: name it `shell`); a function locks if it
+  takes the lock or calls one that does (to a fixed point); the lock is
+  held from `let guard = shell.workspace();` to its block's end or
+  `drop(guard)`, for a whole statement when taken in its temporaries
+  (`match`, `if let`, `while let` scrutinees included; a plain `if`'s
+  condition only for itself), and inside the closure a helper calls
+  holding it (`read`, `edit`, `with_profiles`, `keep_plan`…, found the
+  same way); names bound locally are not functions; macro arguments are
+  read where they parse. Not followed: a closure kept in a variable and
+  called later, a call through a trait object. Its own cases (0.8.0's
+  arm caught at its line, the fixed one passing, drops, blocks,
+  conditions, closures, helpers of helpers, by name, in a macro, by
+  `state::<Shell>()`, an unknown receiver) are beside it. Besides,
+  `Shell::workspace` returns a `WorkspaceGuard` that marks its thread
+  (`HOLDING_WORKSPACE`); a debug build panics on a second lock on that
+  thread instead of hanging (a release build is unchanged), so a test
+  that reaches such a call fails at once.
 - Interface tests (#71): `npm run test:ui` (`vitest run`; one file:
   `npx vitest run src/lib/groupPaste.test.ts`, by name: `-t "<words>"`,
   watching: `npx vitest`). About 3 s, no build, no Rust; in `npm run check`
@@ -156,7 +223,9 @@ The core's integration tests and their support, the interface tests, the contain
   screen, bracketed paste, application cursor keys; #84). Docker is not
   assumed. Public-key auth: it accepts a per-server Ed25519 key
   (`write_client_key(path, passphrase)`) and the RSA fixture
-  `RSA_CLIENT_KEY` (`tests/fixtures/keys/`, a throwaway test key);
+  `rsa_client_key()` (`tests/fixtures/keys/`, a throwaway test key;
+  `core_folder()` finds the core's fixtures from whichever crate includes
+  the harness);
   `client_key()` gives the Ed25519 one. User `OTP_USERNAME` needs
   `PASSWORD` then `ONE_TIME_CODE` (keyboard-interactive; two rounds if
   keyboard-interactive starts it); `start_offering(&[MethodKind])` limits

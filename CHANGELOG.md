@@ -29,6 +29,13 @@ in the project's tracker.
   where terminal input comes from, shortcut keys on AZERTY, Dvorak and
   other layouts, the multi-send group's pastes, and a session's first
   output before it has opened [71].
+- The window's side of the app (the shell) has tests of its own: each kind
+  of session (SSH, telnet, serial, a local shell, the system ssh tab) is
+  opened through the same commands the window uses, without a window, and
+  must answer in time; and a check of the shell's source fails on any call
+  that would lock the workspace again while it is held, the fault behind
+  0.8.0's system ssh tab. They run on Linux and Windows with the other
+  tests [70].
 - The core can send SSH keepalives at an interval of its own instead of one
   per connect timeout; nothing changes for you, and a setting for it comes
   later. The idle-session test no longer relies on a 200 ms login, which
