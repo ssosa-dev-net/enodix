@@ -2695,6 +2695,16 @@ async function main() {
   );
   const heading = await until("the app name on screen", () => text("h1"));
   if (heading !== name) fail(`heading ${heading} differs from title ${name}`);
+  // The screen and window the run sees (a CI runner's is small), for reading a
+  // failure that depends on size.
+  console.log(
+    "window:",
+    JSON.stringify(
+      await evaluate(`({ inner: [innerWidth, innerHeight], outer: [outerWidth, outerHeight],
+        screen: [screen.width, screen.height], available: [screen.availWidth, screen.availHeight],
+        ratio: devicePixelRatio })`),
+    ),
+  );
   await screenshot("quick-connect");
   step(`app launched, named "${name}"`);
 
