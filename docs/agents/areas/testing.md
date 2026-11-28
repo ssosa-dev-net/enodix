@@ -283,8 +283,8 @@ The core's integration tests and their support, the containerlab device suite, t
   the platform defaults are the verified ones. cEOS telnet is published on
   the server's port 2323 (`telnet_address` in the lab file, as the suite's
   telnet check is not tunnelled; the app's is since 0.8.0); cEOS needs
-  `aaa authorization exec default local` for privilege 15. The lab file's `jump_host` can use `key_file` when no
-  agent runs. The SR Linux large output trickles, so it rarely fills the
+  `aaa authorization exec default local` for privilege 15. The lab file's
+  `jump_host` can use `key_file` when no agent runs. The SR Linux large output trickles, so it rarely fills the
   flow-control window; FRR's does.
 - Containerlab platform checks (#47). The topology adds `csr1` (IOS-XE
   CSR 1000v, vrnetlab image, 172.20.30.14) and `cjunos1` (cJunos Evolved,
