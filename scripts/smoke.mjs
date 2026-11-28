@@ -2684,6 +2684,7 @@ async function main() {
     await checkContrast(evaluate, name);
     const folder = process.env.SMOKE_SCREENSHOTS;
     if (!folder) return;
+    mkdirSync(folder, { recursive: true });
     const { data } = await devtools.send("Page.captureScreenshot");
     writeFileSync(join(folder, `${name}.png`), Buffer.from(data, "base64"));
   };
