@@ -172,10 +172,10 @@ shown. Other platforms may work but have not been tested.
 
 Each was checked on 27 November 2026 for login, commands, host keys, large
 output, session logs, jobs and config backups with the built-in platform
-definition, and file transfers, all through an SSH jump host: 15 checks, with
-the suite's NAPALM and tunnel-port checks not run. Cisco NX-OS has not been
-tested. Old equipment that only speaks outdated SSH algorithms is reached with
-the [Legacy crypto](docs/guide/legacy-crypto.md) setting.
+definition, and file transfers, all through an SSH jump host: 13 of the
+suite's 15 checks, with the NAPALM and tunnel-port checks not run. Cisco NX-OS
+has not been tested. Old equipment that only speaks outdated SSH algorithms
+is reached with the [Legacy crypto](docs/guide/legacy-crypto.md) setting.
 
 ## Documentation
 
