@@ -152,7 +152,9 @@ jobs:
       # machine's WebView2 policy (as in Windows Sandbox).
       - name: Smoke test
         shell: bash
-        run: node scripts/smoke.mjs 2>&1 | tee target/smoke.log
+        run: |
+          mkdir -p target/smoke-net-logs target/smoke-pictures
+          node scripts/smoke.mjs 2>&1 | tee target/smoke.log
         env:
           SMOKE_TEST_SERVER: target/debug/examples/test_ssh_server.exe
           SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
