@@ -26,6 +26,28 @@ tauri-plugin-updater = { version = "2.14", default-features = false, features = 
 
 # Watching a session window's page for its death (#89): the same versions
 # Tauri's webview uses.
+[dev-dependencies]
+# The shell's tests (#70) run its commands on Tauri's mock runtime.
+tauri = { version = "2", features = ["test"] }
+# The core's test servers (`crates/core/tests/support`) and what they need,
+# as the core's own dev-dependencies.
+futures = "0.3"
+rand = { version = "0.10", features = ["thread_rng"] }
+russh = { workspace = true }
+russh-sftp = { workspace = true }
+sha2 = "0.11"
+tempfile = "3"
+# Reading the shell's own source for the workspace lock check.
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 

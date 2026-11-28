@@ -121,7 +121,7 @@ pub fn too_old() -> PythonVersion {
 /// Builds the app's wheel into `folder` with the app's build script; `None`
 /// when Node cannot run it.
 pub fn build_wheel(folder: &Path) -> Option<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = super::core_folder().join("../..");
     let done = Command::new("node")
         .arg(root.join("scripts/build-wheel.mjs"))
         .arg(folder)

@@ -14,6 +14,16 @@ in the project's tracker.
   platforms were last tested. The release steps now include checking
   `docs/trust.md` against the code [78].
 
+### Internal
+
+- The window's side of the app (the shell) has tests of its own: each kind
+  of session (SSH, telnet, serial, a local shell, the system ssh tab) is
+  opened through the same commands the window uses, without a window, and
+  must answer in time; and a check of the shell's source fails on any call
+  that would lock the workspace again while it is held, the fault behind
+  0.8.0's system ssh tab. They run on Linux and Windows with the other
+  tests [70].
+
 ## 0.8.1
 
 A fix release for two faults in 0.8.0.

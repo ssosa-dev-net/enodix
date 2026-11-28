@@ -80,6 +80,9 @@ Rules from those files that must hold whatever the task:
   for the agent.
 - Run the smoke test on an unlocked workstation (its clipboard steps fail
   otherwise).
+- In the shell, never call anything that locks the workspace while holding
+  `shell.workspace()`: the second lock never returns. The shell's lock
+  check (`src-tauri/src/tests/workspace_lock.rs`) fails on it (`testing.md`).
 
 ## Commands
 
@@ -98,6 +101,7 @@ Run from the repo root (Git Bash on Windows).
 | Build the app (no installer)   | `npm run app:build` → `target/release/enodix.exe`         |
 | Update-check tests             | `cargo test -p enodix-core --test update_check`           |
 | Headless binary tests          | `cargo test -p enodix-cli`                                |
+| Shell tests (no window)        | `cargo test -p enodix` (commands on Tauri's mock runtime) |
 | End-to-end smoke test          | `npm run app:build && npm run smoke`                      |
 | The same, out of sight         | `npm run smoke:hidden` (a desktop of its own, Windows)    |
 | The same, in Windows Sandbox   | `npm run smoke:sandbox` (setup: `testing.md`)             |

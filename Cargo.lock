@@ -1327,16 +1327,27 @@ name = "enodix"
 version = "0.8.1"
 dependencies = [
  "enodix-core",
+ "futures",
+ "libc",
+ "proc-macro2",
+ "quote",
+ "rand",
+ "russh",
+ "russh-sftp",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
+ "syn 2.0.119",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-updater",
+ "tempfile",
  "tokio",
  "webkit2gtk",
  "webview2-com",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
