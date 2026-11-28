@@ -2975,7 +2975,9 @@ async function main() {
   );
   await devtools.send("Browser.setWindowBounds", {
     windowId,
-    bounds: { width: bounds.width - 300, height: bounds.height - 200 },
+    // 800 px wide whatever the window started at: later steps ("at 800 px")
+    // rely on it, and a CI runner's screen starts it narrower (1028 px).
+    bounds: { width: 800, height: bounds.height - 200 },
   });
   await type("size\r");
   const sizeAfter = await until("a new size from `size`", async () => {
