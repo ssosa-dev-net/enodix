@@ -9,10 +9,11 @@
 #   owns the WINGET_TOKEN secret (a classic token, scope public_repo, in the
 #   `winget` environment).
 #
-# The Release workflow starts it on the release's tag once it has published
-# the release. Run it by hand (Actions, Distribute, Run workflow, from main)
-# to distribute a release again: PyPI skips a version it already has, Komac
-# refuses a second pull request for the same version.
+# Run it by hand once the pre-release the Release workflow published has been
+# promoted (docs/dev/releasing.md, "The release gate"; Actions, Distribute, Run
+# workflow, from main). Run again, it distributes a release again: PyPI skips
+# a version it already has, Komac refuses a second pull request for the same
+# version.
 #
 # It builds nothing. It downloads the release's files and checks them against
 # the release's SHA256SUMS.txt, so PyPI gets the wheel that is in the

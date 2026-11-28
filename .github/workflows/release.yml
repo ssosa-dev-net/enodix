@@ -3,9 +3,13 @@
 #
 # - Pushing a tag v<version> (the version in Cargo.toml) builds the Windows
 #   installer, its updater signature, the portable zip and latest.json, and
-#   the Linux .deb, .rpm and AppImage, then publishes them with the
-#   changelog's section for the version and SHA256SUMS.txt. It then starts
-#   distribute.yml, which puts the wheel on PyPI and the installer in winget.
+#   the Linux .deb, .rpm and AppImage, then publishes them as a PRE-RELEASE
+#   with the changelog's section for the version and SHA256SUMS.txt. Before
+#   anything is built, the gate job checks what a workflow can of the release
+#   gate (docs/dev/releasing.md, "The release gate"): CI green on the tagged
+#   commit and 48 hours since the last feature merge. The maintainer promotes
+#   the pre-release by hand once the smoke and lab output is attached, then
+#   runs distribute.yml (the wheel on PyPI, the installer in winget).
 # - Run by hand (Actions, Release, Run workflow), it builds the same files
 #   and keeps them as the run's artifacts. It never publishes: only a tag
 #   does, so what is published is always a tagged commit.
@@ -62,9 +66,28 @@ jobs:
           grep -q "^## $version\$" CHANGELOG.md || { echo "CHANGELOG.md has no section ## $version"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+  gate:
+    name: Release gate
+    needs: version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The history and the tags, to find the last feature merge.
+          fetch-depth: 0
+      - name: CI green and 48 hours since the last feature merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ github.ref_type == 'tag' && 'tag' || 'dry-run' }}
+        run: scripts/release-gate.sh "$GITHUB_SHA" "$MODE"
+
   windows:
     name: Windows files
-    needs: version
+    needs: [version, gate]
     runs-on: windows-latest
     # The environment holding the updater key.
     environment: release
@@ -103,7 +126,7 @@ jobs:
 
   linux:
     name: Linux packages
-    needs: version
+    needs: [version, gate]
     # The oldest supported Ubuntu with WebKitGTK 4.1: the AppImage then runs
     # on systems with that glibc or newer.
     runs-on: ubuntu-22.04
@@ -145,15 +168,13 @@ jobs:
 
   publish:
     name: Publish
-    needs: [version, windows, linux]
+    needs: [version, gate, windows, linux]
     # Only a tag publishes.
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
-    # The only job that may write: it creates the release, then starts the
-    # Distribute workflow.
+    # The only job that may write: it creates the release, as a pre-release.
     permissions:
       contents: write
-      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -203,14 +224,4 @@ jobs:
             --title "$product $VERSION" \
             --notes-file notes.md \
             --verify-tag \
-            --latest
-      # A workflow of its own (distribute.yml), so that it can also be run by
-      # hand for a release already published, and so that the PyPI identity
-      # and the winget token are never in the job that writes the release.
-      - name: Start the distribution (PyPI and winget)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          gh workflow run distribute.yml --repo "$GITHUB_REPOSITORY" --ref "v$VERSION" \
-            -f version="$VERSION"
+            --prerelease

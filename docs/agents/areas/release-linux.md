@@ -431,3 +431,18 @@ pty` could not be opened; `tests/serial_pty.rs`, Unix: bytes both ways,
   after the copy; a 0.4 copy running beside a starting 0.5 holds no lock
   and may write to the old place after the move (the installer closes
   running copies; portable copies side by side do not).
+
+## The release gate (#76)
+
+- `scripts/release-gate.sh <commit> [tag|dry-run]` is run by the `gate` job of
+  `release.yml` before any build: CI (`ci.yml`) green on the commit, and 48
+  hours since the newest commit since the previous `v*` tag that changes more
+  than docs, the changelog, manifests and `.github/`. `GATE_WAIT_HOURS`
+  overrides the 48 (to test it). A build by hand (`workflow_dispatch`) runs it
+  as `dry-run`: warnings only.
+- The publish job creates the release with `--prerelease` and no longer
+  starts `distribute.yml`; the maintainer promotes the release and runs
+  Distribute. The rest of the gate (evidence, no tag mid-wave, the `release`
+  environment reviewer, the `v*` tag ruleset) is process and settings, in
+  `docs/dev/releasing.md`. Not verified: the gate job on a real runner (it
+  was run locally against the repository's history).

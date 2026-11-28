@@ -137,9 +137,12 @@ build script, the npm tools) never sees them.
 packages on GitHub's runners with `npm run release`, signs the installer
 for the updater with the secrets above, and publishes a GitHub Release with
 every file, `latest.json` included, the version's section of
-`CHANGELOG.md` and `SHA256SUMS.txt` as its notes. It refuses a tag that
-does not match the version in `Cargo.toml`, or a version the changelog has
-no section for.
+`CHANGELOG.md` and `SHA256SUMS.txt` as its notes. The release is always
+published as a **pre-release**: GitHub's "latest" skips pre-releases, so
+no installed copy is offered the update until you promote it (see "The
+release gate"). It refuses a tag that does not match the version in
+`Cargo.toml`, or a version the changelog has no section for, and, before
+building anything, one that fails the gate's automatic checks.
 
 1. On a branch, set the version and the changelog (step 1 of "Each release"
    below), open a pull request and merge it once CI passes.
@@ -153,28 +156,93 @@ no section for.
    The publish job takes from each platform only the files its build is
    meant to give, under their names, and publishes nothing if one is
    missing or anything else is there.
-4. Tag the merged commit and push the tag; the workflow publishes the release:
+4. Make sure the gate's conditions hold ("The release gate" below), then tag
+   the merged commit and push the tag; the workflow publishes a pre-release:
 
    ```
    git tag -s v<version> -m "<product> <version>"
    git push origin v<version>
    ```
 
-5. Then step 6 below (an installed copy of the previous version offers the
-   update) and step 7 (clean up).
-6. The publish job starts the Distribute workflow (next section). Check
+5. Attach the evidence to the release's ticket and promote the pre-release
+   (see "The release gate"). Then step 6 below (an installed copy of the
+   previous version offers the update) and step 7 (clean up).
+6. After promoting, run the Distribute workflow by hand (next section). Check
    that its run is green, and follow the winget pull request it opens until
    Microsoft's moderators merge it.
 
 The steps below are the same release built and published from your own
 computer, for when GitHub's runners are not available.
 
+## The release gate
+
+Decided on 2026-11-28 (ticket #76) after 0.8.0 shipped two regressions that
+a smoke run would have caught. Nothing is tagged until all of this holds:
+
+1. **Evidence on record.** On the release's ticket, attached or pasted: the
+   green CI run on the commit to be tagged, the output of
+   `npm run app:build && npm run smoke:hidden` on that commit, and the output
+   of `npm run test:lab`. The installer checks of step 4 of "Each release"
+   go there too.
+2. **48 hours** between the last feature merge and the tag. A feature merge
+   is any commit since the previous release that changes more than
+   documentation, the changelog and the version files. Fixes found by the
+   smoke or lab run are feature merges: they restart the wait.
+3. **Pre-release first.** The workflow publishes every release as a
+   pre-release (`--prerelease`, never `--latest`), so the updater and
+   `releases/latest` do not see it. Promote it (edit the release, untick
+   "pre-release", tick "latest") only after the evidence is attached and you
+   have installed from its files. Then run Distribute.
+4. **No tag mid-wave.** Tag only when the wave of tickets is finished and
+   one full smoke run and one lab run have passed on that very commit. Any
+   later merge, a fix included, means both are run again.
+5. **Two settings of the repository**, which a workflow cannot make for you
+   (see the ticket): a required reviewer on the `release` environment, and a
+   tag ruleset on `v*` so that only the maintainer can create those tags.
+
+What `.github/workflows/release.yml` enforces by itself, in its `gate` job
+(`scripts/release-gate.sh`, which you can also run in a clone:
+`scripts/release-gate.sh HEAD dry-run`), before the Windows and Linux builds
+start and so before the `release` environment's secrets are used: CI
+finished green on the tagged commit, and 48 hours have passed since the
+last feature merge (computed from the commit history, with the current
+time). It also publishes only pre-releases, and no longer starts
+Distribute. A run by hand (not a tag) prints the gate's failures as warnings
+and goes on, since it publishes nothing. It cannot tell whether the smoke
+and lab output exist, or whether the wave is over: those are yours.
+
+### Review of every pull request before it merges
+
+Each pull request gets this before a squash merge. The verdict goes in a
+comment on the pull request.
+
+- **A fresh reviewer**, given the issue and the diff and not the author's
+  reasoning. For a `security` issue the reviewer also writes a test of their
+  own that tries to break the fix, and says what happened.
+- **Mechanical checks from a clean clone**, after `rustup update stable`:
+  `npm run format:check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, `npm run lint`, and `npm run test:python` when
+  `python/` or `crates/cli/` changed. CI must be green on Ubuntu and Windows.
+- **For a bug**, revert the fix and see the new test fail; then restore it.
+- **The device checks the change calls for**: the smoke test
+  (`npm run app:build && npm run smoke:hidden`) for any change to `src/` or
+  `src-tauri/`; the lab suite (`npm run test:lab`) for changes to
+  `session/`, `job/`, `files/` or the platform definitions; the lrzsz test
+  for modem code.
+- **Docs in step with the change**: the area note in `docs/agents/areas/`,
+  the user guide, `docs/guide/interface.md` when a feature moves, and the
+  changelog.
+- **Approval and green CI** before the squash merge.
+- **A flaky test** is re-run on its own and the failure recorded in the
+  pull request. It is never skipped, ignored or quarantined to get a merge.
+
 ## PyPI and winget
 
 `.github/workflows/distribute.yml` puts a published release on PyPI (the
 Python bridge's wheel, as `enodix`) and in winget (the installer, as
-`ssosa-dev-net.enodix`; the ID never changes). The Release workflow starts
-it on the tag once the release is published. It builds nothing: it
+`ssosa-dev-net.enodix`; the ID never changes). The Release workflow does
+not start it: you run it once the pre-release has been promoted, so that
+nothing reaches PyPI or winget before the release gate is met. It builds nothing: it
 downloads the release's portable zip and `SHA256SUMS.txt`, checks the one
 against the other and takes the wheel out of the zip, so PyPI gets the same
 bytes as the app ships. For winget, Komac (pinned, with its SHA-256) writes
@@ -182,7 +250,8 @@ the new version's manifest from the previous one; the job checks that the
 manifest names the installer's SHA-256 from `SHA256SUMS.txt` and only then
 opens the pull request on `microsoft/winget-pkgs`.
 
-To run it by hand (a failed run, or a release made from your computer):
+To run it (after promoting, a failed run, or a release made from your
+computer):
 Actions, Distribute, Run workflow, from `main`, with the version without
 the `v`. Each half can be left out. Running it again is safe: PyPI skips a
 version it already has, and Komac stops if a pull request for the version

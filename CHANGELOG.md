@@ -5,6 +5,14 @@ in the project's tracker.
 
 ## Unreleased
 
+### Changed
+
+- The release process has a gate: CI, smoke and lab output on record, 48 hours
+  after the last feature merge, a pre-release first. The release workflow now
+  checks CI and the wait before building, publishes only pre-releases and no
+  longer starts the PyPI and winget upload by itself; every pull request's
+  review is written down in `docs/dev/releasing.md` [76].
+
 ### Fixed
 
 - Documentation that no longer matched the app: which workspaces the
