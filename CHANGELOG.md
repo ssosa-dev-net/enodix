@@ -5,6 +5,15 @@ in the project's tracker.
 
 ## Unreleased
 
+### Fixed
+
+- Documentation that no longer matched the app: which workspaces the
+  credential agent answers for, the update check of signed releases, telnet
+  through a jump host in the lab guide, automatic reconnect, the 1.25 MiB a
+  background tab takes before its device is paused, and the date the device
+  platforms were last tested. The release steps now include checking
+  `docs/trust.md` against the code [78].
+
 ### For contributors
 
 - The interface has tests of its own, run by `npm run test:ui` (vitest),
