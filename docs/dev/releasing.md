@@ -143,8 +143,7 @@ no section for.
 
 1. On a branch, set the version and the changelog (step 1 of "Each release"
    below), open a pull request and merge it once CI passes.
-2. On your computer, from the merged `main`: the checks CI cannot run, the
-   smoke test (`npm run app:build && npm run smoke:hidden`), the containerlab
+2. On your computer, from the merged `main`: the checks CI cannot run, the containerlab
    suite (`npm run test:lab`) and the installer check in Windows Sandbox with
    the previous release (step 4 below, built with `npm run release -- --unsigned`).
 3. If the workflow changed since the last release, try it first: Actions,
@@ -230,7 +229,10 @@ not on PyPI.
    code of the version it ships with.
 2. `npm run check`, `npm run test:python` (the Python bridge: needs Python
    3.10+ and, the first time, the network for Nornir), and
-   `npm run app:build && npm run smoke`. The Dependencies workflow must be
+   the smoke test passing in CI on the commit to tag (the "Smoke test
+   (Windows)" job; the release workflow refuses a tag without that run;
+   repeat it locally with `npm run app:build && npm run smoke:hidden` if a
+   step failed there). The Dependencies workflow must be
    green, and each advisory `deny.toml` ignores looked at again: drop the
    ones a dependency update has fixed (`cargo deny check` then reports an
    ignore that matches nothing).

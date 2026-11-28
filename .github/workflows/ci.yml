@@ -1,9 +1,9 @@
 # Runs the checks a change must pass before it is merged (CONTRIBUTING.md):
 # `npm run check` (format check, clippy, svelte-check, every Rust test) and
 # `npm run test:python` (the Python bridge against the headless binary), on
-# Linux and on Windows. The smoke test, the containerlab suite and the
-# installer checks need a desktop, a lab or Windows Sandbox and stay local
-# (docs/dev/releasing.md).
+# Linux and on Windows. The containerlab suite and the installer checks
+# need a lab or Windows Sandbox and stay local (docs/dev/releasing.md); the
+# smoke test has a job of its own below.
 name: CI
 
 on:
