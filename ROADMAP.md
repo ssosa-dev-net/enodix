@@ -17,14 +17,16 @@ planned. What each release added is in [CHANGELOG.md](CHANGELOG.md).
 - **Python is optional.** Everything except script jobs and Fill in from
   devices works without it.
 - **Windows and Linux.** Both are supported; the core has no Windows-only
-  assumptions. macOS is not planned for now.
+  assumptions.
 
 ## Next
 
-- **Code signing for Windows.** The installer is not code-signed
-  (Authenticode), so SmartScreen warns the first time and some managed
-  Windows computers refuse it. Updates are signed for the app's own updater
-  already.
+- **Import from SecureCRT, PuTTY and KiTTY, and MobaXterm**
+  ([#138](https://github.com/ssosa-dev-net/enodix/issues/138),
+  [#139](https://github.com/ssosa-dev-net/enodix/issues/139),
+  [#140](https://github.com/ssosa-dev-net/enodix/issues/140)).
+- **Locking the vault** on idle, when the computer locks and on demand
+  ([#96](https://github.com/ssosa-dev-net/enodix/issues/96)).
 - **An update checked end to end:** a copy of 0.6.0 updating itself to the
   next release.
 - **An independent security review.** An internal review was done in
@@ -60,19 +62,28 @@ These need hardware, devices or setups the project does not have.
   terminal, as a Files connection is.
 - Quick tools: ping, traceroute, a subnet calculator, MAC vendor lookup.
 - A topology map from LLDP and CDP neighbours.
-- A macOS release.
+- **Waiting until the app is further along:**
+  - A macOS release
+    ([#171](https://github.com/ssosa-dev-net/enodix/issues/171)).
+  - Code signing for Windows
+    ([#169](https://github.com/ssosa-dev-net/enodix/issues/169)). The
+    installer is not code-signed (Authenticode), so SmartScreen warns the
+    first time and some managed Windows computers refuse it. Updates are
+    signed for the app's own updater already.
+  - A phone or tablet app
+    ([#173](https://github.com/ssosa-dev-net/enodix/issues/173)).
 
 ## Not planned
 
-- Import from PuTTY, SecureCRT or MobaXterm.
 - Scanning subnets or discovering unknown devices.
 - A manual diagram editor.
 - Telemetry, crash reporting to third parties, AI features.
 - Hosted sync, accounts or any cloud service.
 - Embedded web consoles or stored web logins.
 - An embedded Python interpreter.
-- Locking the app on inactivity or when the computer locks.
-- Encrypting session logs, job results or config backups.
+- Encrypting session logs, job results or config backups: left to the
+  disk's own encryption
+  ([#154](https://github.com/ssosa-dev-net/enodix/issues/154)).
 - A NETCONF and RESTCONF client: scripts reach those ports through tunnels
   with the Python libraries engineers already use.
 
