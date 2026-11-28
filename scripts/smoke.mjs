@@ -36,6 +36,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -48,7 +49,7 @@ import {
   createServer as createTcpServer,
   connect as tcpConnect,
 } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir as osTmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -386,6 +387,9 @@ const apps = [];
 const netLogs = { file: "", copies: 0, found: [] };
 /** The watch on the app's connections over the whole run (#115). */
 let connections = null;
+// The temp folder by its long name: on a CI runner it is given as RUNNER~1, and the
+// app reports the long path (a workspace's own path is compared with it).
+const tmpdir = () => realpathSync.native(osTmpdir());
 const userData = mkdtempSync(join(tmpdir(), "enodix-smoke-"));
 // The app's own data folder, listing workspaces but none to reopen, so the
 // first window is the welcome view.
