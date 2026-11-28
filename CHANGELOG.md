@@ -14,8 +14,13 @@ in the project's tracker.
   platforms were last tested. The release steps now include checking
   `docs/trust.md` against the code [78].
 
-### Internal
+### For contributors
 
+- The interface has tests of its own, run by `npm run test:ui` (vitest),
+  `npm run check` and CI: every way to paste asks first where it should,
+  where terminal input comes from, shortcut keys on AZERTY, Dvorak and
+  other layouts, the multi-send group's pastes, and a session's first
+  output before it has opened [71].
 - The window's side of the app (the shell) has tests of its own: each kind
   of session (SSH, telnet, serial, a local shell, the system ssh tab) is
   opened through the same commands the window uses, without a window, and

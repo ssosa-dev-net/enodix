@@ -27,7 +27,9 @@ interface, xterm.js. What it does is in `README.md` and `docs/`; what comes next
   `Channel` as raw bytes, never the event system.
 - `src/` — the interface. It only renders; `src/lib/session.ts` and
   `src/lib/workspace.ts` wrap the IPC. Components use only the design tokens
-  of `src/app.css` in their styles.
+  of `src/app.css` in their styles. Its tests (`*.test.ts`, vitest) sit
+  beside what they test; `src/test/` is their harness, a stand-in shell
+  on the other side of the IPC (`testing.md`).
 - `scripts/` — `smoke.mjs` (the end-to-end smoke test that drives the built
   app) and the release, wheel and Linux scripts.
 - `docs/` — the spec, the user docs (`interface.md` is the user's map of the
@@ -60,7 +62,7 @@ not here. This file holds only what every session needs.
 | `tunnels.md`        | Tunnels that let scripts reach hosts behind jump hosts (core, cli and Python sides)                                                                                                                                    |
 | `cli.md`            | `enodix-cli`: the inventory and credentials commands, where it finds credentials, its tests and packaging                                                                                                              |
 | `python-bridge.md`  | The `enodix` Python package, the Nornir inventory plugin, the wheel, `npm run test:python`                                                                                                                             |
-| `testing.md`        | Any test: the layout of `tests/`, the session test harness, the containerlab suite, the example server, what the smoke test covers                                                                                     |
+| `testing.md`        | Any test: the layout of `tests/`, the session test harness, the interface tests, the containerlab suite, the example server, what the smoke test covers                                                                |
 | `release-linux.md`  | Packaging, the update check, the Linux checks and the Linux release                                                                                                                                                    |
 
 Rules from those files that must hold whatever the task:
@@ -93,6 +95,7 @@ Run from the repo root (Git Bash on Windows).
 | Install JS dependencies        | `npm install`                                             |
 | Everything below, in one go    | `npm run check` (format check, lint, tests)               |
 | Tests (core, in-process SSH)   | `npm test` (= `cargo test --workspace`)                   |
+| Interface tests (vitest)       | `npm run test:ui` (one: `npx vitest run <file>`)          |
 | One test                       | `cargo test -p enodix-core --test ssh_session <name>`     |
 | Lint (clippy + svelte-check)   | `npm run lint`                                            |
 | Typecheck the interface only   | `npm run typecheck`                                       |

@@ -390,8 +390,11 @@ cancel]`; hiding or closing its tab drops it, and shortcuts stay on
   (wheel arrows in full-screen programs and alt-click cursor moves count
   as `mouse` too); `onBinary` is always mouse. `input.paste(text)` (used
   by `pasteText`, so every paste and snippet with text) marks its data `pasted`.
-  If the internal hook is missing (xterm upgrade), all but our pastes are
-  `reply` (never shared) and a warning is logged. Smoke: `inputOrigins`
+  If the internal hook is missing (xterm upgrade), `terminalInput` throws
+  (since #71; before, all but our pastes were `reply`, so typing never
+  reached the group nor stopped steps, with only a warning logged): the
+  interface tests (`terminalInput.test.ts`, `testing.md`) run against the
+  installed xterm.js and fail first. Smoke: `inputOrigins`
   calls `.terminal`'s `input.record()` (off by default: typed input holds
   passwords), then reads `input.recent()` (last 64); the scripted shell has
   `query` (sends `ESC[6n ESC[c`) and `mouse on|off` (1000 + SGR 1006).
