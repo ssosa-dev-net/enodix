@@ -96,3 +96,77 @@ jobs:
         run: npm run test:python
         env:
           ENODIX_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+
+  # The end-to-end smoke test (scripts/smoke.mjs, docs/agents/areas/testing.md):
+  # builds the app and drives its real windows through WebView2's DevTools
+  # port. A job of its own, so that its name is a stable required check and
+  # the Windows runner's cache is not shared with `check`. It runs on a
+  # desktop of its own (scripts/run-on-desktop.py, as `npm run smoke:hidden`
+  # does): the runner's interactive session has a working clipboard there, so
+  # no step is skipped. The release workflow refuses a tag whose commit has
+  # no passing run of this job.
+  smoke:
+    name: Smoke test (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        id: python
+        with:
+          python-version: "3.12"
+
+      # Both programs are built in debug and release profiles of their own;
+      # the cache keeps target/ keyed on the lock file, so a run that
+      # changed no dependency compiles only the workspace's own crates.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: smoke
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Build the app (release, no installer)
+        run: npm run app:build
+
+      - name: Build the test SSH server
+        run: cargo build -p enodix-core --example test_ssh_server
+
+      # WebView2 150 and later ignores WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS in
+      # an elevated process, and the runner's user is an administrator:
+      # SMOKE_WEBVIEW2_POLICY makes the test also write its arguments to the
+      # machine's WebView2 policy (as in Windows Sandbox).
+      - name: Smoke test
+        shell: bash
+        run: py scripts/run-on-desktop.py enodix-smoke target/smoke-hidden.log node scripts/smoke.mjs
+        env:
+          SMOKE_TEST_SERVER: target/debug/examples/test_ssh_server.exe
+          SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
+          SMOKE_WEBVIEW2_POLICY: "1"
+          SMOKE_SCREENSHOTS: ${{ github.workspace }}/target/smoke-pictures
+          SMOKE_NET_LOGS: ${{ github.workspace }}/target/smoke-net-logs
+
+      - name: Keep the log and the pictures
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-failure
+          path: |
+            target/smoke-hidden.log
+            target/smoke-pictures
+            target/smoke-net-logs
+          if-no-files-found: warn
+          retention-days: 14
