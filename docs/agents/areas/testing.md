@@ -41,6 +41,13 @@ The core's integration tests and their support, the containerlab device suite, t
   `run` reads from the environment (data folder, credential store) plus
   the serial ports; a test gives its own (a temp data folder, `memory`,
   `VirtualSerialPorts`), so it sets no variable and touches no keychain.
+  On Windows a test binary needs the app's manifest (Common Controls v6,
+  which Tauri's dialogs import from) or it never starts
+  (`STATUS_ENTRYPOINT_NOT_FOUND`); tauri-build's resource file reaches the
+  app's binary alone, so `src-tauri/build.rs` builds without its manifest
+  and embeds the same one through the linker in every binary
+  (`/MANIFEST:EMBED`, `/MANIFESTINPUT`, `/MANIFESTUAC:NO`: the app's
+  manifest is byte for byte what it was).
   `tests/app.rs`: `TestApp::start()` / `with_serial_ports(ports)`;
   `invoke(command, json)` calls a command from the main window through
   the IPC as the page does (arguments by their camelCase names) on a
@@ -67,7 +74,8 @@ The core's integration tests and their support, the containerlab device suite, t
   session closes; no agent, no known hosts written; needs an `ssh` on the
   `PATH`, as CI's runners have). With #67's fix undone the system ssh test
   fails in 0.1 s (debug builds panic on the second lock, below) or in 20
-  s without that check. `tests/workspace_lock.rs` is a lint run as a
+  s without that check, and the lock check names the line (all three
+  seen on Windows, 2026-11-28). `tests/workspace_lock.rs` is a lint run as a
   test: it parses every `.rs` file of `src-tauri/src` outside `tests`
   (`syn`, `full` + `visit`; `proc-macro2` `span-locations` for lines) and
   fails on any call, made while `Shell::workspace()` is held, of a

@@ -24,8 +24,6 @@ tauri-plugin-opener = "2"
 tokio = { workspace = true }
 tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
 
-# Watching a session window's page for its death (#89): the same versions
-# Tauri's webview uses.
 [dev-dependencies]
 # The shell's tests (#70) run its commands on Tauri's mock runtime.
 tauri = { version = "2", features = ["test"] }
@@ -48,6 +46,8 @@ libc = "0.2"
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
 
+# Watching a session window's page for its death (#89): the same versions
+# Tauri's webview uses.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 
