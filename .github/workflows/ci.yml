@@ -1,5 +1,6 @@
 # Runs the checks a change must pass before it is merged (CONTRIBUTING.md):
-# `npm run check` (format check, clippy, svelte-check, every Rust test) and
+# `npm run check` (format check, clippy, svelte-check, the interface tests,
+# every Rust test) and
 # `npm run test:python` (the Python bridge against the headless binary), on
 # Linux and on Windows. The smoke test, the containerlab suite and the
 # installer checks need a desktop, a lab or Windows Sandbox and stay local
@@ -74,13 +75,16 @@ jobs:
       - name: Build the interface
         run: npm run build
 
-      # `npm run check`'s three parts, the tests with --no-fail-fast so that
+      # `npm run check`'s parts, the Rust tests with --no-fail-fast so that
       # one failing test file does not hide the others.
       - name: Format check
         run: npm run format:check
 
       - name: Lint (clippy, svelte-check)
         run: npm run lint
+
+      - name: Interface tests (vitest)
+        run: npm run test:ui
 
       - name: Tests
         run: cargo test --workspace --no-fail-fast

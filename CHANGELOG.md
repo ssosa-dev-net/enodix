@@ -22,6 +22,14 @@ in the project's tracker.
   platforms were last tested. The release steps now include checking
   `docs/trust.md` against the code [78].
 
+### For contributors
+
+- The interface has tests of its own, run by `npm run test:ui` (vitest),
+  `npm run check` and CI: every way to paste asks first where it should,
+  where terminal input comes from, shortcut keys on AZERTY, Dvorak and
+  other layouts, the multi-send group's pastes, and a session's first
+  output before it has opened [71].
+
 ## 0.8.1
 
 A fix release for two faults in 0.8.0.
