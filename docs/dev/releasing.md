@@ -186,8 +186,11 @@ a smoke run would have caught. Nothing is tagged until all of this holds:
    go there too.
 2. **48 hours** between the last feature merge and the tag. A feature merge
    is any commit since the previous release that changes more than
-   documentation, the changelog and the version files. Fixes found by the
-   smoke or lab run are feature merges: they restart the wait.
+   documentation, the changelog and the version lines of the manifests
+   (`Cargo.toml`, `Cargo.lock`, `package.json`, `package-lock.json`,
+   `tauri.conf.json`). A dependency bump, a lock file change and any change
+   under `.github/` (the workflows included) are feature merges. Fixes found
+   by the smoke or lab run are feature merges: they restart the wait.
 3. **Pre-release first.** The workflow publishes every release as a
    pre-release (`--prerelease`, never `--latest`), so the updater and
    `releases/latest` do not see it. Promote it (edit the release, untick
@@ -204,9 +207,14 @@ What `.github/workflows/release.yml` enforces by itself, in its `gate` job
 (`scripts/release-gate.sh`, which you can also run in a clone:
 `scripts/release-gate.sh HEAD dry-run`), before the Windows and Linux builds
 start and so before the `release` environment's secrets are used: CI
-finished green on the tagged commit, and 48 hours have passed since the
-last feature merge (computed from the commit history, with the current
-time). It also publishes only pre-releases, and no longer starts
+finished green on the tagged commit (`ci.yml` only: the Dependencies
+workflow stays a manual check, step 2 of "Each release"), and 48 hours have
+passed since the last feature merge, as defined above (computed from the
+commit history, against the time the job runs, so a gate that failed
+because the tag came too early passes on a re-run after the wait). It
+refuses a shallow clone and a commit it cannot find. CI cancels a run on
+`main` when a newer merge lands: a commit overtaken that way has no green
+run, and the gate refuses it until CI is re-run on that commit. It also publishes only pre-releases, and no longer starts
 Distribute. A run by hand (not a tag) prints the gate's failures as warnings
 and goes on, since it publishes nothing. It cannot tell whether the smoke
 and lab output exist, or whether the wave is over: those are yours.
@@ -217,7 +225,9 @@ Each pull request gets this before a squash merge. The verdict goes in a
 comment on the pull request.
 
 - **A fresh reviewer**, given the issue and the diff and not the author's
-  reasoning. For a `security` issue the reviewer also writes a test of their
+  reasoning. The reviewer reads the area notes for the files touched and
+  checks the standing rules of `CLAUDE.md`. Blocking findings go back to the
+  implementer and are reviewed again after the fix. For a `security` issue the reviewer also writes a test of their
   own that tries to break the fix, and says what happened.
 - **Mechanical checks from a clean clone**, after `rustup update stable`:
   `npm run format:check`, `cargo clippy --workspace --all-targets -- -D warnings`,
@@ -385,7 +395,8 @@ not on PyPI.
    window is on a desktop of its own; it takes about two minutes. Paste its
    output into the release's ticket too.
 
-5. Publish by hand: create the release (tag `v<version>`), upload every file
+5. Publish by hand: create the release (tag `v<version>`) **as a
+   pre-release**, promoted only as "The release gate" says, upload every file
    from `target/dist/<version>/`, and paste the version's section of
    `CHANGELOG.md` and `SHA256SUMS.txt` into the release notes. Make `latest.json` reachable at `ENODIX_UPDATE_ENDPOINT` **last**,
    once the installer can be downloaded.

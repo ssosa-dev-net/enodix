@@ -10,7 +10,8 @@
 #      GITHUB_REPOSITORY; skipped with a note when they are not set).
 #   2. 48 hours have passed since the last feature merge: the newest commit
 #      since the previous v* tag that changes anything but documentation,
-#      the changelog and the version files.
+#      the changelog and the version lines of the manifests. A dependency
+#      bump, a lock file change or a change under .github/ is a feature merge.
 # With "dry-run" (a build by hand, which never publishes) the failures are
 # printed as warnings and the script exits 0.
 #
@@ -23,6 +24,13 @@ commit=${1:?usage: release-gate.sh <commit> [tag|dry-run]}
 mode=${2:-tag}
 wait_hours=${GATE_WAIT_HOURS:-48}
 failed=0
+
+# A gate never passes by accident: needs a real commit and the full history.
+commit=$(git rev-parse --verify "$commit^{commit}") || { echo "release gate: no such commit: $commit" >&2; exit 2; }
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+  echo "release gate: this clone is shallow; fetch the full history and the tags first." >&2
+  exit 2
+fi
 
 fail() {
   if [ "$mode" = dry-run ]; then
@@ -52,11 +60,31 @@ fi
 previous=$(git describe --tags --abbrev=0 --match 'v*' "$commit^" 2>/dev/null || true)
 range=${previous:+$previous..}$commit
 last=""
+
+# Manifests and lock files: a change there is no feature merge only when
+# every changed line is a version line (the release's own version bump).
+# A dependency bump changes other lines (checksums, integrity, ranges).
+manifests=(Cargo.toml Cargo.lock package.json package-lock.json src-tauri/tauri.conf.json 'crates/*/Cargo.toml')
+version_only() {
+  ! git diff -U0 "$1^" "$1" -- "${manifests[@]}" 2>/dev/null |
+    grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' |
+    grep -qvE '^[-+][[:space:]]*"?version"?[[:space:]]*[:=]'
+}
+
 while read -r sha stamp; do
-  files=$(git diff-tree --no-commit-id --name-only -r -m --first-parent "$sha")
-  if printf '%s\n' "$files" | grep -qvE '^(docs/|CHANGELOG\.md$|README\.md$|ROADMAP\.md$|CLAUDE\.md$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|src-tauri/tauri\.conf\.json$|\.github/|crates/[^/]+/Cargo\.toml$|$)'; then
+  files=$(git diff-tree --root --no-commit-id --name-only -r -m --first-parent "$sha")
+  # Everything outside documentation, the changelog and the manifests.
+  if printf '%s\n' "$files" | grep -vE '^(docs/|CHANGELOG\.md$|README\.md$|ROADMAP\.md$|CLAUDE\.md$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|src-tauri/tauri\.conf\.json$|crates/[^/]+/Cargo\.toml$|$)' | grep -q .; then
     last="$sha $stamp"
     break
+  fi
+  # Only manifests, lock files and docs: a feature merge unless the manifest
+  # changes are version lines alone.
+  if printf '%s\n' "$files" | grep -qE '^(Cargo\.toml|Cargo\.lock|package\.json|package-lock\.json|src-tauri/tauri\.conf\.json|crates/[^/]+/Cargo\.toml)$'; then
+    if [ "$(git rev-list --parents -n1 "$sha" | wc -w)" -lt 2 ] || ! version_only "$sha"; then
+      last="$sha $stamp"
+      break
+    fi
   fi
 done < <(git log --first-parent --format='%H %ct' "$range")
 
