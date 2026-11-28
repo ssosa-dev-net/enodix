@@ -2331,6 +2331,7 @@ async fn session_open(
                 legacy_crypto: false,
                 agent_forwarding: false,
                 connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+                keepalive_interval: None,
                 terminal_type: TerminalType::default(),
             });
             (

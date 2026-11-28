@@ -181,6 +181,13 @@ pub struct SshTarget {
     /// key, password, one-time code) does not count, and the clock starts
     /// again after each answer. Jump hosts have their own.
     pub connect_timeout: Duration,
+    /// How often an open session sends the device a keepalive, to notice a
+    /// link that went silent: the connection is lost once
+    /// `KEEPALIVES_UNANSWERED` of them have gone unanswered. `None` (the
+    /// default everywhere): one per [`Self::connect_timeout`]. It applies to
+    /// the target only; jump hosts keep sending one per their own connect
+    /// timeout.
+    pub keepalive_interval: Option<Duration>,
     /// The terminal type announced in the pty request.
     pub terminal_type: TerminalType,
 }

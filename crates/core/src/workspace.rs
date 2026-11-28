@@ -452,6 +452,7 @@ impl ResolvedHost {
             legacy_crypto: self.settings.legacy_crypto.value,
             agent_forwarding: self.settings.agent_forwarding.value,
             connect_timeout: self.connect_timeout(),
+            keepalive_interval: None,
             terminal_type: self.settings.terminal_type.value,
         }
     }

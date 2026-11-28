@@ -349,7 +349,10 @@ The core's integration tests and their support, the interface tests, the contain
   in one breath). User `THREE_QUESTIONS_USERNAME`: three
   keyboard-interactive rounds. `support/proxy.rs`: `LinkProxy::to_ssh(&server)`
   (trusts the key at its port; `target()`), `stall()` (nothing crosses,
-  nothing closes), `resume()`, `cut()` (every connection so far).
+  nothing closes), `resume()`, `cut()` (every connection so far),
+  `writes_to_server()` / `writes_to_client()` (writes passed each way so
+  far; the idle keepalive test in `edge_ssh.rs` reads them to see that
+  keepalives went out and were answered, #74).
   The proxy also stands in front of the telnet test device
   (`LinkProxy::start(port)`, #133). `support/telnet.rs` answers `DO
   TIMING-MARK` with `WILL TIMING-MARK` in order (as IOS and BSD telnetd

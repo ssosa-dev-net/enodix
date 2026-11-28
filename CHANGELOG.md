@@ -28,6 +28,10 @@ in the project's tracker.
   that would lock the workspace again while it is held, the fault behind
   0.8.0's system ssh tab. They run on Linux and Windows with the other
   tests [70].
+- The core can send SSH keepalives at an interval of its own instead of one
+  per connect timeout; nothing changes for you, and a setting for it comes
+  later. The idle-session test no longer relies on a 200 ms login, which
+  failed on a loaded machine [74].
 
 ## 0.8.1
 
