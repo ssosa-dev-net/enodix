@@ -3,7 +3,7 @@
 Packaging, the update check, the Linux checks and the Linux release.
 
 - Packaging and update check (#28, `src/update.rs`, `scripts/release.mjs`,
-  `docs/releasing.md`, `README.md`). `UpdateChecker::new(Option<UpdateSource>,
+  `docs/dev/releasing.md`, `README.md`). `UpdateChecker::new(Option<UpdateSource>,
 current_version, InstallKind)`: `automatic(&prefs)` → `Disabled` (no
   connection) when `Preferences.check_for_updates` is off, else
   `check_now()` → `UpdateStatus::NotConfigured | UpToDate | Available(
@@ -47,7 +47,7 @@ NothingOffered | NotifyOnly | NoUpdater`; `UpdateOffer::is_version`
   user's to create). Not verified: the updater's own install (no signed
   release yet).
 - Installer (#111, `src-tauri/installer/hooks.nsh` and `English.nsh`,
-  `scripts/check-installer.ps1`, `docs/releasing.md` "The installer").
+  `scripts/check-installer.ps1`, `docs/dev/releasing.md` "The installer").
   `release.mjs` writes `target/installer-hooks.nsh` (`!define ENODIX_*`:
   product, publisher, description, old vendor = identifier's 2nd part, cli,
   wheel; then `!include` of `hooks.nsh`) for `nsis.installerHooks`, and
@@ -431,3 +431,23 @@ pty` could not be opened; `tests/serial_pty.rs`, Unix: bytes both ways,
   after the copy; a 0.4 copy running beside a starting 0.5 holds no lock
   and may write to the old place after the move (the installer closes
   running copies; portable copies side by side do not).
+
+## The release gate (#76)
+
+- `scripts/release-gate.sh <commit> [tag|dry-run]` is run by the `gate` job of
+  `release.yml` before any build: CI (`ci.yml`) green on the commit, and 48
+  hours since the newest commit since the previous `v*` tag that changes more
+  than docs, the changelog and the version lines of the manifests (a
+  dependency bump or a workflow change counts; issue templates do not, so
+  the release's own version bump does not restart the wait).
+  `npm run test:release-gate` (`scripts/test-release-gate.sh`) builds scratch
+  histories for it, a very large lock diff included (a `grep -q` in a
+  pipeline once read that as version-only); CI does not run it. `GATE_WAIT_HOURS`
+  overrides the 48 (to test it). A build by hand (`workflow_dispatch`) runs it
+  as `dry-run`: warnings only.
+- The publish job creates the release with `--prerelease` and no longer
+  starts `distribute.yml`; the maintainer promotes the release and runs
+  Distribute. The rest of the gate (evidence, no tag mid-wave, the `release`
+  environment reviewer, the `v*` tag ruleset) is process and settings, in
+  `docs/dev/releasing.md`. Not verified: the gate job on a real runner (it
+  was run locally against the repository's history).
