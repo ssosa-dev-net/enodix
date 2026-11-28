@@ -100,11 +100,12 @@ jobs:
   # The end-to-end smoke test (scripts/smoke.mjs, docs/agents/areas/testing.md):
   # builds the app and drives its real windows through WebView2's DevTools
   # port. A job of its own, so that its name is a stable required check and
-  # the Windows runner's cache is not shared with `check`. It runs on a
-  # desktop of its own (scripts/run-on-desktop.py, as `npm run smoke:hidden`
-  # does): the runner's interactive session has a working clipboard there, so
-  # no step is skipped. The release workflow refuses a tag whose commit has
-  # no passing run of this job.
+  # the Windows runner's cache is not shared with `check`. It runs on the
+  # runner's own desktop (an interactive, unlocked session: the clipboard
+  # works there, so no step is skipped; a desktop made by run-on-desktop.py
+  # does not work on the runner, WebView2 cannot make its window there). The
+  # release workflow refuses a tag whose commit has no passing run of this
+  # job.
   smoke:
     name: Smoke test (Windows)
     runs-on: windows-latest
@@ -151,7 +152,7 @@ jobs:
       # machine's WebView2 policy (as in Windows Sandbox).
       - name: Smoke test
         shell: bash
-        run: py scripts/run-on-desktop.py enodix-smoke target/smoke-hidden.log node scripts/smoke.mjs
+        run: node scripts/smoke.mjs 2>&1 | tee target/smoke.log
         env:
           SMOKE_TEST_SERVER: target/debug/examples/test_ssh_server.exe
           SMOKE_PYTHON: ${{ steps.python.outputs.python-path }}
@@ -165,7 +166,7 @@ jobs:
         with:
           name: smoke-failure
           path: |
-            target/smoke-hidden.log
+            target/smoke.log
             target/smoke-pictures
             target/smoke-net-logs
           if-no-files-found: warn

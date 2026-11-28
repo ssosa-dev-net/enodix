@@ -413,15 +413,16 @@ privilege|second_channel`. `LabRun` gives its workspace an id and writes
   gate's: do not rename it without changing `release.yml` and the
   repository's rule), on `windows-latest`, for every pull request and push to
   `main`. It builds `npm run app:build` and the test server (debug example),
-  then runs `py scripts/run-on-desktop.py enodix-smoke target/smoke-hidden.log
-  node scripts/smoke.mjs`: the hidden-desktop way, with `SMOKE_TEST_SERVER`,
+  then runs `node scripts/smoke.mjs` on the runner's own desktop (the
+  hidden-desktop way fails there: WebView2 cannot create its window on a
+  desktop `run-on-desktop.py` makes, "Invalid window handle", 2026-11-28),
+  with `SMOKE_TEST_SERVER`,
   `SMOKE_PYTHON` (setup-python's), `SMOKE_WEBVIEW2_POLICY=1` (the runner's
   user is an elevated administrator, so WebView2 ignores the environment's
   arguments, as in Windows Sandbox), `SMOKE_SCREENSHOTS` and `SMOKE_NET_LOGS`.
   **Clipboard:** the runner's job is in an interactive session (id 2, user
-  `runneradmin`), unlocked: `Set-Clipboard` / `Get-Clipboard` work there and on
-  a desktop made by `run-on-desktop.py` (probed on a runner, 2026-11-28), so
-  no step is skipped or set apart. WebView2 157 is preinstalled. On failure
+  `runneradmin`), unlocked: `Set-Clipboard` / `Get-Clipboard` work there (probed on a
+  runner, 2026-11-28), so no step is skipped or set apart. WebView2 157 is preinstalled. On failure
   the log, pictures and net logs are the artifact `smoke-failure` (14 days).
   `release.yml`'s `version` job refuses a tag whose commit has no successful
   `Smoke test (Windows)` check run. The cache is rust-cache's (`shared-key:
