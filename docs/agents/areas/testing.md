@@ -1,6 +1,6 @@
 # Testing
 
-The core's integration tests and their support, the containerlab device suite, the example server and the smoke test. Each feature's own tests are named in its area file.
+The core's integration tests and their support, the interface tests, the containerlab device suite, the example server and the smoke test. Each feature's own tests are named in its area file.
 
 - CI (2026-11-22, PR #1 on GitHub): `.github/workflows/ci.yml` runs on
   pushes to `main` and pull requests, on `ubuntu-24.04` and
@@ -30,6 +30,47 @@ The core's integration tests and their support, the containerlab device suite, t
   `npm audit --omit=dev` on pushes, pull requests and Mondays. Not on CI: the smoke
   test, the containerlab suite, the installer checks (they need a desktop,
   the lab, Windows Sandbox).
+
+- Interface tests (#71): `npm run test:ui` (`vitest run`; one file:
+  `npx vitest run src/lib/groupPaste.test.ts`, by name: `-t "<words>"`,
+  watching: `npx vitest`). About 3 s, no build, no Rust; in `npm run check`
+  and in CI (step "Interface tests", both runners). Vitest is set up in
+  `vite.config.ts`'s `test` (Svelte's browser build when `mode` is `test`):
+  jsdom for the page, `src/**/*.test.ts` next to what they test. They run
+  the real components and the real xterm.js (opened on the page; jsdom
+  draws nothing, so xterm.js keeps its DOM renderer and lays nothing out:
+  no mouse reports, as cells have no size; the wheel in the alternate
+  screen does give arrows). `src/test/setup.ts` adds what jsdom lacks
+  (`matchMedia`, `ResizeObserver`, a canvas without a context) and clears
+  the shell after each test. `src/test/shell.ts` is the stand-in for the
+  shell on the other side of the IPC (Tauri's `@tauri-apps/api/mocks`):
+  `fakeShell()` records every command (`calls`, `called(name)`), answers
+  those a test gives (`answer(name, fn)`: a value, a promise, or a throw
+  the page sees as a refusal), answers the page's own background ones
+  with nothing to show (`forwards_list`, `highlight_lines`), and sends
+  events (`emit`, for `listen`); `pending()` for an answer the test gives
+  later (a slow `session_open`), `sessionEvents(channels)` sends output and
+  states on a session's channels as the shell does, `sentText(call)` reads
+  a `session_input`/`session_write`, `settle()` lets queued work run. Tests
+  assert what the shell would receive and what the page shows, never a
+  component's internals; answer a command as the shell does (e.g.
+  `paste_plan` asks for more than one line). Files:
+  `TerminalSession.test.ts` (mounts the tab: input before `session_open`
+  answers is sent once it does, in order, its output acknowledged then,
+  nothing when refused (0.8.0's empty local shell); every way a paste
+  starts (Ctrl+V, Ctrl+Shift+V, on Dvorak and a Russian layout,
+  Shift+Insert, right click, the browser's paste event, `sendText` for a
+  snippet) is planned by `paste_plan`, asked, and sends nothing before the
+  answer; Cancel, a session closing while asked, an unplannable paste, the
+  group's paste), `terminalInput.test.ts` (origins with real key, wheel,
+  focus and device events; a missing xterm.js hook throws),
+  `keyBindings.test.ts` (`typedLetter`, `chordsOf`, `bindingOf` on QWERTY,
+  AZERTY, Dvorak and Russian), `groupPaste.test.ts` (the group changing
+  while asked, before asking, or unseen by the window sends nothing; lines
+  from other windows). Not covered here: App's own snippet routing (view,
+  palette and bound key all call the tab's `sendText`; App is not
+  mounted), mouse reports, real layout and the WebGL renderer (the smoke
+  test has those).
 
 - `tests/` — integration tests through the public API only.
   `output_flow.rs` covers batching and flow control;

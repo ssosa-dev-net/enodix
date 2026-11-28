@@ -49,8 +49,11 @@ interface Internals {
  * what separates replies. Mouse reports are user input to xterm.js, so they
  * are recognised by the DOM event being dispatched (`window.event`), as
  * xterm.js sends them from its mouse and wheel handlers. If xterm.js's
- * internals change, everything but our own pastes counts as a reply (never
- * shared) and a warning is logged; the smoke test checks the origins.
+ * internals change and that hook is gone, this throws: typed keys could
+ * not be told from replies (they would never reach the multi-send group,
+ * nor stop a snippet's steps). The interface's tests
+ * (`terminalInput.test.ts`) run against the xterm.js installed, and the
+ * smoke test checks the origins in the app.
  */
 export function terminalInput(
   terminal: Terminal,
@@ -73,7 +76,7 @@ export function terminalInput(
     userInput = true;
   });
   if (!watch) {
-    console.warn(
+    throw new Error(
       "xterm.js internals changed: typed input cannot be told from replies",
     );
   }
