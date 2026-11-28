@@ -36,6 +36,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -48,7 +49,7 @@ import {
   createServer as createTcpServer,
   connect as tcpConnect,
 } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir as osTmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -386,6 +387,9 @@ const apps = [];
 const netLogs = { file: "", copies: 0, found: [] };
 /** The watch on the app's connections over the whole run (#115). */
 let connections = null;
+// The temp folder by its long name: on a CI runner it is given as RUNNER~1, and the
+// app reports the long path (a workspace's own path is compared with it).
+const tmpdir = () => realpathSync.native(osTmpdir());
 const userData = mkdtempSync(join(tmpdir(), "enodix-smoke-"));
 // The app's own data folder, listing workspaces but none to reopen, so the
 // first window is the welcome view.
@@ -2684,6 +2688,7 @@ async function main() {
     await checkContrast(evaluate, name);
     const folder = process.env.SMOKE_SCREENSHOTS;
     if (!folder) return;
+    mkdirSync(folder, { recursive: true });
     const { data } = await devtools.send("Page.captureScreenshot");
     writeFileSync(join(folder, `${name}.png`), Buffer.from(data, "base64"));
   };
@@ -2694,6 +2699,16 @@ async function main() {
   );
   const heading = await until("the app name on screen", () => text("h1"));
   if (heading !== name) fail(`heading ${heading} differs from title ${name}`);
+  // The screen and window the run sees (a CI runner's is small), for reading a
+  // failure that depends on size.
+  console.log(
+    "window:",
+    JSON.stringify(
+      await evaluate(`({ inner: [innerWidth, innerHeight], outer: [outerWidth, outerHeight],
+        screen: [screen.width, screen.height], available: [screen.availWidth, screen.availHeight],
+        ratio: devicePixelRatio })`),
+    ),
+  );
   await screenshot("quick-connect");
   step(`app launched, named "${name}"`);
 
@@ -2964,7 +2979,9 @@ async function main() {
   );
   await devtools.send("Browser.setWindowBounds", {
     windowId,
-    bounds: { width: bounds.width - 300, height: bounds.height - 200 },
+    // 800 px wide whatever the window started at: later steps ("at 800 px")
+    // rely on it, and a CI runner's screen starts it narrower (1028 px).
+    bounds: { width: 800, height: bounds.height - 200 },
   });
   await type("size\r");
   const sizeAfter = await until("a new size from `size`", async () => {

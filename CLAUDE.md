@@ -80,8 +80,10 @@ Rules from those files that must hold whatever the task:
   serial ports, and touch the keychain only under a random `enodix-test-*`
   prefix (`testing.md`). The opt-in containerlab suite is the one exception
   for the agent.
-- Run the smoke test on an unlocked workstation (its clipboard steps fail
-  otherwise).
+- The smoke test runs in CI ("Smoke test (Windows)", a required check). A
+  change that adds or alters a screen adds its smoke steps. Run it locally
+  with `npm run smoke:hidden` on an unlocked workstation (its clipboard steps
+  fail otherwise), and only when no other run holds its fixed ports.
 
 ## Commands
 
@@ -101,7 +103,7 @@ Run from the repo root (Git Bash on Windows).
 | Build the app (no installer)   | `npm run app:build` → `target/release/enodix.exe`         |
 | Update-check tests             | `cargo test -p enodix-core --test update_check`           |
 | Headless binary tests          | `cargo test -p enodix-cli`                                |
-| End-to-end smoke test          | `npm run app:build && npm run smoke`                      |
+| End-to-end smoke test (CI too) | `npm run app:build && npm run smoke`                      |
 | The same, out of sight         | `npm run smoke:hidden` (a desktop of its own, Windows)    |
 | The same, in Windows Sandbox   | `npm run smoke:sandbox` (setup: `testing.md`)             |
 | Installer check, clean Windows | `npm run test:installer:sandbox -- --old <setup.exe>`     |

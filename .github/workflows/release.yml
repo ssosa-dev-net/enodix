@@ -14,9 +14,10 @@
 # (the key file's contents) and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, kept in
 # the `release` environment (which only tags v* and main may use). The
 # release script takes them out of its environment before it builds and
-# gives them to the signer alone, after the build. The smoke test, the
-# containerlab suite and the installer checks run on the maintainer's
-# computer before the tag is pushed.
+# gives them to the signer alone, after the build. The containerlab
+# suite and the installer checks run on the maintainer's computer before the
+# tag is pushed; the smoke test is CI's, and a tag is refused without its
+# passing run.
 name: Release
 
 on:
@@ -43,6 +44,9 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.read.outputs.version }}
+    permissions:
+      contents: read
+      checks: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,6 +65,22 @@ jobs:
           fi
           grep -q "^## $version\$" CHANGELOG.md || { echo "CHANGELOG.md has no section ## $version"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # A tag's commit must have passed the smoke test (CI's "Smoke test
+      # (Windows)" job, which runs on every pull request and push to main).
+      # Run by hand on a branch it is not asked: nothing is published then.
+      - name: Check that the tagged commit passed the smoke test
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs?check_name=Smoke%20test%20(Windows)&filter=latest"             --jq '[.check_runs[].conclusion] | if length == 0 then "none" else (if all(. == "success") then "success" else join(",") end) end')
+          echo "smoke test on $SHA: $conclusion"
+          if [ "$conclusion" != success ]; then
+            echo "::error::commit $SHA has no passing 'Smoke test (Windows)' run in CI (found: $conclusion); push it to a branch or main and let CI pass, or re-run the job"
+            exit 1
+          fi
 
   windows:
     name: Windows files

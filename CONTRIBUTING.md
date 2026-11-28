@@ -37,9 +37,12 @@ screenshots in the documentation come from.
    Python bridge and `npm run test:linux` the Linux checks. CI runs the
    same checks on Linux and Windows for every pull request
    (`.github/workflows/ci.yml`); a pull request is merged once they pass.
-   The end-to-end smoke test, the containerlab device suite and the
-   installer checks need a desktop, a lab or Windows Sandbox, so the
-   maintainer runs them before a release. A new or updated dependency must
+   The end-to-end smoke test (`scripts/smoke.mjs`) runs there too, as the
+   "Smoke test (Windows)" job, and must pass. A pull request that adds or
+   changes a screen adds its smoke steps in the same pull request: the
+   screen is not covered, and the pull request not ready, until the test
+   drives it. The containerlab device suite and the installer checks need
+   a lab or Windows Sandbox, so the maintainer runs them before a release. A new or updated dependency must
    also pass `cargo deny check` (known vulnerabilities, licences and
    sources, set in `deny.toml`) and `npm audit --omit=dev`; CI runs both
    (`.github/workflows/dependencies.yml`), and again every week.

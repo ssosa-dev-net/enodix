@@ -27,9 +27,9 @@ The core's integration tests and their support, the interface tests, the contain
   Python tests (a restored venv had pip half there).
   `.github/workflows/dependencies.yml` runs `cargo deny check` (0.20.2,
   `deny.toml`: every exception listed with its reason) and
-  `npm audit --omit=dev` on pushes, pull requests and Mondays. Not on CI: the smoke
-  test, the containerlab suite, the installer checks (they need a desktop,
-  the lab, Windows Sandbox).
+  `npm audit --omit=dev` on pushes, pull requests and Mondays. Not on CI: the
+  containerlab suite and the installer checks (they need the lab, Windows
+  Sandbox). The smoke test is, since #72: see "Smoke test in CI" below.
 
 - Interface tests (#71): `npm run test:ui` (`vitest run`; one file:
   `npx vitest run src/lib/groupPaste.test.ts`, by name: `-t "<words>"`,
@@ -366,7 +366,7 @@ privilege|second_channel`. `LabRun` gives its workspace an id and writes
   also requires that the device asked the question, and that a job with a
   wrong secret fails the host as refused. Smoke on a locked workstation: the
   clipboard steps fail (even PowerShell's Get-/Set-Clipboard fail while
-  LogonUI runs), so run the smoke unlocked.
+  LogonUI runs), so run the smoke unlocked (CI's runner is never locked).
 - Script lab checks (#93): `tests/lab/scripts.rs` holds what
   `lab_enrichment` and `lab_tunnel_ports` share (`ENODIX_LAB_PYTHON`,
   the cli, `ScriptWorkspace::prepare`: devices behind `jump.yaml`, keys
@@ -452,6 +452,25 @@ privilege|second_channel`. `LabRun` gives its workspace an id and writes
   check list, under WSLg or on a Linux desktop; much smaller than the
   smoke test. Details in `release-linux.md`.
 - `scripts/smoke.mjs` — end-to-end smoke test that drives the built app.
+  **Smoke test in CI (#72).** The `smoke` job of `ci.yml`, named
+  `Smoke test (Windows)` (the name is the required check's and the release
+  gate's: do not rename it without changing `release.yml` and the
+  repository's rule), on `windows-latest`, for every pull request and push to
+  `main`. It builds `npm run app:build` and the test server (debug example),
+  then runs `node scripts/smoke.mjs` on the runner's own desktop (the
+  hidden-desktop way fails there: WebView2 cannot create its window on a
+  desktop `run-on-desktop.py` makes, "Invalid window handle", 2026-11-28),
+  with `SMOKE_TEST_SERVER`,
+  `SMOKE_PYTHON` (setup-python's), `SMOKE_WEBVIEW2_POLICY=1` (the runner's
+  user is an elevated administrator, so WebView2 ignores the environment's
+  arguments, as in Windows Sandbox), `SMOKE_SCREENSHOTS` and `SMOKE_NET_LOGS`.
+  **Clipboard:** the runner's job is in an interactive session (id 2, user
+  `runneradmin`), unlocked: `Set-Clipboard` / `Get-Clipboard` work there (probed on a
+  runner, 2026-11-28), so no step is skipped or set apart. WebView2 157 is preinstalled. On failure
+  the log, pictures and net logs are the artifact `smoke-failure` (14 days).
+  `release.yml`'s `version` job refuses a tag whose commit has no successful
+  `Smoke test (Windows)` check run. The cache is rust-cache's (`shared-key:
+  smoke`).
   **Where to run it.** `npm run smoke` puts the app's windows on the
   desktop it is started from and takes the keyboard focus: on a computer
   someone is using it interrupts them, and their own typing and clicking

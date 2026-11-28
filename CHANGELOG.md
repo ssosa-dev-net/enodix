@@ -5,6 +5,13 @@ in the project's tracker.
 
 ## Unreleased
 
+### Changed
+
+- The end-to-end smoke test now runs in CI on a Windows runner for every
+  pull request and push to `main`, clipboard steps included, and keeps its
+  log and pictures when it fails. The release workflow refuses a tag whose
+  commit has no passing run [72].
+
 ### Fixed
 
 - Documentation that no longer matched the app: which workspaces the
