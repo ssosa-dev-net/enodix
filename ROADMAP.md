@@ -17,8 +17,7 @@ planned. What each release added is in [CHANGELOG.md](CHANGELOG.md).
 - **Python is optional.** Everything except script jobs and Fill in from
   devices works without it.
 - **Windows and Linux.** Both are supported; the core has no Windows-only
-  assumptions. macOS waits until the app is further along
-  ([#171](https://github.com/ssosa-dev-net/enodix/issues/171)).
+  assumptions.
 
 ## Next
 

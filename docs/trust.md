@@ -162,8 +162,9 @@ readable by anyone who can read your files:
 Session logs, job results and config backups hold what the devices print.
 A configuration can contain secrets (SNMP communities, pre-shared keys,
 password hashes), and so can anything shown in a session. Encrypting them
-is not planned: leave that to the disk's own encryption. A password you type at a device's prompt is not shown on
-screen by the device, so it is not in the log.
+is not planned: leave that to the disk's own encryption. A password you type
+at a device's prompt is not shown on screen by the device, so it is not in
+the log.
 
 Telnet sends everything, passwords included, in the clear; a telnet
 session is marked unencrypted in its header.
