@@ -188,8 +188,12 @@ a smoke run would have caught. Nothing is tagged until all of this holds:
    is any commit since the previous release that changes more than
    documentation, the changelog and the version lines of the manifests
    (`Cargo.toml`, `Cargo.lock`, `package.json`, `package-lock.json`,
-   `tauri.conf.json`). A dependency bump, a lock file change and any change
-   under `.github/` (the workflows included) are feature merges. Fixes found
+   `tauri.conf.json`), and the issue templates, pull request template and
+   `CODEOWNERS` under `.github/`. A dependency bump, a lock file change and
+   any change to a workflow or action under `.github/` are feature merges.
+   So the release's own version bump (which changes the issue template's
+   version too) does not restart the wait, and can be tagged 48 hours after
+   the last real change. Fixes found
    by the smoke or lab run are feature merges: they restart the wait.
 3. **Pre-release first.** The workflow publishes every release as a
    pre-release (`--prerelease`, never `--latest`), so the updater and
@@ -205,7 +209,8 @@ a smoke run would have caught. Nothing is tagged until all of this holds:
 
 What `.github/workflows/release.yml` enforces by itself, in its `gate` job
 (`scripts/release-gate.sh`, which you can also run in a clone:
-`scripts/release-gate.sh HEAD dry-run`), before the Windows and Linux builds
+`scripts/release-gate.sh HEAD dry-run`; its cases are in
+`npm run test:release-gate`), before the Windows and Linux builds
 start and so before the `release` environment's secrets are used: CI
 finished green on the tagged commit (`ci.yml` only: the Dependencies
 workflow stays a manual check, step 2 of "Each release"), and 48 hours have

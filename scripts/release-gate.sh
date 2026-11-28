@@ -11,7 +11,8 @@
 #   2. 48 hours have passed since the last feature merge: the newest commit
 #      since the previous v* tag that changes anything but documentation,
 #      the changelog and the version lines of the manifests. A dependency
-#      bump, a lock file change or a change under .github/ is a feature merge.
+#      bump, a lock file change or a change to a workflow or action is a feature
+#      merge; issue templates and the like are documentation.
 # With "dry-run" (a build by hand, which never publishes) the failures are
 # printed as warnings and the script exits 0.
 #
@@ -26,7 +27,8 @@ wait_hours=${GATE_WAIT_HOURS:-48}
 failed=0
 
 # A gate never passes by accident: needs a real commit and the full history.
-commit=$(git rev-parse --verify "$commit^{commit}") || { echo "release gate: no such commit: $commit" >&2; exit 2; }
+given=$commit
+commit=$(git rev-parse --verify "$given^{commit}") || { echo "release gate: no such commit: $given" >&2; exit 2; }
 if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
   echo "release gate: this clone is shallow; fetch the full history and the tags first." >&2
   exit 2
@@ -66,15 +68,19 @@ last=""
 # A dependency bump changes other lines (checksums, integrity, ranges).
 manifests=(Cargo.toml Cargo.lock package.json package-lock.json src-tauri/tauri.conf.json 'crates/*/Cargo.toml')
 version_only() {
-  ! git diff -U0 "$1^" "$1" -- "${manifests[@]}" 2>/dev/null |
-    grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' |
-    grep -qvE '^[-+][[:space:]]*"?version"?[[:space:]]*[:=]'
+  local diff
+  # No -q below and no hidden errors: a grep that quits early would kill the
+  # pipe upstream (SIGPIPE) and read as "version only" on a large lock diff.
+  diff=$(git diff -U0 "$1^" "$1" -- "${manifests[@]}") || return 1
+  ! printf '%s
+' "$diff" | grep -E '^[-+]' | grep -vE '^(\+\+\+|---) ' |
+    grep -vE '^[-+][[:space:]]*"?version"?[[:space:]]*[:=]' >/dev/null
 }
 
 while read -r sha stamp; do
   files=$(git diff-tree --root --no-commit-id --name-only -r -m --first-parent "$sha")
   # Everything outside documentation, the changelog and the manifests.
-  if printf '%s\n' "$files" | grep -vE '^(docs/|CHANGELOG\.md$|README\.md$|ROADMAP\.md$|CLAUDE\.md$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|src-tauri/tauri\.conf\.json$|crates/[^/]+/Cargo\.toml$|$)' | grep -q .; then
+  if printf '%s\n' "$files" | grep -vE '^(docs/|\.github/(ISSUE_TEMPLATE/|pull_request_template\.md$|CODEOWNERS$)|CHANGELOG\.md$|README\.md$|ROADMAP\.md$|CLAUDE\.md$|Cargo\.toml$|Cargo\.lock$|package\.json$|package-lock\.json$|src-tauri/tauri\.conf\.json$|crates/[^/]+/Cargo\.toml$|$)' | grep . >/dev/null; then
     last="$sha $stamp"
     break
   fi

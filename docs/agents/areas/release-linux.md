@@ -438,7 +438,11 @@ pty` could not be opened; `tests/serial_pty.rs`, Unix: bytes both ways,
   `release.yml` before any build: CI (`ci.yml`) green on the commit, and 48
   hours since the newest commit since the previous `v*` tag that changes more
   than docs, the changelog and the version lines of the manifests (a
-  dependency bump or a `.github/` change counts). `GATE_WAIT_HOURS`
+  dependency bump or a workflow change counts; issue templates do not, so
+  the release's own version bump does not restart the wait).
+  `npm run test:release-gate` (`scripts/test-release-gate.sh`) builds scratch
+  histories for it, a very large lock diff included (a `grep -q` in a
+  pipeline once read that as version-only); CI does not run it. `GATE_WAIT_HOURS`
   overrides the 48 (to test it). A build by hand (`workflow_dispatch`) runs it
   as `dry-run`: warnings only.
 - The publish job creates the release with `--prerelease` and no longer
