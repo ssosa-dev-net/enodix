@@ -467,19 +467,36 @@ async fn after_a_short_sleep_the_session_carries_on() {
     output_ending_with(&mut events, PROMPT).await;
 }
 
-/// Hours of idle in compressed time: keepalives every 200 ms for 3 s.
+/// Hours of idle in compressed time: a keepalive every 400 ms for 5 s
+/// (about twelve rounds), with the usual connect timeout so that the login
+/// itself has all the time it needs under load (#74). A link in between
+/// counts what crosses it: the session must have sent keepalives and the
+/// server answered them, not merely stayed quiet. The bounds are far under
+/// the twelve expected so that a loaded machine cannot fail them. The
+/// session is lost after two unanswered keepalives, that is 1.2 s without a
+/// byte from the server, which a slow machine does not reach.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_idle_session_kept_alive_for_many_keepalive_rounds_stays_connected() {
     let server = TestSshServer::start().await;
+    let link = LinkProxy::to_ssh(&server).await;
     let manager = support::manager();
     let target = SshTarget {
-        connect_timeout: Duration::from_millis(200),
-        ..server.target()
+        keepalive_interval: Some(Duration::from_millis(400)),
+        ..link.target()
     };
     let (id, mut events) = open(&manager, target).await;
+    let (sent, answered) = (link.writes_to_server(), link.writes_to_client());
 
-    let quiet = tokio::time::timeout(Duration::from_secs(3), events.next()).await;
+    let quiet = tokio::time::timeout(Duration::from_secs(5), events.next()).await;
     assert!(quiet.is_err(), "the idle session reported {quiet:?}");
+    assert!(
+        link.writes_to_server() >= sent + 5,
+        "the session sent too few keepalives"
+    );
+    assert!(
+        link.writes_to_client() >= answered + 5,
+        "the server answered too few keepalives"
+    );
     manager.write(id, b"size\r".to_vec()).unwrap();
     assert!(output_ending_with(&mut events, PROMPT)
         .await

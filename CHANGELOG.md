@@ -29,6 +29,10 @@ in the project's tracker.
   where terminal input comes from, shortcut keys on AZERTY, Dvorak and
   other layouts, the multi-send group's pastes, and a session's first
   output before it has opened [71].
+- The core can send SSH keepalives at an interval of its own instead of one
+  per connect timeout; nothing changes for you, and a setting for it comes
+  later. The idle-session test no longer relies on a 200 ms login, which
+  failed on a loaded machine [74].
 
 ## 0.8.1
 

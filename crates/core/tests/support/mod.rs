@@ -1113,6 +1113,7 @@ pub fn target_at(host: &str, port: u16) -> SshTarget {
         legacy_crypto: false,
         agent_forwarding: false,
         connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+        keepalive_interval: None,
         terminal_type: TerminalType::default(),
     }
 }
