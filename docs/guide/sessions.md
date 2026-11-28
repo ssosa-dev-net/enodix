@@ -490,5 +490,10 @@ the app shows when negotiation fails.
   paused (its window too busy to draw), they pause with it. A duplicate or a
   second channel of a session opens none. Remote forwards (`ssh -R`) are not
   supported.
+- A session in a background tab (a terminal that is not shown) keeps
+  receiving output up to about 1.25 MiB (1 MiB the app holds for the tab,
+  plus the 256 KiB flow-control window). Then its device is paused until you
+  show the tab again, and the held output is written then. Its port forwards
+  pause with it.
 - Session windows have been checked on Windows; on Linux they are built but
   not yet tried on a desktop.

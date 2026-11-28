@@ -225,6 +225,9 @@ not on PyPI.
    `package.json` (the script refuses if they differ). Versions are semver;
    the app offers only a higher version than its own. In `CHANGELOG.md`,
    rename "Unreleased" to the version and start a new "Unreleased" above it.
+   Read `docs/trust.md` against the code of this version and correct what
+   changed, since it says of itself that it was checked against the source
+   code of the version it ships with.
 2. `npm run check`, `npm run test:python` (the Python bridge: needs Python
    3.10+ and, the first time, the network for Nornir), and
    `npm run app:build && npm run smoke`. The Dependencies workflow must be

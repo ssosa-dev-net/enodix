@@ -170,11 +170,12 @@ shown. Other platforms may work but have not been tested.
 | Cisco IOS-XE (CSR 1000v) | 17.03.08      | yes | not tested | SCP only (`ip scp server enable`) |
 | Juniper cJunos Evolved   | 25.4R1.13-EVO | yes | not tested | SFTP once its server is on; SCP   |
 
-Each was checked on 21 November 2026 for login, commands, host keys, large
+Each was checked on 27 November 2026 for login, commands, host keys, large
 output, session logs, jobs and config backups with the built-in platform
-definition, and file transfers, all through an SSH jump host. Cisco NX-OS has
-not been tested. Old equipment that only speaks outdated SSH algorithms is
-reached with the [Legacy crypto](docs/guide/legacy-crypto.md) setting.
+definition, and file transfers, all through an SSH jump host: 15 checks, with
+the suite's NAPALM and tunnel-port checks not run. Cisco NX-OS has not been
+tested. Old equipment that only speaks outdated SSH algorithms is reached with
+the [Legacy crypto](docs/guide/legacy-crypto.md) setting.
 
 ## Documentation
 

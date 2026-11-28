@@ -141,10 +141,12 @@ profile and secret in it, after asking. Your workspaces are not touched.
 ## How scripts get logins
 
 Python scripts never need a password written in them. The `enodix` Python
-package asks the running app for a host's login or a named secret by name,
-and the app answers only for the open workspace. If the app is not running,
-`enodix-cli` reads Credential Manager itself, or asks for the master password
-on the terminal when the vault is on. Nothing is written to disk. See
+package asks the running app for a host's login or a named secret by name.
+The app answers for the workspace the script names, not only the open one.
+A job limits `enodix-cli` to the job's hosts, but that is a guard against
+mistakes, not a sandbox. If the app is not running, `enodix-cli` reads
+Credential Manager itself, or asks for the master password on the terminal
+when the vault is on. Nothing is written to disk. See
 [the Python guide](../../python/README.md) for how to load the inventory with
 logins, and [trust.md](../trust.md) for exactly how the login travels and who
 can ask for it.
