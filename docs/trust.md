@@ -261,11 +261,13 @@ revocation status from its issuer to do so).
 - It runs once at start, and only if **Check for a new version at start**
   is on (Preferences; kept as `check_for_updates` in `preferences.yaml`).
   **Check now** runs it when you ask, whatever the setting.
-- Only a build made by the release script with a release server's address
-  knows one. Development builds and unsigned pre-releases (the releases so
-  far) have none and check nothing, unless the
-  environment variable `ENODIX_UPDATE_ENDPOINT` names one (the tests use
-  it). That address must be HTTPS, or plain HTTP to this computer.
+- Releases since 0.6.0 know the address of `latest.json` on the project's
+  GitHub releases page
+  (`https://github.com/ssosa-dev-net/enodix/releases/latest/download/latest.json`).
+  Development builds and the unsigned pre-releases 0.1.0 to 0.5.0 have none
+  and check nothing, unless the environment variable `ENODIX_UPDATE_ENDPOINT`
+  names one (the tests use it). That address must be HTTPS, or plain HTTP to
+  this computer.
 - Nothing is downloaded until you click **Install and restart**, and only
   an installed copy offers that. The updater then fetches `latest.json`
   again (its user agent names the updater and its version), downloads the

@@ -459,9 +459,10 @@ SessionLogin, note }` (through `profile_target` / `prompted_target` /
   advice }` (nothing tried). Interface: `Session.reconnect` resolves to
   the note, written dim under `--- reconnecting ---`; a refusal is the
   closed state's reason and advice (`reconnectFailure` in `session.ts`).
-  Every window's terminal goes through the same command. No automatic
-  reconnect exists for terminal sessions (only Enter or the menu's
-  Reconnect); the terminal size is still sent once the reconnect answers.
+  Every window's terminal goes through the same command. A reconnect by hand
+  is Enter or the menu's Reconnect; the automatic reconnect (`auto_reconnect`,
+  see "Automatic reconnect (#24)" above) calls the same `reconnect()`. The
+  terminal size is still sent once the reconnect answers.
   Known limits: the session's tab label, header title and jump host
   marker and `SessionRecord` stay what it opened with (as for a moved
   host); a reconnect that switched a typed login to a profile does not
