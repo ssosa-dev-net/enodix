@@ -17,6 +17,7 @@
     "smoke:sandbox": "node scripts/sandbox.mjs smoke",
     "test:lab": "cargo build -p enodix-cli && cargo test -p enodix-core --test containerlab -- --ignored --nocapture --test-threads=1",
     "test:python": "node scripts/test-python.mjs",
+    "test:release-gate": "bash scripts/test-release-gate.sh",
     "test:linux": "node scripts/test-linux.mjs",
     "test:linux-desktop": "node scripts/linux-desktop-check.mjs",
     "test:linux-fedora": "node scripts/linux-fedora-check.mjs",
