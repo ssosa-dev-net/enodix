@@ -5,6 +5,13 @@ in the project's tracker.
 
 ## Unreleased
 
+### Internal
+
+- The core can send SSH keepalives at an interval of its own instead of one
+  per connect timeout; nothing changes for you, and a setting for it comes
+  later. The idle-session test no longer relies on a 200 ms login, which
+  failed on a loaded machine [74].
+
 ## 0.8.1
 
 A fix release for two faults in 0.8.0.
